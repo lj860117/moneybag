@@ -291,7 +291,7 @@ body{font-family:'Noto Sans SC',-apple-system,sans-serif;background:var(--bg);co
 
 // ---- 底部导航 ----
 function renderNav(){let n=document.getElementById('btmNav');if(!n){n=document.createElement('div');n.id='btmNav';n.className='bottom-nav';document.body.appendChild(n)}
-const tabs=[{id:'landing',icon:'🏠',label:'首页'},{id:'portfolio',icon:'📊',label:'持仓'},{id:'insight',icon:'📰',label:'资讯'},{id:'chat',icon:'🤖',label:'AI分析'},{id:'ledger',icon:'📝',label:'记账'},{id:'assets',icon:'🏦',label:'资产'}];
+const tabs=[{id:'landing',icon:'🏠',label:'首页'},{id:'portfolio',icon:'📊',label:'持仓'},{id:'insight',icon:'📰',label:'资讯'},{id:'chat',icon:'🤖',label:'AI分析'},{id:'assets',icon:'🏦',label:'资产'}];
 n.innerHTML=tabs.map(t=>`<div class="nav-item ${currentPage===t.id?'active':''}" onclick="navigateTo('${t.id}')"><div class="nav-icon">${t.icon}</div><div>${t.label}</div></div>`).join('')}
 
 function navigateTo(p){currentPage=p;renderNav();if(p==='landing')renderLanding();else if(p==='portfolio')renderPortfolio();else if(p==='insight')renderInsight();else if(p==='chat')renderChat();else if(p==='ledger')renderLedger();else if(p==='assets')renderAssets()}
@@ -735,6 +735,82 @@ if(API_AVAILABLE)fetch(API_BASE+'/ledger/add',{method:'POST',headers:{'Content-T
 renderLedger()}
 function clearLedger(){if(confirm('确定清除所有记账记录？')){localStorage.removeItem(LEDGER_KEY);renderLedger()}}
 
+function toggleLedgerPanel(){
+const panel=document.getElementById('ledgerPanelInAssets');
+if(!panel)return;
+if(panel.style.display!=='none'){panel.style.display='none';return}
+panel.style.display='block';
+const entries=loadLedger();const sources=loadSources();
+const totalIncome=entries.filter(e=>e.direction==='income').reduce((s,e)=>s+(e.amount||0),0);
+const totalExpense=entries.filter(e=>e.direction!=='income').reduce((s,e)=>s+(e.amount||0),0);
+const curIcons=ledgerDirection==='income'?INCOME_ICONS:EXPENSE_ICONS;
+const now=new Date();const monthStart=new Date(now.getFullYear(),now.getMonth(),1).toISOString();
+const monthEntries=entries.filter(e=>e.date>=monthStart);
+const monthIncome=monthEntries.filter(e=>e.direction==='income').reduce((s,e)=>s+(e.amount||0),0);
+const monthExpense=monthEntries.filter(e=>e.direction!=='income').reduce((s,e)=>s+(e.amount||0),0);
+const monthSourceIds=new Set(monthEntries.filter(e=>e.sourceId).map(e=>e.sourceId));
+
+panel.innerHTML=`<div style="background:var(--card);border:1px solid var(--border);border-radius:16px;padding:16px">
+<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">
+<div style="font-weight:700;font-size:16px">📝 记账</div>
+<button style="background:none;border:none;color:var(--text2);font-size:18px;cursor:pointer;padding:4px" onclick="document.getElementById('ledgerPanelInAssets').style.display='none'">✕</button>
+</div>
+<div style="display:flex;gap:12px;justify-content:center;margin-bottom:12px;font-size:12px;color:var(--text2)">
+<span>本月收入 <b style="color:var(--green)">+¥${Math.round(monthIncome)}</b></span>
+<span>本月支出 <b style="color:var(--red)">-¥${Math.round(monthExpense)}</b></span>
+<span>总结余 <b style="color:${totalIncome-totalExpense>=0?'var(--green)':'var(--red)'}">¥${Math.round(totalIncome-totalExpense)}</b></span>
+</div>
+
+${sources.length?`<div style="margin-bottom:12px">
+<div style="font-size:13px;font-weight:600;margin-bottom:8px;display:flex;justify-content:space-between;align-items:center">📋 收入源<button style="background:none;border:none;color:var(--accent);font-size:12px;cursor:pointer" onclick="showAddSource()">+ 添加</button></div>
+${sources.map(s=>{const icon=SOURCE_TYPE_ICONS[s.type]||'💵';const recorded=monthSourceIds.has(s.id);
+return`<div style="display:flex;align-items:center;gap:8px;padding:8px;background:var(--bg2);border-radius:8px;margin-bottom:4px">
+<span>${icon}</span><span style="flex:1;font-size:13px">${s.name}</span>
+<button style="background:${recorded?'var(--border)':'var(--green)'};border:none;color:${recorded?'var(--text2)':'#fff'};padding:4px 10px;border-radius:6px;font-size:11px;font-weight:600;cursor:pointer" onclick="quickRecord('${s.id}')">${recorded?'再记':'💰 入账'}</button>
+<button style="background:none;border:none;color:var(--text2);font-size:14px;cursor:pointer" onclick="if(confirm('删除收入源「${s.name}」？')){deleteSource('${s.id}');toggleLedgerPanel();toggleLedgerPanel()}">🗑️</button>
+</div>`}).join('')}
+</div>`:
+`<div style="text-align:center;padding:8px;margin-bottom:8px;border:1px dashed var(--border);border-radius:8px;cursor:pointer;font-size:12px;color:var(--text2)" onclick="showAddSource()">🏡💻🔧 登记收入源（一键入账）</div>`}
+
+<div style="margin-bottom:12px">
+<div style="font-size:13px;font-weight:600;margin-bottom:8px">📸 拍照/截图记账</div>
+<div class="upload-area" style="padding:12px" onclick="document.getElementById('rcptFileAsset').click()"><div class="icon" style="font-size:20px">📷</div><div class="text" style="font-size:12px">拍照或上传截图，AI自动识别<br><span style="font-size:11px;color:var(--text2)">支付宝/微信/银行流水</span></div><input type="file" id="rcptFileAsset" accept="image/*" style="display:none" onchange="handleReceipt(this)"></div><div id="ocrRes"></div>
+</div>
+
+<div>
+<div style="font-size:13px;font-weight:600;margin-bottom:8px">✏️ 手动记一笔</div>
+<div style="display:flex;gap:0;margin-bottom:8px;border-radius:8px;overflow:hidden;border:1px solid var(--border)">
+<button id="btnExpenseAsset" style="flex:1;padding:8px;border:none;font-size:13px;font-weight:600;cursor:pointer;background:${ledgerDirection==='expense'?'var(--red)':'transparent'};color:${ledgerDirection==='expense'?'#fff':'var(--text2)'}" onclick="ledgerDirection='expense';toggleLedgerPanel();toggleLedgerPanel()">💸 支出</button>
+<button id="btnIncomeAsset" style="flex:1;padding:8px;border:none;font-size:13px;font-weight:600;cursor:pointer;background:${ledgerDirection==='income'?'var(--green)':'transparent'};color:${ledgerDirection==='income'?'#fff':'var(--text2)'}" onclick="ledgerDirection='income';toggleLedgerPanel();toggleLedgerPanel()">💰 收入</button>
+</div>
+<div class="form-row" style="margin-bottom:8px"><input class="form-input" type="number" id="ldgAmtAsset" placeholder="金额" inputmode="decimal" style="padding:10px"></div>
+<div style="display:flex;gap:8px;margin-bottom:8px">
+<select class="form-select" id="ldgCatAsset" style="flex:1;padding:10px">${Object.keys(curIcons).map(c=>`<option value="${c}">${curIcons[c]} ${c}</option>`).join('')}</select>
+<input class="form-input" type="text" id="ldgNoteAsset" placeholder="备注" style="flex:1;padding:10px">
+</div>
+<button class="form-submit" style="width:100%;background:${ledgerDirection==='income'?'var(--green)':'var(--accent)'}" onclick="addEntryFromAsset()">${ledgerDirection==='income'?'💰 记一笔收入':'💸 记一笔支出'}</button>
+</div>
+
+${entries.length?`<div style="margin-top:12px"><div style="font-size:13px;font-weight:600;margin-bottom:8px">📋 最近记录 (${entries.length}笔)</div>
+${entries.slice(-10).reverse().map(e=>{const isInc=e.direction==='income';const icon=isInc?(INCOME_ICONS[e.category]||'💵'):(EXPENSE_ICONS[e.category]||'📌');
+return`<div style="display:flex;align-items:center;gap:8px;padding:6px 0;border-bottom:1px solid var(--bg3);font-size:13px">
+<span>${icon}</span><span style="flex:1">${e.note||e.category}</span>
+<span style="font-weight:700;color:${isInc?'var(--green)':'var(--red)'}">${isInc?'+':'-'}¥${e.amount.toFixed(2)}</span>
+<span style="font-size:10px;color:var(--text2)">${new Date(e.date).toLocaleDateString('zh-CN')}</span></div>`}).join('')}
+${entries.length>10?`<div style="text-align:center;padding:8px;font-size:12px;color:var(--text2)">还有${entries.length-10}笔...</div>`:''}
+<button style="width:100%;margin-top:8px;padding:8px;border-radius:8px;border:1px solid var(--border);background:transparent;color:var(--red);font-size:12px;cursor:pointer" onclick="if(confirm('确定清除所有记账记录？')){localStorage.removeItem('${LEDGER_KEY}');renderAssets()}">🗑️ 清除记录</button>
+</div>`:''}
+</div>`}
+
+function addEntryFromAsset(){
+const a=parseFloat(document.getElementById('ldgAmtAsset')?.value);
+const c=document.getElementById('ldgCatAsset')?.value||'其他';
+const n=document.getElementById('ldgNoteAsset')?.value||'';
+if(!a||a<=0){alert('请输入金额');return}
+const es=loadLedger();es.push({date:new Date().toISOString(),amount:a,category:c,note:n,direction:ledgerDirection,source:'manual'});saveLedger(es);
+if(API_AVAILABLE)fetch(API_BASE+'/ledger/add',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({userId:getUserId(),amount:a,category:c,note:n,direction:ledgerDirection})}).catch(()=>{});
+renderAssets();setTimeout(()=>{toggleLedgerPanel()},100)}
+
 // ---- 弹窗 ----
 function showFundDetail(code){const d=FUND_DETAILS[code];if(!d)return;const o=document.createElement('div');o.className='modal-overlay';o.onclick=e=>{if(e.target===o)o.remove()};const nav=liveNavData[code];
 o.innerHTML=`<div class="modal-sheet" onclick="event.stopPropagation()"><div class="modal-handle"></div><div class="modal-title">${d.fullName}</div><div class="modal-subtitle">${d.type} · ${d.company} · ${d.risk}</div>
@@ -808,6 +884,13 @@ return`<div class="holding-card" style="border-left:3px solid ${t.color}">
 <div style="font-size:48px;margin-bottom:12px">🏦</div>
 <div>还没有资产记录</div>
 <div style="font-size:12px;margin-top:8px">添加现金、房产、车辆、保险等</div></div>`}
+
+<div style="display:flex;gap:10px;margin-top:16px">
+<button style="flex:1;padding:14px;border-radius:12px;border:none;background:var(--accent);color:#000;font-size:15px;font-weight:700;cursor:pointer;display:flex;align-items:center;justify-content:center;gap:6px" onclick="toggleLedgerPanel()">📝 记账</button>
+<button style="flex:1;padding:14px;border-radius:12px;border:none;background:var(--card);color:var(--text);font-size:15px;font-weight:600;cursor:pointer;border:1px solid var(--border);display:flex;align-items:center;justify-content:center;gap:6px" onclick="showAddAsset()">➕ 添加资产</button>
+</div>
+
+<div id="ledgerPanelInAssets" style="display:none;margin-top:16px"></div>
 
 <div style="text-align:center;margin-top:16px;font-size:12px;color:var(--text2);line-height:1.8">
 💡 这里管理基金以外的资产<br>

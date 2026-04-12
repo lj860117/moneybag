@@ -715,13 +715,29 @@ def get_macro_calendar() -> list:
         try:
             df = ak.macro_china_m2_yearly()
             if df is not None and len(df) > 0:
+                print(f"[MACRO] M2 columns: {list(df.columns)}")
+                print(f"[MACRO] M2 last row: {df.iloc[-1].to_dict()}")
                 latest = df.iloc[-1]
-                date_col = [c for c in df.columns if "月份" in c or "date" in c.lower() or "统计时间" in c]
-                val_col = [c for c in df.columns if "m2" in c.lower() or "同比" in c]
+                date_col = [c for c in df.columns if any(k in str(c).lower() for k in ["月份", "date", "统计时间", "时间", "月", "期"])]
+                val_col = [c for c in df.columns if any(k in str(c).lower() for k in ["m2", "同比", "货币", "增长", "供应"])]
+                # fallback: 如果精确匹配失败，取第二列（通常是数值列）
+                if not val_col and len(df.columns) > 1:
+                    val_col = [df.columns[1]]
+                    print(f"[MACRO] M2 val_col fallback to: {val_col[0]}")
+                if not date_col and len(df.columns) > 0:
+                    date_col = [df.columns[0]]
+                    print(f"[MACRO] M2 date_col fallback to: {date_col[0]}")
+                m2_val = str(latest[val_col[0]]) if val_col else ""
+                # 如果是数字，加上 % 后缀
+                try:
+                    m2_num = float(m2_val)
+                    m2_val = f"{m2_num}%"
+                except (ValueError, TypeError):
+                    pass
                 events.append({
                     "name": "M2 广义货币供应量",
                     "date": str(latest[date_col[0]]) if date_col else "",
-                    "value": str(latest[val_col[0]]) if val_col else "",
+                    "value": m2_val,
                     "impact": "货币宽松/紧缩信号，影响市场流动性",
                     "icon": "💵",
                 })
