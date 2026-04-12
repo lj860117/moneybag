@@ -1075,27 +1075,15 @@ async def chat_analysis(req: ChatRequest):
 
     # 尝试调用 LLM（支持 OpenAI 兼容 API）
     api_key = os.environ.get("OPENAI_API_KEY") or os.environ.get("LLM_API_KEY")
-    api_base = os.environ.get("LLM_API_BASE", "https://api.openai.com/v1")
-    model = os.environ.get("LLM_MODEL", "gpt-4o-mini")
+    api_base = os.environ.get("LLM_API_BASE", "https://api.deepseek.com/v1")
+    model = os.environ.get("LLM_MODEL", "deepseek-chat")
+    print(f"[CHAT] api_key={'SET' if api_key else 'EMPTY'}, base={api_base}, model={model}")
 
     if api_key:
         try:
             import httpx
-            system_prompt = f"""你是「钱袋子」的 AI 理财分析师。你的职责：
-1. 用通俗易懂的中文回答用户的理财问题
-2. 基于真实市场数据给出分析（不编造数据）
-3. 永远提醒用户"投资有风险"
-4. 不推荐具体买卖时点，只分析趋势和逻辑
-5. 回答控制在 200 字以内，简洁有力
-6. 分析政策对行业和基金的影响（如降息利好债券、关税利空出口等）
-7. 根据新闻事件预判可能的市场趋势（用"可能""趋势"等词汇，不用"一定""必然"）
-8. 如果用户问到政策/新闻，结合下方的事件分析给出解读
-
-当前市场数据：
-{market_ctx}
-
-用户持仓：
-{portfolio_ctx}"""
+            print(f"[CHAT] Calling DeepSeek API...")
+            system_prompt = _build_system_prompt(market_ctx, portfolio_ctx)
 
             async with httpx.AsyncClient(timeout=30) as client:
                 resp = await client.post(
@@ -1107,16 +1095,22 @@ async def chat_analysis(req: ChatRequest):
                             {"role": "system", "content": system_prompt},
                             {"role": "user", "content": user_msg},
                         ],
-                        "max_tokens": 500,
+                        "max_tokens": 800,
                         "temperature": 0.7,
                     },
                 )
+                print(f"[CHAT] DeepSeek status={resp.status_code}")
                 if resp.status_code == 200:
                     data = resp.json()
                     reply = data["choices"][0]["message"]["content"]
+                    print(f"[CHAT] LLM reply OK, len={len(reply)}")
                     return {"reply": reply, "source": "ai"}
+                else:
+                    print(f"[CHAT] DeepSeek error: {resp.text[:200]}")
         except Exception as e:
+            import traceback
             print(f"[CHAT] LLM call failed: {e}")
+            traceback.print_exc()
 
     # 降级：规则引擎回答
     reply = _rule_based_reply(user_msg, market_ctx, portfolio_ctx)
@@ -1136,8 +1130,9 @@ async def chat_analysis_stream(req: ChatRequest):
     portfolio_ctx = _build_portfolio_context(req.portfolio) if req.portfolio else "用户尚未建仓。"
 
     api_key = os.environ.get("OPENAI_API_KEY") or os.environ.get("LLM_API_KEY")
-    api_base = os.environ.get("LLM_API_BASE", "https://api.openai.com/v1")
-    model = os.environ.get("LLM_MODEL", "gpt-4o-mini")
+    api_base = os.environ.get("LLM_API_BASE", "https://api.deepseek.com/v1")
+    model = os.environ.get("LLM_MODEL", "deepseek-chat")
+    print(f"[CHAT-STREAM] api_key={'SET' if api_key else 'EMPTY'}, base={api_base}, model={model}")
 
     if not api_key:
         # 无 API key → 规则引擎降级，一次性返回
@@ -1147,21 +1142,7 @@ async def chat_analysis_stream(req: ChatRequest):
         return StreamingResponse(rules_gen(), media_type="text/event-stream",
                                  headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
 
-    system_prompt = f"""你是「钱袋子」的 AI 理财分析师。你的职责：
-1. 用通俗易懂的中文回答用户的理财问题
-2. 基于真实市场数据给出分析（不编造数据）
-3. 永远提醒用户"投资有风险"
-4. 不推荐具体买卖时点，只分析趋势和逻辑
-5. 回答控制在 200 字以内，简洁有力
-6. 分析政策对行业和基金的影响（如降息利好债券、关税利空出口等）
-7. 根据新闻事件预判可能的市场趋势（用"可能""趋势"等词汇，不用"一定""必然"）
-8. 如果用户问到政策/新闻，结合下方的事件分析给出解读
-
-当前市场数据：
-{market_ctx}
-
-用户持仓：
-{portfolio_ctx}"""
+    system_prompt = _build_system_prompt(market_ctx, portfolio_ctx)
 
     async def stream_gen():
         import httpx
@@ -1177,7 +1158,7 @@ async def chat_analysis_stream(req: ChatRequest):
                             {"role": "system", "content": system_prompt},
                             {"role": "user", "content": user_msg},
                         ],
-                        "max_tokens": 500,
+                        "max_tokens": 800,
                         "temperature": 0.7,
                         "stream": True,
                     },
@@ -1297,13 +1278,144 @@ def _build_market_context() -> str:
     return result
 
 
-def _build_portfolio_context(p: Portfolio) -> str:
-    if not p or not p.holdings:
-        return "用户尚未建仓。"
-    lines = [f"风险类型：{p.profile}，总投入：¥{p.amount:,.0f}"]
-    for h in p.holdings:
-        lines.append(f"  - {h.name}({h.code})：¥{h.amount:,.0f}，目标占比 {h.targetPct}%")
-    return "\n".join(lines)
+def _build_portfolio_context(p=None) -> str:
+    """构建用户持仓+盈亏+风控+配置建议的完整上下文"""
+    lines = []
+
+    # 1. 基本持仓信息
+    if p and p.holdings:
+        lines.append(f"【用户画像】风险类型：{p.profile}，总投入：¥{p.amount:,.0f}")
+        lines.append("【持仓明细】")
+        for h in p.holdings:
+            lines.append(f"  - {h.name}({h.code})：¥{h.amount:,.0f}，目标占比 {h.targetPct}%")
+    else:
+        lines.append("用户尚未通过前端传入持仓数据。")
+
+    # 2. 风控状态
+    vp_val = 50
+    try:
+        vp = get_valuation_percentile()
+        vp_val = vp.get("percentile", 50)
+        fgi_data = get_fear_greed_index()
+        fgi_val = fgi_data.get("score", 50)
+        from services.risk import generate_risk_actions
+        actions = generate_risk_actions(vp_val, fgi_val)
+        if actions:
+            danger = [a for a in actions if a.get("level") == "danger"]
+            warning = [a for a in actions if a.get("level") == "warning"]
+            if danger or warning:
+                lines.append("\n【⚠️ 风控预警】")
+                for a in danger:
+                    lines.append(f"  🔴 {a['message']}")
+                for a in warning:
+                    lines.append(f"  ⚠️ {a['message']}")
+            else:
+                lines.append("\n【风控状态】✅ 当前无风险预警")
+    except Exception:
+        pass
+
+    # 3. 资产配置建议
+    try:
+        from services.portfolio import get_allocation_advice
+        advice = get_allocation_advice(vp_val)
+        if advice:
+            t = advice.get("target", {})
+            dev = advice.get("deviation", {})
+            lines.append("\n【资产配置建议】")
+            lines.append(f"  估值区间：{advice.get('valuation_zone', '未知')}")
+            for k, label in [("stock", "股票"), ("bond", "债券"), ("cash", "现金")]:
+                tgt = round(t.get(k, 0))
+                d = round(dev.get(k, 0))
+                lines.append(f"  {label}：目标{tgt}%，偏离{d:+d}%")
+            if advice.get("summary"):
+                lines.append(f"  建议：{advice['summary']}")
+    except Exception:
+        pass
+
+    return "\n".join(lines) if lines else "用户尚未建仓。"
+
+
+def _build_system_prompt(market_ctx: str, portfolio_ctx: str) -> str:
+    """统一构建 DeepSeek system prompt — 注入全部上下文"""
+    return f"""你是「钱袋子」的 AI 私人理财分析师。你了解用户的持仓、风控状态、资产配置，并掌握实时市场数据。
+
+## 你的能力
+1. **个性化分析**：基于用户实际持仓和盈亏情况给出针对性建议
+2. **市场解读**：解读宏观数据（CPI/PMI/M2/PPI）对投资的影响
+3. **新闻分析**：分析政策/事件对具体行业和基金的影响链条
+4. **风控提醒**：发现用户持仓的风险（集中度、回撤、偏离度）主动提醒
+5. **配置优化**：根据当前估值区间建议资产配置调整方向
+
+## 你的规则
+- 用通俗易懂的中文，像朋友聊天一样
+- 基于下方真实数据分析，绝不编造数据
+- 每次回答末尾提醒"投资有风险"
+- 不推荐具体买卖时点，分析趋势和逻辑
+- 回答控制在 300 字以内，结构清晰
+- 如果用户问的内容与持仓相关，结合持仓数据具体分析
+- 如果用户问新闻/政策，结合事件影响分析给出解读
+- 用 emoji 让回答更生动但不过度
+
+## 实时市场数据
+{market_ctx}
+
+## 用户持仓与风控
+{portfolio_ctx}"""
+    """构建用户持仓+盈亏+风控+配置建议的完整上下文"""
+    lines = []
+
+    # 1. 基本持仓信息（从前端传入的 Portfolio 对象）
+    if p and p.holdings:
+        lines.append(f"【用户画像】风险类型：{p.profile}，总投入：¥{p.amount:,.0f}")
+        lines.append("【持仓明细】")
+        for h in p.holdings:
+            lines.append(f"  - {h.name}({h.code})：¥{h.amount:,.0f}，目标占比 {h.targetPct}%")
+    else:
+        # 尝试从 localStorage 同步的后端数据获取
+        lines.append("用户尚未通过前端传入持仓数据。")
+
+    # 2. 风控状态
+    try:
+        vp = get_valuation_percentile()
+        vp_val = vp.get("percentile", 50)
+        fgi_data = get_fear_greed_index()
+        fgi_val = fgi_data.get("score", 50)
+        from services.risk import generate_risk_actions
+        actions = generate_risk_actions(vp_val, fgi_val)
+        if actions:
+            danger = [a for a in actions if a.get("level") == "danger"]
+            warning = [a for a in actions if a.get("level") == "warning"]
+            if danger or warning:
+                lines.append("\n【⚠️ 风控预警】")
+                for a in danger:
+                    lines.append(f"  🔴 {a['message']}")
+                for a in warning:
+                    lines.append(f"  ⚠️ {a['message']}")
+            else:
+                lines.append("\n【风控状态】✅ 当前无风险预警")
+    except Exception:
+        pass
+
+    # 3. 资产配置建议
+    try:
+        from services.portfolio import get_allocation_advice
+        advice = get_allocation_advice(vp_val)
+        if advice:
+            t = advice.get("target", {})
+            c = advice.get("current", {})
+            dev = advice.get("deviation", {})
+            lines.append("\n【资产配置建议】")
+            lines.append(f"  估值区间：{advice.get('valuation_zone', '未知')}")
+            for k, label in [("stock", "股票"), ("bond", "债券"), ("cash", "现金")]:
+                tgt = round(t.get(k, 0))
+                d = round(dev.get(k, 0))
+                lines.append(f"  {label}：目标{tgt}%，偏离{d:+d}%")
+            if advice.get("summary"):
+                lines.append(f"  建议：{advice['summary']}")
+    except Exception:
+        pass
+
+    return "\n".join(lines) if lines else "用户尚未建仓。"
 
 
 def _rule_based_reply(msg: str, market_ctx: str, portfolio_ctx: str) -> str:
@@ -1609,7 +1721,7 @@ async def _do_ocr(file_path: Path, content: bytes) -> dict:
                                 {"type": "text", "text": "请识别这张截图的信息，返回 JSON。"},
                             ]},
                         ],
-                        "max_tokens": 500,
+                        "max_tokens": 800,
                     },
                 )
                 if resp.status_code == 200:
