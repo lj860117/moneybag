@@ -178,120 +178,7 @@ async function fetchFundDynamic(code){if(!API_AVAILABLE)return null;try{const r=
 async function fetchPolicyNews(){if(!API_AVAILABLE)return[];try{const r=await fetch(API_BASE+'/news/policy',{signal:AbortSignal.timeout(15000)});if(r.ok){const d=await r.json();return d.news||[]}}catch{}return[]}
 async function runDataAudit(){const btn=document.getElementById('auditBtn');if(btn)btn.textContent='🔄 检查中...';try{const r=await fetch(API_BASE+'/health/data-audit',{signal:AbortSignal.timeout(60000)});if(!r.ok)throw new Error('audit failed');const d=await r.json();const statusIcon={'ok':'✅','warn':'⚠️','error':'❌'};const statusColor={'ok':'#10B981','warn':'#F59E0B','error':'#EF4444'};const overallIcon={'healthy':'✅','degraded':'⚠️','unhealthy':'❌'};const o=document.createElement('div');o.className='modal-overlay';o.onclick=e=>{if(e.target===o)o.remove()};o.innerHTML=`<div class="modal-sheet" onclick="event.stopPropagation()"><div class="modal-handle"></div><div class="modal-title">${overallIcon[d.overall]||'🔍'} 数据健康体检报告</div><div class="modal-subtitle">${d.summary} · ${new Date(d.timestamp).toLocaleString('zh-CN')}</div><div style="padding:12px 0">${d.checks.map(c=>`<div style="display:flex;align-items:center;padding:8px 0;border-bottom:1px solid rgba(148,163,184,.1)"><span style="font-size:16px;width:28px">${statusIcon[c.status]}</span><span style="flex:1;font-size:13px;color:var(--text1)">${c.name}</span><span style="font-size:12px;color:${statusColor[c.status]};text-align:right;max-width:50%">${c.msg}</span></div>`).join('')}</div><div style="font-size:11px;color:var(--text2);padding-top:8px;border-top:1px solid rgba(148,163,184,.1)">💡 此体检自动检查：宏观数据新鲜度、估值准确性、基金净值及时性、新闻相关性、API响应速度</div></div>`;document.body.appendChild(o);if(btn)btn.textContent='🔍 数据体检'}catch(e){if(btn)btn.textContent='❌ 检查失败';setTimeout(()=>{if(btn)btn.textContent='🔍 数据体检'},3000)}}
 
-// ---- 样式注入 ----
-function injectStyles(){const s=document.createElement('style');s.textContent=`
-*{margin:0;padding:0;box-sizing:border-box}
-:root{--bg:#0F172A;--bg2:#1E293B;--bg3:#334155;--card:#1E293B;--text:#F1F5F9;--text1:#F1F5F9;--text2:#94A3B8;--accent:#F59E0B;--green:#10B981;--red:#EF4444;--blue:#3B82F6;--radius:16px}
-body{font-family:'Noto Sans SC',-apple-system,sans-serif;background:var(--bg);color:var(--text);min-height:100vh;overflow-x:hidden;-webkit-tap-highlight-color:transparent}
-#app{max-width:480px;margin:0 auto;padding:20px 20px 100px;min-height:100vh}
-@keyframes fadeUp{from{opacity:0;transform:translateY(30px)}to{opacity:1;transform:translateY(0)}}
-@keyframes fadeIn{from{opacity:0}to{opacity:1}}
-@keyframes scaleIn{from{opacity:0;transform:scale(.9)}to{opacity:1;transform:scale(1)}}
-@keyframes slideUp{from{opacity:0;transform:translateY(100%)}to{opacity:1;transform:translateY(0)}}
-@keyframes float{0%,100%{transform:translateY(0)}50%{transform:translateY(-8px)}}
-@keyframes spin{to{transform:rotate(360deg)}}
-@keyframes typingDot{0%,60%,100%{opacity:.3}30%{opacity:1}}
-.fade-up{animation:fadeUp .6s ease forwards}.stagger>*{opacity:0;animation:fadeUp .5s ease forwards}
-.stagger>*:nth-child(1){animation-delay:.1s}.stagger>*:nth-child(2){animation-delay:.2s}.stagger>*:nth-child(3){animation-delay:.3s}.stagger>*:nth-child(4){animation-delay:.4s}.stagger>*:nth-child(5){animation-delay:.5s}.stagger>*:nth-child(6){animation-delay:.6s}
-.landing{display:flex;flex-direction:column;align-items:center;justify-content:center;min-height:80vh;text-align:center}
-.landing-icon{font-size:72px;margin-bottom:24px;animation:float 3s ease-in-out infinite}
-.landing h1{font-size:32px;font-weight:900;margin-bottom:12px;background:linear-gradient(135deg,var(--accent),#F472B6,var(--blue));-webkit-background-clip:text;-webkit-text-fill-color:transparent;background-clip:text}
-.landing .subtitle{font-size:16px;color:var(--text2);margin-bottom:40px;line-height:1.6}
-.cta-btn{background:linear-gradient(135deg,var(--accent),#F97316);color:#000;border:none;padding:16px 48px;font-size:18px;font-weight:700;border-radius:50px;cursor:pointer;font-family:inherit;box-shadow:0 4px 20px rgba(245,158,11,.4)}.cta-btn:active{transform:scale(.96)}
-.trust-badges{margin-top:32px;display:flex;gap:20px;flex-wrap:wrap;justify-content:center}
-.trust-badge{font-size:13px;color:var(--text2);display:flex;align-items:center;gap:4px}.trust-badge::before{content:'✓';color:var(--green);font-weight:700}
-.has-portfolio-badge{margin-top:16px;font-size:13px;color:var(--accent);cursor:pointer;padding:8px 16px;border:1px solid rgba(245,158,11,.3);border-radius:8px}
-.quiz-header{margin-bottom:32px}.progress-bar-bg{width:100%;height:6px;background:var(--bg3);border-radius:3px;overflow:hidden;margin-bottom:16px}
-.progress-bar-fill{height:100%;background:linear-gradient(90deg,var(--accent),#F472B6);border-radius:3px;transition:width .5s ease}.quiz-step{font-size:13px;color:var(--text2)}
-.question-emoji{font-size:48px;margin-bottom:16px}.question-text{font-size:22px;font-weight:700;margin-bottom:28px;line-height:1.4}
-.options{display:flex;flex-direction:column;gap:12px}
-.option-btn{background:var(--bg2);border:2px solid var(--bg3);color:var(--text);padding:16px 20px;font-size:16px;border-radius:12px;cursor:pointer;text-align:left;font-family:inherit;position:relative}
-.option-btn:active{transform:scale(.97);background:rgba(245,158,11,.15);border-color:var(--accent)}.option-btn.selected{border-color:var(--accent);background:rgba(245,158,11,.15)}
-.amount-section{margin-top:32px;animation:fadeUp .5s ease forwards}.amount-input-wrap{position:relative;margin-bottom:8px}
-.amount-input{width:100%;background:var(--bg2);border:2px solid var(--bg3);color:var(--text);padding:16px 60px 16px 36px;font-size:24px;font-weight:700;border-radius:12px;outline:none;font-family:inherit}.amount-input:focus{border-color:var(--accent)}
-.amount-prefix{position:absolute;left:16px;top:50%;transform:translateY(-50%);color:var(--text2);font-size:18px}
-.amount-suffix{position:absolute;right:16px;top:50%;transform:translateY(-50%);color:var(--text2);font-size:14px}
-.amount-quick{display:flex;gap:8px;flex-wrap:wrap;margin-top:12px}
-.quick-btn{background:var(--bg3);border:none;color:var(--text2);padding:8px 16px;font-size:13px;border-radius:8px;cursor:pointer;font-family:inherit}.quick-btn:active,.quick-btn.active{background:var(--accent);color:#000}
-.generate-btn{width:100%;margin-top:24px;background:linear-gradient(135deg,var(--accent),#F97316);color:#000;border:none;padding:16px;font-size:17px;font-weight:700;border-radius:12px;cursor:pointer;font-family:inherit}.generate-btn:disabled{opacity:.4}
-.loading-screen{display:flex;flex-direction:column;align-items:center;justify-content:center;min-height:60vh;text-align:center}
-.loading-spinner{width:48px;height:48px;border:4px solid var(--bg3);border-top-color:var(--accent);border-radius:50%;animation:spin .8s linear infinite;margin-bottom:20px}
-.result-page{padding-bottom:20px}
-.profile-card{background:linear-gradient(135deg,var(--bg2),var(--bg3));border-radius:var(--radius);padding:28px;margin-bottom:24px;text-align:center;position:relative;overflow:hidden;animation:scaleIn .5s ease forwards}
-.profile-emoji{font-size:56px;margin-bottom:12px}.profile-name{font-size:26px;font-weight:900;margin-bottom:8px}.profile-desc{font-size:14px;color:var(--text2);line-height:1.6}.profile-period{margin-top:12px;font-size:13px;color:var(--accent)}
-.section-title{font-size:18px;font-weight:700;margin:28px 0 16px;display:flex;align-items:center;gap:8px}
-.chart-card{background:var(--bg2);border-radius:var(--radius);padding:24px;margin-bottom:24px}.chart-wrap{width:240px;height:240px;margin:0 auto 20px}
-.alloc-list{display:flex;flex-direction:column;gap:10px}.alloc-item{display:flex;align-items:center;gap:10px;font-size:14px;cursor:pointer;padding:6px 8px;border-radius:8px}.alloc-item:active{background:rgba(245,158,11,.1)}
-.alloc-dot{width:12px;height:12px;border-radius:50%;flex-shrink:0}.alloc-name{flex:1;color:var(--text2)}.alloc-pct{font-weight:700;width:40px;text-align:right}.alloc-money{color:var(--accent);font-weight:500;width:90px;text-align:right}
-.shopping-list{background:var(--bg2);border-radius:var(--radius);padding:24px;margin-bottom:24px}
-.shop-item{display:flex;align-items:flex-start;gap:12px;padding:14px 0;border-bottom:1px solid var(--bg3);cursor:pointer}.shop-item:last-child{border-bottom:none}
-.shop-num{width:28px;height:28px;background:var(--accent);color:#000;border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:13px;font-weight:700;flex-shrink:0;margin-top:2px}
-.shop-detail{flex:1}.shop-fund-name{font-weight:600;font-size:15px;margin-bottom:4px}.shop-code{display:inline-block;background:var(--bg3);padding:2px 8px;border-radius:4px;font-size:13px;color:var(--accent);font-family:monospace;margin-right:6px}
-.shop-platform{font-size:12px;color:var(--text2)}.shop-live-nav{font-size:12px;color:var(--green);margin-top:4px}.shop-amount{font-size:17px;font-weight:700;color:var(--accent);white-space:nowrap}
-.projection-card{background:var(--bg2);border-radius:var(--radius);padding:24px;margin-bottom:24px}
-.scenario-grid{display:grid;grid-template-columns:1fr 1fr 1fr;gap:12px;margin-bottom:20px}.scenario-item{text-align:center;padding:16px 8px;background:var(--bg);border-radius:12px}
-.scenario-label{font-size:12px;color:var(--text2);margin-bottom:4px}.scenario-return{font-size:20px;font-weight:900}.scenario-money{font-size:12px;color:var(--text2);margin-top:4px}
-.scenario-return.pos{color:var(--green)}.scenario-return.neg{color:var(--red)}.projection-chart-wrap{height:200px;margin-top:16px}
-.data-source-card{background:var(--bg2);border-radius:var(--radius);padding:20px;margin-bottom:24px}
-.data-source-title{font-size:14px;font-weight:600;margin-bottom:12px;color:var(--accent)}.data-source-item{font-size:12px;color:var(--text2);line-height:1.8;display:flex;gap:8px}.data-source-item::before{content:'📊';flex-shrink:0}
-.api-status{display:inline-block;padding:2px 8px;border-radius:4px;font-size:11px;font-weight:600;margin-left:4px}.api-status.on{background:rgba(16,185,129,.15);color:var(--green)}.api-status.off{background:rgba(239,68,68,.15);color:var(--red)}
-.rules-card{background:linear-gradient(135deg,#1a1a2e,#16213e);border:1px solid rgba(245,158,11,.2);border-radius:var(--radius);padding:24px;margin-bottom:24px}
-.rule-item{display:flex;gap:12px;margin-bottom:16px;align-items:flex-start}.rule-item:last-child{margin-bottom:0}
-.rule-num{width:28px;height:28px;background:rgba(245,158,11,.15);color:var(--accent);border-radius:8px;display:flex;align-items:center;justify-content:center;font-size:14px;font-weight:700;flex-shrink:0}
-.rule-text{font-size:15px;line-height:1.5}.rule-text strong{color:var(--accent)}
-.signals-card{background:linear-gradient(135deg,#0d2818,#1a2e35);border:1px solid rgba(16,185,129,.3);border-radius:var(--radius);padding:24px;margin-bottom:24px}
-.signal-item{display:flex;gap:12px;margin-bottom:14px;align-items:flex-start}.signal-item:last-child{margin-bottom:0}.signal-icon{font-size:24px;flex-shrink:0}.signal-text{font-size:14px;line-height:1.5}.signal-text strong{color:var(--green)}
-.bottom-actions{display:flex;gap:12px;flex-wrap:wrap}
-.action-btn{flex:1;min-width:120px;padding:14px;border-radius:12px;font-size:14px;font-weight:600;cursor:pointer;font-family:inherit;text-align:center}
-.action-btn.primary{background:linear-gradient(135deg,var(--accent),#F97316);color:#000;border:none}.action-btn.secondary{background:transparent;color:var(--text2);border:1px solid var(--bg3)}.action-btn.green{background:linear-gradient(135deg,var(--green),#059669);color:#fff;border:none}.action-btn:active{transform:scale(.96)}
-.modal-overlay{position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,.7);z-index:1000;display:flex;align-items:flex-end;justify-content:center;animation:fadeIn .2s ease;backdrop-filter:blur(4px)}
-.modal-sheet{background:var(--bg2);width:100%;max-width:480px;max-height:85vh;border-radius:20px 20px 0 0;padding:24px 24px 36px;overflow-y:auto;animation:slideUp .35s ease}
-.modal-handle{width:40px;height:4px;background:var(--bg3);border-radius:2px;margin:0 auto 20px}.modal-title{font-size:20px;font-weight:700;margin-bottom:4px}.modal-subtitle{font-size:13px;color:var(--accent);margin-bottom:20px}
-.modal-section{margin-bottom:16px}.modal-section-title{font-size:13px;color:var(--text2);margin-bottom:8px;font-weight:600}
-.modal-tags{display:flex;gap:8px;flex-wrap:wrap}.modal-tag{background:rgba(245,158,11,.12);color:var(--accent);padding:4px 12px;border-radius:6px;font-size:12px}
-.modal-stat-grid{display:grid;grid-template-columns:1fr 1fr;gap:12px}.modal-stat{background:var(--bg);border-radius:10px;padding:12px;text-align:center}.modal-stat-label{font-size:11px;color:var(--text2);margin-bottom:4px}.modal-stat-value{font-size:16px;font-weight:700}
-.modal-history-grid{display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px}.modal-history-item{text-align:center;background:var(--bg);border-radius:8px;padding:10px}.modal-history-label{font-size:11px;color:var(--text2)}.modal-history-value{font-size:15px;font-weight:700;color:var(--green)}
-.modal-buy-tip{background:rgba(16,185,129,.08);border:1px solid rgba(16,185,129,.2);border-radius:10px;padding:14px;font-size:13px;line-height:1.6}
-.modal-reason{background:rgba(59,130,246,.08);border-left:3px solid var(--blue);padding:14px;border-radius:0 10px 10px 0;font-size:14px;line-height:1.7}
-.pnl-hero{text-align:center;margin-bottom:24px;padding:24px;background:linear-gradient(135deg,var(--bg2),var(--bg3));border-radius:var(--radius)}
-.pnl-total-value{font-size:36px;font-weight:900;color:var(--accent)}.pnl-label{font-size:13px;color:var(--text2);margin-top:4px}.pnl-change{font-size:20px;font-weight:700;margin-top:8px}.pnl-change.pos{color:var(--green)}.pnl-change.neg{color:var(--red)}.pnl-sub{font-size:12px;color:var(--text2);margin-top:4px}
-.holding-card{background:var(--bg2);border-radius:12px;padding:16px;margin-bottom:12px;cursor:pointer}.holding-card:active{background:var(--bg3)}
-.holding-top{display:flex;align-items:center;gap:12px;margin-bottom:8px}.holding-info{flex:1}.holding-name{font-weight:600;font-size:14px}.holding-meta{font-size:12px;color:var(--text2);margin-top:2px}
-.holding-amount{text-align:right}.holding-money{font-size:16px;font-weight:700;color:var(--accent)}.holding-pct{font-size:12px;color:var(--text2)}
-.holding-pnl-row{display:flex;justify-content:space-between;padding-top:8px;border-top:1px solid var(--bg3);font-size:12px}.holding-pnl-item{text-align:center;flex:1}.holding-pnl-label{color:var(--text2);margin-bottom:2px}.holding-pnl-val{font-weight:700}.holding-pnl-val.pos{color:var(--green)}.holding-pnl-val.neg{color:var(--red)}
-.chat-page{display:flex;flex-direction:column;height:calc(100vh - 120px)}.chat-header{text-align:center;padding:16px 0}.chat-header h2{font-size:20px;font-weight:700}.chat-header p{font-size:13px;color:var(--text2)}
-.chat-messages{flex:1;overflow-y:auto;padding:8px 0;display:flex;flex-direction:column;gap:12px}
-.chat-msg{max-width:85%;padding:12px 16px;border-radius:16px;font-size:14px;line-height:1.6;word-break:break-word;white-space:pre-wrap}
-.chat-msg.user{background:var(--accent);color:#000;align-self:flex-end;border-bottom-right-radius:4px}.chat-msg.bot{background:var(--bg2);color:var(--text);align-self:flex-start;border-bottom-left-radius:4px}
-.chat-msg .src-tag{display:inline-block;font-size:10px;color:var(--text2);margin-top:8px;padding:2px 6px;background:var(--bg3);border-radius:4px}
-.chat-typing{display:flex;gap:4px;padding:12px 16px}.chat-typing span{width:8px;height:8px;background:var(--text2);border-radius:50%;animation:typingDot 1.4s infinite}.chat-typing span:nth-child(2){animation-delay:.2s}.chat-typing span:nth-child(3){animation-delay:.4s}
-.stream-cursor{display:inline;animation:blink 0.8s step-end infinite;color:var(--accent);font-weight:bold}@keyframes blink{50%{opacity:0}}
-.chat-input-bar{display:flex;gap:8px;padding:12px 0}.chat-input{flex:1;background:var(--bg2);border:2px solid var(--bg3);color:var(--text);padding:12px 16px;font-size:15px;border-radius:24px;outline:none;font-family:inherit}.chat-input:focus{border-color:var(--accent)}
-.chat-send{background:var(--accent);color:#000;border:none;width:44px;height:44px;border-radius:50%;font-size:18px;cursor:pointer;display:flex;align-items:center;justify-content:center}.chat-send:disabled{opacity:.4}
-.chat-suggestions{display:flex;gap:8px;flex-wrap:wrap;padding:8px 0}.chat-suggest-btn{background:var(--bg2);border:1px solid var(--bg3);color:var(--text2);padding:8px 14px;border-radius:20px;font-size:13px;cursor:pointer;font-family:inherit}.chat-suggest-btn:active{background:var(--accent);color:#000}
-.ledger-page{padding-bottom:20px}.ledger-header{text-align:center;margin-bottom:24px}.ledger-total{font-size:32px;font-weight:900;color:var(--red)}.ledger-period{font-size:13px;color:var(--text2);margin-top:4px}
-.ledger-cats{display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px;margin-bottom:20px}.ledger-cat{background:var(--bg2);border-radius:10px;padding:12px 8px;text-align:center}.ledger-cat-icon{font-size:20px}.ledger-cat-name{font-size:11px;color:var(--text2);margin:4px 0}.ledger-cat-amt{font-size:14px;font-weight:700}
-.ledger-entry{background:var(--bg2);border-radius:10px;padding:14px 16px;margin-bottom:8px;display:flex;align-items:center;gap:12px}.ledger-entry-icon{font-size:24px}.ledger-entry-info{flex:1}.ledger-entry-note{font-size:14px;font-weight:500}.ledger-entry-date{font-size:11px;color:var(--text2)}.ledger-entry-amt{font-size:16px;font-weight:700;color:var(--red)}
-.upload-area{background:var(--bg2);border:2px dashed var(--bg3);border-radius:var(--radius);padding:32px;text-align:center;cursor:pointer;margin-bottom:16px}.upload-area:active{border-color:var(--accent)}.upload-area .icon{font-size:48px;margin-bottom:12px}.upload-area .text{font-size:14px;color:var(--text2)}
-.manual-form{background:var(--bg2);border-radius:var(--radius);padding:20px;margin-bottom:16px}.form-row{margin-bottom:12px}.form-label{font-size:12px;color:var(--text2);margin-bottom:4px}
-.form-input{width:100%;background:var(--bg);border:1px solid var(--bg3);color:var(--text);padding:10px 14px;font-size:15px;border-radius:8px;outline:none;font-family:inherit}.form-input:focus{border-color:var(--accent)}
-.form-select{width:100%;background:var(--bg);border:1px solid var(--bg3);color:var(--text);padding:10px 14px;font-size:15px;border-radius:8px;outline:none;font-family:inherit}
-.form-submit{width:100%;background:var(--accent);color:#000;border:none;padding:12px;font-size:15px;font-weight:700;border-radius:10px;cursor:pointer;font-family:inherit;margin-top:8px}
-.bottom-nav{position:fixed;bottom:0;left:50%;transform:translateX(-50%);width:100%;max-width:480px;background:var(--bg2);border-top:1px solid var(--bg3);display:flex;padding:6px 0;padding-bottom:max(6px,env(safe-area-inset-bottom));z-index:100}
-.nav-item{flex:1;display:flex;flex-direction:column;align-items:center;gap:2px;padding:6px 0;cursor:pointer;color:var(--text2);font-size:10px}.nav-item.active{color:var(--accent)}.nav-icon{font-size:22px}
-.footer-disclaimer{text-align:center;font-size:11px;color:#475569;margin-top:32px;padding:16px;line-height:1.5}
-.insight-page{padding-bottom:20px}.insight-header{text-align:center;margin-bottom:24px}.insight-header h2{font-size:22px;font-weight:700}.insight-header p{font-size:13px;color:var(--text2);margin-top:4px}
-.dashboard-card{background:var(--bg2);border-radius:var(--radius);padding:20px;margin-bottom:16px;overflow:hidden}
-.dashboard-card-title{font-size:15px;font-weight:700;margin-bottom:12px;display:flex;align-items:center;gap:8px}
-.fgi-gauge{text-align:center;padding:16px 0}.fgi-score{font-size:48px;font-weight:900}.fgi-label{font-size:14px;color:var(--text2);margin-top:4px}
-.fgi-dims{display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px;margin-top:12px}.fgi-dim{text-align:center;background:var(--bg);border-radius:8px;padding:8px}.fgi-dim-label{font-size:11px;color:var(--text2)}.fgi-dim-val{font-size:14px;font-weight:700;margin-top:2px}
-.tech-grid{display:grid;grid-template-columns:1fr 1fr;gap:10px}.tech-item{background:var(--bg);border-radius:10px;padding:12px;text-align:center}.tech-label{font-size:11px;color:var(--text2)}.tech-value{font-size:16px;font-weight:700;margin-top:4px}.tech-signal{font-size:11px;margin-top:4px;padding:2px 8px;border-radius:4px;display:inline-block}
-.tech-signal.buy{background:rgba(16,185,129,.15);color:var(--green)}.tech-signal.sell{background:rgba(239,68,68,.15);color:var(--red)}.tech-signal.neutral{background:rgba(148,163,184,.15);color:var(--text2)}
-.news-item{padding:12px 0;border-bottom:1px solid var(--bg3);display:flex;gap:10px;align-items:flex-start;cursor:pointer;transition:background .2s;border-radius:8px;padding:10px 8px;margin:0 -8px}.news-item:active{background:rgba(255,255,255,.05)}.news-item:last-child{border-bottom:none}.news-icon{font-size:18px;flex-shrink:0;margin-top:2px}.news-content{flex:1}.news-title{font-size:14px;line-height:1.5}.news-meta{font-size:11px;color:var(--text2);margin-top:4px}.news-arrow{color:var(--text2);font-size:12px;flex-shrink:0;align-self:center}
-.macro-item{display:flex;gap:12px;padding:12px 0;border-bottom:1px solid var(--bg3);align-items:flex-start;cursor:pointer;transition:background .2s;border-radius:8px;padding:10px 8px;margin:0 -8px}.macro-item:active{background:rgba(255,255,255,.05)}.macro-item:last-child{border-bottom:none}.macro-icon{font-size:24px;flex-shrink:0}.macro-info{flex:1}.macro-name{font-size:14px;font-weight:600}.macro-value{font-size:18px;font-weight:900;color:var(--accent);margin:4px 0}.macro-impact{font-size:12px;color:var(--text2);line-height:1.4}.macro-date{font-size:11px;color:var(--text2)}
-.val-bar{height:8px;background:var(--bg3);border-radius:4px;margin:8px 0;position:relative;overflow:visible}.val-bar-fill{height:100%;border-radius:4px;transition:width .5s ease}.val-bar-marker{position:absolute;top:-4px;width:16px;height:16px;border-radius:50%;border:2px solid var(--bg);transform:translateX(-50%)}
-.section-tab-bar{display:flex;gap:4px;margin-bottom:16px;overflow-x:auto;padding-bottom:4px;-webkit-overflow-scrolling:touch;scrollbar-width:none}.section-tab-bar::-webkit-scrollbar{display:none}.section-tab{padding:5px 10px;border-radius:20px;font-size:12px;background:var(--bg3);color:var(--text2);border:none;cursor:pointer;font-family:inherit;white-space:nowrap;flex-shrink:0}.section-tab.active{background:var(--accent);color:#000;font-weight:600}
-`;document.head.appendChild(s)}
+// ---- 样式已迁移至 styles.css ----
 
 // ---- 底部导航 ----
 function renderNav(){let n=document.getElementById('btmNav');if(!n){n=document.createElement('div');n.id='btmNav';n.className='bottom-nav';document.body.appendChild(n)}
@@ -300,13 +187,13 @@ n.innerHTML=tabs.map(t=>`<div class="nav-item ${currentPage===t.id?'active':''}"
 
 function navigateTo(p){currentPage=p;renderNav();if(p==='landing')renderLanding();else if(p==='portfolio')renderPortfolio();else if(p==='insight')renderInsight();else if(p==='chat')renderChat();else if(p==='ledger')renderLedger();else if(p==='assets')renderAssets()}
 
-// ---- 落地页（净资产仪表盘）----
+// ---- 落地页（智能决策中心）----
 function renderLanding(){currentPage='landing';const p=loadPortfolio();const txns=loadTxns();const assets=loadAssets();const ledger=loadLedger();
 const hasTxns=txns.length>0||p.holdings.length>0||assets.length>0||ledger.length>0;
 if(!hasTxns){
 $('#app').innerHTML=`<div class="landing stagger"><div class="landing-icon">💰</div><h1>你的钱，该怎么放？</h1><p class="subtitle">回答5个问题，AI帮你出一份<br>专属资产配置方案</p><button class="cta-btn" onclick="startQuiz()">开始测评</button><div class="trust-badges"><span class="trust-badge">不收费</span><span class="trust-badge">不推销</span><span class="trust-badge">不注册</span></div></div>`;renderNav();return}
-// 有数据 → 净资产仪表盘
-const nw=calcNetWorth();const holdings=nw.holdings;
+// 有数据 → 智能决策中心
+const nw=calcNetWorth();
 const monthNow=new Date();const monthStart=new Date(monthNow.getFullYear(),monthNow.getMonth(),1).toISOString();
 const monthLedger=ledger.filter(e=>e.date>=monthStart);
 const monthInc=monthLedger.filter(e=>e.direction==='income').reduce((s,e)=>s+(e.amount||0),0);
@@ -337,16 +224,105 @@ $('#app').innerHTML=`<div class="result-page fade-up">
 
 <div id="signalsSection"></div>
 
-${holdings.length?`<div class="section-title">📊 基金持仓 (${holdings.length})</div>
-${holdings.map(h=>`<div class="holding-card" onclick="showHoldingActions('${h.code}')">
-<div class="holding-top"><div class="holding-info"><div class="holding-name">${h.name}</div><div class="holding-meta">${h.category} · ${h.shares.toFixed(2)}份 · 均价¥${h.avgPrice.toFixed(4)}</div></div>
-<div class="holding-amount"><div class="holding-money">¥${Math.round(h.totalCost)}</div></div></div></div>`).join('')}`:''}
+<div id="riskAlertSection"></div>
+
+<div id="allocationAdviceSection"></div>
 
 <div class="bottom-actions" style="margin-top:16px">
-<button class="action-btn primary" onclick="showAddTxn()">➕ 记一笔交易</button>
+<button class="action-btn primary" onclick="showAllocateAssets()">💰 配置资产</button>
+<button class="action-btn secondary" onclick="showAddTxn()">➕ 记交易</button>
 <button class="action-btn secondary" onclick="startQuiz()">🔄 重新测评</button>
 </div>
-</div>`;renderNav();loadSignals()}
+</div>`;renderNav();loadSignals();loadHomeRiskAlert();loadHomeAllocationAdvice()}
+
+// ---- 首页：风控预警摘要 ----
+async function loadHomeRiskAlert(){
+const el=document.getElementById('riskAlertSection');if(!el||!API_AVAILABLE)return;
+try{
+const vp=await fetch(API_BASE+'/dashboard',{signal:AbortSignal.timeout(15000)}).then(r=>r.ok?r.json():null);
+if(!vp)return;
+const r=await fetch(API_BASE+'/risk-actions',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({valuation_percentile:vp.valuation?.percentile||50,fear_greed:vp.fear_greed?.score||50}),signal:AbortSignal.timeout(10000)});
+if(!r.ok)return;const data=await r.json();
+const actions=(data.actions||[]).filter(a=>a.level==='danger'||a.level==='warning');
+if(!actions.length){el.innerHTML='<div style="background:rgba(16,185,129,.06);border:1px solid rgba(16,185,129,.15);border-radius:12px;padding:10px 14px;margin-bottom:12px;font-size:12px;color:var(--green)">✅ 风控状态良好，暂无预警</div>';return}
+el.innerHTML=`<div style="margin-bottom:12px">${actions.map(a=>{
+const isD=a.level==='danger';
+return`<div style="background:${isD?'rgba(239,68,68,.08)':'rgba(245,158,11,.08)'};border:1px solid ${isD?'rgba(239,68,68,.2)':'rgba(245,158,11,.2)'};border-radius:12px;padding:10px 14px;margin-bottom:6px;font-size:13px;color:${isD?'var(--red)':'#F59E0B'}">${isD?'🔴':'⚠️'} ${a.action}</div>`}).join('')}</div>`;
+}catch(e){console.warn('Risk alert:',e)}}
+
+// ---- 首页：资产配置建议 ----
+async function loadHomeAllocationAdvice(){
+const el=document.getElementById('allocationAdviceSection');if(!el||!API_AVAILABLE)return;
+try{
+const r=await fetch(API_BASE+'/allocation-advice',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({user_id:getUserId()}),signal:AbortSignal.timeout(10000)});
+if(!r.ok)return;const data=await r.json();
+if(!data.target)return;
+const t=data.target;const c=data.current||{};const dev=data.deviation||{};
+el.innerHTML=`<div style="background:var(--bg2);border-radius:var(--radius);padding:16px;margin-bottom:12px">
+<div style="font-size:14px;font-weight:700;margin-bottom:10px">🎯 资产配置建议 <span style="font-size:11px;color:var(--text2);font-weight:400">${data.regime||''}</span></div>
+${['equity','bond','cash'].map(k=>{
+const label=k==='equity'?'股票类':k==='bond'?'债券类':'现金类';
+const cur=Math.round((c[k]||0)*100);const tgt=Math.round((t[k]||0)*100);const d=cur-tgt;
+const dColor=Math.abs(d)>15?'var(--red)':Math.abs(d)>5?'#F59E0B':'var(--green)';
+return`<div style="display:flex;align-items:center;gap:8px;margin-bottom:8px">
+<div style="width:56px;font-size:12px;color:var(--text2)">${label}</div>
+<div style="flex:1;height:6px;background:var(--bg3);border-radius:3px;overflow:hidden"><div style="height:100%;width:${cur}%;background:var(--accent);border-radius:3px"></div></div>
+<div style="width:80px;font-size:11px;text-align:right">${cur}% <span style="color:var(--text2)">→</span> ${tgt}% <span style="color:${dColor};font-weight:600">${d>0?'+':''}${d}%</span></div>
+</div>`}).join('')}
+${data.advice?`<div style="font-size:12px;color:var(--text2);margin-top:6px;padding-top:8px;border-top:1px solid var(--bg3)">💡 ${data.advice}</div>`:''}
+</div>`;
+}catch(e){console.warn('Allocation advice:',e)}}
+
+// ---- 配置资产弹窗 ----
+function showAllocateAssets(){
+const p=loadPortfolio();const profile=p.profile||'稳健型';
+const al=ALLOCATIONS[profile]||ALLOCATIONS['稳健型'];
+const o=document.createElement('div');o.className='modal-overlay';o.onclick=e=>{if(e.target===o)o.remove()};
+o.innerHTML=`<div class="modal-sheet" onclick="event.stopPropagation()"><div class="modal-handle"></div>
+<div class="modal-title">💰 配置新资产</div>
+<div class="modal-subtitle">新存款/工资到账？按方案自动分配</div>
+<div class="manual-form" style="background:transparent;padding:0;margin-top:16px">
+<div class="form-row"><div class="form-label">投入金额</div>
+<div class="amount-input-wrap"><span class="amount-prefix">¥</span><input type="number" id="allocAmt" class="amount-input" placeholder="10000" style="padding-left:36px;padding-right:16px;font-size:20px"></div>
+<div style="display:flex;gap:6px;margin-top:8px;flex-wrap:wrap">${[1000,3000,5000,10000,20000].map(v=>`<button onclick="document.getElementById('allocAmt').value=${v};updateAllocPreview()" style="background:var(--bg3);border:none;color:var(--text2);padding:6px 12px;border-radius:6px;font-size:12px;cursor:pointer">¥${fmtMoney(v)}</button>`).join('')}</div></div>
+<div id="allocPreview" style="margin-top:16px"></div>
+<button class="form-submit" onclick="executeAllocate()" id="allocBtn" disabled>生成买入清单</button>
+<div style="font-size:11px;color:var(--text2);text-align:center;margin-top:8px">按「${profile}」方案分配</div>
+</div></div>`;
+document.body.appendChild(o);
+document.getElementById('allocAmt').addEventListener('input',updateAllocPreview)}
+
+function updateAllocPreview(){
+const amt=parseFloat(document.getElementById('allocAmt')?.value)||0;
+const el=document.getElementById('allocPreview');const btn=document.getElementById('allocBtn');
+if(!el)return;
+if(!amt||amt<=0){el.innerHTML='';if(btn)btn.disabled=true;return}
+if(btn)btn.disabled=false;
+const p=loadPortfolio();const profile=p.profile||'稳健型';
+const al=ALLOCATIONS[profile]||ALLOCATIONS['稳健型'];
+el.innerHTML=al.map(a=>{
+const fundAmt=Math.round(amt*a.pct/100);
+return`<div style="display:flex;align-items:center;gap:10px;padding:10px 0;border-bottom:1px solid var(--bg3)">
+<div style="width:10px;height:10px;border-radius:50%;background:${a.color};flex-shrink:0"></div>
+<div style="flex:1"><div style="font-size:13px;font-weight:600">${a.fullName||a.name}</div><div style="font-size:11px;color:var(--text2)">${a.code} · ${a.pct}%</div></div>
+<div style="font-size:15px;font-weight:700;color:var(--accent)">¥${fmtMoney(fundAmt)}</div></div>`}).join('')}
+
+function executeAllocate(){
+const amt=parseFloat(document.getElementById('allocAmt')?.value)||0;
+if(!amt||amt<=0)return;
+const p=loadPortfolio();const profile=p.profile||'稳健型';
+const al=ALLOCATIONS[profile]||ALLOCATIONS['稳健型'];
+const txns=loadTxns();const now=new Date().toISOString();
+al.forEach(a=>{
+const fundAmt=Math.round(amt*a.pct/100);
+if(fundAmt<=0)return;
+txns.push({code:a.code,name:a.fullName||a.name,category:a.name,type:'BUY',amount:fundAmt,price:1,shares:fundAmt,date:now,note:'配置资产自动分配'})});
+saveTxns(txns);
+// 同步后端
+if(API_AVAILABLE){txns.slice(-al.length).forEach(t=>{fetch(API_BASE+'/portfolio/transaction',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({user_id:getUserId(),transaction:t})}).catch(()=>{})})}
+// 关闭弹窗
+document.querySelector('.modal-overlay')?.remove();
+navigateTo('portfolio')}
 
 // ---- 问卷 ----
 function renderQuiz(){const q=QUESTIONS[currentQuestion];$('#app').innerHTML=`<div class="quiz-header fade-up"><div class="progress-bar-bg"><div class="progress-bar-fill" style="width:${currentQuestion/QUESTIONS.length*100}%"></div></div><div class="quiz-step">第${currentQuestion+1}/${QUESTIONS.length}题</div></div><div class="question-card"><div class="question-emoji">${q.emoji}</div><div class="question-text">${q.question}</div><div class="options stagger">${q.options.map((o,i)=>`<button class="option-btn" onclick="selectAnswer(${i},${o.score})">${o.text}</button>`).join('')}</div></div>`}
@@ -1420,7 +1396,6 @@ if(API_AVAILABLE)fetch(API_BASE+'/assets/'+id+'?userId='+getUserId(),{method:'DE
 renderAssets()}
 
 // ---- 启动 ----
-injectStyles();
 migrateV3toV4();
 checkAPI().then(()=>{fetchNav();syncFromCloud()});
 renderLanding();
