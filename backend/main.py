@@ -44,6 +44,8 @@ macro_cache = {}
 NAV_CACHE_TTL = 3600  # 1小时缓存
 NEWS_CACHE_TTL = 1800  # 30分钟缓存
 MACRO_CACHE_TTL = 7200  # 2小时缓存
+FUND_RANK_CACHE_TTL = 86400  # 基金排行24小时缓存
+fund_rank_cache = {}  # 基金排行缓存
 
 # ---- 数据模型 ----
 
@@ -577,7 +579,7 @@ def get_fund_news(code: str, limit: int = 3) -> list:
         "050025": "标普500",
         "217022": "债券",
         "000216": "黄金",
-        "070018": "REITs",
+        "008114": "红利低波",
     }
     keyword = keyword_map.get(code, "基金")
     news_list = []
@@ -1338,7 +1340,7 @@ def health():
 @app.get("/api/nav/all")
 def get_all_nav():
     """获取所有推荐基金的净值"""
-    codes = ["110020", "050025", "217022", "000216", "070018"]
+    codes = ["110020", "050025", "217022", "000216", "008114"]
     result = {}
     for code in codes:
         result[code] = get_fund_nav(code)
@@ -1575,7 +1577,7 @@ def get_take_profit(portfolio: Portfolio):
 @app.get("/api/news/portfolio")
 def get_portfolio_news():
     """获取所有持仓基金的相关新闻"""
-    codes = ["110020", "050025", "217022", "000216", "070018"]
+    codes = ["110020", "050025", "217022", "000216", "008114"]
     result = {}
     for code in codes:
         result[code] = get_fund_news(code, 3)
@@ -1592,6 +1594,190 @@ def get_news_by_fund(code: str, limit: int = 3):
 def get_all_news(limit: int = 10):
     """获取综合市场新闻"""
     return {"news": get_market_news(limit)}
+
+
+# ---- 基金动态数据（收益率、规模等）----
+
+def _load_fund_rank_data() -> dict:
+    """加载基金排行数据（含各周期收益率），24小时缓存"""
+    cache_key = "fund_rank_all"
+    now = time.time()
+    if cache_key in fund_rank_cache and now - fund_rank_cache[cache_key]["ts"] < FUND_RANK_CACHE_TTL:
+        return fund_rank_cache[cache_key]["data"]
+    try:
+        import akshare as ak
+        df = ak.fund_open_fund_rank_em(symbol="全部")
+        if df is not None and len(df) > 0:
+            # 建立 code -> row 字典
+            code_col = next((c for c in df.columns if "代码" in c), df.columns[0])
+            data = {}
+            for _, row in df.iterrows():
+                code = str(row[code_col]).strip()
+                data[code] = row
+            fund_rank_cache[cache_key] = {"data": data, "ts": now}
+            print(f"[FUND_RANK] Loaded {len(data)} funds")
+            return data
+    except Exception as e:
+        print(f"[FUND_RANK] Failed: {e}")
+        import traceback; traceback.print_exc()
+    return {}
+
+
+def get_fund_dynamic_info(code: str) -> dict:
+    """获取基金的动态收益率、排名等数据"""
+    cache_key = f"fund_info_{code}"
+    now = time.time()
+    if cache_key in fund_rank_cache and now - fund_rank_cache[cache_key]["ts"] < FUND_RANK_CACHE_TTL:
+        return fund_rank_cache[cache_key]["data"]
+
+    rank_data = _load_fund_rank_data()
+    row = rank_data.get(code)
+    if row is None:
+        return {"code": code, "error": "未找到该基金"}
+
+    def _safe_float(val):
+        try:
+            v = float(val)
+            if isinstance(v, float) and not (v != v):  # not NaN
+                return round(v, 2)
+        except (ValueError, TypeError):
+            pass
+        return None
+
+    def _find_col(cols, keywords):
+        for kw in keywords:
+            for c in cols:
+                if kw in str(c):
+                    return c
+        return None
+
+    cols = list(row.index) if hasattr(row, 'index') else []
+    result = {
+        "code": code,
+        "name": str(row.get(_find_col(cols, ["简称", "名称"]) or cols[1], "")),
+        "nav": _safe_float(row.get(_find_col(cols, ["单位净值"]), None)),
+        "accNav": _safe_float(row.get(_find_col(cols, ["累计净值"]), None)),
+        "dayChange": _safe_float(row.get(_find_col(cols, ["日增长率"]), None)),
+        "returns": {
+            "1w": _safe_float(row.get(_find_col(cols, ["近1周"]), None)),
+            "1m": _safe_float(row.get(_find_col(cols, ["近1月"]), None)),
+            "3m": _safe_float(row.get(_find_col(cols, ["近3月"]), None)),
+            "6m": _safe_float(row.get(_find_col(cols, ["近6月"]), None)),
+            "1y": _safe_float(row.get(_find_col(cols, ["近1年"]), None)),
+            "2y": _safe_float(row.get(_find_col(cols, ["近2年"]), None)),
+            "3y": _safe_float(row.get(_find_col(cols, ["近3年"]), None)),
+            "ytd": _safe_float(row.get(_find_col(cols, ["今年来"]), None)),
+            "since": _safe_float(row.get(_find_col(cols, ["成立来"]), None)),
+        },
+        "fee": str(row.get(_find_col(cols, ["手续费"]), "")),
+        "updatedAt": datetime.now().strftime("%Y-%m-%d"),
+        "source": "东方财富天天基金",
+    }
+    fund_rank_cache[cache_key] = {"data": result, "ts": now}
+    return result
+
+
+@app.get("/api/fund/info/{code}")
+def get_fund_info(code: str):
+    """获取基金动态信息（收益率、净值等，数据来源：天天基金排行榜）"""
+    return get_fund_dynamic_info(code)
+
+
+@app.get("/api/fund/info-batch")
+def get_fund_info_batch(codes: str = ""):
+    """批量获取基金动态信息，codes 用逗号分隔"""
+    if not codes:
+        return {"funds": {}}
+    code_list = [c.strip() for c in codes.split(",") if c.strip()]
+    result = {}
+    for code in code_list:
+        result[code] = get_fund_dynamic_info(code)
+    return {"funds": result, "updatedAt": datetime.now().strftime("%Y-%m-%d")}
+
+
+# ---- 政策 & 国际新闻 ----
+
+def get_policy_news(limit: int = 8) -> list:
+    """获取政策经济新闻（政府经济政策 + 中美贸易/外交）"""
+    cache_key = "policy_news"
+    now = time.time()
+    if cache_key in news_cache and now - news_cache[cache_key]["ts"] < NEWS_CACHE_TTL:
+        return news_cache[cache_key]["data"]
+
+    POLICY_KEYWORDS = ["政策", "央行", "国务院", "财政", "降准", "降息", "LPR",
+                       "关税", "贸易", "制裁", "外交", "中美", "特朗普", "拜登",
+                       "战争", "地缘", "OPEC", "美联储", "加息", "缩表",
+                       "刺激", "基建", "新质", "科技", "半导体", "芯片"]
+
+    all_news = []
+    try:
+        import akshare as ak
+
+        # 源1：财经新闻中筛选政策相关
+        try:
+            df = ak.stock_news_em(symbol="财经")
+            if df is not None and len(df) > 0:
+                title_col = next((c for c in df.columns if "标题" in c or "title" in c.lower()), df.columns[0])
+                time_col = next((c for c in df.columns if "时间" in c or "date" in c.lower() or "发布" in c), None)
+                source_col = next((c for c in df.columns if "来源" in c or "source" in c.lower()), None)
+                url_col = next((c for c in df.columns if "链接" in c or "url" in c.lower()), None)
+                for _, row in df.iterrows():
+                    title = str(row[title_col]).strip()
+                    if any(kw in title for kw in POLICY_KEYWORDS):
+                        all_news.append({
+                            "title": title,
+                            "time": str(row[time_col]) if time_col else "",
+                            "source": str(row[source_col]) if source_col else "东方财富",
+                            "url": str(row[url_col]) if url_col else "",
+                            "category": "policy" if any(kw in title for kw in ["政策", "央行", "国务院", "财政", "降准", "降息", "LPR", "刺激", "基建"]) else "international",
+                        })
+                    if len(all_news) >= limit:
+                        break
+        except Exception as e:
+            print(f"[POLICY_NEWS] stock_news_em(财经) failed: {e}")
+
+        # 源2：A股新闻中补充政策类
+        if len(all_news) < limit:
+            try:
+                df = ak.stock_news_em(symbol="A股")
+                if df is not None and len(df) > 0:
+                    title_col = next((c for c in df.columns if "标题" in c or "title" in c.lower()), df.columns[0])
+                    time_col = next((c for c in df.columns if "时间" in c or "date" in c.lower() or "发布" in c), None)
+                    source_col = next((c for c in df.columns if "来源" in c or "source" in c.lower()), None)
+                    url_col = next((c for c in df.columns if "链接" in c or "url" in c.lower()), None)
+                    existing_titles = {n["title"] for n in all_news}
+                    for _, row in df.iterrows():
+                        title = str(row[title_col]).strip()
+                        if title in existing_titles:
+                            continue
+                        if any(kw in title for kw in POLICY_KEYWORDS):
+                            all_news.append({
+                                "title": title,
+                                "time": str(row[time_col]) if time_col else "",
+                                "source": str(row[source_col]) if source_col else "东方财富",
+                                "url": str(row[url_col]) if url_col else "",
+                                "category": "policy" if any(kw in title for kw in ["政策", "央行", "国务院", "财政", "降准", "降息", "LPR", "刺激", "基建"]) else "international",
+                            })
+                        if len(all_news) >= limit:
+                            break
+            except Exception as e:
+                print(f"[POLICY_NEWS] stock_news_em(A股) failed: {e}")
+
+    except Exception as e:
+        print(f"[POLICY_NEWS] Fatal: {e}")
+
+    if not all_news:
+        all_news = [{"title": "政策资讯加载中...", "time": "", "source": "系统", "category": "policy"}]
+
+    print(f"[POLICY_NEWS] Got {len(all_news)} items")
+    news_cache[cache_key] = {"data": all_news, "ts": now}
+    return all_news
+
+
+@app.get("/api/news/policy")
+def get_policy_news_api(limit: int = 8):
+    """获取政策 & 国际新闻（政府经济政策 + 中美贸易外交 + 地缘冲突）"""
+    return {"news": get_policy_news(limit)}
 
 
 # ---- API: 技术指标 ----
@@ -1718,7 +1904,7 @@ def search_fund(q: str = ""):
         "050025": "博时标普500ETF联接A",
         "217022": "招商产业债A",
         "000216": "华安黄金ETF联接A",
-        "070018": "嘉实多利优选混合A",
+        "008114": "天弘中证红利低波动100ETF联接A",
     }
     for code, name in hardcoded.items():
         if q in code or q in name:
