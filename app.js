@@ -178,7 +178,7 @@ async function fetchPortfolioNews(){if(!API_AVAILABLE)return{};try{const r=await
 // ---- 样式注入 ----
 function injectStyles(){const s=document.createElement('style');s.textContent=`
 *{margin:0;padding:0;box-sizing:border-box}
-:root{--bg:#0F172A;--bg2:#1E293B;--bg3:#334155;--text:#F1F5F9;--text2:#94A3B8;--accent:#F59E0B;--green:#10B981;--red:#EF4444;--blue:#3B82F6;--radius:16px}
+:root{--bg:#0F172A;--bg2:#1E293B;--bg3:#334155;--card:#1E293B;--text:#F1F5F9;--text1:#F1F5F9;--text2:#94A3B8;--accent:#F59E0B;--green:#10B981;--red:#EF4444;--blue:#3B82F6;--radius:16px}
 body{font-family:'Noto Sans SC',-apple-system,sans-serif;background:var(--bg);color:var(--text);min-height:100vh;overflow-x:hidden;-webkit-tap-highlight-color:transparent}
 #app{max-width:480px;margin:0 auto;padding:20px 20px 100px;min-height:100vh}
 @keyframes fadeUp{from{opacity:0;transform:translateY(30px)}to{opacity:1;transform:translateY(0)}}

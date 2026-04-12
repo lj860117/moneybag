@@ -2297,20 +2297,43 @@ def _rule_based_reply(msg: str, market_ctx: str, portfolio_ctx: str) -> str:
     if any(k in msg_lower for k in ["涨", "赚", "红", "上涨", "牛"]):
         return f"📈 恭喜！不过也别过于乐观。\n\n{market_ctx}\n\n赚钱时更要冷静，检查一下各资产的占比是否偏离目标太多。如果某类资产涨太多导致占比过高，可以考虑再平衡——卖掉一点涨多的，买入涨少的。\n\n⚠️ 以上仅供参考，不构成投资建议。"
 
-    if any(k in msg_lower for k in ["买", "加仓", "什么时候"]):
-        return f"💰 关于买入时机：\n\n{market_ctx}\n\n定投的精髓就是「不择时」——每月固定日期买入，无论涨跌。这样长期下来会自动实现低买多、高买少。如果恐惧指数很高（市场极度悲观），可以适当多买一点。\n\n⚠️ 以上仅供参考，不构成投资建议。"
-
+    # 特定资产类问题（优先于通用"买/卖"匹配，避免"黄金还能买吗"被通用规则拦截）
     if any(k in msg_lower for k in ["黄金", "gold"]):
         nav = get_fund_nav("000216")
         news = get_fund_news("000216", 3)
         news_text = "\n".join([f"📰 {n['title']}" for n in news if n["title"] != "黄金市场动态获取中..."])
         return f"🪙 黄金近况：净值 {nav['nav']}，日涨跌 {nav['change']}%。\n\n{news_text}\n\n黄金是经典避险资产，近年全球央行持续增持。在你的配置中作为分散风险的角色，建议保持目标占比即可，不用频繁操作。\n\n⚠️ 以上仅供参考，不构成投资建议。"
 
+    if any(k in msg_lower for k in ["标普", "美股", "s&p", "sp500"]):
+        nav = get_fund_nav("050025")
+        news = get_fund_news("050025", 3)
+        news_text = "\n".join([f"📰 {n['title']}" for n in news if "获取中" not in n["title"]])
+        return f"🇺🇸 标普500近况：净值 {nav['nav']}，日涨跌 {nav['change']}%。\n\n{news_text}\n\n标普500追踪美国500强企业，过去30年年化约10%。分散地域风险的核心配置。\n\n⚠️ 以上仅供参考，不构成投资建议。"
+
+    if any(k in msg_lower for k in ["沪深", "a股", "300", "大盘"]):
+        nav = get_fund_nav("110020")
+        news = get_fund_news("110020", 3)
+        news_text = "\n".join([f"📰 {n['title']}" for n in news if "获取中" not in n["title"]])
+        return f"📊 沪深300近况：净值 {nav['nav']}，日涨跌 {nav['change']}%。\n\n{news_text}\n\n沪深300覆盖A股市值最大的300家公司，是A股的核心指数。\n\n⚠️ 以上仅供参考，不构成投资建议。"
+
+    if any(k in msg_lower for k in ["债券", "债基", "纯债"]):
+        nav = get_fund_nav("217022")
+        return f"🏦 债券近况：招商产业债A 净值 {nav['nav']}，日涨跌 {nav['change']}%。\n\n纯债基金是组合的\"稳定器\"，历史几乎没有亏过年度。适合保守资金配置。\n\n⚠️ 以上仅供参考，不构成投资建议。"
+
+    if any(k in msg_lower for k in ["买", "加仓", "什么时候"]):
+        return f"💰 关于买入时机：\n\n{market_ctx}\n\n定投的精髓就是「不择时」——每月固定日期买入，无论涨跌。这样长期下来会自动实现低买多、高买少。如果恐惧指数很高（市场极度悲观），可以适当多买一点。\n\n⚠️ 以上仅供参考，不构成投资建议。"
+
     # 新闻/资讯/发生了什么
     if any(k in msg_lower for k in ["新闻", "资讯", "消息", "发生", "怎么了", "什么情况", "为什么"]):
         news = get_market_news(5)
-        news_text = "\n".join([f"📰 {n['title']}（{n['source']}）" for n in news[:5]])
-        return f"📰 最新市场资讯：\n\n{news_text}\n\n{market_ctx}\n\n💡 建议：关注大趋势，不要因为单条新闻做决定。投资看的是长期逻辑。\n\n⚠️ 以上仅供参考，不构成投资建议。"
+        news_lines = []
+        for n in news[:5]:
+            if n.get("url"):
+                news_lines.append(f'📰 <a href="{n["url"]}" target="_blank" style="color:#F59E0B;text-decoration:underline">{n["title"]}</a>（{n["source"]}）')
+            else:
+                news_lines.append(f"📰 {n['title']}（{n['source']}）")
+        news_text = "\n".join(news_lines)
+        return f"📰 最新市场资讯：\n\n{news_text}\n\n💡 建议：关注大趋势，不要因为单条新闻做决定。投资看的是长期逻辑。\n\n⚠️ 以上仅供参考，不构成投资建议。"
 
     # 技术分析
     if any(k in msg_lower for k in ["技术", "rsi", "macd", "布林", "超买", "超卖", "指标"]):
