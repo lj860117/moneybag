@@ -38,6 +38,7 @@ from services.data_layer import (
     get_news_sentiment_score, calc_rsi, calc_macd, calc_bollinger,
     get_fund_dynamic_info, _load_fund_rank_data,
     get_policy_news, analyze_news_impact, _get_nav_on_date,
+    get_main_money_flow, get_stock_financials, get_fund_holding_detail,
 )
 from services.portfolio_calc import (
     calc_holdings_from_transactions, migrate_v3_to_v4, ensure_v4_portfolio,
@@ -498,8 +499,26 @@ def get_all_factors():
         "shibor": get_shibor(),
         "dividend": get_dividend_yield(),
         "sentiment": get_news_sentiment_score(),
+        "mainFlow": get_main_money_flow(),
         "updatedAt": datetime.now().isoformat(),
     }
+
+# ---- V5.5 API: 数据缺口补齐 ----
+
+@app.get("/api/factors/main-flow")
+def get_main_flow_api():
+    """主力资金流向（今日全市场主力净流入TOP5/流出TOP5）"""
+    return get_main_money_flow()
+
+@app.get("/api/stock/financials/{code}")
+def get_stock_fin(code: str):
+    """个股核心财务数据（ROE/EPS/营收增速）"""
+    return get_stock_financials(code)
+
+@app.get("/api/fund/holdings/{code}")
+def get_fund_holdings(code: str):
+    """基金持仓明细（前10大重仓股+占净值比）"""
+    return get_fund_holding_detail(code)
 
 # ---- V4.5 API: 风控指标 ----
 

@@ -314,3 +314,114 @@ def get_news_sentiment_score() -> dict:
 # ============================================================
 
 
+# ============================================================
+# V5.5 数据缺口补齐（审计报告 P0 缺口）
+# ============================================================
+
+def get_main_money_flow() -> dict:
+    """获取主力资金流向（沪深300成分股的主力净流入）"""
+    cache_key = "main_flow"
+    now = time.time()
+    if cache_key in factor_cache and now - factor_cache[cache_key]["ts"] < FACTOR_CACHE_TTL:
+        return factor_cache[cache_key]["data"]
+
+    result = {"net_flow": 0, "top_inflow": [], "top_outflow": [], "available": False}
+    try:
+        import akshare as ak
+        df = ak.stock_individual_fund_flow_rank(indicator="今日")
+        if df is not None and len(df) > 0:
+            cols = list(df.columns)
+            name_col = next((c for c in cols if "名称" in c), None)
+            flow_col = next((c for c in cols if "主力净流入" in c and "净占比" not in c), None)
+            if name_col and flow_col:
+                df[flow_col] = df[flow_col].astype(float)
+                top_in = df.nlargest(5, flow_col)
+                top_out = df.nsmallest(5, flow_col)
+                result["top_inflow"] = [{"name": str(r[name_col]), "flow": round(float(r[flow_col]) / 1e4, 2)} for _, r in top_in.iterrows()]
+                result["top_outflow"] = [{"name": str(r[name_col]), "flow": round(float(r[flow_col]) / 1e4, 2)} for _, r in top_out.iterrows()]
+                result["net_flow"] = round(float(df[flow_col].sum()) / 1e8, 2)
+                result["available"] = True
+                print(f"[MAIN_FLOW] net={result['net_flow']}亿, top_in={result['top_inflow'][0]['name']}")
+    except Exception as e:
+        print(f"[MAIN_FLOW] Failed: {e}")
+
+    factor_cache[cache_key] = {"data": result, "ts": now}
+    return result
+
+
+def get_stock_financials(code: str) -> dict:
+    """获取个股核心财务数据（ROE/EPS/营收增速）"""
+    cache_key = f"fin_{code}"
+    now = time.time()
+    if cache_key in factor_cache and now - factor_cache[cache_key]["ts"] < 86400:  # 24h 缓存
+        return factor_cache[cache_key]["data"]
+
+    result = {"code": code, "roe": None, "eps": None, "revenue_growth": None, "available": False}
+    try:
+        import akshare as ak
+        df = ak.stock_financial_analysis_indicator(symbol=code, start_year="2024")
+        if df is not None and len(df) > 0:
+            cols = list(df.columns)
+            roe_col = next((c for c in cols if "净资产收益率" in c and "摊薄" not in c), None)
+            eps_col = next((c for c in cols if "每股收益" in c), None)
+            rev_col = next((c for c in cols if "营业收入" in c and "增长" in c), None)
+            if roe_col:
+                try:
+                    result["roe"] = round(float(df[roe_col].iloc[0]), 2)
+                except (ValueError, TypeError):
+                    pass
+            if eps_col:
+                try:
+                    result["eps"] = round(float(df[eps_col].iloc[0]), 4)
+                except (ValueError, TypeError):
+                    pass
+            if rev_col:
+                try:
+                    result["revenue_growth"] = round(float(df[rev_col].iloc[0]), 2)
+                except (ValueError, TypeError):
+                    pass
+            result["available"] = any([result["roe"], result["eps"], result["revenue_growth"]])
+            print(f"[FIN] {code} ROE={result['roe']}, EPS={result['eps']}")
+    except Exception as e:
+        print(f"[FIN] {code} Failed: {e}")
+
+    factor_cache[cache_key] = {"data": result, "ts": now}
+    return result
+
+
+def get_fund_holding_detail(code: str) -> dict:
+    """获取基金持仓明细（前10大重仓股）"""
+    cache_key = f"holding_{code}"
+    now = time.time()
+    if cache_key in factor_cache and now - factor_cache[cache_key]["ts"] < 86400:
+        return factor_cache[cache_key]["data"]
+
+    result = {"code": code, "holdings": [], "update_date": "", "available": False}
+    try:
+        import akshare as ak
+        df = ak.fund_portfolio_hold_em(symbol=code, date="2025")
+        if df is not None and len(df) > 0:
+            cols = list(df.columns)
+            name_col = next((c for c in cols if "股票名称" in c), None)
+            pct_col = next((c for c in cols if "占净值比" in c), None)
+            code_col = next((c for c in cols if "股票代码" in c), None)
+            if name_col:
+                for _, row in df.head(10).iterrows():
+                    h = {"name": str(row.get(name_col, ""))}
+                    if code_col:
+                        h["code"] = str(row.get(code_col, ""))
+                    if pct_col:
+                        try:
+                            h["pct"] = round(float(row.get(pct_col, 0)), 2)
+                        except (ValueError, TypeError):
+                            h["pct"] = 0
+                    result["holdings"].append(h)
+                result["available"] = True
+                print(f"[HOLDING] {code} top={result['holdings'][0]['name'] if result['holdings'] else 'N/A'}")
+    except Exception as e:
+        print(f"[HOLDING] {code} Failed: {e}")
+
+    factor_cache[cache_key] = {"data": result, "ts": now}
+    return result
+
+

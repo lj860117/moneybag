@@ -20,6 +20,7 @@ from services.macro_data import (
 from services.factor_data import (
     get_northbound_flow, get_margin_trading, get_treasury_yield,
     get_shibor, get_dividend_yield, get_news_sentiment_score,
+    get_main_money_flow, get_stock_financials, get_fund_holding_detail,
 )
 from services.fund_rank import (
     _load_fund_rank_data, get_fund_dynamic_info, _fund_rank_cache,
