@@ -4,7 +4,7 @@
 """
 import time
 from datetime import datetime, timedelta
-from config import MACRO_CACHE_TTL
+from config import MACRO_CACHE_TTL, FACTOR_CACHE_TTL
 
 _macro_cache = {}
 
@@ -151,7 +151,6 @@ def get_macro_calendar() -> list:
 
 # --- 缓存 ---
 factor_cache = {}
-FACTOR_CACHE_TTL = 3600  # 1小时
 
 
 

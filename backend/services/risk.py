@@ -9,7 +9,7 @@ from config import (
     ALLOCATION_PROFILES, VALUATION_HIGH,
 )
 from services.portfolio_calc import calc_holdings_from_transactions
-from services.market_data import get_fund_nav
+from services.data_layer import get_fund_nav
 
 
 def calc_risk_metrics(transactions: list) -> dict:

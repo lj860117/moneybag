@@ -3,9 +3,9 @@
 根据估值水平和恐惧贪婪指数，给出股/债/现金目标比例 + 偏离建议
 参考：豆包方案 + 幻方量化风控规则
 """
-from config import ALLOCATION_PROFILES, VALUATION_HIGH, VALUATION_LOW
+from config import ALLOCATION_PROFILES, VALUATION_HIGH, VALUATION_LOW, RISK_REBALANCE_THRESHOLD
 from services.portfolio_calc import calc_holdings_from_transactions
-from services.market_data import get_fund_nav
+from services.data_layer import get_fund_nav
 
 
 # 基金分类映射
@@ -91,7 +91,7 @@ def generate_allocation_advice(
 
     # 4. 生成调仓建议
     advice = []
-    rebalance_threshold = 8  # ±8% 触发再平衡
+    rebalance_threshold = RISK_REBALANCE_THRESHOLD * 100  # config中0.08 → 8(%)
 
     if abs(deviation["stock"]) > rebalance_threshold:
         if deviation["stock"] > 0:

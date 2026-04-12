@@ -3,6 +3,7 @@
 用户数据文件读写
 """
 import json
+import hashlib
 from pathlib import Path
 from datetime import datetime
 from config import USERS_DIR

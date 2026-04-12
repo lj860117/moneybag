@@ -18,6 +18,8 @@ NAV_CACHE_TTL = 3600        # 基金净值 1小时
 NEWS_CACHE_TTL = 1800       # 新闻 30分钟
 MACRO_CACHE_TTL = 7200      # 宏观 2小时
 FUND_RANK_CACHE_TTL = 86400 # 基金排行 24小时
+STOCK_CACHE_TTL = 7200      # 选股数据 2小时
+FACTOR_CACHE_TTL = 3600     # 因子数据 1小时
 
 # ---- 12维因子权重（V4.5）----
 FACTOR_WEIGHTS = {
@@ -26,6 +28,17 @@ FACTOR_WEIGHTS = {
     "资金面": 0.20,
     "情绪面": 0.15,
     "宏观面": 0.10,
+}
+
+# ---- 7维选股权重（V5.0）----
+STOCK_SCREEN_WEIGHTS = {
+    "value": 0.20,
+    "growth": 0.15,
+    "quality": 0.15,
+    "momentum": 0.15,
+    "risk": 0.15,
+    "liquidity": 0.10,
+    "sentiment": 0.10,
 }
 
 # ---- 估值阈值 ----

@@ -3,14 +3,15 @@
 规则引擎 + LLM API 对话
 """
 import os
+from fastapi import HTTPException
 from config import LLM_API_URL, LLM_API_KEY, LLM_MODEL
+from models.schemas import ChatRequest
 from services.data_layer import (
     get_fear_greed_index, get_valuation_percentile, get_technical_indicators,
 )
 
-# ---- API: AI 对话分析 ----
+# ---- AI 对话分析（纯业务逻辑，路由在 main.py 中注册）----
 
-@app.post("/api/chat")
 async def chat_analysis(req: ChatRequest):
     """AI 对话分析 — 回答用户的理财问题"""
     user_msg = req.message.strip()

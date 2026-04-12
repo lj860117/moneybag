@@ -3,6 +3,7 @@
 基金净值、恐惧贪婪指数、估值百分位
 """
 import time
+from datetime import datetime
 from typing import Optional
 from config import NAV_CACHE_TTL
 

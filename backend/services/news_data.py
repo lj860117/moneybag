@@ -227,11 +227,6 @@ def get_policy_news(limit: int = 8) -> list:
     return all_news
 
 
-@app.get("/api/news/policy")
-def get_policy_news_api(limit: int = 8):
-    """获取政策 & 国际新闻（政府经济政策 + 中美贸易外交 + 地缘冲突）"""
-    return {"news": get_policy_news(limit)}
-
 
 # ---- 新闻→行业→基金 关联分析引擎 ----
 
@@ -305,20 +300,3 @@ def analyze_news_impact(news_list: list) -> list:
                 seen_tags.add(rule["tag"])
                 break
     return impacts
-
-
-@app.get("/api/news/impact")
-def get_news_impact_api():
-    """分析最新新闻对持仓基金的影响"""
-    policy_news = get_policy_news(15)
-    market_news = get_market_news(10)
-    all_news = policy_news + market_news
-    impacts = analyze_news_impact(all_news)
-    return {
-        "impacts": impacts[:8],
-        "total_news_analyzed": len(all_news),
-        "timestamp": datetime.now().isoformat(),
-    }
-
-
-

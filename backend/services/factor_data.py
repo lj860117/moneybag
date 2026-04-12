@@ -5,9 +5,9 @@
 import os
 import time
 from datetime import datetime, timedelta
-from config import NAV_CACHE_TTL, LLM_API_URL, LLM_API_KEY, LLM_MODEL
+from config import FACTOR_CACHE_TTL, LLM_API_URL, LLM_API_KEY, LLM_MODEL
 
-_nav_cache = {}
+factor_cache = {}
 
 def get_northbound_flow() -> dict:
     """获取北向资金（沪股通+深股通）净流入数据"""

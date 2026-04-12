@@ -6,9 +6,10 @@
 """
 import time
 import traceback
+from config import STOCK_CACHE_TTL, STOCK_SCREEN_WEIGHTS
+from services.utils import find_col as _fc, safe_float as _sf
 
 _stock_cache = {}
-STOCK_CACHE_TTL = 7200  # 2小时
 
 
 def screen_stocks(top_n: int = 50) -> dict:
@@ -163,12 +164,7 @@ def screen_stocks(top_n: int = 50) -> dict:
                 scores["sentiment"] = 50
 
                 # 加权总分
-                weights = {
-                    "value": 0.20, "growth": 0.15, "quality": 0.15,
-                    "momentum": 0.15, "risk": 0.15, "liquidity": 0.10,
-                    "sentiment": 0.10,
-                }
-                total_score = sum(scores[k] * weights[k] for k in weights)
+                total_score = sum(scores[k] * STOCK_SCREEN_WEIGHTS[k] for k in STOCK_SCREEN_WEIGHTS)
 
                 candidates.append({
                     "code": code,
@@ -203,20 +199,3 @@ def screen_stocks(top_n: int = 50) -> dict:
         traceback.print_exc()
         return {"stocks": [], "total": 0, "error": str(e)}
 
-
-def _fc(cols, keywords):
-    """模糊匹配列名"""
-    for kw in keywords:
-        for c in cols:
-            if kw in str(c):
-                return c
-    return None
-
-
-def _sf(val):
-    """安全转float"""
-    try:
-        v = float(val)
-        return None if v != v else round(v, 2)
-    except (ValueError, TypeError):
-        return None

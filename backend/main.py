@@ -337,86 +337,7 @@ def get_all_news(limit: int = 10):
     return {"news": get_market_news(limit)}
 
 
-# ---- 基金动态数据（收益率、规模等）----
-
-def _load_fund_rank_data() -> dict:
-    """加载基金排行数据（含各周期收益率），24小时缓存"""
-    cache_key = "fund_rank_all"
-    now = time.time()
-    if cache_key in fund_rank_cache and now - fund_rank_cache[cache_key]["ts"] < FUND_RANK_CACHE_TTL:
-        return fund_rank_cache[cache_key]["data"]
-    try:
-        import akshare as ak
-        df = ak.fund_open_fund_rank_em(symbol="全部")
-        if df is not None and len(df) > 0:
-            # 建立 code -> row 字典
-            code_col = next((c for c in df.columns if "代码" in c), df.columns[0])
-            data = {}
-            for _, row in df.iterrows():
-                code = str(row[code_col]).strip()
-                data[code] = row
-            fund_rank_cache[cache_key] = {"data": data, "ts": now}
-            print(f"[FUND_RANK] Loaded {len(data)} funds")
-            return data
-    except Exception as e:
-        print(f"[FUND_RANK] Failed: {e}")
-        import traceback; traceback.print_exc()
-    return {}
-
-
-def get_fund_dynamic_info(code: str) -> dict:
-    """获取基金的动态收益率、排名等数据"""
-    cache_key = f"fund_info_{code}"
-    now = time.time()
-    if cache_key in fund_rank_cache and now - fund_rank_cache[cache_key]["ts"] < FUND_RANK_CACHE_TTL:
-        return fund_rank_cache[cache_key]["data"]
-
-    rank_data = _load_fund_rank_data()
-    row = rank_data.get(code)
-    if row is None:
-        return {"code": code, "error": "未找到该基金"}
-
-    def _safe_float(val):
-        try:
-            v = float(val)
-            if isinstance(v, float) and not (v != v):  # not NaN
-                return round(v, 2)
-        except (ValueError, TypeError):
-            pass
-        return None
-
-    def _find_col(cols, keywords):
-        for kw in keywords:
-            for c in cols:
-                if kw in str(c):
-                    return c
-        return None
-
-    cols = list(row.index) if hasattr(row, 'index') else []
-    result = {
-        "code": code,
-        "name": str(row.get(_find_col(cols, ["简称", "名称"]) or cols[1], "")),
-        "nav": _safe_float(row.get(_find_col(cols, ["单位净值"]), None)),
-        "accNav": _safe_float(row.get(_find_col(cols, ["累计净值"]), None)),
-        "dayChange": _safe_float(row.get(_find_col(cols, ["日增长率"]), None)),
-        "returns": {
-            "1w": _safe_float(row.get(_find_col(cols, ["近1周"]), None)),
-            "1m": _safe_float(row.get(_find_col(cols, ["近1月"]), None)),
-            "3m": _safe_float(row.get(_find_col(cols, ["近3月"]), None)),
-            "6m": _safe_float(row.get(_find_col(cols, ["近6月"]), None)),
-            "1y": _safe_float(row.get(_find_col(cols, ["近1年"]), None)),
-            "2y": _safe_float(row.get(_find_col(cols, ["近2年"]), None)),
-            "3y": _safe_float(row.get(_find_col(cols, ["近3年"]), None)),
-            "ytd": _safe_float(row.get(_find_col(cols, ["今年来"]), None)),
-            "since": _safe_float(row.get(_find_col(cols, ["成立来"]), None)),
-        },
-        "fee": str(row.get(_find_col(cols, ["手续费"]), "")),
-        "updatedAt": datetime.now().strftime("%Y-%m-%d"),
-        "source": "东方财富天天基金",
-    }
-    fund_rank_cache[cache_key] = {"data": result, "ts": now}
-    return result
-
+# ---- 基金动态数据（逻辑在 services/fund_rank.py）----
 
 @app.get("/api/fund/info/{code}")
 def get_fund_info(code: str):
@@ -436,163 +357,12 @@ def get_fund_info_batch(codes: str = ""):
     return {"funds": result, "updatedAt": datetime.now().strftime("%Y-%m-%d")}
 
 
-# ---- 政策 & 国际新闻 ----
-
-def get_policy_news(limit: int = 8) -> list:
-    """获取政策经济新闻（政府经济政策 + 中美贸易/外交）"""
-    cache_key = "policy_news"
-    now = time.time()
-    if cache_key in news_cache and now - news_cache[cache_key]["ts"] < NEWS_CACHE_TTL:
-        return news_cache[cache_key]["data"]
-
-    POLICY_KEYWORDS = ["政策", "央行", "国务院", "财政", "降准", "降息", "LPR",
-                       "关税", "贸易", "制裁", "外交", "中美", "特朗普", "拜登",
-                       "战争", "地缘", "OPEC", "美联储", "加息", "缩表",
-                       "刺激", "基建", "新质", "科技", "半导体", "芯片"]
-
-    all_news = []
-    try:
-        import akshare as ak
-
-        # 源1：财经新闻中筛选政策相关
-        try:
-            df = ak.stock_news_em(symbol="财经")
-            if df is not None and len(df) > 0:
-                title_col = next((c for c in df.columns if "标题" in c or "title" in c.lower()), df.columns[0])
-                time_col = next((c for c in df.columns if "时间" in c or "date" in c.lower() or "发布" in c), None)
-                source_col = next((c for c in df.columns if "来源" in c or "source" in c.lower()), None)
-                url_col = next((c for c in df.columns if "链接" in c or "url" in c.lower()), None)
-                for _, row in df.iterrows():
-                    title = str(row[title_col]).strip()
-                    if any(kw in title for kw in POLICY_KEYWORDS):
-                        all_news.append({
-                            "title": title,
-                            "time": str(row[time_col]) if time_col else "",
-                            "source": str(row[source_col]) if source_col else "东方财富",
-                            "url": str(row[url_col]) if url_col else "",
-                            "category": "policy" if any(kw in title for kw in ["政策", "央行", "国务院", "财政", "降准", "降息", "LPR", "刺激", "基建"]) else "international",
-                        })
-                    if len(all_news) >= limit:
-                        break
-        except Exception as e:
-            print(f"[POLICY_NEWS] stock_news_em(财经) failed: {e}")
-
-        # 源2：A股新闻中补充政策类
-        if len(all_news) < limit:
-            try:
-                df = ak.stock_news_em(symbol="A股")
-                if df is not None and len(df) > 0:
-                    title_col = next((c for c in df.columns if "标题" in c or "title" in c.lower()), df.columns[0])
-                    time_col = next((c for c in df.columns if "时间" in c or "date" in c.lower() or "发布" in c), None)
-                    source_col = next((c for c in df.columns if "来源" in c or "source" in c.lower()), None)
-                    url_col = next((c for c in df.columns if "链接" in c or "url" in c.lower()), None)
-                    existing_titles = {n["title"] for n in all_news}
-                    for _, row in df.iterrows():
-                        title = str(row[title_col]).strip()
-                        if title in existing_titles:
-                            continue
-                        if any(kw in title for kw in POLICY_KEYWORDS):
-                            all_news.append({
-                                "title": title,
-                                "time": str(row[time_col]) if time_col else "",
-                                "source": str(row[source_col]) if source_col else "东方财富",
-                                "url": str(row[url_col]) if url_col else "",
-                                "category": "policy" if any(kw in title for kw in ["政策", "央行", "国务院", "财政", "降准", "降息", "LPR", "刺激", "基建"]) else "international",
-                            })
-                        if len(all_news) >= limit:
-                            break
-            except Exception as e:
-                print(f"[POLICY_NEWS] stock_news_em(A股) failed: {e}")
-
-    except Exception as e:
-        print(f"[POLICY_NEWS] Fatal: {e}")
-
-    if not all_news:
-        all_news = [{"title": "政策资讯加载中...", "time": "", "source": "系统", "category": "policy"}]
-
-    print(f"[POLICY_NEWS] Got {len(all_news)} items")
-    news_cache[cache_key] = {"data": all_news, "ts": now}
-    return all_news
-
+# ---- 政策 & 国际新闻 + 新闻影响分析（逻辑在 services/news_data.py）----
 
 @app.get("/api/news/policy")
 def get_policy_news_api(limit: int = 8):
     """获取政策 & 国际新闻（政府经济政策 + 中美贸易外交 + 地缘冲突）"""
     return {"news": get_policy_news(limit)}
-
-
-# ---- 新闻→行业→基金 关联分析引擎 ----
-
-# 事件→行业→基金映射表（核心知识库）
-NEWS_IMPACT_MAP = [
-    {"keywords": ["降准", "降息", "LPR", "宽松", "流动性"],
-     "impact": "利好：银行间流动性增加，利率下行推动股债双牛",
-     "bullish": ["110020", "217022"], "bearish": [],
-     "sectors": ["银行", "地产", "债券"], "tag": "货币宽松"},
-    {"keywords": ["加息", "缩表", "收紧", "美联储鹰派"],
-     "impact": "利空：流动性收紧，成长股承压，美元走强",
-     "bullish": ["000216"], "bearish": ["050025", "110020"],
-     "sectors": ["黄金避险"], "tag": "货币收紧"},
-    {"keywords": ["关税", "贸易战", "制裁", "中美对抗"],
-     "impact": "出口承压，内需消费和国产替代受益",
-     "bullish": ["110020", "008114"], "bearish": ["050025"],
-     "sectors": ["内需消费", "国产替代"], "tag": "贸易摩擦"},
-    {"keywords": ["半导体", "芯片", "科技自主", "AI", "人工智能"],
-     "impact": "科技板块活跃，相关ETF受益",
-     "bullish": ["110020"], "bearish": [],
-     "sectors": ["科技", "半导体", "新能源"], "tag": "科技政策"},
-    {"keywords": ["战争", "地缘", "冲突", "中东", "俄乌"],
-     "impact": "避险情绪升温，黄金和债券受益",
-     "bullish": ["000216", "217022"], "bearish": ["110020", "050025"],
-     "sectors": ["黄金", "债券", "军工"], "tag": "地缘风险"},
-    {"keywords": ["刺激", "基建", "财政扩张", "国务院", "发改委"],
-     "impact": "财政刺激利好周期股和基建链",
-     "bullish": ["110020", "008114"], "bearish": [],
-     "sectors": ["基建", "周期", "红利"], "tag": "财政刺激"},
-    {"keywords": ["油价", "OPEC", "原油", "大宗商品"],
-     "impact": "大宗商品价格影响通胀预期和周期股",
-     "bullish": ["000216", "008114"], "bearish": ["217022"],
-     "sectors": ["能源", "黄金", "通胀链"], "tag": "大宗商品"},
-    {"keywords": ["房地产", "楼市", "限购", "房贷"],
-     "impact": "地产政策影响金融和消费",
-     "bullish": ["110020"], "bearish": [],
-     "sectors": ["地产", "银行", "建材"], "tag": "地产政策"},
-    {"keywords": ["汇率", "人民币", "贬值", "升值", "外汇"],
-     "impact": "汇率波动影响QDII基金和外贸企业",
-     "bullish": [], "bearish": [],
-     "sectors": ["外贸", "QDII"], "tag": "汇率波动"},
-]
-
-# 基金代码→名称映射
-FUND_NAME_MAP = {
-    "110020": "沪深300", "050025": "标普500", "217022": "债券",
-    "000216": "黄金", "008114": "红利低波"
-}
-
-
-def analyze_news_impact(news_list: list) -> list:
-    """分析新闻对持仓基金的影响"""
-    impacts = []
-    seen_tags = set()
-    for n in news_list:
-        title = n.get("title", "")
-        for rule in NEWS_IMPACT_MAP:
-            if any(kw in title for kw in rule["keywords"]) and rule["tag"] not in seen_tags:
-                bullish_names = [FUND_NAME_MAP.get(c, c) for c in rule["bullish"]]
-                bearish_names = [FUND_NAME_MAP.get(c, c) for c in rule["bearish"]]
-                impacts.append({
-                    "trigger": title[:40] + ("..." if len(title) > 40 else ""),
-                    "tag": rule["tag"],
-                    "impact": rule["impact"],
-                    "bullish": bullish_names,
-                    "bearish": bearish_names,
-                    "sectors": rule["sectors"],
-                    "bullish_codes": rule["bullish"],
-                    "bearish_codes": rule["bearish"],
-                })
-                seen_tags.add(rule["tag"])
-                break
-    return impacts
 
 
 @app.get("/api/news/impact")
@@ -732,10 +502,10 @@ def get_risk_actions(req: dict):
         user = load_user(user_id)
         user = ensure_v4_portfolio(user)
         txs = user["portfolio"].get("transactions", [])
-    # 获取当前估值百分位
+    # 获取当前估值百分位（get_valuation_percentile 返回 dict）
     try:
         vp = get_valuation_percentile()
-        val_pct = vp if isinstance(vp, (int, float)) else 50
+        val_pct = vp.get("percentile", 50) if isinstance(vp, dict) else 50
     except Exception:
         val_pct = 50
     return generate_risk_actions(txs, val_pct)
@@ -751,15 +521,15 @@ def get_allocation_advice(req: dict):
         user = load_user(user_id)
         user = ensure_v4_portfolio(user)
         txs = user["portfolio"].get("transactions", [])
-    # 获取当前估值和恐惧贪婪
+    # 获取当前估值和恐惧贪婪（两者都返回 dict）
     try:
         vp = get_valuation_percentile()
-        val_pct = vp if isinstance(vp, (int, float)) else 50
+        val_pct = vp.get("percentile", 50) if isinstance(vp, dict) else 50
     except Exception:
         val_pct = 50
     try:
         fgi = get_fear_greed_index()
-        fg_val = fgi if isinstance(fgi, (int, float)) else 50
+        fg_val = fgi.get("score", 50) if isinstance(fgi, dict) else 50
     except Exception:
         fg_val = 50
     return generate_allocation_advice(txs, val_pct, fg_val)
@@ -803,23 +573,6 @@ def get_backtest(strategy: str = "smart_dca", years: int = 3, monthly: float = 1
     result = run_backtest(strategy, years, monthly)
     macro_cache[cache_key] = {"data": result, "ts": now}
     return result
-
-
-# ---- 持久化工具 ----
-def _user_file(user_id: str) -> Path:
-    safe_id = hashlib.sha256(user_id.encode()).hexdigest()[:16]
-    return USERS_DIR / f"{safe_id}.json"
-
-def load_user(user_id: str) -> dict:
-    f = _user_file(user_id)
-    if f.exists():
-        return json.loads(f.read_text(encoding="utf-8"))
-    return {"userId": user_id, "portfolio": None, "ledger": [], "createdAt": datetime.now().isoformat(), "updatedAt": datetime.now().isoformat()}
-
-def save_user(data: dict):
-    data["updatedAt"] = datetime.now().isoformat()
-    f = _user_file(data["userId"])
-    f.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
 # ---- V4 API: 基金搜索 ----
@@ -1298,40 +1051,6 @@ def calc_portfolio_pnl(portfolio: Portfolio):
         "totalPnlPct": round(total_pnl_pct, 2),
         "holdings": results,
     }
-
-
-def _get_nav_on_date(code: str, date_str: str) -> Optional[float]:
-    """获取基金在指定日期的净值"""
-    cache_key = f"hist_{code}"
-    now = time.time()
-
-    # 使用缓存的历史数据
-    if cache_key in nav_cache and now - nav_cache[cache_key]["ts"] < NAV_CACHE_TTL:
-        df = nav_cache[cache_key]["data"]
-    else:
-        try:
-            import akshare as ak
-            df = ak.fund_open_fund_info_em(symbol=code, indicator="单位净值走势")
-            if df is not None and len(df) > 0:
-                nav_cache[cache_key] = {"data": df, "ts": now}
-            else:
-                return None
-        except Exception as e:
-            print(f"[HIST_NAV] Failed for {code}: {e}")
-            return None
-
-    try:
-        target = datetime.fromisoformat(date_str.replace("Z", "+00:00")).strftime("%Y-%m-%d")
-        # 找最接近买入日期的净值
-        df["date_str"] = df["净值日期"].astype(str)
-        match = df[df["date_str"] >= target].head(1)
-        if len(match) > 0:
-            return float(match.iloc[0]["单位净值"])
-        # 如果买入日期比所有数据都新，取最新
-        return float(df.iloc[-1]["单位净值"])
-    except Exception as e:
-        print(f"[HIST_NAV] Parse error: {e}")
-        return None
 
 
 # ---- API: AI 对话分析 ----
@@ -1917,18 +1636,6 @@ def get_ledger_summary(user_id: str, days: int = 30):
 # ============================================================
 # 收入源管理 API
 # ============================================================
-
-class IncomeSourceCreate(BaseModel):
-    userId: str
-    name: str
-    type: str = "其他"
-    expectedAmt: float = 0
-    note: str = ""
-
-class IncomeSourceRecord(BaseModel):
-    userId: str
-    sourceId: str
-    amount: float
 
 @app.post("/api/income-sources/add")
 def add_income_source(src: IncomeSourceCreate):

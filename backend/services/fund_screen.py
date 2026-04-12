@@ -6,6 +6,7 @@
 import time
 from config import FUND_RANK_CACHE_TTL
 from services.fund_rank import _load_fund_rank_data, _fund_rank_cache
+from services.utils import find_col as _find_col, safe_float as _safe_float, parse_fee as _parse_fee
 
 
 def screen_funds(
@@ -114,31 +115,3 @@ def screen_funds(
     _fund_rank_cache[cache_key] = {"data": result, "ts": time.time()}
     return result
 
-
-def _find_col(cols, keywords):
-    """模糊匹配列名"""
-    for kw in keywords:
-        for c in cols:
-            if kw in str(c):
-                return c
-    return None
-
-
-def _safe_float(val):
-    """安全转float"""
-    try:
-        v = float(val)
-        if v != v:  # NaN
-            return None
-        return round(v, 2)
-    except (ValueError, TypeError):
-        return None
-
-
-def _parse_fee(fee_str: str):
-    """从费率字符串中提取数值，如 '0.15%' → 0.15"""
-    try:
-        s = str(fee_str).replace("%", "").strip()
-        return float(s)
-    except (ValueError, TypeError):
-        return None
