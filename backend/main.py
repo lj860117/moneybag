@@ -660,35 +660,57 @@ def get_macro_calendar() -> list:
     events = []
     try:
         import akshare as ak
+        import math
+
+        def _find_col(cols, keywords):
+            """模糊匹配列名"""
+            for c in cols:
+                cl = str(c).lower()
+                if any(k in cl for k in keywords):
+                    return c
+            return None
+
+        def _get_latest_valid(df, val_col, date_col, max_back=5):
+            """从最后往前找第一条 val_col 非 NaN 的行"""
+            for i in range(1, min(max_back + 1, len(df) + 1)):
+                row = df.iloc[-i]
+                v = row[val_col]
+                try:
+                    if v is not None and not (isinstance(v, float) and math.isnan(v)):
+                        d = str(row[date_col]) if date_col else ""
+                        return str(v), d
+                except (TypeError, ValueError):
+                    return str(v), str(row[date_col]) if date_col else ""
+            return "", ""
 
         # 尝试获取中国宏观数据（CPI）
         try:
             df = ak.macro_china_cpi_monthly()
             if df is not None and len(df) > 0:
                 print(f"[MACRO] CPI columns: {list(df.columns)}")
-                print(f"[MACRO] CPI last row: {df.iloc[-1].to_dict()}")
-                latest = df.iloc[-1]
-                date_col = [c for c in df.columns if any(k in str(c) for k in ["月份", "date", "统计时间", "时间", "日期"])]
-                val_col = [c for c in df.columns if any(k in str(c).lower() for k in ["全国", "同比", "cpi", "当月", "涨幅"])]
-                # 如果精确匹配失败，用第二列（通常是数值列）
-                if not val_col and len(df.columns) > 1:
-                    val_col = [df.columns[1]]
-                if not date_col and len(df.columns) > 0:
-                    date_col = [df.columns[0]]
-                cpi_value = str(latest[val_col[0]]) if val_col else ""
-                # 如果是数值加上 % 后缀
-                try:
-                    float(cpi_value)
-                    cpi_value = cpi_value + "%"
-                except (ValueError, TypeError):
-                    pass
-                events.append({
-                    "name": "CPI 居民消费价格指数",
-                    "date": str(latest[date_col[0]]) if date_col else "",
-                    "value": cpi_value,
-                    "impact": "通胀指标，影响央行货币政策",
-                    "icon": "📊",
-                })
+                print(f"[MACRO] CPI last 3 rows: {df.tail(3).to_dict('records')}")
+                # AKShare 列名: ['商品', '日期', '今值', '预测值', '前值']
+                val_col = _find_col(df.columns, ["今值", "value", "今"]) or (df.columns[2] if len(df.columns) > 2 else None)
+                date_col = _find_col(df.columns, ["日期", "date", "时间"]) or (df.columns[1] if len(df.columns) > 1 else None)
+                if val_col:
+                    cpi_value, cpi_date = _get_latest_valid(df, val_col, date_col)
+                    if cpi_value:
+                        try:
+                            float(cpi_value)
+                            cpi_value = cpi_value + "%"
+                        except (ValueError, TypeError):
+                            pass
+                        events.append({
+                            "name": "CPI 居民消费价格指数",
+                            "date": cpi_date,
+                            "value": cpi_value,
+                            "impact": "通胀指标，影响央行货币政策",
+                            "icon": "📊",
+                        })
+                    else:
+                        print("[MACRO] CPI: all recent values are NaN")
+                else:
+                    print(f"[MACRO] CPI: cannot find value column in {list(df.columns)}")
         except Exception as e:
             print(f"[MACRO] CPI failed: {e}")
             import traceback; traceback.print_exc()
@@ -697,17 +719,19 @@ def get_macro_calendar() -> list:
         try:
             df = ak.macro_china_pmi()
             if df is not None and len(df) > 0:
-                latest = df.iloc[-1]
-                date_col = [c for c in df.columns if "月份" in c or "date" in c.lower() or "统计时间" in c]
-                val_col = [c for c in df.columns if "制造业" in c or "pmi" in c.lower()]
-                pmi_val = str(latest[val_col[0]]) if val_col else ""
-                events.append({
-                    "name": "PMI 采购经理指数",
-                    "date": str(latest[date_col[0]]) if date_col else "",
-                    "value": pmi_val,
-                    "impact": "经济景气度指标，>50扩张、<50收缩",
-                    "icon": "🏭",
-                })
+                print(f"[MACRO] PMI columns: {list(df.columns)}")
+                val_col = _find_col(df.columns, ["今值", "制造业", "pmi", "value", "今"]) or (df.columns[2] if len(df.columns) > 2 else None)
+                date_col = _find_col(df.columns, ["日期", "月份", "date", "时间"]) or (df.columns[1] if len(df.columns) > 1 else None)
+                if val_col:
+                    pmi_value, pmi_date = _get_latest_valid(df, val_col, date_col)
+                    if pmi_value:
+                        events.append({
+                            "name": "PMI 采购经理指数",
+                            "date": pmi_date,
+                            "value": pmi_value,
+                            "impact": "经济景气度指标，>50扩张、<50收缩",
+                            "icon": "🏭",
+                        })
         except Exception as e:
             print(f"[MACRO] PMI failed: {e}")
 
@@ -716,31 +740,28 @@ def get_macro_calendar() -> list:
             df = ak.macro_china_m2_yearly()
             if df is not None and len(df) > 0:
                 print(f"[MACRO] M2 columns: {list(df.columns)}")
-                print(f"[MACRO] M2 last row: {df.iloc[-1].to_dict()}")
-                latest = df.iloc[-1]
-                date_col = [c for c in df.columns if any(k in str(c).lower() for k in ["月份", "date", "统计时间", "时间", "月", "期"])]
-                val_col = [c for c in df.columns if any(k in str(c).lower() for k in ["m2", "同比", "货币", "增长", "供应"])]
-                # fallback: 如果精确匹配失败，取第二列（通常是数值列）
-                if not val_col and len(df.columns) > 1:
-                    val_col = [df.columns[1]]
-                    print(f"[MACRO] M2 val_col fallback to: {val_col[0]}")
-                if not date_col and len(df.columns) > 0:
-                    date_col = [df.columns[0]]
-                    print(f"[MACRO] M2 date_col fallback to: {date_col[0]}")
-                m2_val = str(latest[val_col[0]]) if val_col else ""
-                # 如果是数字，加上 % 后缀
-                try:
-                    m2_num = float(m2_val)
-                    m2_val = f"{m2_num}%"
-                except (ValueError, TypeError):
-                    pass
-                events.append({
-                    "name": "M2 广义货币供应量",
-                    "date": str(latest[date_col[0]]) if date_col else "",
-                    "value": m2_val,
-                    "impact": "货币宽松/紧缩信号，影响市场流动性",
-                    "icon": "💵",
-                })
+                print(f"[MACRO] M2 last 3 rows: {df.tail(3).to_dict('records')}")
+                val_col = _find_col(df.columns, ["今值", "m2", "value", "今"]) or (df.columns[2] if len(df.columns) > 2 else None)
+                date_col = _find_col(df.columns, ["日期", "date", "时间"]) or (df.columns[1] if len(df.columns) > 1 else None)
+                if val_col:
+                    m2_val, m2_date = _get_latest_valid(df, val_col, date_col)
+                    if m2_val:
+                        try:
+                            float(m2_val)
+                            m2_val = m2_val + "%"
+                        except (ValueError, TypeError):
+                            pass
+                        events.append({
+                            "name": "M2 广义货币供应量",
+                            "date": m2_date,
+                            "value": m2_val,
+                            "impact": "货币宽松/紧缩信号，影响市场流动性",
+                            "icon": "💵",
+                        })
+                    else:
+                        print("[MACRO] M2: all recent values are NaN")
+                else:
+                    print(f"[MACRO] M2: cannot find value column in {list(df.columns)}")
         except Exception as e:
             print(f"[MACRO] M2 failed: {e}")
 

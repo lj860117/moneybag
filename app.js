@@ -171,7 +171,7 @@ async function checkAPI(){try{const r=await fetch(API_BASE+'/health',{signal:Abo
 async function fetchNav(){if(!API_AVAILABLE)return;try{const r=await fetch(API_BASE+'/nav/all');if(r.ok)liveNavData=await r.json()}catch{}}
 async function fetchSignals(){if(!API_AVAILABLE)return null;try{const p=loadPortfolio();if(!p.holdings.length)return null;const r=await fetch(API_BASE+'/signals',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(p)});if(r.ok)return await r.json()}catch{}return null}
 async function fetchPnl(){if(!API_AVAILABLE)return null;try{const p=loadPortfolio();if(!p.holdings.length)return null;const r=await fetch(API_BASE+'/portfolio/pnl',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(p)});if(r.ok)return await r.json()}catch{}return null}
-async function fetchDashboard(){if(!API_AVAILABLE)return null;try{const r=await fetch(API_BASE+'/dashboard');if(r.ok)return await r.json()}catch{}return null}
+async function fetchDashboard(){if(!API_AVAILABLE)return null;try{const r=await fetch(API_BASE+'/dashboard',{signal:AbortSignal.timeout(30000)});if(r.ok)return await r.json()}catch(e){console.warn('Dashboard fetch failed:',e)}return null}
 async function fetchFundNews(code){if(!API_AVAILABLE)return[];try{const r=await fetch(API_BASE+'/news/'+code);if(r.ok){const d=await r.json();return d.news||[]}}catch{}return[]}
 async function fetchPortfolioNews(){if(!API_AVAILABLE)return{};try{const r=await fetch(API_BASE+'/news/portfolio');if(r.ok)return await r.json()}catch{}return{}}
 
