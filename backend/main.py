@@ -80,6 +80,23 @@ def health():
     return {"status": "ok", "time": datetime.now().isoformat()}
 
 
+# ---- 可用模型列表（前端下拉选择）----
+AVAILABLE_MODELS = [
+    {"id": "deepseek-chat", "name": "DeepSeek V3", "provider": "deepseek", "base": "https://api.deepseek.com/v1", "env_key": "LLM_API_KEY"},
+    {"id": "deepseek-reasoner", "name": "DeepSeek R1 (深度思考)", "provider": "deepseek", "base": "https://api.deepseek.com/v1", "env_key": "LLM_API_KEY"},
+]
+
+@app.get("/api/models")
+def list_models():
+    """返回可用模型列表（只返回有 API key 的模型）"""
+    result = []
+    for m in AVAILABLE_MODELS:
+        key = os.environ.get(m["env_key"], "")
+        if key:
+            result.append({"id": m["id"], "name": m["name"], "provider": m["provider"]})
+    return {"models": result, "default": "deepseek-chat"}
+
+
 @app.get("/api/nav/all")
 def get_all_nav():
     """获取所有推荐基金的净值"""
@@ -1076,7 +1093,13 @@ async def chat_analysis(req: ChatRequest):
     # 尝试调用 LLM（支持 OpenAI 兼容 API）
     api_key = os.environ.get("OPENAI_API_KEY") or os.environ.get("LLM_API_KEY")
     api_base = os.environ.get("LLM_API_BASE", "https://api.deepseek.com/v1")
-    model = os.environ.get("LLM_MODEL", "deepseek-chat")
+    model = req.model or os.environ.get("LLM_MODEL", "deepseek-chat")
+    # 根据模型查找对应 base URL
+    for m in AVAILABLE_MODELS:
+        if m["id"] == model:
+            api_base = m["base"]
+            api_key = os.environ.get(m["env_key"], api_key)
+            break
     print(f"[CHAT] api_key={'SET' if api_key else 'EMPTY'}, base={api_base}, model={model}")
 
     if api_key:
@@ -1131,7 +1154,12 @@ async def chat_analysis_stream(req: ChatRequest):
 
     api_key = os.environ.get("OPENAI_API_KEY") or os.environ.get("LLM_API_KEY")
     api_base = os.environ.get("LLM_API_BASE", "https://api.deepseek.com/v1")
-    model = os.environ.get("LLM_MODEL", "deepseek-chat")
+    model = req.model or os.environ.get("LLM_MODEL", "deepseek-chat")
+    for m in AVAILABLE_MODELS:
+        if m["id"] == model:
+            api_base = m["base"]
+            api_key = os.environ.get(m["env_key"], api_key)
+            break
     print(f"[CHAT-STREAM] api_key={'SET' if api_key else 'EMPTY'}, base={api_base}, model={model}")
 
     if not api_key:

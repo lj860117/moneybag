@@ -702,14 +702,20 @@ document.querySelector('.modal-overlay')?.remove();
 showAddTxnFor(code,'BUY')}
 
 // ---- AI聊天页 ----
+let chatModel='deepseek-chat';
+let chatModelList=[];
+async function loadModelList(){try{const r=await fetch(API_BASE+'/models',{signal:AbortSignal.timeout(5000)});if(r.ok){const d=await r.json();chatModelList=d.models||[];if(d.default)chatModel=localStorage.getItem('chatModel')||d.default}}catch{chatModelList=[{id:'deepseek-chat',name:'DeepSeek V3',provider:'deepseek'}]}}
 function renderChat(){currentPage='chat';renderNav();const sugs=['现在适合入场吗？','什么时候该卖出？','智能定投怎么投？','最近有什么新闻？','政策对我持仓有啥影响？','关税贸易战利好利空啥？','技术指标怎么样？','宏观经济怎么样？','今天市场怎么样？','黄金还能买吗？'];
-$('#app').innerHTML=`<div class="chat-page"><div class="chat-header"><h2>🤖 AI理财分析师</h2><p>${API_AVAILABLE?'连接实时数据分析':'后端离线，部分功能受限'}</p></div><div class="chat-messages" id="chatMsgs"><div class="chat-msg bot">你好！我是钱袋子AI分析师。问我关于市场行情、持仓、买卖建议等问题。\n\n所有建议仅供参考 😊<div class="src-tag">系统</div></div>${chatMessages.map(m=>`<div class="chat-msg ${m.role}">${m.text}${m.src?`<div class="src-tag">${m.src==='ai'?'AI分析':'规则引擎'}</div>`:''}</div>`).join('')}</div><div class="chat-suggestions" id="chatSugs">${sugs.map(s=>`<button class="chat-suggest-btn" onclick="sendChat('${s}')">${s}</button>`).join('')}</div><div class="chat-input-bar"><input class="chat-input" id="chatIn" placeholder="问点什么..." onkeydown="if(event.key==='Enter')sendChat()"><button class="chat-send" onclick="sendChat()">→</button></div></div>`;scrollChat()}
+const modelSelector=chatModelList.length>0?`<select id="modelSelect" onchange="chatModel=this.value;localStorage.setItem('chatModel',this.value)" style="background:var(--bg2);color:var(--text);border:1px solid var(--bg3);border-radius:8px;padding:4px 8px;font-size:11px;margin-left:8px">${chatModelList.map(m=>`<option value="${m.id}" ${m.id===chatModel?'selected':''}>${m.name}</option>`).join('')}</select>`:'';
+$('#app').innerHTML=`<div class="chat-page"><div class="chat-header"><h2>🤖 AI理财分析师</h2><p>${API_AVAILABLE?'连接实时数据分析':'后端离线，部分功能受限'}${modelSelector}</p></div><div class="chat-messages" id="chatMsgs"><div class="chat-msg bot">你好！我是钱袋子AI分析师，内置巴菲特、格雷厄姆、林奇、塔勒布四位大师的投资框架 🧠\n\n问我关于市场行情、持仓、买卖建议等问题。\n\n所有建议仅供参考 😊<div class="src-tag">系统</div></div>${chatMessages.map(m=>`<div class="chat-msg ${m.role}">${m.text}${m.src?`<div class="src-tag">${m.src==='ai'?'AI分析':'规则引擎'}</div>`:''}</div>`).join('')}</div><div class="chat-suggestions" id="chatSugs">${sugs.map(s=>`<button class="chat-suggest-btn" onclick="sendChat('${s}')">${s}</button>`).join('')}</div><div class="chat-input-bar"><input class="chat-input" id="chatIn" placeholder="问点什么..." onkeydown="if(event.key==='Enter')sendChat()"><button class="chat-send" onclick="sendChat()">→</button></div></div>`;scrollChat()}
 
 async function sendChat(text){const inp=document.getElementById('chatIn');const msg=text||(inp?inp.value.trim():'');if(!msg)return;if(inp)inp.value='';
 const sg=document.getElementById('chatSugs');if(sg)sg.style.display='none';
 chatMessages.push({role:'user',text:msg});appendMsg('user',msg);appendTyping();
+const body=JSON.stringify({message:msg,model:chatModel});
+chatMessages.push({role:'user',text:msg});appendMsg('user',msg);appendTyping();
 if(API_AVAILABLE){try{const p=loadPortfolio();
-const r=await fetch(API_BASE+'/chat/stream',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({message:msg,portfolio:p.holdings.length?p:null})});
+const r=await fetch(API_BASE+'/chat/stream',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({message:msg,model:chatModel,portfolio:p.holdings.length?p:null})});
 rmTyping();
 if(r.ok&&r.body){
 // SSE 流式逐字渲染
@@ -1402,5 +1408,5 @@ renderAssets()}
 
 // ---- 启动 ----
 migrateV3toV4();
-checkAPI().then(()=>{fetchNav();syncFromCloud()});
+checkAPI().then(()=>{fetchNav();syncFromCloud();loadModelList()});
 renderLanding();
