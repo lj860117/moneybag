@@ -257,19 +257,22 @@ try{
 const r=await fetch(API_BASE+'/allocation-advice',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({user_id:getUserId()}),signal:AbortSignal.timeout(10000)});
 if(!r.ok)return;const data=await r.json();
 if(!data.target)return;
-const t=data.target;const c=data.current||{};const dev=data.deviation||{};
+const t=data.target||{};const c=data.current||{};const dev=data.deviation||{};
+const advArr=Array.isArray(data.advice)?data.advice:[];
+const summaryText=data.summary||'';
 el.innerHTML=`<div style="background:var(--bg2);border-radius:var(--radius);padding:16px;margin-bottom:12px">
-<div style="font-size:14px;font-weight:700;margin-bottom:10px">🎯 资产配置建议 <span style="font-size:11px;color:var(--text2);font-weight:400">${data.regime||''}</span></div>
-${['equity','bond','cash'].map(k=>{
-const label=k==='equity'?'股票类':k==='bond'?'债券类':'现金类';
-const cur=Math.round((c[k]||0)*100);const tgt=Math.round((t[k]||0)*100);const d=cur-tgt;
+<div style="font-size:14px;font-weight:700;margin-bottom:10px">🎯 资产配置建议 <span style="font-size:11px;color:var(--text2);font-weight:400">${data.valuation_zone||''}</span></div>
+${['stock','bond','cash'].map(k=>{
+const label=k==='stock'?'股票类':k==='bond'?'债券类':'现金类';
+const cur=Math.round(c[k]||0);const tgt=Math.round(t[k]||0);const d=Math.round(dev[k]||0);
 const dColor=Math.abs(d)>15?'var(--red)':Math.abs(d)>5?'#F59E0B':'var(--green)';
 return`<div style="display:flex;align-items:center;gap:8px;margin-bottom:8px">
 <div style="width:56px;font-size:12px;color:var(--text2)">${label}</div>
-<div style="flex:1;height:6px;background:var(--bg3);border-radius:3px;overflow:hidden"><div style="height:100%;width:${cur}%;background:var(--accent);border-radius:3px"></div></div>
+<div style="flex:1;height:6px;background:var(--bg3);border-radius:3px;overflow:hidden"><div style="height:100%;width:${Math.min(cur,100)}%;background:var(--accent);border-radius:3px"></div></div>
 <div style="width:80px;font-size:11px;text-align:right">${cur}% <span style="color:var(--text2)">→</span> ${tgt}% <span style="color:${dColor};font-weight:600">${d>0?'+':''}${d}%</span></div>
 </div>`}).join('')}
-${data.advice?`<div style="font-size:12px;color:var(--text2);margin-top:6px;padding-top:8px;border-top:1px solid var(--bg3)">💡 ${data.advice}</div>`:''}
+${summaryText?`<div style="font-size:12px;color:var(--text2);margin-top:6px;padding-top:8px;border-top:1px solid var(--bg3)">💡 ${summaryText}</div>`:''}
+${advArr.length?advArr.map(a=>{const bg=a.direction==='reduce'?'rgba(239,68,68,.08)':'rgba(34,197,94,.08)';return`<div style="background:${bg};border-radius:8px;padding:8px 10px;margin-top:6px;font-size:12px">${a.message}</div>`}).join(''):''}
 </div>`;
 }catch(e){console.warn('Allocation advice:',e)}}
 
