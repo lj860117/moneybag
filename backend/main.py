@@ -400,21 +400,27 @@ def get_macro_data():
 # ---- API: 综合市场仪表盘（一次性拉全部数据）----
 
 @app.get("/api/dashboard")
-def get_market_dashboard():
-    """V4.5 综合市场仪表盘 — 含12维多因子数据"""
-    val = get_valuation_percentile()
-    fgi_data = get_fear_greed_index()
-    tech = get_technical_indicators()
-    news = get_market_news(8)
-    macro = get_macro_calendar()
+async def get_market_dashboard():
+    """V4.5 综合市场仪表盘 — 11个数据源并行请求"""
+    import asyncio
 
-    # V4.5 新因子
-    northbound = get_northbound_flow()
-    margin = get_margin_trading()
-    treasury = get_treasury_yield()
-    shibor_data = get_shibor()
-    dividend = get_dividend_yield()
-    sentiment = get_news_sentiment_score()
+    loop = asyncio.get_event_loop()
+    # 把所有阻塞的数据源调用并行化
+    (val, fgi_data, tech, news, macro,
+     northbound, margin, treasury, shibor_data, dividend, sentiment
+    ) = await asyncio.gather(
+        loop.run_in_executor(None, get_valuation_percentile),
+        loop.run_in_executor(None, get_fear_greed_index),
+        loop.run_in_executor(None, get_technical_indicators),
+        loop.run_in_executor(None, lambda: get_market_news(8)),
+        loop.run_in_executor(None, get_macro_calendar),
+        loop.run_in_executor(None, get_northbound_flow),
+        loop.run_in_executor(None, get_margin_trading),
+        loop.run_in_executor(None, get_treasury_yield),
+        loop.run_in_executor(None, get_shibor),
+        loop.run_in_executor(None, get_dividend_yield),
+        loop.run_in_executor(None, get_news_sentiment_score),
+    )
 
     return {
         "valuation": val,
@@ -422,7 +428,6 @@ def get_market_dashboard():
         "technical": tech,
         "news": news,
         "macro": macro,
-        # V4.5 新增
         "northbound": northbound,
         "margin": margin,
         "treasury": treasury,
