@@ -841,6 +841,420 @@ def get_macro_calendar() -> list:
     return events
 
 
+# ============================================================
+# V4.5 新因子数据层（借鉴幻方量化多因子体系）
+# ============================================================
+
+# --- 缓存 ---
+factor_cache = {}
+FACTOR_CACHE_TTL = 3600  # 1小时
+
+def get_northbound_flow() -> dict:
+    """获取北向资金（沪股通+深股通）净流入数据"""
+    cache_key = "northbound"
+    now = time.time()
+    if cache_key in factor_cache and now - factor_cache[cache_key]["ts"] < FACTOR_CACHE_TTL:
+        return factor_cache[cache_key]["data"]
+
+    result = {"net_flow_today": 0, "net_flow_5d": 0, "net_flow_20d": 0, "trend": "中性", "available": False}
+    try:
+        import akshare as ak
+        # 沪股通+深股通历史数据
+        df = ak.stock_hsgt_north_net_flow_in_em(symbol="北上")
+        if df is not None and len(df) >= 20:
+            # 列名可能是 "净流入" / "当日净流入" / "value"
+            val_col = next((c for c in df.columns if "净流入" in str(c) or "value" in str(c).lower()), None)
+            date_col = next((c for c in df.columns if "日期" in str(c) or "date" in str(c).lower()), df.columns[0])
+            if val_col:
+                df = df.sort_values(date_col, ascending=True)
+                vals = df[val_col].astype(float).values
+                result["net_flow_today"] = round(float(vals[-1]), 2)  # 亿元
+                result["net_flow_5d"] = round(float(sum(vals[-5:])), 2)
+                result["net_flow_20d"] = round(float(sum(vals[-20:])), 2)
+                result["available"] = True
+                if result["net_flow_5d"] > 50:
+                    result["trend"] = "大幅流入"
+                elif result["net_flow_5d"] > 10:
+                    result["trend"] = "净流入"
+                elif result["net_flow_5d"] < -50:
+                    result["trend"] = "大幅流出"
+                elif result["net_flow_5d"] < -10:
+                    result["trend"] = "净流出"
+                print(f"[NORTH] today={result['net_flow_today']}亿, 5d={result['net_flow_5d']}亿, 20d={result['net_flow_20d']}亿")
+    except Exception as e:
+        print(f"[NORTH] Failed: {e}")
+
+    factor_cache[cache_key] = {"data": result, "ts": now}
+    return result
+
+
+def get_margin_trading() -> dict:
+    """获取两融（融资融券）余额数据 — 市场杠杆情绪指标"""
+    cache_key = "margin"
+    now = time.time()
+    if cache_key in factor_cache and now - factor_cache[cache_key]["ts"] < FACTOR_CACHE_TTL:
+        return factor_cache[cache_key]["data"]
+
+    result = {"margin_balance": 0, "margin_change_5d": 0, "trend": "中性", "available": False}
+    try:
+        import akshare as ak
+        df = ak.stock_margin_sse()  # 上交所融资融券
+        if df is not None and len(df) >= 20:
+            bal_col = next((c for c in df.columns if "融资余额" in str(c)), None)
+            if bal_col:
+                vals = df[bal_col].astype(float).values
+                current = vals[-1]
+                prev_5d = vals[-6] if len(vals) >= 6 else vals[0]
+                change_pct = (current - prev_5d) / prev_5d * 100 if prev_5d > 0 else 0
+                result["margin_balance"] = round(current / 1e8, 2)  # 转亿元
+                result["margin_change_5d"] = round(change_pct, 2)
+                result["available"] = True
+                if change_pct > 3:
+                    result["trend"] = "杠杆快速上升"
+                elif change_pct > 1:
+                    result["trend"] = "杠杆温和上升"
+                elif change_pct < -3:
+                    result["trend"] = "杠杆快速下降"
+                elif change_pct < -1:
+                    result["trend"] = "杠杆温和下降"
+                print(f"[MARGIN] balance={result['margin_balance']}亿, 5d_change={change_pct:.2f}%")
+    except Exception as e:
+        print(f"[MARGIN] Failed: {e}")
+
+    factor_cache[cache_key] = {"data": result, "ts": now}
+    return result
+
+
+def get_treasury_yield() -> dict:
+    """获取国债收益率（10年期）— 无风险利率 / 股债性价比"""
+    cache_key = "treasury"
+    now = time.time()
+    if cache_key in factor_cache and now - factor_cache[cache_key]["ts"] < FACTOR_CACHE_TTL:
+        return factor_cache[cache_key]["data"]
+
+    result = {"yield_10y": 0, "yield_change": 0, "equity_premium": "", "available": False}
+    try:
+        import akshare as ak
+        df = ak.bond_zh_us_rate(start_date="20240101")
+        if df is not None and len(df) >= 5:
+            cn_col = next((c for c in df.columns if "中国" in str(c) and "10" in str(c)), None)
+            if cn_col:
+                vals = df[cn_col].dropna().astype(float).values
+                if len(vals) >= 2:
+                    current = vals[-1]
+                    prev = vals[-5] if len(vals) >= 5 else vals[0]
+                    result["yield_10y"] = round(current, 3)
+                    result["yield_change"] = round(current - prev, 3)
+                    result["available"] = True
+                    # 股债性价比：PE倒数 vs 国债收益率
+                    val = get_valuation_percentile()
+                    pe = val.get("current_pe", 12)
+                    if pe > 0:
+                        equity_yield = round(1 / pe * 100, 2)  # 盈利收益率
+                        spread = round(equity_yield - current, 2)
+                        if spread > 4:
+                            result["equity_premium"] = f"股债价差{spread}%，股市极有吸引力"
+                        elif spread > 2:
+                            result["equity_premium"] = f"股债价差{spread}%，股市有吸引力"
+                        elif spread > 0:
+                            result["equity_premium"] = f"股债价差{spread}%，股债相当"
+                        else:
+                            result["equity_premium"] = f"股债价差{spread}%，债券更有吸引力"
+                    print(f"[TREASURY] 10Y={current}%, change={result['yield_change']}%, premium={result['equity_premium']}")
+    except Exception as e:
+        print(f"[TREASURY] Failed: {e}")
+
+    factor_cache[cache_key] = {"data": result, "ts": now}
+    return result
+
+
+def get_shibor() -> dict:
+    """获取 SHIBOR 利率（银行间市场流动性指标）"""
+    cache_key = "shibor"
+    now = time.time()
+    if cache_key in factor_cache and now - factor_cache[cache_key]["ts"] < FACTOR_CACHE_TTL:
+        return factor_cache[cache_key]["data"]
+
+    result = {"overnight": 0, "one_week": 0, "trend": "中性", "available": False}
+    try:
+        import akshare as ak
+        df = ak.rate_interbank(market="上海银行同业拆放利率(Shibor)", symbol="隔夜", indicator="利率")
+        if df is not None and len(df) >= 10:
+            val_col = next((c for c in df.columns if "利率" in str(c) or "报价" in str(c)), None)
+            if not val_col and len(df.columns) > 1:
+                val_col = df.columns[1]
+            if val_col:
+                vals = df[val_col].dropna().astype(float).values
+                if len(vals) >= 5:
+                    current = vals[-1]
+                    avg_5d = sum(vals[-5:]) / 5
+                    result["overnight"] = round(current, 4)
+                    result["available"] = True
+                    if current > avg_5d * 1.2:
+                        result["trend"] = "流动性收紧"
+                    elif current < avg_5d * 0.8:
+                        result["trend"] = "流动性宽松"
+                    else:
+                        result["trend"] = "流动性平稳"
+                    print(f"[SHIBOR] overnight={current}%, trend={result['trend']}")
+    except Exception as e:
+        print(f"[SHIBOR] Failed: {e}")
+
+    factor_cache[cache_key] = {"data": result, "ts": now}
+    return result
+
+
+def get_dividend_yield() -> dict:
+    """获取沪深300股息率 — 价值因子"""
+    cache_key = "dividend"
+    now = time.time()
+    if cache_key in factor_cache and now - factor_cache[cache_key]["ts"] < FACTOR_CACHE_TTL:
+        return factor_cache[cache_key]["data"]
+
+    result = {"dividend_yield": 0, "level": "中性", "available": False}
+    try:
+        import akshare as ak
+        # 尝试从估值数据中获取股息率
+        df = ak.stock_index_pe_lg(symbol="沪深300")
+        if df is not None and len(df) > 0:
+            dy_col = next((c for c in df.columns if "股息率" in str(c)), None)
+            if dy_col:
+                dy_vals = df[dy_col].dropna().astype(float)
+                if len(dy_vals) > 0:
+                    current = float(dy_vals.iloc[-1])
+                    result["dividend_yield"] = round(current, 2)
+                    result["available"] = True
+                    # 历史百分位
+                    window = min(1250, len(dy_vals))
+                    recent = dy_vals.tail(window).values
+                    pct = round(sum(1 for d in recent if d <= current) / len(recent) * 100, 1)
+                    result["percentile"] = pct
+                    if pct > 70:
+                        result["level"] = "高股息(价值凸显)"
+                    elif pct > 40:
+                        result["level"] = "中等股息"
+                    else:
+                        result["level"] = "低股息(成长偏好)"
+                    print(f"[DIVIDEND] yield={current}%, pct={pct}%")
+    except Exception as e:
+        print(f"[DIVIDEND] Failed: {e}")
+
+    factor_cache[cache_key] = {"data": result, "ts": now}
+    return result
+
+
+def get_news_sentiment_score() -> dict:
+    """LLM 新闻情绪量化 — 用 DeepSeek/OpenAI 给新闻打分（-100~+100）
+    借鉴幻方量化的新闻情绪因子，用LLM替代BERT实现零训练成本
+    """
+    cache_key = "sentiment"
+    now = time.time()
+    # 情绪分数缓存 30 分钟（新闻更新频率）
+    if cache_key in factor_cache and now - factor_cache[cache_key]["ts"] < 1800:
+        return factor_cache[cache_key]["data"]
+
+    result = {"score": 0, "level": "中性", "headlines": [], "available": False}
+
+    try:
+        # 获取最新新闻
+        news = get_market_news(8)
+        policy = get_policy_news(5)
+        all_news = news + policy
+        valid = [n for n in all_news if "加载中" not in n.get("title", "")]
+
+        if not valid:
+            factor_cache[cache_key] = {"data": result, "ts": now}
+            return result
+
+        headlines = [n["title"] for n in valid[:10]]
+        result["headlines"] = headlines
+
+        # 尝试用 LLM 打分
+        api_key = os.environ.get("OPENAI_API_KEY") or os.environ.get("LLM_API_KEY")
+        api_base = os.environ.get("LLM_API_BASE", "https://api.openai.com/v1")
+        model = os.environ.get("LLM_MODEL", "gpt-4o-mini")
+
+        if api_key:
+            try:
+                import httpx
+                headlines_text = "\n".join([f"{i+1}. {h}" for i, h in enumerate(headlines)])
+                prompt = f"""你是A股市场情绪分析师。请对以下新闻标题进行情绪打分。
+
+新闻标题：
+{headlines_text}
+
+请返回一个JSON，格式：
+{{"score": 数字(-100到+100, 负数看空 正数看多), "level": "极度悲观/悲观/偏空/中性/偏多/乐观/极度乐观", "reason": "一句话总结"}}
+
+打分标准：
+- 降息降准/财政刺激/经济复苏/业绩超预期 → 正分(+20~+80)
+- 加息缩表/贸易摩擦/地缘冲突/经济衰退 → 负分(-20~-80)
+- 日常资讯/无明确方向 → 0附近(-10~+10)
+只返回JSON，不要其他内容。"""
+
+                # 同步调用（在后台线程中）
+                import httpx
+                with httpx.Client(timeout=15) as client:
+                    resp = client.post(
+                        f"{api_base}/chat/completions",
+                        headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
+                        json={
+                            "model": model,
+                            "messages": [{"role": "user", "content": prompt}],
+                            "max_tokens": 200,
+                            "temperature": 0.3,
+                        },
+                    )
+                    if resp.status_code == 200:
+                        data = resp.json()
+                        text = data["choices"][0]["message"]["content"]
+                        import re
+                        json_match = re.search(r'\{[^}]+\}', text, re.DOTALL)
+                        if json_match:
+                            parsed = json.loads(json_match.group())
+                            result["score"] = max(-100, min(100, int(parsed.get("score", 0))))
+                            result["level"] = parsed.get("level", "中性")
+                            result["reason"] = parsed.get("reason", "")
+                            result["available"] = True
+                            result["source"] = "llm"
+                            print(f"[SENTIMENT] LLM score={result['score']}, level={result['level']}")
+            except Exception as e:
+                print(f"[SENTIMENT] LLM failed: {e}")
+
+        # 降级：关键词规则打分
+        if not result["available"]:
+            pos_words = ["利好", "上涨", "反弹", "新高", "突破", "降准", "降息", "刺激", "增长", "超预期", "回暖", "复苏"]
+            neg_words = ["利空", "下跌", "暴跌", "制裁", "关税", "战争", "衰退", "收紧", "加息", "缩表", "违约", "暴雷"]
+            pos_count = sum(1 for h in headlines for w in pos_words if w in h)
+            neg_count = sum(1 for h in headlines for w in neg_words if w in h)
+            raw = (pos_count - neg_count) * 15
+            result["score"] = max(-100, min(100, raw))
+            result["available"] = True
+            result["source"] = "keywords"
+            if result["score"] > 30:
+                result["level"] = "乐观"
+            elif result["score"] > 10:
+                result["level"] = "偏多"
+            elif result["score"] > -10:
+                result["level"] = "中性"
+            elif result["score"] > -30:
+                result["level"] = "偏空"
+            else:
+                result["level"] = "悲观"
+            print(f"[SENTIMENT] Keywords score={result['score']}, pos={pos_count}, neg={neg_count}")
+
+    except Exception as e:
+        print(f"[SENTIMENT] Fatal: {e}")
+
+    factor_cache[cache_key] = {"data": result, "ts": now}
+    return result
+
+
+# ============================================================
+# V4.5 风控体系（借鉴幻方 CVaR 模型简化版）
+# ============================================================
+
+def calc_risk_metrics(transactions: list) -> dict:
+    """计算组合风险指标：集中度/回撤/相关性"""
+    result = {
+        "concentration": {"hhi": 0, "max_single": 0, "level": "正常", "detail": ""},
+        "drawdown": {"current": 0, "max_historical": 0, "level": "正常", "detail": ""},
+        "correlation": {"avg": 0, "detail": ""},
+        "alerts": [],
+    }
+
+    holdings = calc_holdings_from_transactions(transactions)
+    active = holdings.get("active", [])
+    if not active:
+        return result
+
+    # --- 1. 集中度分析（HHI指数） ---
+    total_cost = sum(h["totalCost"] for h in active)
+    if total_cost > 0:
+        weights = [h["totalCost"] / total_cost for h in active]
+        hhi = sum(w ** 2 for w in weights) * 10000  # HHI 指数 (0-10000)
+        max_single = max(weights) * 100
+
+        result["concentration"]["hhi"] = round(hhi, 0)
+        result["concentration"]["max_single"] = round(max_single, 1)
+
+        if hhi > 5000:
+            result["concentration"]["level"] = "高度集中"
+            result["concentration"]["detail"] = f"HHI={hhi:.0f}，单一资产占比最高{max_single:.0f}%，建议分散"
+            result["alerts"].append({
+                "type": "concentration",
+                "severity": "warning",
+                "message": f"⚠️ 持仓集中度过高（HHI={hhi:.0f}），最大单品占{max_single:.0f}%，建议分散配置降低风险"
+            })
+        elif hhi > 3000:
+            result["concentration"]["level"] = "适度集中"
+            result["concentration"]["detail"] = f"HHI={hhi:.0f}，集中度适中"
+        else:
+            result["concentration"]["level"] = "分散良好"
+            result["concentration"]["detail"] = f"HHI={hhi:.0f}，分散度良好"
+
+    # --- 2. 回撤监控 ---
+    try:
+        # 计算当前市值和历史最高市值
+        current_market = 0
+        for h in active:
+            code = h["code"]
+            if code == "余额宝":
+                current_market += h["shares"]
+                continue
+            nav_info = get_fund_nav(code)
+            if nav_info and nav_info["nav"] != "N/A":
+                current_market += h["shares"] * float(nav_info["nav"])
+            else:
+                current_market += h["shares"] * h["avgNav"]
+
+        # 简化回撤计算：用总成本+总浮盈历史峰值
+        peak = total_cost * 1.1  # 假设历史高点（简化）
+        if current_market > 0 and peak > 0:
+            drawdown = (peak - current_market) / peak * 100
+            if drawdown > 0:
+                result["drawdown"]["current"] = round(drawdown, 2)
+                if drawdown > 20:
+                    result["drawdown"]["level"] = "严重回撤"
+                    result["alerts"].append({
+                        "type": "drawdown",
+                        "severity": "danger",
+                        "message": f"🔴 当前回撤{drawdown:.1f}%，超过20%警戒线！检查持仓基本面是否变化"
+                    })
+                elif drawdown > 10:
+                    result["drawdown"]["level"] = "中度回撤"
+                    result["alerts"].append({
+                        "type": "drawdown",
+                        "severity": "warning",
+                        "message": f"⚠️ 当前回撤{drawdown:.1f}%，注意风险控制"
+                    })
+                result["drawdown"]["detail"] = f"当前回撤{drawdown:.1f}%"
+    except Exception as e:
+        print(f"[RISK] Drawdown calc failed: {e}")
+
+    # --- 3. 相关性提示 ---
+    stock_count = sum(1 for h in active if h["code"] in ["110020", "050025", "008114"])
+    bond_count = sum(1 for h in active if h["code"] in ["217022"])
+    gold_count = sum(1 for h in active if h["code"] in ["000216"])
+
+    if stock_count >= 2 and bond_count == 0 and gold_count == 0:
+        result["correlation"]["avg"] = 0.75
+        result["correlation"]["detail"] = "持仓以权益类为主，相关性较高，缺少避险资产对冲"
+        result["alerts"].append({
+            "type": "correlation",
+            "severity": "info",
+            "message": "💡 持仓权益资产占比高，建议配置债券/黄金降低组合波动"
+        })
+    elif bond_count > 0 and gold_count > 0:
+        result["correlation"]["avg"] = 0.35
+        result["correlation"]["detail"] = "股债金组合，相关性适中，对冲效果良好"
+    else:
+        result["correlation"]["avg"] = 0.5
+        result["correlation"]["detail"] = "相关性中等"
+
+    return result
+
+
 def calc_smart_dca(base_amount: float, valuation_pct: float) -> dict:
     """智能定投：根据估值百分位动态调整定投金额
     低估多买，高估少买，极度高估暂停
@@ -919,24 +1333,30 @@ def calc_take_profit_strategy(cost: float, market_value: float, profile: str) ->
 
 
 # ============================================================
-# 每日智能信号引擎（综合 RSI + MACD + 估值 + 恐贪 + 大师策略）
+# V4.5 多因子智能信号引擎（12维：技术面+资金面+基本面+情绪面+宏观面）
+# 借鉴幻方量化多因子体系，散户成本实现专业级分析
 # ============================================================
 
 def generate_daily_signal() -> dict:
-    """生成每日综合交易信号 — 融合技术面 + 基本面 + 大师策略"""
+    """生成每日综合交易信号 — 12维多因子融合 + 大师策略"""
     signal = {
         "date": datetime.now().strftime("%Y-%m-%d"),
-        "overall": "HOLD",  # BUY / SELL / HOLD
+        "overall": "HOLD",
         "confidence": 0,
         "summary": "",
         "details": [],
         "masterStrategies": [],
         "smartDca": None,
+        "sentiment": None,
+        "riskMetrics": None,
+        "version": "4.5",
     }
 
-    scores = []  # (score, weight, name, detail)  score: -100(强烈卖出) ~ +100(强烈买入)
+    scores = []  # (score, weight, name, detail, category)
 
-    # --- 1. RSI 信号 ---
+    # ===== 技术面因子 (权重合计 25%) =====
+
+    # --- 1. RSI 信号 (8%) ---
     tech = get_technical_indicators()
     rsi = tech.get("rsi", 50)
     if rsi < 25:
@@ -953,9 +1373,9 @@ def generate_daily_signal() -> dict:
         rsi_score, rsi_detail = -60, f"RSI={rsi}，超买区，偏向卖出"
     else:
         rsi_score, rsi_detail = -80, f"RSI={rsi}，极度超买，强烈卖出信号"
-    scores.append((rsi_score, 0.15, "RSI", rsi_detail))
+    scores.append((rsi_score, 0.08, "RSI", rsi_detail, "技术面"))
 
-    # --- 2. MACD 信号 ---
+    # --- 2. MACD 信号 (10%) ---
     macd = tech.get("macd", {})
     trend = macd.get("trend", "")
     if "金叉" in trend:
@@ -968,13 +1388,13 @@ def generate_daily_signal() -> dict:
         macd_score, macd_detail = -30, f"MACD空头排列，下降趋势持续"
     else:
         macd_score, macd_detail = 0, "MACD数据不足"
-    scores.append((macd_score, 0.15, "MACD", macd_detail))
+    scores.append((macd_score, 0.10, "MACD", macd_detail, "技术面"))
 
-    # --- 3. 布林带信号 ---
+    # --- 3. 布林带信号 (7%) ---
     boll = tech.get("bollinger", {})
     pos = boll.get("position", "")
     if "超卖" in pos:
-        boll_score, boll_detail = 60, f"价格低于布林下轨，超卖反弹机会"
+        boll_score, boll_detail = 60, "价格低于布林下轨，超卖反弹机会"
     elif "下方" in pos:
         boll_score, boll_detail = 15, "价格在中轨下方，偏弱但未到极端"
     elif "上方" in pos:
@@ -983,9 +1403,11 @@ def generate_daily_signal() -> dict:
         boll_score, boll_detail = -60, "价格高于布林上轨，超买回调风险"
     else:
         boll_score, boll_detail = 0, "布林带数据不足"
-    scores.append((boll_score, 0.10, "布林带", boll_detail))
+    scores.append((boll_score, 0.07, "布林带", boll_detail, "技术面"))
 
-    # --- 4. 估值百分位信号 (最重要) ---
+    # ===== 基本面因子 (权重合计 30%) =====
+
+    # --- 4. 估值百分位 (18%) --- 最重要
     val = get_valuation_percentile()
     vp = val.get("percentile", 50)
     if vp < 15:
@@ -1000,9 +1422,106 @@ def generate_daily_signal() -> dict:
         val_score, val_detail = -50, f"估值百分位{vp}%，偏高估（减少定投）"
     else:
         val_score, val_detail = -80, f"估值百分位{vp}%，极度高估（建议暂停或减仓）"
-    scores.append((val_score, 0.25, "估值", val_detail))
+    scores.append((val_score, 0.18, "估值", val_detail, "基本面"))
 
-    # --- 5. 恐惧贪婪指数 ---
+    # --- 5. 股息率因子 (5%) --- NEW
+    dy = get_dividend_yield()
+    if dy.get("available"):
+        dy_pct = dy.get("percentile", 50)
+        dy_val = dy.get("dividend_yield", 0)
+        if dy_pct > 70:
+            dy_score, dy_detail = 50, f"股息率{dy_val}%（百分位{dy_pct}%），价值凸显"
+        elif dy_pct > 40:
+            dy_score, dy_detail = 10, f"股息率{dy_val}%（百分位{dy_pct}%），中性"
+        else:
+            dy_score, dy_detail = -20, f"股息率{dy_val}%（百分位{dy_pct}%），成长偏好期"
+    else:
+        dy_score, dy_detail = 0, "股息率数据暂不可用"
+    scores.append((dy_score, 0.05, "股息率", dy_detail, "基本面"))
+
+    # --- 6. 国债收益率/股债性价比 (7%) --- NEW
+    treasury = get_treasury_yield()
+    if treasury.get("available"):
+        y10 = treasury.get("yield_10y", 2.5)
+        premium = treasury.get("equity_premium", "")
+        pe = val.get("current_pe", 12)
+        if pe > 0:
+            eq_yield = 1 / pe * 100
+            spread = eq_yield - y10
+            if spread > 4:
+                tr_score, tr_detail = 60, f"10Y国债{y10}%，股债价差{spread:.1f}%，股市极有吸引力"
+            elif spread > 2:
+                tr_score, tr_detail = 30, f"10Y国债{y10}%，股债价差{spread:.1f}%，股市有吸引力"
+            elif spread > 0:
+                tr_score, tr_detail = 0, f"10Y国债{y10}%，股债价差{spread:.1f}%，股债相当"
+            else:
+                tr_score, tr_detail = -40, f"10Y国债{y10}%，股债价差{spread:.1f}%，债券更有吸引力"
+        else:
+            tr_score, tr_detail = 0, f"10Y国债{y10}%，估值数据不足"
+    else:
+        tr_score, tr_detail = 0, "国债收益率数据暂不可用"
+    scores.append((tr_score, 0.07, "股债性价比", tr_detail, "基本面"))
+
+    # ===== 资金面因子 (权重合计 20%) =====
+
+    # --- 7. 北向资金 (10%) --- NEW 聪明钱风向标
+    north = get_northbound_flow()
+    if north.get("available"):
+        flow_5d = north.get("net_flow_5d", 0)
+        flow_today = north.get("net_flow_today", 0)
+        if flow_5d > 100:
+            north_score, north_detail = 70, f"北向资金5日净流入{flow_5d:.0f}亿，今日{flow_today:.0f}亿，外资大举买入"
+        elif flow_5d > 30:
+            north_score, north_detail = 40, f"北向资金5日净流入{flow_5d:.0f}亿，外资持续流入"
+        elif flow_5d > 0:
+            north_score, north_detail = 15, f"北向资金5日净流入{flow_5d:.0f}亿，小幅流入"
+        elif flow_5d > -30:
+            north_score, north_detail = -15, f"北向资金5日净流出{abs(flow_5d):.0f}亿，小幅流出"
+        elif flow_5d > -100:
+            north_score, north_detail = -40, f"北向资金5日净流出{abs(flow_5d):.0f}亿，外资持续撤退"
+        else:
+            north_score, north_detail = -70, f"北向资金5日净流出{abs(flow_5d):.0f}亿，外资大幅撤退"
+    else:
+        north_score, north_detail = 0, "北向资金数据暂不可用"
+    scores.append((north_score, 0.10, "北向资金", north_detail, "资金面"))
+
+    # --- 8. 融资融券 (5%) --- NEW 市场杠杆情绪
+    margin = get_margin_trading()
+    if margin.get("available"):
+        m_change = margin.get("margin_change_5d", 0)
+        m_bal = margin.get("margin_balance", 0)
+        if m_change > 3:
+            margin_score, margin_detail = -30, f"融资余额{m_bal:.0f}亿，5日增{m_change:.1f}%，杠杆快速上升（过热风险）"
+        elif m_change > 1:
+            margin_score, margin_detail = 15, f"融资余额{m_bal:.0f}亿，5日增{m_change:.1f}%，温和加杠杆"
+        elif m_change < -3:
+            margin_score, margin_detail = 30, f"融资余额{m_bal:.0f}亿，5日降{abs(m_change):.1f}%，去杠杆（恐慌中可能见底）"
+        elif m_change < -1:
+            margin_score, margin_detail = -15, f"融资余额{m_bal:.0f}亿，5日降{abs(m_change):.1f}%，温和去杠杆"
+        else:
+            margin_score, margin_detail = 0, f"融资余额{m_bal:.0f}亿，杠杆水平稳定"
+    else:
+        margin_score, margin_detail = 0, "融资融券数据暂不可用"
+    scores.append((margin_score, 0.05, "融资融券", margin_detail, "资金面"))
+
+    # --- 9. SHIBOR 流动性 (5%) --- NEW
+    shibor = get_shibor()
+    if shibor.get("available"):
+        overnight = shibor.get("overnight", 1.5)
+        shibor_trend = shibor.get("trend", "中性")
+        if "宽松" in shibor_trend:
+            shibor_score, shibor_detail = 30, f"SHIBOR隔夜{overnight}%，{shibor_trend}，利好权益市场"
+        elif "收紧" in shibor_trend:
+            shibor_score, shibor_detail = -30, f"SHIBOR隔夜{overnight}%，{shibor_trend}，流动性承压"
+        else:
+            shibor_score, shibor_detail = 0, f"SHIBOR隔夜{overnight}%，{shibor_trend}"
+    else:
+        shibor_score, shibor_detail = 0, "SHIBOR数据暂不可用"
+    scores.append((shibor_score, 0.05, "SHIBOR", shibor_detail, "资金面"))
+
+    # ===== 情绪面因子 (权重合计 15%) =====
+
+    # --- 10. 恐惧贪婪指数 (8%) ---
     fgi_data = get_fear_greed_index()
     fgi = fgi_data.get("score", 50)
     if fgi >= 80:
@@ -1015,9 +1534,27 @@ def generate_daily_signal() -> dict:
         fgi_score, fgi_detail = -40, f"恐惧指数{fgi:.0f}（贪婪），市场偏乐观"
     else:
         fgi_score, fgi_detail = -80, f"恐惧指数{fgi:.0f}（极度贪婪），别人贪婪时恐惧"
-    scores.append((fgi_score, 0.20, "恐贪指数", fgi_detail))
+    scores.append((fgi_score, 0.08, "恐贪指数", fgi_detail, "情绪面"))
 
-    # --- 6. 宏观经济信号 ---
+    # --- 11. LLM新闻情绪 (7%) --- NEW 核心创新
+    sentiment = get_news_sentiment_score()
+    if sentiment.get("available"):
+        sent_score_raw = sentiment.get("score", 0)
+        sent_level = sentiment.get("level", "中性")
+        sent_source = sentiment.get("source", "unknown")
+        # 情绪分数直接映射（-100~+100 → -80~+80）
+        sent_score = max(-80, min(80, int(sent_score_raw * 0.8)))
+        sent_detail = f"新闻情绪{sent_score_raw:+d}分（{sent_level}），来源:{sent_source}"
+        if sentiment.get("reason"):
+            sent_detail += f"，{sentiment['reason']}"
+    else:
+        sent_score, sent_detail = 0, "新闻情绪数据暂不可用"
+    scores.append((sent_score, 0.07, "新闻情绪", sent_detail, "情绪面"))
+    signal["sentiment"] = sentiment
+
+    # ===== 宏观面因子 (权重 10%) =====
+
+    # --- 12. 宏观经济信号 (10%) ---
     macro = get_macro_calendar()
     macro_score = 0
     macro_parts = []
@@ -1043,17 +1580,17 @@ def generate_daily_signal() -> dict:
         except (ValueError, TypeError):
             pass
     macro_detail = "宏观环境：" + ("、".join(macro_parts) if macro_parts else "暂无可量化数据")
-    scores.append((max(-50, min(50, macro_score)), 0.15, "宏观经济", macro_detail))
+    scores.append((max(-50, min(50, macro_score)), 0.10, "宏观经济", macro_detail, "宏观面"))
 
-    # --- 加权综合 ---
-    total_score = sum(s * w for s, w, _, _ in scores)
-    total_weight = sum(w for _, w, _, _ in scores)
+    # ===== 加权综合 =====
+    total_score = sum(s * w for s, w, _, _, _ in scores)
+    total_weight = sum(w for _, w, _, _, _ in scores)
     final_score = total_score / total_weight if total_weight > 0 else 0
 
     # --- 信号判定 ---
     if final_score >= 40:
         signal["overall"] = "STRONG_BUY"
-        signal["summary"] = "🟢 强烈买入信号 — 多个指标共振看多，是较好的加仓时机"
+        signal["summary"] = "🟢 强烈买入信号 — 12维多因子共振看多，是较好的加仓时机"
     elif final_score >= 20:
         signal["overall"] = "BUY"
         signal["summary"] = "🟢 买入信号 — 整体偏向看多，适合按计划定投或小额加仓"
@@ -1070,9 +1607,18 @@ def generate_daily_signal() -> dict:
     signal["confidence"] = min(abs(final_score), 100)
     signal["score"] = round(final_score, 1)
     signal["details"] = [
-        {"name": name, "score": round(s, 1), "weight": f"{w*100:.0f}%", "detail": detail}
-        for s, w, name, detail in scores
+        {"name": name, "score": round(s, 1), "weight": f"{w*100:.0f}%", "detail": detail, "category": cat}
+        for s, w, name, detail, cat in scores
     ]
+
+    # 按类别分组
+    signal["factorGroups"] = {}
+    for s, w, name, detail, cat in scores:
+        if cat not in signal["factorGroups"]:
+            signal["factorGroups"][cat] = {"factors": [], "totalWeight": 0, "weightedScore": 0}
+        signal["factorGroups"][cat]["factors"].append({"name": name, "score": round(s, 1), "weight": f"{w*100:.0f}%"})
+        signal["factorGroups"][cat]["totalWeight"] += w
+        signal["factorGroups"][cat]["weightedScore"] += s * w
 
     # --- 大师策略 ---
     signal["masterStrategies"] = _apply_master_strategies(val, fgi_data, tech)
@@ -1091,19 +1637,25 @@ def _apply_master_strategies(val: dict, fgi_data: dict, tech: dict) -> list:
     fgi = fgi_data.get("score", 50)
     rsi = tech.get("rsi", 50)
 
-    # 巴菲特价值投资
+    # 巴菲特价值投资（幻方量化逻辑：估值为核心，情绪为辅助）
     buffett_signal = "HOLD"
-    if vp < 30 and fgi >= 60:
+    if vp < 20 and fgi >= 65:
+        buffett_signal = "STRONG_BUY"
+        buffett_msg = f"🔥 极度低估({vp}%) + 市场恐惧({fgi:.0f})！巴菲特的黄金时刻——\"别人恐惧时我贪婪\"。"
+    elif vp < 30 and fgi >= 50:
         buffett_signal = "BUY"
-        buffett_msg = f"✅ 符合巴菲特买入条件！估值低({vp}%) + 市场恐惧({fgi:.0f})。\"别人恐惧时我贪婪\"。"
-    elif vp > 70 and fgi < 35:
-        buffett_signal = "SELL"
-        buffett_msg = f"⚠️ 巴菲特会谨慎！估值高({vp}%) + 市场贪婪({fgi:.0f})。\"别人贪婪时我恐惧\"。"
+        buffett_msg = f"✅ 估值低({vp}%) + 市场偏恐惧({fgi:.0f})，巴菲特会果断买入优质资产。"
     elif vp < 40:
         buffett_signal = "HOLD_BUY"
         buffett_msg = f"估值尚可({vp}%)，巴菲特会耐心等待更好价格，但已可以开始建仓。"
+    elif vp >= 85:
+        buffett_signal = "SELL"
+        buffett_msg = f"⚠️ 极度高估({vp}%)！巴菲特会说\"无论市场情绪如何，这个价格不值得持有\"。建议减仓或暂停买入。"
+    elif vp > 70:
+        buffett_signal = "SELL" if fgi < 40 else "HOLD"
+        buffett_msg = f"⚠️ 估值偏高({vp}%){'+ 市场贪婪(' + str(round(fgi)) + ')' if fgi < 40 else ''}，巴菲特会谨慎——\"别人贪婪时我恐惧\"。" if fgi < 40 else f"估值偏高({vp}%)但市场情绪({fgi:.0f})未极端贪婪，巴菲特会持仓观望但不再加仓。"
     else:
-        buffett_msg = f"估值{vp}%，巴菲特会说\"价格合理但不便宜\"，不急着买也不急着卖。"
+        buffett_msg = f"估值{vp}%处于中间区域，巴菲特会说\"价格合理但不便宜\"，保持耐心等待。"
     strategies.append({
         "master": "巴菲特",
         "philosophy": "价值投资：低估时买入优质资产，长期持有",
@@ -1291,6 +1843,69 @@ def run_backtest(strategy: str = "smart_dca", years: int = 3, monthly_amount: fl
         fix_annual = ((1 + fix_return_pct / 100) ** (1 / n_years) - 1) * 100 if n_years > 0 and fix_return_pct > -100 else 0
         smart_annual = ((1 + smart_return_pct / 100) ** (1 / n_years) - 1) * 100 if n_years > 0 and smart_return_pct > -100 else 0
 
+        # --- V4.5 增强回测指标（借鉴幻方量化科学化回测）---
+        def calc_advanced_metrics(curve, annual_return):
+            """计算信息比率IR、卡玛比率、胜率、盈亏比、Sortino比率"""
+            metrics = {"ir": 0, "calmar": 0, "winRate": 0, "profitLossRatio": 0, "sortino": 0}
+            if len(curve) < 6:
+                return metrics
+
+            # 月度收益率序列
+            monthly_returns = []
+            for i in range(1, len(curve)):
+                prev_val = curve[i-1]["value"]
+                curr_val = curve[i]["value"]
+                if prev_val > 0:
+                    monthly_returns.append((curr_val - prev_val) / prev_val * 100)
+
+            if not monthly_returns:
+                return metrics
+
+            # 基准月度收益（沪深300指数的月度涨跌）
+            benchmark_returns = []
+            for i in range(1, len(monthly_prices)):
+                if monthly_prices[i-1] > 0:
+                    benchmark_returns.append((monthly_prices[i] - monthly_prices[i-1]) / monthly_prices[i-1] * 100)
+            # 对齐长度
+            min_len = min(len(monthly_returns), len(benchmark_returns))
+            monthly_returns = monthly_returns[:min_len]
+            benchmark_returns = benchmark_returns[:min_len]
+
+            # 1. 信息比率 IR = (策略收益 - 基准收益) / 跟踪误差
+            if min_len > 3:
+                excess = [monthly_returns[i] - benchmark_returns[i] for i in range(min_len)]
+                avg_excess = sum(excess) / len(excess)
+                tracking_error = (sum((e - avg_excess) ** 2 for e in excess) / len(excess)) ** 0.5
+                metrics["ir"] = round(avg_excess / tracking_error * (12 ** 0.5), 2) if tracking_error > 0.01 else 0
+
+            # 2. 卡玛比率 = 年化收益率 / 最大回撤
+            max_dd = calc_max_drawdown(curve)
+            metrics["calmar"] = round(annual_return / max_dd, 2) if max_dd > 0.1 else 99.99
+
+            # 3. 胜率 = 正收益月数 / 总月数
+            wins = sum(1 for r in monthly_returns if r > 0)
+            metrics["winRate"] = round(wins / len(monthly_returns) * 100, 1) if monthly_returns else 0
+
+            # 4. 盈亏比 = 平均盈利 / 平均亏损
+            gains = [r for r in monthly_returns if r > 0]
+            losses = [abs(r) for r in monthly_returns if r < 0]
+            avg_gain = sum(gains) / len(gains) if gains else 0
+            avg_loss = sum(losses) / len(losses) if losses else 0.01
+            metrics["profitLossRatio"] = round(avg_gain / avg_loss, 2) if avg_loss > 0.01 else 99.99
+
+            # 5. Sortino 比率 = (收益-无风险利率) / 下行标准差
+            risk_free_monthly = 0.15  # 假设年化1.8%/12
+            downside = [r for r in monthly_returns if r < risk_free_monthly]
+            if downside:
+                downside_std = (sum((r - risk_free_monthly) ** 2 for r in downside) / len(downside)) ** 0.5
+                avg_return = sum(monthly_returns) / len(monthly_returns)
+                metrics["sortino"] = round((avg_return - risk_free_monthly) / downside_std * (12 ** 0.5), 2) if downside_std > 0.01 else 0
+
+            return metrics
+
+        fix_metrics = calc_advanced_metrics(fix_curve, fix_annual)
+        smart_metrics = calc_advanced_metrics(smart_curve, smart_annual)
+
         result.update({
             "totalInvested": round(smart_invested, 2),
             "finalValue": round(smart_final, 2),
@@ -1298,6 +1913,7 @@ def run_backtest(strategy: str = "smart_dca", years: int = 3, monthly_amount: fl
             "totalReturnPct": round(smart_return_pct, 2),
             "annualizedReturn": round(smart_annual, 2),
             "maxDrawdown": calc_max_drawdown(smart_curve),
+            "advancedMetrics": smart_metrics,
             "months": smart_curve,
             "comparison": {
                 "fixedDca": {
@@ -1307,6 +1923,7 @@ def run_backtest(strategy: str = "smart_dca", years: int = 3, monthly_amount: fl
                     "totalReturnPct": round(fix_return_pct, 2),
                     "annualizedReturn": round(fix_annual, 2),
                     "maxDrawdown": calc_max_drawdown(fix_curve),
+                    "advancedMetrics": fix_metrics,
                     "months": fix_curve,
                 },
                 "smartDca": {
@@ -1316,6 +1933,7 @@ def run_backtest(strategy: str = "smart_dca", years: int = 3, monthly_amount: fl
                     "totalReturnPct": round(smart_return_pct, 2),
                     "annualizedReturn": round(smart_annual, 2),
                     "maxDrawdown": calc_max_drawdown(smart_curve),
+                    "advancedMetrics": smart_metrics,
                     "months": smart_curve,
                 },
                 "advantage": round(smart_return_pct - fix_return_pct, 2),
@@ -1888,12 +2506,20 @@ def get_macro_data():
 
 @app.get("/api/dashboard")
 def get_market_dashboard():
-    """综合市场仪表盘 — 前端资讯页一次性拉取"""
+    """V4.5 综合市场仪表盘 — 含12维多因子数据"""
     val = get_valuation_percentile()
     fgi_data = get_fear_greed_index()
     tech = get_technical_indicators()
     news = get_market_news(8)
     macro = get_macro_calendar()
+
+    # V4.5 新因子
+    northbound = get_northbound_flow()
+    margin = get_margin_trading()
+    treasury = get_treasury_yield()
+    shibor_data = get_shibor()
+    dividend = get_dividend_yield()
+    sentiment = get_news_sentiment_score()
 
     return {
         "valuation": val,
@@ -1901,8 +2527,76 @@ def get_market_dashboard():
         "technical": tech,
         "news": news,
         "macro": macro,
+        # V4.5 新增
+        "northbound": northbound,
+        "margin": margin,
+        "treasury": treasury,
+        "shibor": shibor_data,
+        "dividend": dividend,
+        "sentiment": sentiment,
+        "version": "4.5",
         "updatedAt": datetime.now().isoformat(),
     }
+
+
+# ---- V4.5 API: 新因子单独接口 ----
+
+@app.get("/api/factors/northbound")
+def get_northbound_api():
+    """北向资金数据"""
+    return get_northbound_flow()
+
+@app.get("/api/factors/margin")
+def get_margin_api():
+    """融资融券数据"""
+    return get_margin_trading()
+
+@app.get("/api/factors/treasury")
+def get_treasury_api():
+    """国债收益率 / 股债性价比"""
+    return get_treasury_yield()
+
+@app.get("/api/factors/shibor")
+def get_shibor_api():
+    """SHIBOR 银行间利率"""
+    return get_shibor()
+
+@app.get("/api/factors/dividend")
+def get_dividend_api():
+    """股息率数据"""
+    return get_dividend_yield()
+
+@app.get("/api/factors/sentiment")
+def get_sentiment_api():
+    """LLM 新闻情绪评分"""
+    return get_news_sentiment_score()
+
+@app.get("/api/factors/all")
+def get_all_factors():
+    """一次性获取全部新因子数据"""
+    return {
+        "northbound": get_northbound_flow(),
+        "margin": get_margin_trading(),
+        "treasury": get_treasury_yield(),
+        "shibor": get_shibor(),
+        "dividend": get_dividend_yield(),
+        "sentiment": get_news_sentiment_score(),
+        "updatedAt": datetime.now().isoformat(),
+    }
+
+# ---- V4.5 API: 风控指标 ----
+
+@app.post("/api/risk-metrics")
+def get_risk_metrics(req: dict):
+    """获取组合风控指标（集中度/回撤/相关性）"""
+    user_id = req.get("userId", "")
+    if not user_id:
+        txs = req.get("transactions", [])
+    else:
+        user = load_user(user_id)
+        user = ensure_v4_portfolio(user)
+        txs = user["portfolio"].get("transactions", [])
+    return calc_risk_metrics(txs)
 
 
 # ---- API: 每日智能信号 ----

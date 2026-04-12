@@ -390,13 +390,43 @@ const bgMap={STRONG_BUY:'rgba(16,185,129,.12)',BUY:'rgba(16,185,129,.08)',HOLD:'
 const borderMap={STRONG_BUY:'rgba(16,185,129,.3)',BUY:'rgba(16,185,129,.2)',HOLD:'rgba(245,158,11,.2)',SELL:'rgba(239,68,68,.2)',STRONG_SELL:'rgba(239,68,68,.3)'};
 const labelMap={STRONG_BUY:'强烈买入 🟢',BUY:'建议买入 🟢',HOLD:'持有观望 🟡',SELL:'建议减仓 🟠',STRONG_SELL:'强烈减仓 🔴'};
 
-let html=`<div class="section-title">🤖 今日量化信号</div>`;
-setExplain('signal','量化信号解读','钱袋子的量化信号系统融合了6个维度的数据：\n\n📊 技术面(40%)：RSI超买超卖 + MACD趋势 + 布林带位置\n📈 基本面(40%)：估值百分位 + 恐惧贪婪指数\n🏛️ 宏观面(20%)：PMI景气度 + M2货币供应\n\n每个维度打分(-100~+100)，加权平均后得出综合信号。\n\n当前综合得分：'+(d.score||0)+'\n置信度：'+Math.round(d.confidence||0)+'%\n\n'+((d.details||[]).map(x=>x.name+'('+x.weight+')：'+x.detail).join('\n'))+'\n\n⚠️ 量化信号仅供参考，不构成投资建议。');
-html+=`<div style="background:${bgMap[d.overall]||bgMap.HOLD};border:1px solid ${borderMap[d.overall]||borderMap.HOLD};border-radius:16px;padding:16px;margin-bottom:12px" onclick="showExplain('signal')" style="cursor:pointer">
+let html=`<div class="section-title">🤖 今日量化信号 <span style="font-size:11px;color:var(--accent);font-weight:400">V4.5 · 12维多因子</span></div>`;
+setExplain('signal','量化信号解读','钱袋子 V4.5 多因子信号系统融合了12个维度的数据（借鉴幻方量化）：\n\n📊 技术面(25%)：RSI(8%) + MACD(10%) + 布林带(7%)\n📈 基本面(30%)：估值(18%) + 股息率(5%) + 股债性价比(7%)\n💰 资金面(20%)：北向资金(10%) + 融资融券(5%) + SHIBOR(5%)\n😊 情绪面(15%)：恐惧贪婪(8%) + LLM新闻情绪(7%)\n🏛️ 宏观面(10%)：PMI+M2\n\n每个维度打分(-100~+100)，加权平均后得出综合信号。\n\n当前综合得分：'+(d.score||0)+'\n置信度：'+Math.round(d.confidence||0)+'%\n\n'+((d.details||[]).map(x=>(x.category||'')+' | '+x.name+'('+x.weight+')：'+x.detail).join('\n'))+'\n\n⚠️ 量化信号仅供参考，不构成投资建议。');
+html+=`<div style="background:${bgMap[d.overall]||bgMap.HOLD};border:1px solid ${borderMap[d.overall]||borderMap.HOLD};border-radius:16px;padding:16px;margin-bottom:12px;cursor:pointer" onclick="showExplain('signal')">
 <div style="display:flex;justify-content:space-between;align-items:center">
 <div><div style="font-size:20px;font-weight:900">${labelMap[d.overall]||'持有观望'}</div><div style="font-size:12px;color:var(--text2);margin-top:4px">${d.date||''} · 综合得分 ${d.score||0} · 置信度 ${Math.round(d.confidence||0)}%</div></div>
 <div style="font-size:11px;color:var(--accent)">点击看详情 ›</div></div>
 <div style="font-size:13px;margin-top:8px;line-height:1.6">${d.summary||''}</div></div>`;
+
+// V4.5 因子分组展示
+const catIcons={'技术面':'📊','基本面':'📈','资金面':'💰','情绪面':'😊','宏观面':'🏛️'};
+const catColors={'技术面':'#3B82F6','基本面':'#10B981','资金面':'#F59E0B','情绪面':'#EC4899','宏观面':'#8B5CF6'};
+if(d.factorGroups){
+html+=`<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(140px,1fr));gap:6px;margin-bottom:12px">`;
+Object.entries(d.factorGroups).forEach(([cat,grp])=>{
+const catScore=grp.totalWeight>0?Math.round(grp.weightedScore/grp.totalWeight):0;
+const c=catColors[cat]||'var(--text2)';
+const barW=Math.min(Math.abs(catScore),100);
+const barDir=catScore>=0?'right':'left';
+html+=`<div style="background:var(--card);border-radius:10px;padding:8px 10px">
+<div style="font-size:11px;font-weight:700;color:${c}">${catIcons[cat]||''} ${cat} <span style="font-weight:400;opacity:.7">${(grp.totalWeight*100).toFixed(0)}%</span></div>
+<div style="font-size:16px;font-weight:900;color:${catScore>10?'var(--green)':catScore<-10?'var(--red)':'var(--text1)'};margin-top:2px">${catScore>0?'+':''}${catScore}</div>
+<div style="height:3px;background:var(--bg);border-radius:2px;margin-top:4px;overflow:hidden"><div style="height:100%;width:${barW}%;background:${catScore>=0?'var(--green)':'var(--red)'};border-radius:2px;float:${barDir}"></div></div>
+<div style="font-size:10px;color:var(--text2);margin-top:3px">${grp.factors.map(f=>'<span style="color:'+(f.score>10?'var(--green)':f.score<-10?'var(--red)':'var(--text2)')+'">'+f.name+(f.score>0?'+':'')+f.score+'</span>').join(' ')}</div></div>`;
+});
+html+=`</div>`}
+
+// V4.5 新闻情绪卡片
+if(d.sentiment&&d.sentiment.available){
+const s=d.sentiment;
+const sentColor=s.score>20?'var(--green)':s.score<-20?'var(--red)':'var(--accent)';
+setExplain('sentiment','LLM新闻情绪分析','🤖 用AI（DeepSeek/GPT）对最新新闻进行情绪打分：\n\n情绪得分：'+s.score+' ('+(s.level||'中性')+')\n分析来源：'+(s.source==='llm'?'AI模型':'关键词匹配')+'\n'+(s.reason||'')+'\n\n📰 分析的新闻标题：\n'+(s.headlines||[]).map((h,i)=>(i+1)+'. '+h).join('\n')+'\n\n💡 新闻情绪是短期市场方向的参考，不要因为单日情绪做决策。');
+html+=`<div style="background:var(--card);border-radius:12px;padding:12px;margin-bottom:12px;cursor:pointer" onclick="showExplain('sentiment')">
+<div style="display:flex;justify-content:space-between;align-items:center">
+<div><div style="font-size:13px;font-weight:700">🤖 新闻情绪 <span style="font-size:11px;font-weight:400;color:var(--text2)">${s.source==='llm'?'AI分析':'关键词'}</span></div>
+<div style="font-size:11px;color:var(--text2);margin-top:2px">${s.reason||s.level||'中性'}</div></div>
+<div style="text-align:right"><div style="font-size:18px;font-weight:900;color:${sentColor}">${s.score>0?'+':''}${s.score}</div>
+<div style="font-size:10px;color:var(--text2)">${s.level||'中性'}</div></div></div></div>`}
 
 // 大师策略
 if(d.masterStrategies&&d.masterStrategies.length){
@@ -404,11 +434,12 @@ html+=`<div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bot
 d.masterStrategies.forEach((ms,i)=>{
 const msKey='master_'+i;
 setExplain(msKey,ms.icon+' '+ms.master+'的投资策略','💡 核心理念：'+ms.philosophy+'\n\n'+ms.message+'\n\n⚠️ 大师策略基于当前市场数据自动生成分析，仅供参考。');
-const msColor=ms.signal==='BUY'||ms.signal==='HOLD_BUY'?'var(--green)':ms.signal==='SELL'?'var(--red)':'var(--accent)';
+const msColor=ms.signal==='STRONG_BUY'||ms.signal==='BUY'||ms.signal==='HOLD_BUY'?'var(--green)':ms.signal==='SELL'||ms.signal==='STRONG_SELL'?'var(--red)':'var(--accent)';
+const msLabel=ms.signal==='STRONG_BUY'?'强烈买入':ms.signal==='BUY'?'建议买入':ms.signal==='HOLD_BUY'?'可以建仓':ms.signal==='SELL'?'建议减仓':ms.signal==='STRONG_SELL'?'强烈减仓':'持有观望';
 html+=`<div style="background:var(--card);border-radius:12px;padding:12px;cursor:pointer" onclick="showExplain('${msKey}')">
 <div style="font-size:14px;font-weight:700">${ms.icon} ${ms.master}</div>
-<div style="font-size:12px;color:${msColor};margin-top:4px;font-weight:600">${ms.signal==='BUY'?'建议买入':ms.signal==='HOLD_BUY'?'可以建仓':ms.signal==='SELL'?'建议减仓':'持有观望'}</div>
-<div style="font-size:11px;color:var(--text2);margin-top:4px;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden">${ms.philosophy}</div></div>`;
+<div style="font-size:12px;color:${msColor};margin-top:4px;font-weight:600">${msLabel}</div>
+<div style="font-size:11px;color:var(--text2);margin-top:4px;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden">${ms.message||ms.philosophy}</div></div>`;
 });
 html+=`</div>`}
 
@@ -462,6 +493,8 @@ return`<div class="ledger-entry"><div class="ledger-entry-icon">${isBuy?'🟢':'
 <div class="ledger-entry-date">${new Date(t.date).toLocaleString('zh-CN')} · ${t.shares?.toFixed(2)||'-'}份 × ¥${t.price?.toFixed(4)||'-'}</div></div>
 <div class="ledger-entry-amt" style="color:${isBuy?'var(--green)':'var(--red)'}">¥${Math.round(t.amount||t.shares*t.price)}</div></div>`}).join('')}</div>`:''}
 
+<div id="riskMetricsSection"><div style="text-align:center;padding:12px;font-size:12px;color:var(--text2)">${API_AVAILABLE?'正在加载风控体检...':''}</div></div>
+
 <div class="bottom-actions" style="margin-top:16px">
 <button class="action-btn secondary" onclick="startQuiz()">🔄 重新测评</button>
 <button class="action-btn secondary" onclick="if(confirm('清除所有持仓和交易记录？')){localStorage.removeItem(TXN_KEY);localStorage.removeItem(STORAGE_KEY);renderPortfolio()}">🗑️ 清除</button>
@@ -475,7 +508,41 @@ const r=await fetch(API_BASE+'/portfolio/pnl',{method:'POST',headers:{'Content-T
 if(r.ok){const pnl=await r.json();
 const pe=document.getElementById('pnlSum');
 if(pe){const c=pnl.totalPnl>=0?'pos':'neg';const sg=pnl.totalPnl>=0?'+':'';
-pe.innerHTML=`<div class="pnl-change ${c}">${sg}${fmtFull(Math.round(pnl.totalPnl))}(${sg}${pnl.totalPnlPct.toFixed(2)}%)</div><div class="pnl-sub">当前市值${fmtFull(Math.round(pnl.totalMarket))}</div>`}}}catch{}}}
+pe.innerHTML=`<div class="pnl-change ${c}">${sg}${fmtFull(Math.round(pnl.totalPnl))}(${sg}${pnl.totalPnlPct.toFixed(2)}%)</div><div class="pnl-sub">当前市值${fmtFull(Math.round(pnl.totalMarket))}</div>`}}}catch{}}
+// 异步加载风控指标
+if(API_AVAILABLE){loadRiskMetrics()}}
+
+async function loadRiskMetrics(){
+try{const r=await fetch(API_BASE+'/risk-metrics',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({userId:getUserId()}),signal:AbortSignal.timeout(15000)});
+if(!r.ok)return;const rm=await r.json();
+const el=document.getElementById('riskMetricsSection');if(!el)return;
+const conc=rm.concentration||{};const dd=rm.drawdown||{};const corr=rm.correlation||{};const alerts=rm.alerts||[];
+const concColor=conc.level==='高度集中'?'var(--red)':conc.level==='适度集中'?'var(--accent)':'var(--green)';
+const ddColor=dd.level==='严重回撤'?'var(--red)':dd.level==='中度回撤'?'var(--accent)':'var(--green)';
+const corrColor=corr.avg>0.6?'var(--red)':corr.avg>0.4?'var(--accent)':'var(--green)';
+setExplain('risk_hhi','持仓集中度(HHI)','HHI(赫芬达尔指数) = 每只基金占比的平方和 × 10000\n\n📊 当前HHI：'+conc.hhi+'\n📊 最大单品占比：'+conc.max_single+'%\n📊 评级：'+conc.level+'\n\n🔍 怎么看：\n• HHI < 3000 → 分散良好 ✅\n• 3000-5000 → 适度集中 ⚠️\n• > 5000 → 高度集中 🔴\n\n💡 "不要把鸡蛋放在一个篮子里"——分散投资是最基本的风控。');
+setExplain('risk_dd','回撤监控','回撤 = 从最高点跌了多少。\n\n📊 当前回撤：'+dd.current+'%\n📊 评级：'+dd.level+'\n\n🔍 怎么看：\n• < 10% → 正常波动\n• 10-20% → 需要注意，检查基本面\n• > 20% → 严重回撤，要认真审视持仓\n\n⚠️ 最大回撤是投资中最重要的风险指标之一。\n💡 控制回撤的关键是分散配置+止盈纪律。');
+setExplain('risk_corr','相关性分析','相关性 = 持仓基金之间的涨跌联动程度。\n\n📊 平均相关性：'+corr.avg+'\n📊 分析：'+corr.detail+'\n\n🔍 怎么看：\n• < 0.3 → 低相关，对冲效果好 ✅\n• 0.3-0.6 → 中等相关\n• > 0.6 → 高相关，涨跌同步 ⚠️\n\n💡 股+债+黄金 是经典低相关组合。\n全买股票型基金 = 高相关 = 风险集中。');
+let alertHtml='';
+if(alerts.length){alertHtml=alerts.map(a=>{
+const ic=a.severity==='danger'?'🔴':a.severity==='warning'?'⚠️':'💡';
+const bg=a.severity==='danger'?'rgba(239,68,68,.1)':a.severity==='warning'?'rgba(245,158,11,.1)':'rgba(59,130,246,.08)';
+return`<div style="background:${bg};border-radius:8px;padding:8px 10px;margin-bottom:6px;font-size:12px">${ic} ${a.message}</div>`}).join('')}
+el.innerHTML=`<div class="section-title" style="margin-top:20px">🛡️ 风控体检 <span style="font-size:11px;color:var(--accent);font-weight:400">借鉴幻方CVaR</span></div>
+${alertHtml}
+<div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px">
+<div style="background:var(--card);border-radius:10px;padding:10px;cursor:pointer" onclick="showExplain('risk_hhi')">
+<div style="font-size:11px;color:var(--text2)">集中度 HHI</div>
+<div style="font-size:18px;font-weight:900;color:${concColor};margin-top:2px">${conc.hhi}</div>
+<div style="font-size:10px;color:${concColor}">${conc.level}</div></div>
+<div style="background:var(--card);border-radius:10px;padding:10px;cursor:pointer" onclick="showExplain('risk_dd')">
+<div style="font-size:11px;color:var(--text2)">当前回撤</div>
+<div style="font-size:18px;font-weight:900;color:${ddColor};margin-top:2px">${dd.current}%</div>
+<div style="font-size:10px;color:${ddColor}">${dd.level}</div></div>
+<div style="background:var(--card);border-radius:10px;padding:10px;cursor:pointer" onclick="showExplain('risk_corr')">
+<div style="font-size:11px;color:var(--text2)">相关性</div>
+<div style="font-size:18px;font-weight:900;color:${corrColor};margin-top:2px">${corr.avg}</div>
+<div style="font-size:10px;color:${corrColor}">${corr.detail.slice(0,8)}</div></div></div>`}catch(e){console.warn('Risk metrics load failed:',e)}}
 
 // 持仓操作弹窗（加仓/卖出/删除）
 function showHoldingActions(code){
@@ -664,6 +731,17 @@ content.innerHTML=`
 <div style="text-align:center;padding:12px;background:rgba(16,185,129,.06);border-radius:10px;margin-bottom:12px">
 <div style="font-size:13px;font-weight:700;color:var(--green)">智能定投多赚 ${adv>0?'+':''}${adv}%</div>
 <div style="font-size:11px;color:var(--text2);margin-top:4px">低估多买 + 高估少买 = 更优收益</div></div>
+${(()=>{const fm=fix.advancedMetrics||{};const sm=smart.advancedMetrics||{};
+if(!sm.winRate&&!sm.calmar)return '';
+return `<div style="margin-bottom:12px"><div style="font-size:12px;font-weight:700;margin-bottom:8px;color:var(--text1)">📐 V4.5 高级回测指标</div>
+<div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:6px;font-size:11px">
+<div style="background:var(--card);border-radius:8px;padding:8px;text-align:center"><div style="color:var(--text2)">胜率</div><div style="font-weight:900;color:var(--accent);margin-top:2px">${fm.winRate||0}%</div><div style="font-size:10px;color:var(--green)">${sm.winRate||0}%</div></div>
+<div style="background:var(--card);border-radius:8px;padding:8px;text-align:center"><div style="color:var(--text2)">盈亏比</div><div style="font-weight:900;color:var(--accent);margin-top:2px">${fm.profitLossRatio||0}</div><div style="font-size:10px;color:var(--green)">${sm.profitLossRatio||0}</div></div>
+<div style="background:var(--card);border-radius:8px;padding:8px;text-align:center"><div style="color:var(--text2)">卡玛比率</div><div style="font-weight:900;color:var(--accent);margin-top:2px">${fm.calmar||0}</div><div style="font-size:10px;color:var(--green)">${sm.calmar||0}</div></div>
+<div style="background:var(--card);border-radius:8px;padding:8px;text-align:center"><div style="color:var(--text2)">信息比率</div><div style="font-weight:900;color:var(--accent);margin-top:2px">${fm.ir||0}</div><div style="font-size:10px;color:var(--green)">${sm.ir||0}</div></div>
+<div style="background:var(--card);border-radius:8px;padding:8px;text-align:center"><div style="color:var(--text2)">Sortino</div><div style="font-weight:900;color:var(--accent);margin-top:2px">${fm.sortino||0}</div><div style="font-size:10px;color:var(--green)">${sm.sortino||0}</div></div>
+<div style="background:var(--card);border-radius:8px;padding:8px;text-align:center"><div style="color:var(--text2)">图例</div><div style="font-size:10px;color:var(--accent);margin-top:4px">📦固定</div><div style="font-size:10px;color:var(--green)">🧠智能</div></div>
+</div></div>`;})()}
 <div style="font-size:11px;color:var(--text2);text-align:center;line-height:1.8">
 📌 回测基于沪深300历史数据，过往收益不代表未来表现<br>
 ⚠️ 本数据仅供参考，不构成投资建议</div>
@@ -685,6 +763,48 @@ else if(insightTab==='news')renderInsightNews(el,dash);
 else if(insightTab==='policy')renderInsightPolicy(el);
 else if(insightTab==='tech')renderInsightTech(el,dash);
 else if(insightTab==='macro')renderInsightMacro(el,dash)}
+
+function renderV45FactorCards(d){
+const nb=d.northbound||{};const mg=d.margin||{};const tr=d.treasury||{};const sh=d.shibor||{};const dv=d.dividend||{};
+const cards=[];
+if(nb.available){
+const nbColor=nb.net_flow_5d>30?'var(--green)':nb.net_flow_5d<-30?'var(--red)':'var(--accent)';
+setExplain('northbound','北向资金','北向资金 = 外资通过沪股通/深股通买入A股的钱，被称为"聪明钱"。\n\n📊 今日净流入：'+(nb.net_flow_today||0)+'亿\n📊 5日累计：'+(nb.net_flow_5d||0)+'亿\n📊 20日累计：'+(nb.net_flow_20d||0)+'亿\n📊 趋势：'+nb.trend+'\n\n🔍 怎么看：\n• 连续大幅流入（>100亿/5日）→ 外资看好A股\n• 连续大幅流出（<-100亿/5日）→ 外资避险\n• 短期波动不用太在意，看5日/20日趋势更有意义\n\n💡 北向资金占A股成交额约5-8%，影响力不小。');
+cards.push(`<div style="background:var(--card);border-radius:12px;padding:12px;cursor:pointer" onclick="showExplain('northbound')">
+<div style="font-size:12px;font-weight:700">💰 北向资金</div>
+<div style="font-size:18px;font-weight:900;color:${nbColor};margin-top:4px">${nb.net_flow_today>0?'+':''}${nb.net_flow_today}亿</div>
+<div style="font-size:11px;color:var(--text2);margin-top:2px">5日 ${nb.net_flow_5d>0?'+':''}${nb.net_flow_5d}亿 · ${nb.trend}</div></div>`)}
+if(mg.available){
+const mgColor=mg.trend.includes('上升')?'var(--red)':mg.trend.includes('下降')?'var(--green)':'var(--accent)';
+setExplain('margin_factor','融资融券','融资融券 = 借钱/借股票来炒股，反映市场的杠杆情绪。\n\n📊 融资余额：'+mg.margin_balance+'亿\n📊 5日变化：'+(mg.margin_change_5d>0?'+':'')+mg.margin_change_5d+'%\n📊 趋势：'+mg.trend+'\n\n🔍 怎么看：\n• 融资余额快速上升（>3%/5日）→ 散户加杠杆，市场过热\n• 融资余额快速下降（<-3%/5日）→ 去杠杆，可能恐慌\n• 温和变化属于正常市场波动\n\n⚠️ 杠杆是双刃剑：放大收益也放大亏损。');
+cards.push(`<div style="background:var(--card);border-radius:12px;padding:12px;cursor:pointer" onclick="showExplain('margin_factor')">
+<div style="font-size:12px;font-weight:700">📊 融资融券</div>
+<div style="font-size:18px;font-weight:900;color:${mgColor};margin-top:4px">${mg.margin_balance}亿</div>
+<div style="font-size:11px;color:var(--text2);margin-top:2px">5日 ${mg.margin_change_5d>0?'+':''}${mg.margin_change_5d}% · ${mg.trend}</div></div>`)}
+if(sh.available){
+const shColor=sh.trend.includes('收紧')?'var(--red)':sh.trend.includes('宽松')?'var(--green)':'var(--accent)';
+setExplain('shibor_factor','SHIBOR 利率','SHIBOR = 上海银行间同业拆放利率，反映银行之间借钱的成本，是流动性"温度计"。\n\n📊 隔夜利率：'+sh.overnight+'%\n📊 趋势：'+sh.trend+'\n\n🔍 怎么看：\n• 利率下降/宽松 → 市场钱多，利好股市\n• 利率上升/收紧 → 市场缺钱，股市承压\n• 隔夜利率通常在1-2%之间波动\n\n💡 央行货币政策最先反映在 SHIBOR 上。');
+cards.push(`<div style="background:var(--card);border-radius:12px;padding:12px;cursor:pointer" onclick="showExplain('shibor_factor')">
+<div style="font-size:12px;font-weight:700">🏦 SHIBOR</div>
+<div style="font-size:18px;font-weight:900;color:${shColor};margin-top:4px">${sh.overnight}%</div>
+<div style="font-size:11px;color:var(--text2);margin-top:2px">隔夜 · ${sh.trend}</div></div>`)}
+if(dv.available){
+const dvColor=dv.level.includes('高')?'var(--green)':dv.level.includes('低')?'var(--red)':'var(--accent)';
+setExplain('dividend_factor','股息率','股息率 = 每年分红 ÷ 股价，衡量"持有这个指数每年能拿多少分红"。\n\n📊 当前股息率：'+dv.dividend_yield+'%\n📊 水平：'+dv.level+(dv.percentile!=null?'\n📊 百分位：'+dv.percentile+'%':'')+'\n\n🔍 怎么看：\n• 股息率高（百分位>70%）→ 价值凸显，适合长期持有\n• 股息率低（百分位<40%）→ 成长偏好期，市场追涨\n• 高股息策略在熊市特别有保护作用\n\n💡 巴菲特说："如果你不打算持有一只股票10年，那就不要持有10分钟。"');
+cards.push(`<div style="background:var(--card);border-radius:12px;padding:12px;cursor:pointer" onclick="showExplain('dividend_factor')">
+<div style="font-size:12px;font-weight:700">📈 股息率</div>
+<div style="font-size:18px;font-weight:900;color:${dvColor};margin-top:4px">${dv.dividend_yield}%</div>
+<div style="font-size:11px;color:var(--text2);margin-top:2px">${dv.level}${dv.percentile!=null?' · P'+dv.percentile+'%':''}</div></div>`)}
+if(tr.available){
+const trColor=tr.equity_premium.includes('极有')?'var(--green)':tr.equity_premium.includes('债券更')?'var(--red)':'var(--accent)';
+setExplain('treasury_factor','国债收益率 / 股债性价比','10年期国债收益率是"无风险回报率"——不承担任何风险就能拿到的收益。\n\n📊 10Y国债：'+tr.yield_10y+'%\n📊 变动：'+(tr.yield_change>0?'+':'')+tr.yield_change+'%\n📊 股债性价比：'+tr.equity_premium+'\n\n🔍 怎么看：\n• 股票盈利收益率(1/PE) 远 > 国债 → 股市更有吸引力\n• 股票盈利收益率 ≈ 国债 → 股债差不多\n• 国债收益率 > 股票 → 买债更划算\n\n💡 巴菲特经常用这个指标判断"股票是否值得买"。');
+cards.push(`<div style="background:var(--card);border-radius:12px;padding:12px;cursor:pointer" onclick="showExplain('treasury_factor')">
+<div style="font-size:12px;font-weight:700">🔗 国债/股债比</div>
+<div style="font-size:18px;font-weight:900;color:${trColor};margin-top:4px">${tr.yield_10y}%</div>
+<div style="font-size:11px;color:var(--text2);margin-top:2px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${tr.equity_premium||'数据计算中'}</div></div>`)}
+if(!cards.length)return'';
+return`<div class="dashboard-card"><div class="dashboard-card-title">🔬 V4.5 多因子数据 <span style="font-size:11px;color:var(--accent);font-weight:400">借鉴幻方量化</span></div>
+<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(140px,1fr));gap:8px">${cards.join('')}</div></div>`}
 
 function renderInsightOverview(el,d){
 const fgi=d.fearGreed||{};const val=d.valuation||{};const tech=d.technical||{};const news=(d.news||[]).slice(0,5);const macro=(d.macro||[]).slice(0,3);
@@ -713,6 +833,7 @@ ${Object.keys(dims).length?`<div class="fgi-dims">${Object.values(dims).map(d=>`
 </div></div>
 ${news.length?`<div class="dashboard-card"><div class="dashboard-card-title">📰 最新资讯</div>${news.map(n=>`<div class="news-item" onclick="${n.url?`window.open('${n.url}','_blank')`:''}"${n.url?'':' style="cursor:default"'}><div class="news-icon">📰</div><div class="news-content"><div class="news-title">${n.title}</div><div class="news-meta">${n.source||''}${n.time?' · '+n.time:''}</div></div>${n.url?'<div class="news-arrow">›</div>':''}</div>`).join('')}</div>`:''}
 ${macro.length?`<div class="dashboard-card" onclick="insightTab='macro';renderInsight()" style="cursor:pointer"><div class="dashboard-card-title">🏛️ 宏观经济 <span style="font-size:11px;color:var(--accent)">点击查看详情 ›</span></div>${macro.map(e=>`<div class="macro-item"><div class="macro-icon">${e.icon||'📅'}</div><div class="macro-info"><div class="macro-name">${e.name}</div><div class="macro-value">${e.value||'—'}</div><div class="macro-impact">${e.impact||''}</div></div><div class="news-arrow">›</div></div>`).join('')}</div>`:''}
+${renderV45FactorCards(d)}
 <div id="impactSection" class="dashboard-card"><div class="dashboard-card-title">🔗 事件影响分析</div><div style="text-align:center;padding:16px;font-size:12px;color:var(--text2)">分析新闻对持仓的影响中...</div></div>
 <div style="text-align:center;font-size:11px;color:#475569;margin-top:16px">更新于 ${new Date(d.updatedAt).toLocaleString('zh-CN')}</div>`;
 // 异步加载事件影响分析
