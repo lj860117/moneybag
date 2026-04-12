@@ -1335,26 +1335,21 @@ def _build_portfolio_context(p=None) -> str:
     return "\n".join(lines) if lines else "用户尚未建仓。"
 
 
+_system_prompt_template = ""
+def _load_prompt_template():
+    global _system_prompt_template
+    if not _system_prompt_template:
+        p = Path(__file__).parent / "prompts" / "system_prompt.md"
+        if p.exists():
+            _system_prompt_template = p.read_text(encoding="utf-8")
+        else:
+            _system_prompt_template = "你是钱袋子AI投顾，基于真实数据分析，不编造数字。"
+    return _system_prompt_template
+
 def _build_system_prompt(market_ctx: str, portfolio_ctx: str) -> str:
-    """统一构建 DeepSeek system prompt — 注入全部上下文"""
-    return f"""你是「钱袋子」的 AI 私人理财分析师。你了解用户的持仓、风控状态、资产配置，并掌握实时市场数据。
-
-## 你的能力
-1. **个性化分析**：基于用户实际持仓和盈亏情况给出针对性建议
-2. **市场解读**：解读宏观数据（CPI/PMI/M2/PPI）对投资的影响
-3. **新闻分析**：分析政策/事件对具体行业和基金的影响链条
-4. **风控提醒**：发现用户持仓的风险（集中度、回撤、偏离度）主动提醒
-5. **配置优化**：根据当前估值区间建议资产配置调整方向
-
-## 你的规则
-- 用通俗易懂的中文，像朋友聊天一样
-- 基于下方真实数据分析，绝不编造数据
-- 每次回答末尾提醒"投资有风险"
-- 不推荐具体买卖时点，分析趋势和逻辑
-- 回答控制在 300 字以内，结构清晰
-- 如果用户问的内容与持仓相关，结合持仓数据具体分析
-- 如果用户问新闻/政策，结合事件影响分析给出解读
-- 用 emoji 让回答更生动但不过度
+    """统一构建 DeepSeek system prompt — 7 Skill 投资分析框架，prompt 从文件加载"""
+    template = _load_prompt_template()
+    return f"""{template}
 
 ## 实时市场数据
 {market_ctx}
