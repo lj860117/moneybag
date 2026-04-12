@@ -813,10 +813,11 @@ return `<div style="margin-bottom:12px"><div style="font-size:12px;font-weight:7
 // ---- 资讯页 ----
 let insightTab='overview';
 async function renderInsight(){currentPage='insight';renderNav();
-$('#app').innerHTML=`<div class="insight-page fade-up"><div class="insight-header"><h2>📰 市场资讯</h2><p>${API_AVAILABLE?'实时数据更新中':'后端离线'} <button onclick="runDataAudit()" style="background:rgba(245,158,11,.15);border:1px solid rgba(245,158,11,.3);border-radius:6px;padding:2px 8px;font-size:11px;color:#F59E0B;cursor:pointer;margin-left:4px" id="auditBtn">🔍 数据体检</button></p></div><div class="section-tab-bar"><button class="section-tab ${insightTab==='overview'?'active':''}" onclick="insightTab='overview';renderInsight()">📊 总览</button><button class="section-tab ${insightTab==='news'?'active':''}" onclick="insightTab='news';renderInsight()">📰 新闻</button><button class="section-tab ${insightTab==='policy'?'active':''}" onclick="insightTab='policy';renderInsight()">🏛️ 政策</button><button class="section-tab ${insightTab==='tech'?'active':''}" onclick="insightTab='tech';renderInsight()">📈 技术</button><button class="section-tab ${insightTab==='macro'?'active':''}" onclick="insightTab='macro';renderInsight()">📊 宏观</button><button class="section-tab ${insightTab==='fundpick'?'active':''}" onclick="insightTab='fundpick';renderInsight()">🔍 选基</button></div><div id="insightContent"><div style="text-align:center;padding:40px;color:var(--text2)"><div class="loading-spinner" style="width:32px;height:32px;margin:0 auto 12px;border-width:3px"></div><div id="loadingMsg" style="margin-top:8px">正在加载市场数据...</div><div style="font-size:12px;color:var(--text3,#94a3b8);margin-top:8px">☁️ 免费云服务器，首次加载可能需要 10~30 秒</div></div></div></div>`;
+$('#app').innerHTML=`<div class="insight-page fade-up"><div class="insight-header"><h2>📰 市场资讯</h2><p>${API_AVAILABLE?'实时数据更新中':'后端离线'} <button onclick="runDataAudit()" style="background:rgba(245,158,11,.15);border:1px solid rgba(245,158,11,.3);border-radius:6px;padding:2px 8px;font-size:11px;color:#F59E0B;cursor:pointer;margin-left:4px" id="auditBtn">🔍 数据体检</button></p></div><div class="section-tab-bar"><button class="section-tab ${insightTab==='overview'?'active':''}" onclick="insightTab='overview';renderInsight()">📊 总览</button><button class="section-tab ${insightTab==='news'?'active':''}" onclick="insightTab='news';renderInsight()">📰 新闻</button><button class="section-tab ${insightTab==='policy'?'active':''}" onclick="insightTab='policy';renderInsight()">🏛️ 政策</button><button class="section-tab ${insightTab==='tech'?'active':''}" onclick="insightTab='tech';renderInsight()">📈 技术</button><button class="section-tab ${insightTab==='macro'?'active':''}" onclick="insightTab='macro';renderInsight()">📊 宏观</button><button class="section-tab ${insightTab==='fundpick'?'active':''}" onclick="insightTab='fundpick';renderInsight()">🔍 选基</button><button class="section-tab ${insightTab==='stockpick'?'active':''}" onclick="insightTab='stockpick';renderInsight()">🧠 选股</button></div><div id="insightContent"><div style="text-align:center;padding:40px;color:var(--text2)"><div class="loading-spinner" style="width:32px;height:32px;margin:0 auto 12px;border-width:3px"></div><div id="loadingMsg" style="margin-top:8px">正在加载市场数据...</div><div style="font-size:12px;color:var(--text3,#94a3b8);margin-top:8px">☁️ 免费云服务器，首次加载可能需要 10~30 秒</div></div></div></div>`;
 if(!API_AVAILABLE){document.getElementById('insightContent').innerHTML='<div style="text-align:center;padding:40px;color:var(--text2)">后端离线，请启动后端服务获取实时数据</div>';return}
 // fundpick 不需要 dashboard 数据
 if(insightTab==='fundpick'){const el=document.getElementById('insightContent');if(el)renderFundPick(el);return}
+if(insightTab==='stockpick'){const el=document.getElementById('insightContent');if(el)renderStockPick(el);return}
 // 加载进度动态提示
 const loadStart=Date.now();const loadTimer=setInterval(()=>{const el=document.getElementById('loadingMsg');if(!el){clearInterval(loadTimer);return}const sec=Math.round((Date.now()-loadStart)/1000);if(sec>=5&&sec<15)el.textContent='正在从数据源抓取实时行情...';else if(sec>=15&&sec<25)el.textContent='数据量较大，还在努力加载中...';else if(sec>=25)el.textContent='快好了，感谢耐心等待 🙏'},3000);
 const dash=await fetchDashboard();clearInterval(loadTimer);if(!dash){document.getElementById('insightContent').innerHTML='<div style="text-align:center;padding:40px;color:var(--text2)">数据加载失败，请稍后再试<br><button onclick="renderInsight()" style="margin-top:12px;padding:8px 20px;border-radius:8px;border:none;background:var(--accent);color:#fff;cursor:pointer">🔄 重新加载</button></div>';return}
@@ -1011,6 +1012,43 @@ const r=f.returns;
 setExplain('fund_'+f.code,f.name+' ('+f.code+')',
 '📊 综合评分：'+f.score+'\n\n📈 收益表现：\n• 近3月：'+(r['3m']!=null?r['3m']+'%':'—')+'\n• 近6月：'+(r['6m']!=null?r['6m']+'%':'—')+'\n• 近1年：'+(r['1y']!=null?r['1y']+'%':'—')+'\n• 近3年：'+(r['3y']!=null?r['3y']+'%':'—')+'\n• 今年来：'+(r.ytd!=null?r.ytd+'%':'—')+'\n\n💰 费率：'+(f.fee||'—')+'\n\n💡 评分方法：近1年35%+近3年25%+近6月20%+近3月10%+费率加减分。仅供参考，不构成投资建议。')
 })}catch(e){console.warn('Fund pick failed:',e);listEl.innerHTML='<div style="text-align:center;padding:20px;color:var(--text2)">筛选失败，请稍后重试<br><button onclick="renderFundPickResult()" style="margin-top:8px;padding:6px 16px;border-radius:6px;border:none;background:var(--accent);color:#fff;cursor:pointer;font-size:12px">重试</button></div>'}}
+
+// AI 多因子选股页
+async function renderStockPick(el){
+el.innerHTML=`<div class="dashboard-card">
+<div class="dashboard-card-title">🧠 AI 多因子选股</div>
+<div style="font-size:12px;color:var(--text2);margin-bottom:8px">7维打分：价值20%+成长15%+质量15%+动量15%+风险15%+流动性10%+舆情10%</div>
+<div style="font-size:11px;color:var(--accent);margin-bottom:12px;padding:6px 8px;background:rgba(245,158,11,.06);border-radius:6px">⚠️ 当前使用规则打分，舆情/成长/质量维度数据有限。仅供参考，不构成投资建议。</div>
+<div id="stockPickList"><div style="text-align:center;padding:20px;color:var(--text2)"><div class="loading-spinner" style="width:24px;height:24px;margin:0 auto 8px;border-width:2px"></div>正在从 5000+ A股中筛选...</div></div>
+</div>`;
+try{
+const r=await fetch(API_BASE+'/stock-screen?top_n=50',{signal:AbortSignal.timeout(60000)});
+if(!r.ok)throw new Error('fetch failed');
+const data=await r.json();
+const stocks=data.stocks||[];
+const listEl=document.getElementById('stockPickList');if(!listEl)return;
+if(!stocks.length){listEl.innerHTML='<div style="text-align:center;padding:20px;color:var(--text2)">'+(data.error||'暂无数据')+'</div>';return}
+listEl.innerHTML=`<div style="font-size:11px;color:var(--text2);margin-bottom:8px">从 ${data.total} 只股票中筛选 TOP ${stocks.length}</div>
+<div style="display:grid;grid-template-columns:30px 1fr 70px 50px;gap:4px;font-size:11px;color:var(--text2);font-weight:600;padding:6px 0;border-bottom:1px solid rgba(148,163,184,.1)">
+<div>#</div><div>股票</div><div style="text-align:right">涨跌</div><div style="text-align:right">评分</div></div>
+${stocks.map((s,i)=>{
+const chgColor=s.change_pct>0?'var(--green)':s.change_pct<0?'var(--red)':'var(--text2)';
+const scoreColor=s.score>65?'var(--green)':s.score>50?'var(--accent)':'var(--red)';
+return`<div style="display:grid;grid-template-columns:30px 1fr 70px 50px;gap:4px;padding:8px 0;border-bottom:1px solid rgba(148,163,184,.04);align-items:center;cursor:pointer" onclick="showExplain('stock_${s.code}')">
+<div style="font-size:11px;color:var(--text2);font-weight:700">${i+1}</div>
+<div><div style="font-size:13px;font-weight:600">${s.name}</div>
+<div style="font-size:10px;color:var(--text2)">${s.code} · PE${s.pe||'-'} · ${s.market_cap?s.market_cap+'亿':'-'}</div></div>
+<div style="text-align:right;font-size:13px;font-weight:700;color:${chgColor}">${s.change_pct!=null?(s.change_pct>0?'+':'')+s.change_pct+'%':'—'}</div>
+<div style="text-align:right;font-size:13px;font-weight:800;color:${scoreColor}">${s.score}</div></div>`}).join('')}
+<div style="text-align:center;margin-top:12px"><button class="action-btn secondary" style="display:inline-block;min-width:auto;padding:10px 24px" onclick="insightTab='stockpick';renderInsight()">🔄 刷新</button></div>
+<div style="font-size:11px;color:#475569;margin-top:8px;line-height:1.5">${data.method||''}<br>${data.note||''}</div>`;
+stocks.forEach(s=>{
+const sc=s.scores||{};
+setExplain('stock_'+s.code,s.name+' ('+s.code+')',
+'💰 价格：¥'+s.price+' · 涨跌：'+(s.change_pct!=null?s.change_pct+'%':'—')+'\n📊 PE：'+(s.pe||'—')+' · PB：'+(s.pb||'—')+' · 换手率：'+(s.turnover||'—')+'%\n📈 市值：'+(s.market_cap?s.market_cap+'亿':'—')+'\n\n🎯 综合评分：'+s.score+'/100\n\n7维详情：\n• 价值：'+sc.value+' (PE/PB越低越好)\n• 成长：'+sc.growth+' (低PE+上涨趋势)\n• 质量：'+sc.quality+' (大盘+合理估值)\n• 动量：'+sc.momentum+' (中短期趋势)\n• 风险：'+sc.risk+' (低振幅=低风险)\n• 流动性：'+sc.liquidity+' (适中换手+大市值)\n• 舆情：'+sc.sentiment+' (暂无数据，中性分)\n\n⚠️ 仅供参考，不构成投资建议。')
+})}catch(e){console.warn('Stock pick failed:',e);
+const listEl=document.getElementById('stockPickList');
+if(listEl)listEl.innerHTML='<div style="text-align:center;padding:20px;color:var(--text2)">选股失败：'+e.message+'<br><button onclick="insightTab=\'stockpick\';renderInsight()" style="margin-top:8px;padding:6px 16px;border-radius:6px;border:none;background:var(--accent);color:#fff;cursor:pointer;font-size:12px">重试</button></div>'}}
 
 // ---- 记账页 ----
 function renderLedger(){currentPage='ledger';renderNav();const entries=loadLedger();const sources=loadSources();

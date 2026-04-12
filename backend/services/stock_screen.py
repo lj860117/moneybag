@@ -1,0 +1,222 @@
+"""
+钱袋子 — AI 多因子选股
+7 维打分：价值/成长/质量/动量/风险/舆情/流动性
+参考：豆包方案（7维打分 → TOP50-150）
+数据源：AKShare 免费公开数据
+"""
+import time
+import traceback
+
+_stock_cache = {}
+STOCK_CACHE_TTL = 7200  # 2小时
+
+
+def screen_stocks(top_n: int = 50) -> dict:
+    """
+    多因子选股，返回 TOP N 股票
+    当前使用规则打分，后续可接 LightGBM
+    """
+    cache_key = f"stock_screen_{top_n}"
+    now = time.time()
+    if cache_key in _stock_cache and now - _stock_cache[cache_key]["ts"] < STOCK_CACHE_TTL:
+        return _stock_cache[cache_key]["data"]
+
+    try:
+        import akshare as ak
+
+        # 获取 A 股实时行情（含PE/PB/换手率/涨跌幅等）
+        print("[STOCK_SCREEN] Loading A-share realtime data...")
+        df = ak.stock_zh_a_spot_em()
+        if df is None or len(df) == 0:
+            return {"stocks": [], "total": 0, "error": "A股行情数据暂不可用"}
+
+        cols = list(df.columns)
+        print(f"[STOCK_SCREEN] Loaded {len(df)} stocks, columns: {cols[:15]}")
+
+        candidates = []
+        for _, row in df.iterrows():
+            try:
+                code = str(row.get(_fc(cols, ["代码"]), ""))
+                name = str(row.get(_fc(cols, ["名称"]), ""))
+                price = _sf(row.get(_fc(cols, ["最新价"]), None))
+                pe = _sf(row.get(_fc(cols, ["市盈率"]), None))
+                pb = _sf(row.get(_fc(cols, ["市净率"]), None))
+                change_pct = _sf(row.get(_fc(cols, ["涨跌幅"]), None))
+                turnover = _sf(row.get(_fc(cols, ["换手率"]), None))
+                volume = _sf(row.get(_fc(cols, ["成交量"]), None))
+                market_cap = _sf(row.get(_fc(cols, ["总市值"]), None))
+                change_5d = _sf(row.get(_fc(cols, ["5日涨跌幅", "5日涨跌"]), None))
+                change_20d = _sf(row.get(_fc(cols, ["20日涨跌幅", "20日涨跌"]), None))
+                change_60d = _sf(row.get(_fc(cols, ["60日涨跌幅", "60日涨跌"]), None))
+                amp = _sf(row.get(_fc(cols, ["振幅"]), None))
+                high_52w = _sf(row.get(_fc(cols, ["52周最高", "年初至今涨跌幅"]), None))
+
+                # 过滤条件
+                if not code or not name or price is None or price <= 0:
+                    continue
+                if name.startswith("ST") or name.startswith("*ST"):
+                    continue  # 排除ST
+                if pe is not None and (pe <= 0 or pe > 300):
+                    continue  # 排除负PE和极端PE
+                if market_cap is not None and market_cap < 5e9:
+                    continue  # 排除市值<50亿
+                if turnover is not None and turnover < 0.5:
+                    continue  # 排除流动性极差的
+
+                # --- 7 维打分（每维 0-100）---
+                scores = {}
+
+                # 1. 价值（PE + PB，越低越好）
+                val_score = 0
+                if pe is not None:
+                    if pe < 10:
+                        val_score += 50
+                    elif pe < 20:
+                        val_score += 40
+                    elif pe < 30:
+                        val_score += 25
+                    elif pe < 50:
+                        val_score += 10
+                if pb is not None:
+                    if pb < 1:
+                        val_score += 50
+                    elif pb < 2:
+                        val_score += 35
+                    elif pb < 3:
+                        val_score += 20
+                    elif pb < 5:
+                        val_score += 10
+                scores["value"] = min(val_score, 100)
+
+                # 2. 动量（近期涨跌幅，适度上涨好）
+                mom_score = 50  # 中性起步
+                if change_5d is not None:
+                    if 0 < change_5d < 5:
+                        mom_score += 15
+                    elif change_5d >= 5:
+                        mom_score += 5  # 短期涨太多减分
+                    elif -5 < change_5d < 0:
+                        mom_score += 5
+                    else:
+                        mom_score -= 10
+                if change_60d is not None:
+                    if 5 < change_60d < 30:
+                        mom_score += 20
+                    elif change_60d >= 30:
+                        mom_score += 5
+                    elif -10 < change_60d < 5:
+                        mom_score += 10
+                    else:
+                        mom_score -= 15
+                scores["momentum"] = max(0, min(mom_score, 100))
+
+                # 3. 流动性（换手率适中好、成交量大好）
+                liq_score = 50
+                if turnover is not None:
+                    if 1 < turnover < 5:
+                        liq_score += 30  # 适中换手最好
+                    elif 0.5 < turnover <= 1:
+                        liq_score += 15
+                    elif turnover >= 5:
+                        liq_score += 10  # 换手太高可能有炒作
+                if market_cap is not None:
+                    if market_cap > 100e9:
+                        liq_score += 20  # 大盘股流动性好
+                    elif market_cap > 50e9:
+                        liq_score += 15
+                    elif market_cap > 20e9:
+                        liq_score += 10
+                scores["liquidity"] = max(0, min(liq_score, 100))
+
+                # 4. 风险（振幅低好、回撤小好）
+                risk_score = 70  # 起步偏正面
+                if amp is not None:
+                    if amp < 2:
+                        risk_score += 20
+                    elif amp < 5:
+                        risk_score += 10
+                    elif amp > 10:
+                        risk_score -= 30
+                    elif amp > 7:
+                        risk_score -= 15
+                scores["risk"] = max(0, min(risk_score, 100))
+
+                # 5. 成长（暂用动量+PE组合替代，因为没有ROE/EPS增速）
+                growth_score = 50
+                if pe is not None and pe < 25 and change_60d is not None and change_60d > 0:
+                    growth_score += 25  # 低PE + 上涨 = 成长潜力
+                if change_20d is not None and change_20d > 0:
+                    growth_score += 15
+                scores["growth"] = max(0, min(growth_score, 100))
+
+                # 6. 质量（暂用PE+PB+市值组合替代）
+                quality_score = 50
+                if pe is not None and 5 < pe < 30:
+                    quality_score += 15  # PE在合理范围
+                if pb is not None and 0.5 < pb < 5:
+                    quality_score += 15
+                if market_cap is not None and market_cap > 50e9:
+                    quality_score += 20  # 大市值通常质量更好
+                scores["quality"] = max(0, min(quality_score, 100))
+
+                # 7. 舆情（暂无数据，给中性分）
+                scores["sentiment"] = 50
+
+                # 加权总分
+                weights = {
+                    "value": 0.20, "growth": 0.15, "quality": 0.15,
+                    "momentum": 0.15, "risk": 0.15, "liquidity": 0.10,
+                    "sentiment": 0.10,
+                }
+                total_score = sum(scores[k] * weights[k] for k in weights)
+
+                candidates.append({
+                    "code": code,
+                    "name": name,
+                    "price": price,
+                    "pe": pe,
+                    "pb": pb,
+                    "change_pct": change_pct,
+                    "turnover": turnover,
+                    "market_cap": round(market_cap / 1e8, 1) if market_cap else None,
+                    "score": round(total_score, 1),
+                    "scores": {k: round(v, 0) for k, v in scores.items()},
+                })
+            except Exception:
+                continue
+
+        # 排序取 TOP N
+        candidates.sort(key=lambda x: x["score"], reverse=True)
+        top = candidates[:top_n]
+        result = {
+            "stocks": top,
+            "total": len(candidates),
+            "method": "7维多因子规则打分（价值20%+成长15%+质量15%+动量15%+风险15%+流动性10%+舆情10%）",
+            "note": "当前使用规则打分，成长/质量/舆情维度数据有限，后续可接LightGBM优化",
+        }
+        _stock_cache[cache_key] = {"data": result, "ts": time.time()}
+        print(f"[STOCK_SCREEN] Screened {len(candidates)} → TOP {len(top)}")
+        return result
+
+    except Exception as e:
+        print(f"[STOCK_SCREEN] Failed: {e}")
+        traceback.print_exc()
+        return {"stocks": [], "total": 0, "error": str(e)}
+
+
+def _fc(cols, keywords):
+    """模糊匹配列名"""
+    for kw in keywords:
+        for c in cols:
+            if kw in str(c):
+                return c
+    return None
+
+
+def _sf(val):
+    """安全转float"""
+    try:
+        v = float(val)
+        return None if v != v else round(v, 2)
+    except (ValueError, TypeError):
+        return None
