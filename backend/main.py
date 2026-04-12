@@ -398,43 +398,60 @@ def get_fear_greed_index() -> dict:
 
 
 def get_valuation_percentile() -> dict:
-    """获取沪深300真实PE估值百分位（近3年）"""
+    """获取沪深300真实PE估值百分位（近5年）"""
     try:
         import akshare as ak
-        # 优先尝试获取真实 PE 数据
-        try:
-            df = ak.stock_a_pe(symbol="000300.SH")
-            if df is not None and len(df) >= 250:
-                pe_col = [c for c in df.columns if "pe" in c.lower() or "市盈率" in c]
-                if pe_col:
-                    pe_data = df[pe_col[0]].dropna().tail(750)
-                    if len(pe_data) >= 100:
-                        current_pe = float(pe_data.iloc[-1])
-                        pe_values = pe_data.values
-                        percentile = round(sum(1 for p in pe_values if p <= current_pe) / len(pe_values) * 100, 1)
-                        return {
-                            "index": "沪深300",
-                            "percentile": percentile,
-                            "level": "低估" if percentile < 30 else "适中" if percentile < 70 else "高估",
-                            "current_pe": round(current_pe, 2),
-                            "metric": "PE",
-                        }
-        except Exception as e:
-            print(f"[VAL] PE data failed, falling back to index: {e}")
 
-        # 降级：用指数价格百分位
-        df = ak.stock_zh_index_daily(symbol="sh000300")
-        if df is not None and len(df) >= 750:
-            closes = df.tail(750)["close"].values
-            current = closes[-1]
-            percentile = round(sum(1 for c in closes if c <= current) / len(closes) * 100, 1)
-            return {
-                "index": "沪深300",
-                "percentile": percentile,
-                "level": "低估" if percentile < 30 else "适中" if percentile < 70 else "高估",
-                "current_pe": round(float(current), 2),
-                "metric": "价格(降级)",
-            }
+        # 优先：乐咕 stock_index_pe_lg — 数据全、更新快
+        try:
+            df = ak.stock_index_pe_lg(symbol="沪深300")
+            if df is not None and len(df) >= 250:
+                pe_col = "滚动市盈率"
+                if pe_col not in df.columns:
+                    # 容错：取第一个含"市盈率"的列
+                    pe_col = next((c for c in df.columns if "市盈率" in c and "中位" not in c and "等权" not in c), None)
+                if pe_col:
+                    pe_data = df[pe_col].dropna()
+                    # 用近5年数据算百分位（更合理的时间窗口）
+                    window = min(1250, len(pe_data))
+                    recent = pe_data.tail(window)
+                    current_pe = float(recent.iloc[-1])
+                    pe_values = recent.values
+                    percentile = round(sum(1 for p in pe_values if p <= current_pe) / len(pe_values) * 100, 1)
+                    latest_date = str(df["日期"].iloc[-1]) if "日期" in df.columns else ""
+                    print(f"[VAL] PE={current_pe}, pct={percentile}%, window={window}d, date={latest_date}")
+                    return {
+                        "index": "沪深300",
+                        "percentile": percentile,
+                        "level": "低估" if percentile < 30 else "适中" if percentile < 70 else "高估",
+                        "current_pe": round(current_pe, 2),
+                        "metric": "PE-TTM(滚动)",
+                        "date": latest_date,
+                    }
+        except Exception as e:
+            print(f"[VAL] stock_index_pe_lg failed: {e}")
+            import traceback; traceback.print_exc()
+
+        # 降级：中证官方 stock_zh_index_value_csindex（数据量少但权威）
+        try:
+            df = ak.stock_zh_index_value_csindex(symbol="000300")
+            if df is not None and len(df) > 0:
+                pe_col = "市盈率1"  # 静态PE
+                if pe_col in df.columns:
+                    current_pe = float(df[pe_col].iloc[-1])
+                    latest_date = str(df["日期"].iloc[-1]) if "日期" in df.columns else ""
+                    print(f"[VAL] CSIndex PE={current_pe}, date={latest_date} (limited data, no percentile)")
+                    return {
+                        "index": "沪深300",
+                        "percentile": 50,  # 数据量不够算百分位，默认适中
+                        "level": "适中(数据不足)",
+                        "current_pe": round(current_pe, 2),
+                        "metric": "PE(中证官方)",
+                        "date": latest_date,
+                    }
+        except Exception as e:
+            print(f"[VAL] CSIndex failed: {e}")
+
     except Exception as e:
         print(f"[VAL] Failed: {e}")
     return {"index": "沪深300", "percentile": 50, "level": "适中", "current_pe": 0, "metric": "默认"}
@@ -612,32 +629,68 @@ def get_fund_news(code: str, limit: int = 3) -> list:
 
 
 def get_market_news(limit: int = 10) -> list:
-    """获取综合市场新闻"""
+    """获取综合市场新闻（优先 A 股相关，过滤无用信息）"""
     cache_key = "market_news_all"
     now = time.time()
     if cache_key in news_cache and now - news_cache[cache_key]["ts"] < NEWS_CACHE_TTL:
         return news_cache[cache_key]["data"]
 
+    # 标题中包含这些词的直接排除
+    EXCLUDE_KEYWORDS = ["荷兰", "伦敦股市", "日经", "纽约股市", "法兰克福", "巴黎股市"]
+
+    def _is_useful(title: str) -> bool:
+        """排除明显无关的海外市场新闻"""
+        return not any(kw in title for kw in EXCLUDE_KEYWORDS)
+
+    def _extract_news(df, max_n):
+        """从 DataFrame 提取新闻列表"""
+        results = []
+        if df is None or len(df) == 0:
+            return results
+        title_col = next((c for c in df.columns if "标题" in c or "title" in c.lower()), df.columns[0])
+        time_col = next((c for c in df.columns if "时间" in c or "date" in c.lower() or "发布" in c), None)
+        source_col = next((c for c in df.columns if "来源" in c or "source" in c.lower()), None)
+        url_col = next((c for c in df.columns if "链接" in c or "url" in c.lower()), None)
+        seen = set()
+        for _, row in df.iterrows():
+            title = str(row[title_col]).strip()
+            if not title or title in seen:
+                continue
+            if not _is_useful(title):
+                continue
+            seen.add(title)
+            results.append({
+                "title": title,
+                "time": str(row[time_col]) if time_col else "",
+                "source": str(row[source_col]) if source_col else "东方财富",
+                "url": str(row[url_col]) if url_col else "",
+            })
+            if len(results) >= max_n:
+                break
+        return results
+
     all_news = []
     try:
         import akshare as ak
-        # 尝试获取财经要闻
+        # 优先：A 股市场新闻（质量最高）
         try:
-            df = ak.stock_news_em(symbol="财经")
-            if df is not None and len(df) > 0:
-                for _, row in df.head(limit).iterrows():
-                    title_col = [c for c in df.columns if "标题" in c or "title" in c.lower()]
-                    time_col = [c for c in df.columns if "时间" in c or "date" in c.lower() or "发布" in c]
-                    source_col = [c for c in df.columns if "来源" in c or "source" in c.lower()]
-                    url_col = [c for c in df.columns if "链接" in c or "url" in c.lower() or "新闻链接" in c]
-                    all_news.append({
-                        "title": str(row[title_col[0]]) if title_col else str(row.iloc[0]),
-                        "time": str(row[time_col[0]]) if time_col else "",
-                        "source": str(row[source_col[0]]) if source_col else "东方财富",
-                        "url": str(row[url_col[0]]) if url_col else "",
-                    })
+            df = ak.stock_news_em(symbol="A股")
+            all_news.extend(_extract_news(df, limit))
+            print(f"[NEWS] A股: got {len(all_news)}")
         except Exception as e:
-            print(f"[NEWS] market news failed: {e}")
+            print(f"[NEWS] A股 failed: {e}")
+
+        # 补充：财经新闻（如果 A 股不够）
+        if len(all_news) < limit:
+            try:
+                df = ak.stock_news_em(symbol="财经")
+                existing_titles = {n["title"] for n in all_news}
+                extras = _extract_news(df, limit - len(all_news))
+                extras = [n for n in extras if n["title"] not in existing_titles]
+                all_news.extend(extras)
+                print(f"[NEWS] 财经补充: +{len(extras)}")
+            except Exception as e:
+                print(f"[NEWS] 财经 failed: {e}")
     except Exception as e:
         print(f"[NEWS] import failed: {e}")
 
@@ -651,7 +704,7 @@ def get_market_news(limit: int = 10) -> list:
 # ---- 宏观经济日历 ----
 
 def get_macro_calendar() -> list:
-    """获取近期宏观经济事件"""
+    """获取近期宏观经济事件（CPI/PMI/M2/PPI）"""
     cache_key = "macro_cal"
     now = time.time()
     if cache_key in macro_cache and now - macro_cache[cache_key]["ts"] < MACRO_CACHE_TTL:
@@ -661,205 +714,126 @@ def get_macro_calendar() -> list:
     try:
         import akshare as ak
         import math
+        import re
 
         def _find_col(cols, keywords):
             """模糊匹配列名"""
-            for c in cols:
-                cl = str(c).lower()
-                if any(k in cl for k in keywords):
-                    return c
+            for kw in keywords:
+                for c in cols:
+                    if kw in str(c):
+                        return c
             return None
 
-        def _get_latest_valid(df, val_col, date_col, max_back=5):
-            """从最后往前找第一条 val_col 非 NaN 的行"""
-            for i in range(1, min(max_back + 1, len(df) + 1)):
-                row = df.iloc[-i]
+        def _is_valid(v):
+            """判断值是否有效（非 None、非 NaN）"""
+            if v is None:
+                return False
+            try:
+                if isinstance(v, float) and math.isnan(v):
+                    return False
+            except (TypeError, ValueError):
+                pass
+            return True
+
+        def _get_first_valid(df, val_col, date_col, max_rows=10):
+            """从头部向下找第一条有效值（数据倒序排列）"""
+            for i in range(min(max_rows, len(df))):
+                row = df.iloc[i]
                 v = row[val_col]
-                try:
-                    if v is not None and not (isinstance(v, float) and math.isnan(v)):
-                        d = str(row[date_col]) if date_col else ""
-                        return str(v), d
-                except (TypeError, ValueError):
-                    return str(v), str(row[date_col]) if date_col else ""
+                if _is_valid(v):
+                    d = str(row[date_col]) if date_col else ""
+                    return str(v), d
             return "", ""
 
-        # 尝试获取中国宏观数据（CPI，改用国家统计局月度接口）
+        def _clean_date(raw_date: str) -> str:
+            """统一日期格式：'2026年03月份' → '2026-03'"""
+            m = re.match(r"(\d{4})\D*(\d{1,2})", raw_date)
+            if m:
+                return f"{m.group(1)}-{int(m.group(2)):02d}"
+            return raw_date
+
+        def _fmt_pct(val_str: str) -> str:
+            """数值加 % 后缀"""
+            try:
+                float(val_str)
+                return val_str + "%"
+            except (ValueError, TypeError):
+                return val_str
+
+        # ---- CPI ----
         try:
             df = ak.macro_china_cpi()
             if df is not None and len(df) > 0:
-                print(f"[MACRO] CPI columns: {list(df.columns)}")
-                print(f"[MACRO] CPI first 3 rows: {df.head(3).to_dict('records')}")
-                # macro_china_cpi() 列: ['月份', '全国-当月', '全国-同比增长', ...]
-                # 数据按时间倒序，第一行是最新
+                print(f"[MACRO] CPI cols={list(df.columns)}, rows={len(df)}")
                 val_col = _find_col(df.columns, ["全国-同比增长", "全国-同比", "同比增长"]) or (df.columns[2] if len(df.columns) > 2 else None)
-                date_col = _find_col(df.columns, ["月份", "日期"]) or (df.columns[0] if len(df.columns) > 0 else None)
+                date_col = _find_col(df.columns, ["月份", "日期"]) or df.columns[0]
                 if val_col:
-                    cpi_value = ""
-                    cpi_date = ""
-                    for i in range(min(5, len(df))):
-                        row = df.iloc[i]
-                        v = row[val_col]
-                        try:
-                            if v is not None and not (isinstance(v, float) and __import__('math').isnan(v)):
-                                cpi_value = str(v)
-                                cpi_date = str(row[date_col]) if date_col else ""
-                                break
-                        except (TypeError, ValueError):
-                            cpi_value = str(v)
-                            cpi_date = str(row[date_col]) if date_col else ""
-                            break
-                    if cpi_value:
-                        try:
-                            float(cpi_value)
-                            cpi_value = cpi_value + "%"
-                        except (ValueError, TypeError):
-                            pass
-                        events.append({
-                            "name": "CPI 居民消费价格指数",
-                            "date": cpi_date,
-                            "value": cpi_value,
-                            "impact": "通胀指标，影响央行货币政策",
-                            "icon": "📊",
-                        })
-                    else:
-                        print("[MACRO] CPI: all recent values are NaN")
-                else:
-                    print(f"[MACRO] CPI: cannot find value column in {list(df.columns)}")
+                    v, d = _get_first_valid(df, val_col, date_col)
+                    if v:
+                        events.append({"name": "CPI 居民消费价格指数", "date": _clean_date(d), "value": _fmt_pct(v), "impact": "通胀指标，影响央行货币政策", "icon": "📊"})
+                        print(f"[MACRO] CPI={v} date={d}")
         except Exception as e:
             print(f"[MACRO] CPI failed: {e}")
             import traceback; traceback.print_exc()
 
-        # PMI（数据倒序排列，最新在头部）
+        # ---- PMI ----
         try:
             df = ak.macro_china_pmi()
             if df is not None and len(df) > 0:
-                print(f"[MACRO] PMI columns: {list(df.columns)}")
-                print(f"[MACRO] PMI first 3 rows: {df.head(3).to_dict('records')}")
-                # macro_china_pmi() 列: ['月份', '制造业-指数', '制造业-同比增长', '非制造业-指数', '非制造业-同比增长']
-                val_col = _find_col(df.columns, ["制造业-指数", "制造业", "pmi"]) or (df.columns[1] if len(df.columns) > 1 else None)
-                date_col = _find_col(df.columns, ["月份", "日期"]) or (df.columns[0] if len(df.columns) > 0 else None)
+                print(f"[MACRO] PMI cols={list(df.columns)}, rows={len(df)}")
+                val_col = _find_col(df.columns, ["制造业-指数", "制造业"]) or (df.columns[1] if len(df.columns) > 1 else None)
+                date_col = _find_col(df.columns, ["月份", "日期"]) or df.columns[0]
                 if val_col:
-                    pmi_value = ""
-                    pmi_date = ""
-                    for i in range(min(5, len(df))):
-                        row = df.iloc[i]
-                        v = row[val_col]
-                        try:
-                            if v is not None and not (isinstance(v, float) and __import__('math').isnan(v)):
-                                pmi_value = str(v)
-                                pmi_date = str(row[date_col]) if date_col else ""
-                                break
-                        except (TypeError, ValueError):
-                            pmi_value = str(v)
-                            pmi_date = str(row[date_col]) if date_col else ""
-                            break
-                    if pmi_value:
-                        events.append({
-                            "name": "PMI 采购经理指数",
-                            "date": pmi_date,
-                            "value": pmi_value,
-                            "impact": "经济景气度指标，>50扩张、<50收缩",
-                            "icon": "🏭",
-                        })
+                    v, d = _get_first_valid(df, val_col, date_col)
+                    if v:
+                        events.append({"name": "PMI 采购经理指数", "date": _clean_date(d), "value": v, "impact": "经济景气度指标，>50扩张、<50收缩", "icon": "🏭"})
+                        print(f"[MACRO] PMI={v} date={d}")
         except Exception as e:
             print(f"[MACRO] PMI failed: {e}")
 
-        # M2 货币供应（改用国家统计局月度接口）
+        # ---- M2 ----
         try:
             df = ak.macro_china_money_supply()
             if df is not None and len(df) > 0:
-                print(f"[MACRO] M2 columns: {list(df.columns)}")
-                print(f"[MACRO] M2 first 3 rows: {df.head(3).to_dict('records')}")
-                # macro_china_money_supply() 列: ['月份', '货币和准货币(M2)-数量(亿元)', '货币和准货币(M2)-同比增长', ...]
-                # 数据按时间倒序，第一行是最新
+                print(f"[MACRO] M2 cols={list(df.columns)}, rows={len(df)}")
                 val_col = _find_col(df.columns, ["货币和准货币(M2)-同比增长", "M2-同比", "M2同比"]) or (df.columns[2] if len(df.columns) > 2 else None)
-                date_col = _find_col(df.columns, ["月份", "日期"]) or (df.columns[0] if len(df.columns) > 0 else None)
+                date_col = _find_col(df.columns, ["月份", "日期"]) or df.columns[0]
                 if val_col:
-                    m2_val = ""
-                    m2_date = ""
-                    for i in range(min(5, len(df))):
-                        row = df.iloc[i]
-                        v = row[val_col]
-                        try:
-                            if v is not None and not (isinstance(v, float) and __import__('math').isnan(v)):
-                                m2_val = str(v)
-                                m2_date = str(row[date_col]) if date_col else ""
-                                break
-                        except (TypeError, ValueError):
-                            m2_val = str(v)
-                            m2_date = str(row[date_col]) if date_col else ""
-                            break
-                    if m2_val:
-                        try:
-                            float(m2_val)
-                            m2_val = m2_val + "%"
-                        except (ValueError, TypeError):
-                            pass
-                        events.append({
-                            "name": "M2 广义货币供应量",
-                            "date": m2_date,
-                            "value": m2_val,
-                            "impact": "货币宽松/紧缩信号，影响市场流动性",
-                            "icon": "💵",
-                        })
-                    else:
-                        print("[MACRO] M2: all recent values are NaN")
-                else:
-                    print(f"[MACRO] M2: cannot find value column in {list(df.columns)}")
+                    v, d = _get_first_valid(df, val_col, date_col)
+                    if v:
+                        events.append({"name": "M2 广义货币供应量", "date": _clean_date(d), "value": _fmt_pct(v), "impact": "货币宽松/紧缩信号，影响市场流动性", "icon": "💵"})
+                        print(f"[MACRO] M2={v} date={d}")
         except Exception as e:
             print(f"[MACRO] M2 failed: {e}")
 
-        # PPI 工业生产者出厂价格指数（改用月度接口，数据更及时）
+        # ---- PPI ----
         try:
             df = ak.macro_china_ppi()
             if df is not None and len(df) > 0:
-                print(f"[MACRO] PPI columns: {list(df.columns)}")
-                print(f"[MACRO] PPI first 3 rows: {df.head(3).to_dict('records')}")
-                # macro_china_ppi() 列: ['月份', '当月', '当月同比增长', '累计']
-                # 数据按时间倒序，第一行就是最新的
-                val_col = _find_col(df.columns, ["当月同比增长", "当月同比", "同比"]) or (df.columns[2] if len(df.columns) > 2 else None)
-                date_col = _find_col(df.columns, ["月份", "日期", "date"]) or (df.columns[0] if len(df.columns) > 0 else None)
+                print(f"[MACRO] PPI cols={list(df.columns)}, rows={len(df)}")
+                # 优先匹配"当月同比增长"，然后按列序号降级
+                val_col = _find_col(df.columns, ["当月同比增长", "当月同比"]) or (df.columns[2] if len(df.columns) > 2 else None)
+                date_col = _find_col(df.columns, ["月份", "日期"]) or df.columns[0]
                 if val_col:
-                    # 数据倒序排列，从头部找第一条有效值
-                    ppi_val = ""
-                    ppi_date = ""
-                    for i in range(min(5, len(df))):
-                        row = df.iloc[i]
-                        v = row[val_col]
-                        try:
-                            if v is not None and not (isinstance(v, float) and __import__('math').isnan(v)):
-                                ppi_val = str(v)
-                                ppi_date = str(row[date_col]) if date_col else ""
-                                break
-                        except (TypeError, ValueError):
-                            ppi_val = str(v)
-                            ppi_date = str(row[date_col]) if date_col else ""
-                            break
-                    if ppi_val:
-                        try:
-                            float(ppi_val)
-                            ppi_val = ppi_val + "%"
-                        except (ValueError, TypeError):
-                            pass
-                        events.append({
-                            "name": "PPI 工业生产者出厂价格指数",
-                            "date": ppi_date,
-                            "value": ppi_val,
-                            "impact": "上游价格指标，领先CPI反映通胀趋势",
-                            "icon": "🏭",
-                        })
+                    v, d = _get_first_valid(df, val_col, date_col)
+                    if v:
+                        events.append({"name": "PPI 工业生产者出厂价格指数", "date": _clean_date(d), "value": _fmt_pct(v), "impact": "上游价格指标，领先CPI反映通胀趋势", "icon": "🏭"})
+                        print(f"[MACRO] PPI={v} date={d}")
                     else:
-                        print("[MACRO] PPI: all recent values are NaN")
+                        print(f"[MACRO] PPI: no valid value in first 10 rows")
                 else:
-                    print(f"[MACRO] PPI: cannot find value column in {list(df.columns)}")
+                    print(f"[MACRO] PPI: no matching column in {list(df.columns)}")
         except Exception as e:
             print(f"[MACRO] PPI failed: {e}")
+            import traceback; traceback.print_exc()
 
     except Exception as e:
-        print(f"[MACRO] Failed: {e}")
+        print(f"[MACRO] Fatal: {e}")
 
     if not events:
         events = [{"name": "宏观数据加载中", "date": "", "value": "", "impact": "", "icon": "📅"}]
+    else:
+        print(f"[MACRO] Total {len(events)} indicators loaded")
 
     macro_cache[cache_key] = {"data": events, "ts": now}
     return events

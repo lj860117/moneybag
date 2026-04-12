@@ -695,7 +695,7 @@ el.innerHTML=`
 ${Object.keys(dims).length?`<div class="fgi-dims">${Object.values(dims).map(d=>`<div class="fgi-dim"><div class="fgi-dim-label">${d.label}</div><div class="fgi-dim-val">${d.value}</div></div>`).join('')}</div>`:''}
 </div>
 <div class="dashboard-card" onclick="showExplain('valuation')" style="cursor:pointer"><div class="dashboard-card-title">📊 估值水平 <span style="font-size:11px;color:var(--accent)">点击了解 ›</span></div>
-<div style="display:flex;justify-content:space-between;align-items:center"><div><div style="font-size:24px;font-weight:900;color:${valColor}">${val.percentile||50}%</div><div style="font-size:13px;color:var(--text2)">${val.index||'沪深300'}·${val.level||'适中'}</div></div><div style="text-align:right;font-size:12px;color:var(--text2)">${val.metric||''}<br>PE: ${val.current_pe||'-'}</div></div>
+<div style="display:flex;justify-content:space-between;align-items:center"><div><div style="font-size:24px;font-weight:900;color:${valColor}">${val.percentile||50}%</div><div style="font-size:13px;color:var(--text2)">${val.index||'沪深300'}·${val.level||'适中'}</div></div><div style="text-align:right;font-size:12px;color:var(--text2)">PE: ${val.current_pe||'-'}${val.date?'<br>'+val.date:''}</div></div>
 <div class="val-bar"><div class="val-bar-fill" style="width:${valPct}%;background:${valColor}"></div><div class="val-bar-marker" style="left:${valPct}%;background:${valColor}"></div></div>
 <div style="display:flex;justify-content:space-between;font-size:11px;color:var(--text2)"><span>低估</span><span>适中</span><span>高估</span></div>
 </div>
