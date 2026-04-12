@@ -1,9 +1,8 @@
 """
-钱袋子 — FastAPI 后端 V5.0（模块化重构）
-路由入口 + 中间件配置，业务逻辑在 services/ 中
+钱袋子 — FastAPI 后端 V4.0
+交易流水制 + 全资产管理 + OCR增强 + 实时净值 + AI对话 + 买卖信号
 """
 import os
-import sys
 import json
 import time
 import uuid
@@ -13,53 +12,15 @@ from pathlib import Path
 from datetime import datetime, timedelta
 from typing import Optional, Literal
 
-# 确保能导入同级模块
-sys.path.insert(0, os.path.dirname(__file__))
-
 from fastapi import FastAPI, UploadFile, File, Form, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
+from pydantic import BaseModel, Field
 
-# ---- 从 services 导入业务逻辑 ----
-from config import DATA_DIR, USERS_DIR, RECEIPTS_DIR
-from models.schemas import (
-    Holding, Portfolio, Transaction, Asset, PortfolioV4,
-    TransactionRequest, AssetRequest, TopupRequest, UserData,
-    ChatRequest, LedgerEntry, FundSearchResult,
-    IncomeSourceCreate, IncomeSourceRecord,
-)
-from services.data_layer import (
-    get_fund_nav, get_fear_greed_index, get_valuation_percentile,
-    get_technical_indicators, get_fund_news, get_market_news,
-    get_macro_calendar, get_northbound_flow, get_margin_trading,
-    get_treasury_yield, get_shibor, get_dividend_yield,
-    get_news_sentiment_score, calc_rsi, calc_macd, calc_bollinger,
-    get_fund_dynamic_info, _load_fund_rank_data,
-    get_policy_news, analyze_news_impact, _get_nav_on_date,
-)
-from services.portfolio_calc import (
-    calc_holdings_from_transactions, migrate_v3_to_v4, ensure_v4_portfolio,
-)
-from services.signal import (
-    generate_daily_signal, _apply_master_strategies,
-    calc_smart_dca, calc_take_profit_strategy,
-)
-from services.risk import calc_risk_metrics
-from services.backtest import run_backtest
-from services.persistence import load_user, save_user, _user_file
+app = FastAPI(title="钱袋子 API", version="4.0.0")
 
-# ---- 缓存兼容（路由中直接引用的缓存变量）----
-from services.data_layer import (
-    _nav_cache as nav_cache,
-    _news_cache as news_cache,
-    _macro_cache as macro_cache,
-    _fund_rank_cache as fund_rank_cache,
-)
-
-# ---- FastAPI 应用 ----
-app = FastAPI(title="钱袋子 API", version="5.0.0")
-
+# CORS - 允许前端跨域
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -67,6 +28,1925 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# ---- 持久化目录 ----
+DATA_DIR = Path(os.environ.get("DATA_DIR", "./data"))
+DATA_DIR.mkdir(parents=True, exist_ok=True)
+USERS_DIR = DATA_DIR / "users"
+USERS_DIR.mkdir(exist_ok=True)
+RECEIPTS_DIR = DATA_DIR / "receipts"
+RECEIPTS_DIR.mkdir(exist_ok=True)
+
+# ---- 缓存 ----
+nav_cache = {}
+news_cache = {}
+macro_cache = {}
+NAV_CACHE_TTL = 3600  # 1小时缓存
+NEWS_CACHE_TTL = 1800  # 30分钟缓存
+MACRO_CACHE_TTL = 7200  # 2小时缓存
+FUND_RANK_CACHE_TTL = 86400  # 基金排行24小时缓存
+fund_rank_cache = {}  # 基金排行缓存
+
+# ---- 数据模型 ----
+
+# V3 旧模型（兼容）
+class Holding(BaseModel):
+    code: str
+    name: str
+    category: str
+    targetPct: float
+    amount: float
+    buyDate: str
+
+class Portfolio(BaseModel):
+    """V3 兼容 Portfolio — 旧的 holdings 快照模式"""
+    holdings: list[Holding] = []
+    history: list = []
+    profile: Optional[str] = None
+    amount: float = 0
+
+# V4 新模型 — 交易流水制
+class Transaction(BaseModel):
+    id: str = ""
+    type: Literal["BUY", "SELL", "DIVIDEND"] = "BUY"
+    code: str
+    name: str = ""
+    amount: float = 0        # 买入金额（BUY 时）
+    shares: float = 0        # 份额
+    nav: float = 0           # 成交净值
+    fee: float = 0           # 手续费
+    date: str = ""           # 交易日期
+    source: str = "manual"   # recommend|manual|ocr|topup
+    note: str = ""
+
+class Asset(BaseModel):
+    id: str = ""
+    type: Literal["cash", "property", "liability", "other"] = "cash"
+    name: str = ""
+    balance: float = 0       # cash/liability 用 balance
+    value: float = 0         # property/other 用 value
+    icon: str = ""
+    updated: str = ""
+
+class PortfolioV4(BaseModel):
+    """V4 交易流水制 Portfolio"""
+    transactions: list[Transaction] = []
+    assets: list[Asset] = []
+    profile: Optional[str] = None
+    history: list = []
+    version: int = 4
+
+class TransactionRequest(BaseModel):
+    userId: str
+    transaction: Transaction
+
+class AssetRequest(BaseModel):
+    userId: str
+    asset: Asset
+
+class TopupRequest(BaseModel):
+    userId: str
+    amount: float
+    profile: Optional[str] = None
+    allocations: list[dict] = []  # [{code, name, pct, amount}]
+
+class UserData(BaseModel):
+    userId: str
+    portfolio: Optional[dict] = None  # 兼容 V3 和 V4
+    ledger: list = []
+    createdAt: Optional[str] = None
+    updatedAt: Optional[str] = None
+
+class ChatRequest(BaseModel):
+    message: str
+    portfolio: Optional[Portfolio] = None
+
+class LedgerEntry(BaseModel):
+    userId: str
+    category: str
+    amount: float
+    note: str = ""
+    date: Optional[str] = None
+    direction: Literal["expense", "income"] = "expense"  # 收入/支出
+
+class FundSearchResult(BaseModel):
+    code: str
+    name: str
+    type: str = ""
+
+
+# ---- V4 核心计算引擎 ----
+
+def calc_holdings_from_transactions(transactions: list[dict]) -> dict:
+    """从交易流水计算当前持仓（加权平均成本法）
+    参考：Ghostfolio Portfolio Calculator
+    """
+    holdings = {}  # code -> {shares, totalCost, avgNav, name, txCount}
+    realized = {}  # code -> 已实现盈亏
+
+    sorted_txs = sorted(transactions, key=lambda t: t.get("date", ""))
+
+    for tx in sorted_txs:
+        code = tx.get("code", "")
+        if not code:
+            continue
+
+        if code not in holdings:
+            holdings[code] = {
+                "code": code,
+                "name": tx.get("name", ""),
+                "shares": 0,
+                "totalCost": 0,
+                "avgNav": 0,
+                "txCount": 0,
+                "firstBuyDate": tx.get("date", ""),
+            }
+        h = holdings[code]
+
+        tx_type = tx.get("type", "BUY")
+        if tx_type == "BUY":
+            amount = tx.get("amount", 0)
+            fee = tx.get("fee", 0)
+            shares = tx.get("shares", 0)
+            h["totalCost"] += amount + fee
+            h["shares"] += shares
+            h["avgNav"] = h["totalCost"] / h["shares"] if h["shares"] > 0 else 0
+            h["txCount"] += 1
+            if not h.get("name"):
+                h["name"] = tx.get("name", "")
+
+        elif tx_type == "SELL":
+            shares_to_sell = tx.get("shares", 0)
+            sell_nav = tx.get("nav", 0)
+            fee = tx.get("fee", 0)
+            if h["shares"] > 0 and shares_to_sell > 0:
+                sell_cost = shares_to_sell * h["avgNav"]
+                sell_revenue = shares_to_sell * sell_nav - fee
+                realized[code] = realized.get(code, 0) + (sell_revenue - sell_cost)
+                h["totalCost"] -= sell_cost
+                h["shares"] -= shares_to_sell
+                if h["shares"] < 0:
+                    h["shares"] = 0
+
+        elif tx_type == "DIVIDEND":
+            div_amount = tx.get("amount", 0)
+            realized[code] = realized.get(code, 0) + div_amount
+
+    active = [h for h in holdings.values() if h["shares"] > 0]
+    closed = [h for h in holdings.values() if h["shares"] <= 0 and h["txCount"] > 0]
+
+    return {
+        "active": active,
+        "realized": realized,
+        "closed": closed,
+    }
+
+
+def migrate_v3_to_v4(old_portfolio: dict) -> dict:
+    """将 V3 holdings 快照转为 V4 交易流水"""
+    transactions = []
+    old_holdings = old_portfolio.get("holdings", [])
+
+    for h in old_holdings:
+        code = h.get("code", "")
+        if not code:
+            continue
+        tx_id = f"migrate_{code}_{uuid.uuid4().hex[:6]}"
+        transactions.append({
+            "id": tx_id,
+            "type": "BUY",
+            "code": code,
+            "name": h.get("name", ""),
+            "amount": h.get("amount", 0),
+            "shares": 0,  # 待后端补算
+            "nav": 0,     # 待后端补算
+            "fee": 0,
+            "date": h.get("buyDate", datetime.now().isoformat()),
+            "source": "recommend",
+            "note": "V3迁移",
+        })
+
+    return {
+        "transactions": transactions,
+        "assets": [],
+        "profile": old_portfolio.get("profile"),
+        "history": old_portfolio.get("history", []),
+        "version": 4,
+    }
+
+
+def ensure_v4_portfolio(user_data: dict) -> dict:
+    """确保用户数据中的 portfolio 是 V4 格式"""
+    p = user_data.get("portfolio")
+    if not p:
+        user_data["portfolio"] = {
+            "transactions": [],
+            "assets": [],
+            "profile": None,
+            "history": [],
+            "version": 4,
+        }
+        return user_data
+
+    if p.get("version") == 4:
+        return user_data
+
+    # V3 → V4 迁移
+    if "holdings" in p and p["holdings"]:
+        user_data["portfolio"] = migrate_v3_to_v4(p)
+        # 补算净值和份额
+        for tx in user_data["portfolio"]["transactions"]:
+            if tx["shares"] == 0 and tx["amount"] > 0:
+                buy_nav = _get_nav_on_date(tx["code"], tx["date"])
+                if buy_nav and buy_nav > 0:
+                    tx["nav"] = buy_nav
+                    tx["shares"] = round(tx["amount"] / buy_nav, 2)
+                else:
+                    # 无法获取历史净值，用当前净值近似
+                    nav_info = get_fund_nav(tx["code"])
+                    if nav_info and nav_info["nav"] != "N/A":
+                        tx["nav"] = float(nav_info["nav"])
+                        tx["shares"] = round(tx["amount"] / float(nav_info["nav"]), 2)
+                    else:
+                        tx["nav"] = 1.0
+                        tx["shares"] = tx["amount"]
+    else:
+        user_data["portfolio"] = {
+            "transactions": [],
+            "assets": [],
+            "profile": p.get("profile"),
+            "history": p.get("history", []),
+            "version": 4,
+        }
+
+    return user_data
+
+# ---- AKShare 数据拉取 ----
+def get_fund_nav(code: str) -> dict:
+    """获取单只基金的最新净值"""
+    cache_key = code
+    now = time.time()
+
+    if cache_key in nav_cache and now - nav_cache[cache_key]["ts"] < NAV_CACHE_TTL:
+        return nav_cache[cache_key]["data"]
+
+    try:
+        import akshare as ak
+        # 开放式基金净值
+        df = ak.fund_open_fund_info_em(symbol=code, indicator="单位净值走势")
+        if df is not None and len(df) > 0:
+            latest = df.iloc[-1]
+            prev = df.iloc[-2] if len(df) > 1 else df.iloc[-1]
+            nav_val = float(latest["单位净值"])
+            prev_val = float(prev["单位净值"])
+            change = round((nav_val - prev_val) / prev_val * 100, 2)
+            result = {
+                "code": code,
+                "nav": str(nav_val),
+                "date": str(latest["净值日期"]),
+                "change": str(change),
+            }
+            nav_cache[cache_key] = {"data": result, "ts": now}
+            return result
+    except Exception as e:
+        print(f"[NAV] Failed to fetch {code}: {e}")
+
+    # 降级：返回空
+    return {"code": code, "nav": "N/A", "date": "N/A", "change": "0"}
+
+
+def get_fear_greed_index() -> dict:
+    """增强版恐惧贪婪指数（3维：涨跌幅+波动率+成交量偏离）
+    返回 dict 包含综合分数和各维度明细，兼容旧代码（可用 result["score"]）
+    """
+    result = {"score": 50, "level": "中性", "dimensions": {}}
+    try:
+        import akshare as ak
+        df = ak.stock_zh_index_daily(symbol="sh000300")
+        if df is not None and len(df) >= 60:
+            recent_60 = df.tail(60)
+            recent_20 = df.tail(20)
+
+            close_20 = recent_20["close"].values
+            close_60 = recent_60["close"].values
+
+            # 维度1: 20日涨跌幅 → 恐惧/贪婪 (权重 40%)
+            change_20d = (close_20[-1] - close_20[0]) / close_20[0] * 100
+            if change_20d < -15:
+                dim1_score = 90
+            elif change_20d < -8:
+                dim1_score = 75
+            elif change_20d < -3:
+                dim1_score = 60
+            elif change_20d < 3:
+                dim1_score = 50
+            elif change_20d < 8:
+                dim1_score = 35
+            elif change_20d < 15:
+                dim1_score = 20
+            else:
+                dim1_score = 10
+            result["dimensions"]["momentum"] = {"value": round(change_20d, 2), "score": dim1_score, "label": "20日动量"}
+
+            # 维度2: 波动率（20日收益率标准差）→ 高波动=恐惧 (权重 30%)
+            returns = [(close_20[i] - close_20[i - 1]) / close_20[i - 1] * 100 for i in range(1, len(close_20))]
+            volatility = (sum((r - sum(returns) / len(returns)) ** 2 for r in returns) / len(returns)) ** 0.5
+            # 历史波动率阈值（沪深300日波动率通常 0.5-2.5%）
+            if volatility > 2.5:
+                dim2_score = 90
+            elif volatility > 1.8:
+                dim2_score = 70
+            elif volatility > 1.2:
+                dim2_score = 50
+            elif volatility > 0.7:
+                dim2_score = 35
+            else:
+                dim2_score = 20
+            result["dimensions"]["volatility"] = {"value": round(volatility, 3), "score": dim2_score, "label": "波动率"}
+
+            # 维度3: 成交量偏离（近5日 vs 近60日均量）(权重 30%)
+            if "volume" in df.columns:
+                vol_5 = df.tail(5)["volume"].mean()
+                vol_60 = recent_60["volume"].mean()
+                vol_ratio = vol_5 / vol_60 if vol_60 > 0 else 1
+                # 缩量下跌=恐惧，放量上涨=贪婪
+                if change_20d < 0:  # 下跌中
+                    dim3_score = 70 if vol_ratio > 1.3 else 60 if vol_ratio > 1.0 else 80  # 缩量下跌更恐惧
+                else:  # 上涨中
+                    dim3_score = 20 if vol_ratio > 1.5 else 35 if vol_ratio > 1.0 else 45
+                result["dimensions"]["volume"] = {"value": round(vol_ratio, 2), "score": dim3_score, "label": "量能偏离"}
+            else:
+                dim3_score = 50
+                result["dimensions"]["volume"] = {"value": 1.0, "score": 50, "label": "量能(无数据)"}
+
+            # 加权综合
+            composite = dim1_score * 0.4 + dim2_score * 0.3 + dim3_score * 0.3
+            result["score"] = round(composite, 1)
+
+            if composite >= 75:
+                result["level"] = "极度恐惧"
+            elif composite >= 60:
+                result["level"] = "恐惧"
+            elif composite >= 40:
+                result["level"] = "中性"
+            elif composite >= 25:
+                result["level"] = "贪婪"
+            else:
+                result["level"] = "极度贪婪"
+
+    except Exception as e:
+        print(f"[FGI] Failed: {e}")
+    return result
+
+
+def get_valuation_percentile() -> dict:
+    """获取沪深300真实PE估值百分位（近5年）"""
+    try:
+        import akshare as ak
+
+        # 优先：乐咕 stock_index_pe_lg — 数据全、更新快
+        try:
+            df = ak.stock_index_pe_lg(symbol="沪深300")
+            if df is not None and len(df) >= 250:
+                pe_col = "滚动市盈率"
+                if pe_col not in df.columns:
+                    # 容错：取第一个含"市盈率"的列
+                    pe_col = next((c for c in df.columns if "市盈率" in c and "中位" not in c and "等权" not in c), None)
+                if pe_col:
+                    pe_data = df[pe_col].dropna()
+                    # 用近5年数据算百分位（更合理的时间窗口）
+                    window = min(1250, len(pe_data))
+                    recent = pe_data.tail(window)
+                    current_pe = float(recent.iloc[-1])
+                    pe_values = recent.values
+                    percentile = round(sum(1 for p in pe_values if p <= current_pe) / len(pe_values) * 100, 1)
+                    latest_date = str(df["日期"].iloc[-1]) if "日期" in df.columns else ""
+                    print(f"[VAL] PE={current_pe}, pct={percentile}%, window={window}d, date={latest_date}")
+                    return {
+                        "index": "沪深300",
+                        "percentile": percentile,
+                        "level": "低估" if percentile < 30 else "适中" if percentile < 70 else "高估",
+                        "current_pe": round(current_pe, 2),
+                        "metric": "PE-TTM(滚动)",
+                        "date": latest_date,
+                    }
+        except Exception as e:
+            print(f"[VAL] stock_index_pe_lg failed: {e}")
+            import traceback; traceback.print_exc()
+
+        # 降级：中证官方 stock_zh_index_value_csindex（数据量少但权威）
+        try:
+            df = ak.stock_zh_index_value_csindex(symbol="000300")
+            if df is not None and len(df) > 0:
+                pe_col = "市盈率1"  # 静态PE
+                if pe_col in df.columns:
+                    current_pe = float(df[pe_col].iloc[-1])
+                    latest_date = str(df["日期"].iloc[-1]) if "日期" in df.columns else ""
+                    print(f"[VAL] CSIndex PE={current_pe}, date={latest_date} (limited data, no percentile)")
+                    return {
+                        "index": "沪深300",
+                        "percentile": 50,  # 数据量不够算百分位，默认适中
+                        "level": "适中(数据不足)",
+                        "current_pe": round(current_pe, 2),
+                        "metric": "PE(中证官方)",
+                        "date": latest_date,
+                    }
+        except Exception as e:
+            print(f"[VAL] CSIndex failed: {e}")
+
+    except Exception as e:
+        print(f"[VAL] Failed: {e}")
+    return {"index": "沪深300", "percentile": 50, "level": "适中", "current_pe": 0, "metric": "默认"}
+
+
+# ---- 技术指标 ----
+
+def calc_rsi(prices: list, period: int = 14) -> float:
+    """计算 RSI 指标"""
+    if len(prices) < period + 1:
+        return 50.0
+    deltas = [prices[i] - prices[i - 1] for i in range(1, len(prices))]
+    recent = deltas[-period:]
+    gains = [d for d in recent if d > 0]
+    losses = [-d for d in recent if d < 0]
+    avg_gain = sum(gains) / period if gains else 0
+    avg_loss = sum(losses) / period if losses else 0.001
+    rs = avg_gain / avg_loss
+    return round(100 - (100 / (1 + rs)), 1)
+
+
+def calc_macd(prices: list) -> dict:
+    """计算 MACD 指标（12/26/9）"""
+    if len(prices) < 35:
+        return {"macd": 0, "signal": 0, "histogram": 0, "trend": "数据不足"}
+
+    def ema(data, period):
+        k = 2 / (period + 1)
+        result = [data[0]]
+        for i in range(1, len(data)):
+            result.append(data[i] * k + result[-1] * (1 - k))
+        return result
+
+    ema12 = ema(prices, 12)
+    ema26 = ema(prices, 26)
+    dif = [ema12[i] - ema26[i] for i in range(len(prices))]
+    dea = ema(dif, 9)
+    macd_val = dif[-1] - dea[-1]
+
+    if dif[-1] > dea[-1] and dif[-2] <= dea[-2]:
+        trend = "金叉（买入信号）"
+    elif dif[-1] < dea[-1] and dif[-2] >= dea[-2]:
+        trend = "死叉（卖出信号）"
+    elif dif[-1] > dea[-1]:
+        trend = "多头排列"
+    else:
+        trend = "空头排列"
+
+    return {
+        "macd": round(macd_val, 4),
+        "dif": round(dif[-1], 4),
+        "dea": round(dea[-1], 4),
+        "trend": trend,
+    }
+
+
+def calc_bollinger(prices: list, period: int = 20) -> dict:
+    """计算布林带"""
+    if len(prices) < period:
+        return {"upper": 0, "middle": 0, "lower": 0, "position": "数据不足"}
+    recent = prices[-period:]
+    middle = sum(recent) / period
+    std = (sum((p - middle) ** 2 for p in recent) / period) ** 0.5
+    upper = middle + 2 * std
+    lower = middle - 2 * std
+    current = prices[-1]
+
+    if current > upper:
+        position = "超买（高于上轨）"
+    elif current < lower:
+        position = "超卖（低于下轨）"
+    elif current > middle:
+        position = "中轨上方（偏强）"
+    else:
+        position = "中轨下方（偏弱）"
+
+    return {
+        "upper": round(upper, 2),
+        "middle": round(middle, 2),
+        "lower": round(lower, 2),
+        "current": round(current, 2),
+        "position": position,
+    }
+
+
+def get_technical_indicators(symbol: str = "sh000300") -> dict:
+    """获取沪深300的技术指标（RSI/MACD/布林带）"""
+    cache_key = f"tech_{symbol}"
+    now = time.time()
+    if cache_key in nav_cache and now - nav_cache[cache_key]["ts"] < NAV_CACHE_TTL:
+        return nav_cache[cache_key]["data"]
+
+    try:
+        import akshare as ak
+        df = ak.stock_zh_index_daily(symbol=symbol)
+        if df is not None and len(df) >= 60:
+            closes = [float(c) for c in df.tail(120)["close"].values]
+            result = {
+                "rsi": calc_rsi(closes),
+                "macd": calc_macd(closes),
+                "bollinger": calc_bollinger(closes),
+                "rsi_signal": "超买" if calc_rsi(closes) > 70 else "超卖" if calc_rsi(closes) < 30 else "中性",
+            }
+            nav_cache[cache_key] = {"data": result, "ts": now}
+            return result
+    except Exception as e:
+        print(f"[TECH] Failed: {e}")
+    return {"rsi": 50, "macd": {"macd": 0, "dif": 0, "dea": 0, "trend": "数据不足"}, "bollinger": {"upper": 0, "middle": 0, "lower": 0, "position": "数据不足"}, "rsi_signal": "数据不足"}
+
+
+# ---- 新闻资讯 ----
+
+def get_fund_news(code: str, limit: int = 3) -> list:
+    """获取基金/市场相关新闻"""
+    cache_key = f"news_{code}"
+    now = time.time()
+    if cache_key in news_cache and now - news_cache[cache_key]["ts"] < NEWS_CACHE_TTL:
+        return news_cache[cache_key]["data"]
+
+    # 基金代码到关键词映射
+    keyword_map = {
+        "110020": "沪深300",
+        "050025": "标普500",
+        "217022": "债券",
+        "000216": "黄金",
+        "008114": "红利低波",
+    }
+    keyword = keyword_map.get(code, "基金")
+    news_list = []
+
+    try:
+        import akshare as ak
+        # 尝试获取财经新闻
+        try:
+            df = ak.stock_news_em(symbol=keyword)
+            if df is not None and len(df) > 0:
+                for _, row in df.head(limit).iterrows():
+                    title_col = [c for c in df.columns if "标题" in c or "title" in c.lower()]
+                    time_col = [c for c in df.columns if "时间" in c or "date" in c.lower() or "发布" in c]
+                    source_col = [c for c in df.columns if "来源" in c or "source" in c.lower() or "文章来源" in c]
+                    url_col = [c for c in df.columns if "链接" in c or "url" in c.lower() or "新闻链接" in c]
+                    news_list.append({
+                        "title": str(row[title_col[0]]) if title_col else str(row.iloc[0]),
+                        "time": str(row[time_col[0]]) if time_col else "",
+                        "source": str(row[source_col[0]]) if source_col else "东方财富",
+                        "url": str(row[url_col[0]]) if url_col else "",
+                    })
+        except Exception as e:
+            print(f"[NEWS] stock_news_em failed for {keyword}: {e}")
+
+        # 黄金专用新闻源
+        if code == "000216" and not news_list:
+            try:
+                df = ak.futures_news_shmet(symbol="黄金")
+                if df is not None and len(df) > 0:
+                    for _, row in df.head(limit).iterrows():
+                        title_col = [c for c in df.columns if "标题" in c or "title" in c.lower()]
+                        news_list.append({
+                            "title": str(row[title_col[0]]) if title_col else str(row.iloc[0]),
+                            "time": "",
+                            "source": "上海金属网",
+                        })
+            except Exception:
+                pass
+
+    except Exception as e:
+        print(f"[NEWS] Failed: {e}")
+
+    # 如果 AKShare 新闻不可用，返回默认提示
+    if not news_list:
+        news_list = [{"title": f"{keyword}市场动态获取中...", "time": "", "source": "系统"}]
+
+    news_cache[cache_key] = {"data": news_list, "ts": now}
+    return news_list
+
+
+def get_market_news(limit: int = 10) -> list:
+    """获取综合市场新闻（优先 A 股相关，过滤无用信息）"""
+    cache_key = "market_news_all"
+    now = time.time()
+    if cache_key in news_cache and now - news_cache[cache_key]["ts"] < NEWS_CACHE_TTL:
+        return news_cache[cache_key]["data"]
+
+    # 标题中包含这些词的直接排除
+    EXCLUDE_KEYWORDS = ["荷兰", "伦敦股市", "日经", "纽约股市", "法兰克福", "巴黎股市"]
+
+    def _is_useful(title: str) -> bool:
+        """排除明显无关的海外市场新闻"""
+        return not any(kw in title for kw in EXCLUDE_KEYWORDS)
+
+    def _extract_news(df, max_n):
+        """从 DataFrame 提取新闻列表"""
+        results = []
+        if df is None or len(df) == 0:
+            return results
+        title_col = next((c for c in df.columns if "标题" in c or "title" in c.lower()), df.columns[0])
+        time_col = next((c for c in df.columns if "时间" in c or "date" in c.lower() or "发布" in c), None)
+        source_col = next((c for c in df.columns if "来源" in c or "source" in c.lower()), None)
+        url_col = next((c for c in df.columns if "链接" in c or "url" in c.lower()), None)
+        seen = set()
+        for _, row in df.iterrows():
+            title = str(row[title_col]).strip()
+            if not title or title in seen:
+                continue
+            if not _is_useful(title):
+                continue
+            seen.add(title)
+            results.append({
+                "title": title,
+                "time": str(row[time_col]) if time_col else "",
+                "source": str(row[source_col]) if source_col else "东方财富",
+                "url": str(row[url_col]) if url_col else "",
+            })
+            if len(results) >= max_n:
+                break
+        return results
+
+    all_news = []
+    try:
+        import akshare as ak
+        # 优先：A 股市场新闻（质量最高）
+        try:
+            df = ak.stock_news_em(symbol="A股")
+            all_news.extend(_extract_news(df, limit))
+            print(f"[NEWS] A股: got {len(all_news)}")
+        except Exception as e:
+            print(f"[NEWS] A股 failed: {e}")
+
+        # 补充：财经新闻（如果 A 股不够）
+        if len(all_news) < limit:
+            try:
+                df = ak.stock_news_em(symbol="财经")
+                existing_titles = {n["title"] for n in all_news}
+                extras = _extract_news(df, limit - len(all_news))
+                extras = [n for n in extras if n["title"] not in existing_titles]
+                all_news.extend(extras)
+                print(f"[NEWS] 财经补充: +{len(extras)}")
+            except Exception as e:
+                print(f"[NEWS] 财经 failed: {e}")
+    except Exception as e:
+        print(f"[NEWS] import failed: {e}")
+
+    if not all_news:
+        all_news = [{"title": "市场资讯加载中...", "time": "", "source": "系统"}]
+
+    news_cache[cache_key] = {"data": all_news, "ts": now}
+    return all_news
+
+
+# ---- 宏观经济日历 ----
+
+def get_macro_calendar() -> list:
+    """获取近期宏观经济事件（CPI/PMI/M2/PPI）"""
+    cache_key = "macro_cal"
+    now = time.time()
+    if cache_key in macro_cache and now - macro_cache[cache_key]["ts"] < MACRO_CACHE_TTL:
+        return macro_cache[cache_key]["data"]
+
+    events = []
+    try:
+        import akshare as ak
+        import math
+        import re
+
+        def _find_col(cols, keywords):
+            """模糊匹配列名"""
+            for kw in keywords:
+                for c in cols:
+                    if kw in str(c):
+                        return c
+            return None
+
+        def _is_valid(v):
+            """判断值是否有效（非 None、非 NaN）"""
+            if v is None:
+                return False
+            try:
+                if isinstance(v, float) and math.isnan(v):
+                    return False
+            except (TypeError, ValueError):
+                pass
+            return True
+
+        def _get_first_valid(df, val_col, date_col, max_rows=10):
+            """从头部向下找第一条有效值（数据倒序排列）"""
+            for i in range(min(max_rows, len(df))):
+                row = df.iloc[i]
+                v = row[val_col]
+                if _is_valid(v):
+                    d = str(row[date_col]) if date_col else ""
+                    return str(v), d
+            return "", ""
+
+        def _clean_date(raw_date: str) -> str:
+            """统一日期格式：'2026年03月份' → '2026-03'"""
+            m = re.match(r"(\d{4})\D*(\d{1,2})", raw_date)
+            if m:
+                return f"{m.group(1)}-{int(m.group(2)):02d}"
+            return raw_date
+
+        def _fmt_pct(val_str: str) -> str:
+            """数值加 % 后缀"""
+            try:
+                float(val_str)
+                return val_str + "%"
+            except (ValueError, TypeError):
+                return val_str
+
+        # ---- CPI ----
+        try:
+            df = ak.macro_china_cpi()
+            if df is not None and len(df) > 0:
+                print(f"[MACRO] CPI cols={list(df.columns)}, rows={len(df)}")
+                val_col = _find_col(df.columns, ["全国-同比增长", "全国-同比", "同比增长"]) or (df.columns[2] if len(df.columns) > 2 else None)
+                date_col = _find_col(df.columns, ["月份", "日期"]) or df.columns[0]
+                if val_col:
+                    v, d = _get_first_valid(df, val_col, date_col)
+                    if v:
+                        events.append({"name": "CPI 居民消费价格指数", "date": _clean_date(d), "value": _fmt_pct(v), "impact": "通胀指标，影响央行货币政策", "icon": "📊"})
+                        print(f"[MACRO] CPI={v} date={d}")
+        except Exception as e:
+            print(f"[MACRO] CPI failed: {e}")
+            import traceback; traceback.print_exc()
+
+        # ---- PMI ----
+        try:
+            df = ak.macro_china_pmi()
+            if df is not None and len(df) > 0:
+                print(f"[MACRO] PMI cols={list(df.columns)}, rows={len(df)}")
+                val_col = _find_col(df.columns, ["制造业-指数", "制造业"]) or (df.columns[1] if len(df.columns) > 1 else None)
+                date_col = _find_col(df.columns, ["月份", "日期"]) or df.columns[0]
+                if val_col:
+                    v, d = _get_first_valid(df, val_col, date_col)
+                    if v:
+                        events.append({"name": "PMI 采购经理指数", "date": _clean_date(d), "value": v, "impact": "经济景气度指标，>50扩张、<50收缩", "icon": "🏭"})
+                        print(f"[MACRO] PMI={v} date={d}")
+        except Exception as e:
+            print(f"[MACRO] PMI failed: {e}")
+
+        # ---- M2 ----
+        try:
+            df = ak.macro_china_money_supply()
+            if df is not None and len(df) > 0:
+                print(f"[MACRO] M2 cols={list(df.columns)}, rows={len(df)}")
+                val_col = _find_col(df.columns, ["货币和准货币(M2)-同比增长", "M2-同比", "M2同比"]) or (df.columns[2] if len(df.columns) > 2 else None)
+                date_col = _find_col(df.columns, ["月份", "日期"]) or df.columns[0]
+                if val_col:
+                    v, d = _get_first_valid(df, val_col, date_col)
+                    if v:
+                        events.append({"name": "M2 广义货币供应量", "date": _clean_date(d), "value": _fmt_pct(v), "impact": "货币宽松/紧缩信号，影响市场流动性", "icon": "💵"})
+                        print(f"[MACRO] M2={v} date={d}")
+        except Exception as e:
+            print(f"[MACRO] M2 failed: {e}")
+
+        # ---- PPI ----
+        try:
+            df = ak.macro_china_ppi()
+            if df is not None and len(df) > 0:
+                print(f"[MACRO] PPI cols={list(df.columns)}, rows={len(df)}")
+                # 优先匹配"当月同比增长"，然后按列序号降级
+                val_col = _find_col(df.columns, ["当月同比增长", "当月同比"]) or (df.columns[2] if len(df.columns) > 2 else None)
+                date_col = _find_col(df.columns, ["月份", "日期"]) or df.columns[0]
+                if val_col:
+                    v, d = _get_first_valid(df, val_col, date_col)
+                    if v:
+                        events.append({"name": "PPI 工业生产者出厂价格指数", "date": _clean_date(d), "value": _fmt_pct(v), "impact": "上游价格指标，领先CPI反映通胀趋势", "icon": "🏭"})
+                        print(f"[MACRO] PPI={v} date={d}")
+                    else:
+                        print(f"[MACRO] PPI: no valid value in first 10 rows")
+                else:
+                    print(f"[MACRO] PPI: no matching column in {list(df.columns)}")
+        except Exception as e:
+            print(f"[MACRO] PPI failed: {e}")
+            import traceback; traceback.print_exc()
+
+    except Exception as e:
+        print(f"[MACRO] Fatal: {e}")
+
+    if not events:
+        events = [{"name": "宏观数据加载中", "date": "", "value": "", "impact": "", "icon": "📅"}]
+    else:
+        print(f"[MACRO] Total {len(events)} indicators loaded")
+
+    macro_cache[cache_key] = {"data": events, "ts": now}
+    return events
+
+
+# ============================================================
+# V4.5 新因子数据层（借鉴幻方量化多因子体系）
+# ============================================================
+
+# --- 缓存 ---
+factor_cache = {}
+FACTOR_CACHE_TTL = 3600  # 1小时
+
+def get_northbound_flow() -> dict:
+    """获取北向资金（沪股通+深股通）净流入数据"""
+    cache_key = "northbound"
+    now = time.time()
+    if cache_key in factor_cache and now - factor_cache[cache_key]["ts"] < FACTOR_CACHE_TTL:
+        return factor_cache[cache_key]["data"]
+
+    result = {"net_flow_today": 0, "net_flow_5d": 0, "net_flow_20d": 0, "trend": "中性", "available": False}
+    try:
+        import akshare as ak
+        # 沪股通+深股通历史数据
+        df = ak.stock_hsgt_north_net_flow_in_em(symbol="北上")
+        if df is not None and len(df) >= 20:
+            # 列名可能是 "净流入" / "当日净流入" / "value"
+            val_col = next((c for c in df.columns if "净流入" in str(c) or "value" in str(c).lower()), None)
+            date_col = next((c for c in df.columns if "日期" in str(c) or "date" in str(c).lower()), df.columns[0])
+            if val_col:
+                df = df.sort_values(date_col, ascending=True)
+                vals = df[val_col].astype(float).values
+                result["net_flow_today"] = round(float(vals[-1]), 2)  # 亿元
+                result["net_flow_5d"] = round(float(sum(vals[-5:])), 2)
+                result["net_flow_20d"] = round(float(sum(vals[-20:])), 2)
+                result["available"] = True
+                if result["net_flow_5d"] > 50:
+                    result["trend"] = "大幅流入"
+                elif result["net_flow_5d"] > 10:
+                    result["trend"] = "净流入"
+                elif result["net_flow_5d"] < -50:
+                    result["trend"] = "大幅流出"
+                elif result["net_flow_5d"] < -10:
+                    result["trend"] = "净流出"
+                print(f"[NORTH] today={result['net_flow_today']}亿, 5d={result['net_flow_5d']}亿, 20d={result['net_flow_20d']}亿")
+    except Exception as e:
+        print(f"[NORTH] Failed: {e}")
+
+    factor_cache[cache_key] = {"data": result, "ts": now}
+    return result
+
+
+def get_margin_trading() -> dict:
+    """获取两融（融资融券）余额数据 — 市场杠杆情绪指标"""
+    cache_key = "margin"
+    now = time.time()
+    if cache_key in factor_cache and now - factor_cache[cache_key]["ts"] < FACTOR_CACHE_TTL:
+        return factor_cache[cache_key]["data"]
+
+    result = {"margin_balance": 0, "margin_change_5d": 0, "trend": "中性", "available": False}
+    try:
+        import akshare as ak
+        df = ak.stock_margin_sse()  # 上交所融资融券
+        if df is not None and len(df) >= 20:
+            bal_col = next((c for c in df.columns if "融资余额" in str(c)), None)
+            if bal_col:
+                vals = df[bal_col].astype(float).values
+                current = vals[-1]
+                prev_5d = vals[-6] if len(vals) >= 6 else vals[0]
+                change_pct = (current - prev_5d) / prev_5d * 100 if prev_5d > 0 else 0
+                result["margin_balance"] = round(current / 1e8, 2)  # 转亿元
+                result["margin_change_5d"] = round(change_pct, 2)
+                result["available"] = True
+                if change_pct > 3:
+                    result["trend"] = "杠杆快速上升"
+                elif change_pct > 1:
+                    result["trend"] = "杠杆温和上升"
+                elif change_pct < -3:
+                    result["trend"] = "杠杆快速下降"
+                elif change_pct < -1:
+                    result["trend"] = "杠杆温和下降"
+                print(f"[MARGIN] balance={result['margin_balance']}亿, 5d_change={change_pct:.2f}%")
+    except Exception as e:
+        print(f"[MARGIN] Failed: {e}")
+
+    factor_cache[cache_key] = {"data": result, "ts": now}
+    return result
+
+
+def get_treasury_yield() -> dict:
+    """获取国债收益率（10年期）— 无风险利率 / 股债性价比"""
+    cache_key = "treasury"
+    now = time.time()
+    if cache_key in factor_cache and now - factor_cache[cache_key]["ts"] < FACTOR_CACHE_TTL:
+        return factor_cache[cache_key]["data"]
+
+    result = {"yield_10y": 0, "yield_change": 0, "equity_premium": "", "available": False}
+    try:
+        import akshare as ak
+        df = ak.bond_zh_us_rate(start_date="20240101")
+        if df is not None and len(df) >= 5:
+            cn_col = next((c for c in df.columns if "中国" in str(c) and "10" in str(c)), None)
+            if cn_col:
+                vals = df[cn_col].dropna().astype(float).values
+                if len(vals) >= 2:
+                    current = vals[-1]
+                    prev = vals[-5] if len(vals) >= 5 else vals[0]
+                    result["yield_10y"] = round(current, 3)
+                    result["yield_change"] = round(current - prev, 3)
+                    result["available"] = True
+                    # 股债性价比：PE倒数 vs 国债收益率
+                    val = get_valuation_percentile()
+                    pe = val.get("current_pe", 12)
+                    if pe > 0:
+                        equity_yield = round(1 / pe * 100, 2)  # 盈利收益率
+                        spread = round(equity_yield - current, 2)
+                        if spread > 4:
+                            result["equity_premium"] = f"股债价差{spread}%，股市极有吸引力"
+                        elif spread > 2:
+                            result["equity_premium"] = f"股债价差{spread}%，股市有吸引力"
+                        elif spread > 0:
+                            result["equity_premium"] = f"股债价差{spread}%，股债相当"
+                        else:
+                            result["equity_premium"] = f"股债价差{spread}%，债券更有吸引力"
+                    print(f"[TREASURY] 10Y={current}%, change={result['yield_change']}%, premium={result['equity_premium']}")
+    except Exception as e:
+        print(f"[TREASURY] Failed: {e}")
+
+    factor_cache[cache_key] = {"data": result, "ts": now}
+    return result
+
+
+def get_shibor() -> dict:
+    """获取 SHIBOR 利率（银行间市场流动性指标）"""
+    cache_key = "shibor"
+    now = time.time()
+    if cache_key in factor_cache and now - factor_cache[cache_key]["ts"] < FACTOR_CACHE_TTL:
+        return factor_cache[cache_key]["data"]
+
+    result = {"overnight": 0, "one_week": 0, "trend": "中性", "available": False}
+    try:
+        import akshare as ak
+        df = ak.rate_interbank(market="上海银行同业拆放利率(Shibor)", symbol="隔夜", indicator="利率")
+        if df is not None and len(df) >= 10:
+            val_col = next((c for c in df.columns if "利率" in str(c) or "报价" in str(c)), None)
+            if not val_col and len(df.columns) > 1:
+                val_col = df.columns[1]
+            if val_col:
+                vals = df[val_col].dropna().astype(float).values
+                if len(vals) >= 5:
+                    current = vals[-1]
+                    avg_5d = sum(vals[-5:]) / 5
+                    result["overnight"] = round(current, 4)
+                    result["available"] = True
+                    if current > avg_5d * 1.2:
+                        result["trend"] = "流动性收紧"
+                    elif current < avg_5d * 0.8:
+                        result["trend"] = "流动性宽松"
+                    else:
+                        result["trend"] = "流动性平稳"
+                    print(f"[SHIBOR] overnight={current}%, trend={result['trend']}")
+    except Exception as e:
+        print(f"[SHIBOR] Failed: {e}")
+
+    factor_cache[cache_key] = {"data": result, "ts": now}
+    return result
+
+
+def get_dividend_yield() -> dict:
+    """获取沪深300股息率 — 价值因子"""
+    cache_key = "dividend"
+    now = time.time()
+    if cache_key in factor_cache and now - factor_cache[cache_key]["ts"] < FACTOR_CACHE_TTL:
+        return factor_cache[cache_key]["data"]
+
+    result = {"dividend_yield": 0, "level": "中性", "available": False}
+    try:
+        import akshare as ak
+        # 尝试从估值数据中获取股息率
+        df = ak.stock_index_pe_lg(symbol="沪深300")
+        if df is not None and len(df) > 0:
+            dy_col = next((c for c in df.columns if "股息率" in str(c)), None)
+            if dy_col:
+                dy_vals = df[dy_col].dropna().astype(float)
+                if len(dy_vals) > 0:
+                    current = float(dy_vals.iloc[-1])
+                    result["dividend_yield"] = round(current, 2)
+                    result["available"] = True
+                    # 历史百分位
+                    window = min(1250, len(dy_vals))
+                    recent = dy_vals.tail(window).values
+                    pct = round(sum(1 for d in recent if d <= current) / len(recent) * 100, 1)
+                    result["percentile"] = pct
+                    if pct > 70:
+                        result["level"] = "高股息(价值凸显)"
+                    elif pct > 40:
+                        result["level"] = "中等股息"
+                    else:
+                        result["level"] = "低股息(成长偏好)"
+                    print(f"[DIVIDEND] yield={current}%, pct={pct}%")
+    except Exception as e:
+        print(f"[DIVIDEND] Failed: {e}")
+
+    factor_cache[cache_key] = {"data": result, "ts": now}
+    return result
+
+
+def get_news_sentiment_score() -> dict:
+    """LLM 新闻情绪量化 — 用 DeepSeek/OpenAI 给新闻打分（-100~+100）
+    借鉴幻方量化的新闻情绪因子，用LLM替代BERT实现零训练成本
+    """
+    cache_key = "sentiment"
+    now = time.time()
+    # 情绪分数缓存 30 分钟（新闻更新频率）
+    if cache_key in factor_cache and now - factor_cache[cache_key]["ts"] < 1800:
+        return factor_cache[cache_key]["data"]
+
+    result = {"score": 0, "level": "中性", "headlines": [], "available": False}
+
+    try:
+        # 获取最新新闻
+        news = get_market_news(8)
+        policy = get_policy_news(5)
+        all_news = news + policy
+        valid = [n for n in all_news if "加载中" not in n.get("title", "")]
+
+        if not valid:
+            factor_cache[cache_key] = {"data": result, "ts": now}
+            return result
+
+        headlines = [n["title"] for n in valid[:10]]
+        result["headlines"] = headlines
+
+        # 尝试用 LLM 打分
+        api_key = os.environ.get("OPENAI_API_KEY") or os.environ.get("LLM_API_KEY")
+        api_base = os.environ.get("LLM_API_BASE", "https://api.openai.com/v1")
+        model = os.environ.get("LLM_MODEL", "gpt-4o-mini")
+
+        if api_key:
+            try:
+                import httpx
+                headlines_text = "\n".join([f"{i+1}. {h}" for i, h in enumerate(headlines)])
+                prompt = f"""你是A股市场情绪分析师。请对以下新闻标题进行情绪打分。
+
+新闻标题：
+{headlines_text}
+
+请返回一个JSON，格式：
+{{"score": 数字(-100到+100, 负数看空 正数看多), "level": "极度悲观/悲观/偏空/中性/偏多/乐观/极度乐观", "reason": "一句话总结"}}
+
+打分标准：
+- 降息降准/财政刺激/经济复苏/业绩超预期 → 正分(+20~+80)
+- 加息缩表/贸易摩擦/地缘冲突/经济衰退 → 负分(-20~-80)
+- 日常资讯/无明确方向 → 0附近(-10~+10)
+只返回JSON，不要其他内容。"""
+
+                # 同步调用（在后台线程中）
+                import httpx
+                with httpx.Client(timeout=15) as client:
+                    resp = client.post(
+                        f"{api_base}/chat/completions",
+                        headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
+                        json={
+                            "model": model,
+                            "messages": [{"role": "user", "content": prompt}],
+                            "max_tokens": 200,
+                            "temperature": 0.3,
+                        },
+                    )
+                    if resp.status_code == 200:
+                        data = resp.json()
+                        text = data["choices"][0]["message"]["content"]
+                        import re
+                        json_match = re.search(r'\{[^}]+\}', text, re.DOTALL)
+                        if json_match:
+                            parsed = json.loads(json_match.group())
+                            result["score"] = max(-100, min(100, int(parsed.get("score", 0))))
+                            result["level"] = parsed.get("level", "中性")
+                            result["reason"] = parsed.get("reason", "")
+                            result["available"] = True
+                            result["source"] = "llm"
+                            print(f"[SENTIMENT] LLM score={result['score']}, level={result['level']}")
+            except Exception as e:
+                print(f"[SENTIMENT] LLM failed: {e}")
+
+        # 降级：关键词规则打分
+        if not result["available"]:
+            pos_words = ["利好", "上涨", "反弹", "新高", "突破", "降准", "降息", "刺激", "增长", "超预期", "回暖", "复苏"]
+            neg_words = ["利空", "下跌", "暴跌", "制裁", "关税", "战争", "衰退", "收紧", "加息", "缩表", "违约", "暴雷"]
+            pos_count = sum(1 for h in headlines for w in pos_words if w in h)
+            neg_count = sum(1 for h in headlines for w in neg_words if w in h)
+            raw = (pos_count - neg_count) * 15
+            result["score"] = max(-100, min(100, raw))
+            result["available"] = True
+            result["source"] = "keywords"
+            if result["score"] > 30:
+                result["level"] = "乐观"
+            elif result["score"] > 10:
+                result["level"] = "偏多"
+            elif result["score"] > -10:
+                result["level"] = "中性"
+            elif result["score"] > -30:
+                result["level"] = "偏空"
+            else:
+                result["level"] = "悲观"
+            print(f"[SENTIMENT] Keywords score={result['score']}, pos={pos_count}, neg={neg_count}")
+
+    except Exception as e:
+        print(f"[SENTIMENT] Fatal: {e}")
+
+    factor_cache[cache_key] = {"data": result, "ts": now}
+    return result
+
+
+# ============================================================
+# V4.5 风控体系（借鉴幻方 CVaR 模型简化版）
+# ============================================================
+
+def calc_risk_metrics(transactions: list) -> dict:
+    """计算组合风险指标：集中度/回撤/相关性"""
+    result = {
+        "concentration": {"hhi": 0, "max_single": 0, "level": "正常", "detail": ""},
+        "drawdown": {"current": 0, "max_historical": 0, "level": "正常", "detail": ""},
+        "correlation": {"avg": 0, "detail": ""},
+        "alerts": [],
+    }
+
+    holdings = calc_holdings_from_transactions(transactions)
+    active = holdings.get("active", [])
+    if not active:
+        return result
+
+    # --- 1. 集中度分析（HHI指数） ---
+    total_cost = sum(h["totalCost"] for h in active)
+    if total_cost > 0:
+        weights = [h["totalCost"] / total_cost for h in active]
+        hhi = sum(w ** 2 for w in weights) * 10000  # HHI 指数 (0-10000)
+        max_single = max(weights) * 100
+
+        result["concentration"]["hhi"] = round(hhi, 0)
+        result["concentration"]["max_single"] = round(max_single, 1)
+
+        if hhi > 5000:
+            result["concentration"]["level"] = "高度集中"
+            result["concentration"]["detail"] = f"HHI={hhi:.0f}，单一资产占比最高{max_single:.0f}%，建议分散"
+            result["alerts"].append({
+                "type": "concentration",
+                "severity": "warning",
+                "message": f"⚠️ 持仓集中度过高（HHI={hhi:.0f}），最大单品占{max_single:.0f}%，建议分散配置降低风险"
+            })
+        elif hhi > 3000:
+            result["concentration"]["level"] = "适度集中"
+            result["concentration"]["detail"] = f"HHI={hhi:.0f}，集中度适中"
+        else:
+            result["concentration"]["level"] = "分散良好"
+            result["concentration"]["detail"] = f"HHI={hhi:.0f}，分散度良好"
+
+    # --- 2. 回撤监控 ---
+    try:
+        # 计算当前市值和历史最高市值
+        current_market = 0
+        for h in active:
+            code = h["code"]
+            if code == "余额宝":
+                current_market += h["shares"]
+                continue
+            nav_info = get_fund_nav(code)
+            if nav_info and nav_info["nav"] != "N/A":
+                current_market += h["shares"] * float(nav_info["nav"])
+            else:
+                current_market += h["shares"] * h["avgNav"]
+
+        # 简化回撤计算：用总成本+总浮盈历史峰值
+        peak = total_cost * 1.1  # 假设历史高点（简化）
+        if current_market > 0 and peak > 0:
+            drawdown = (peak - current_market) / peak * 100
+            if drawdown > 0:
+                result["drawdown"]["current"] = round(drawdown, 2)
+                if drawdown > 20:
+                    result["drawdown"]["level"] = "严重回撤"
+                    result["alerts"].append({
+                        "type": "drawdown",
+                        "severity": "danger",
+                        "message": f"🔴 当前回撤{drawdown:.1f}%，超过20%警戒线！检查持仓基本面是否变化"
+                    })
+                elif drawdown > 10:
+                    result["drawdown"]["level"] = "中度回撤"
+                    result["alerts"].append({
+                        "type": "drawdown",
+                        "severity": "warning",
+                        "message": f"⚠️ 当前回撤{drawdown:.1f}%，注意风险控制"
+                    })
+                result["drawdown"]["detail"] = f"当前回撤{drawdown:.1f}%"
+    except Exception as e:
+        print(f"[RISK] Drawdown calc failed: {e}")
+
+    # --- 3. 相关性提示 ---
+    stock_count = sum(1 for h in active if h["code"] in ["110020", "050025", "008114"])
+    bond_count = sum(1 for h in active if h["code"] in ["217022"])
+    gold_count = sum(1 for h in active if h["code"] in ["000216"])
+
+    if stock_count >= 2 and bond_count == 0 and gold_count == 0:
+        result["correlation"]["avg"] = 0.75
+        result["correlation"]["detail"] = "持仓以权益类为主，相关性较高，缺少避险资产对冲"
+        result["alerts"].append({
+            "type": "correlation",
+            "severity": "info",
+            "message": "💡 持仓权益资产占比高，建议配置债券/黄金降低组合波动"
+        })
+    elif bond_count > 0 and gold_count > 0:
+        result["correlation"]["avg"] = 0.35
+        result["correlation"]["detail"] = "股债金组合，相关性适中，对冲效果良好"
+    else:
+        result["correlation"]["avg"] = 0.5
+        result["correlation"]["detail"] = "相关性中等"
+
+    return result
+
+
+def calc_smart_dca(base_amount: float, valuation_pct: float) -> dict:
+    """智能定投：根据估值百分位动态调整定投金额
+    低估多买，高估少买，极度高估暂停
+    """
+    if valuation_pct < 20:
+        multiplier = 1.5
+        advice = "极度低估，建议定投 1.5 倍"
+    elif valuation_pct < 30:
+        multiplier = 1.3
+        advice = "低估区间，建议定投 1.3 倍"
+    elif valuation_pct < 50:
+        multiplier = 1.1
+        advice = "偏低估，建议定投 1.1 倍"
+    elif valuation_pct < 70:
+        multiplier = 1.0
+        advice = "估值适中，正常定投"
+    elif valuation_pct < 85:
+        multiplier = 0.7
+        advice = "偏高估，建议定投 0.7 倍"
+    else:
+        multiplier = 0.3
+        advice = "极度高估，建议大幅减少或暂停定投"
+
+    return {
+        "baseAmount": round(base_amount, 2),
+        "multiplier": multiplier,
+        "smartAmount": round(base_amount * multiplier, 2),
+        "advice": advice,
+        "valuationPct": valuation_pct,
+    }
+
+
+def calc_take_profit_strategy(cost: float, market_value: float, profile: str) -> dict:
+    """止盈止损策略：根据风险类型给目标收益率和止损线"""
+    # 不同风险类型的止盈止损参数
+    params = {
+        "保守型": {"target_pct": 15, "stop_loss_pct": -8, "partial_pct": 10},
+        "稳健型": {"target_pct": 20, "stop_loss_pct": -10, "partial_pct": 15},
+        "平衡型": {"target_pct": 30, "stop_loss_pct": -15, "partial_pct": 20},
+        "进取型": {"target_pct": 50, "stop_loss_pct": -20, "partial_pct": 30},
+        "激进型": {"target_pct": 80, "stop_loss_pct": -25, "partial_pct": 40},
+    }
+    p = params.get(profile, params["平衡型"])
+
+    current_pnl_pct = ((market_value - cost) / cost * 100) if cost > 0 else 0
+    target_value = cost * (1 + p["target_pct"] / 100)
+    stop_loss_value = cost * (1 + p["stop_loss_pct"] / 100)
+
+    # 判断当前状态
+    if current_pnl_pct >= p["target_pct"]:
+        status = "reached_target"
+        action = f"🎯 已达止盈目标！建议卖出 {p['partial_pct']}% 锁定利润，剩余继续持有。"
+    elif current_pnl_pct >= p["partial_pct"]:
+        status = "partial_profit"
+        action = f"📈 收益不错（+{current_pnl_pct:.1f}%），可考虑止盈一小部分（20-30%），剩余继续持有。"
+    elif current_pnl_pct <= p["stop_loss_pct"]:
+        status = "stop_loss"
+        action = f"⚠️ 亏损已达 {current_pnl_pct:.1f}%，接近止损线。检查基金基本面是否变化，若无问题可继续持有甚至加仓。"
+    elif current_pnl_pct < 0:
+        status = "in_loss"
+        action = f"📉 当前浮亏 {current_pnl_pct:.1f}%，离止损线还有空间。保持耐心，继续定投摊低成本。"
+    else:
+        status = "holding"
+        action = f"✅ 当前盈利 +{current_pnl_pct:.1f}%，距止盈目标还有 {p['target_pct'] - current_pnl_pct:.1f}%，继续持有。"
+
+    return {
+        "currentPnlPct": round(current_pnl_pct, 2),
+        "targetPct": p["target_pct"],
+        "stopLossPct": p["stop_loss_pct"],
+        "targetValue": round(target_value, 2),
+        "stopLossValue": round(stop_loss_value, 2),
+        "status": status,
+        "action": action,
+        "profile": profile,
+    }
+
+
+# ============================================================
+# V4.5 多因子智能信号引擎（12维：技术面+资金面+基本面+情绪面+宏观面）
+# 借鉴幻方量化多因子体系，散户成本实现专业级分析
+# ============================================================
+
+def generate_daily_signal() -> dict:
+    """生成每日综合交易信号 — 12维多因子融合 + 大师策略"""
+    signal = {
+        "date": datetime.now().strftime("%Y-%m-%d"),
+        "overall": "HOLD",
+        "confidence": 0,
+        "summary": "",
+        "details": [],
+        "masterStrategies": [],
+        "smartDca": None,
+        "sentiment": None,
+        "riskMetrics": None,
+        "version": "4.5",
+    }
+
+    scores = []  # (score, weight, name, detail, category)
+
+    # ===== 技术面因子 (权重合计 25%) =====
+
+    # --- 1. RSI 信号 (8%) ---
+    tech = get_technical_indicators()
+    rsi = tech.get("rsi", 50)
+    if rsi < 25:
+        rsi_score, rsi_detail = 80, f"RSI={rsi}，极度超卖，强烈买入信号"
+    elif rsi < 30:
+        rsi_score, rsi_detail = 60, f"RSI={rsi}，超卖区，偏向买入"
+    elif rsi < 45:
+        rsi_score, rsi_detail = 20, f"RSI={rsi}，偏低，轻度看多"
+    elif rsi <= 55:
+        rsi_score, rsi_detail = 0, f"RSI={rsi}，中性区间"
+    elif rsi <= 70:
+        rsi_score, rsi_detail = -20, f"RSI={rsi}，偏高，注意风险"
+    elif rsi <= 80:
+        rsi_score, rsi_detail = -60, f"RSI={rsi}，超买区，偏向卖出"
+    else:
+        rsi_score, rsi_detail = -80, f"RSI={rsi}，极度超买，强烈卖出信号"
+    scores.append((rsi_score, 0.08, "RSI", rsi_detail, "技术面"))
+
+    # --- 2. MACD 信号 (10%) ---
+    macd = tech.get("macd", {})
+    trend = macd.get("trend", "")
+    if "金叉" in trend:
+        macd_score, macd_detail = 70, f"MACD金叉（{trend}），趋势转多"
+    elif "多头" in trend:
+        macd_score, macd_detail = 30, f"MACD多头排列，上升趋势持续"
+    elif "死叉" in trend:
+        macd_score, macd_detail = -70, f"MACD死叉（{trend}），趋势转空"
+    elif "空头" in trend:
+        macd_score, macd_detail = -30, f"MACD空头排列，下降趋势持续"
+    else:
+        macd_score, macd_detail = 0, "MACD数据不足"
+    scores.append((macd_score, 0.10, "MACD", macd_detail, "技术面"))
+
+    # --- 3. 布林带信号 (7%) ---
+    boll = tech.get("bollinger", {})
+    pos = boll.get("position", "")
+    if "超卖" in pos:
+        boll_score, boll_detail = 60, "价格低于布林下轨，超卖反弹机会"
+    elif "下方" in pos:
+        boll_score, boll_detail = 15, "价格在中轨下方，偏弱但未到极端"
+    elif "上方" in pos:
+        boll_score, boll_detail = -15, "价格在中轨上方，偏强但注意回调"
+    elif "超买" in pos:
+        boll_score, boll_detail = -60, "价格高于布林上轨，超买回调风险"
+    else:
+        boll_score, boll_detail = 0, "布林带数据不足"
+    scores.append((boll_score, 0.07, "布林带", boll_detail, "技术面"))
+
+    # ===== 基本面因子 (权重合计 30%) =====
+
+    # --- 4. 估值百分位 (18%) --- 最重要
+    val = get_valuation_percentile()
+    vp = val.get("percentile", 50)
+    if vp < 15:
+        val_score, val_detail = 90, f"估值百分位{vp}%，极度低估（历史最佳买入区）"
+    elif vp < 30:
+        val_score, val_detail = 60, f"估值百分位{vp}%，低估区间（适合加仓）"
+    elif vp < 50:
+        val_score, val_detail = 20, f"估值百分位{vp}%，偏低估（正常定投）"
+    elif vp < 70:
+        val_score, val_detail = -10, f"估值百分位{vp}%，适中偏高（谨慎加仓）"
+    elif vp < 85:
+        val_score, val_detail = -50, f"估值百分位{vp}%，偏高估（减少定投）"
+    else:
+        val_score, val_detail = -80, f"估值百分位{vp}%，极度高估（建议暂停或减仓）"
+    scores.append((val_score, 0.18, "估值", val_detail, "基本面"))
+
+    # --- 5. 股息率因子 (5%) --- NEW
+    dy = get_dividend_yield()
+    if dy.get("available"):
+        dy_pct = dy.get("percentile", 50)
+        dy_val = dy.get("dividend_yield", 0)
+        if dy_pct > 70:
+            dy_score, dy_detail = 50, f"股息率{dy_val}%（百分位{dy_pct}%），价值凸显"
+        elif dy_pct > 40:
+            dy_score, dy_detail = 10, f"股息率{dy_val}%（百分位{dy_pct}%），中性"
+        else:
+            dy_score, dy_detail = -20, f"股息率{dy_val}%（百分位{dy_pct}%），成长偏好期"
+    else:
+        dy_score, dy_detail = 0, "股息率数据暂不可用"
+    scores.append((dy_score, 0.05, "股息率", dy_detail, "基本面"))
+
+    # --- 6. 国债收益率/股债性价比 (7%) --- NEW
+    treasury = get_treasury_yield()
+    if treasury.get("available"):
+        y10 = treasury.get("yield_10y", 2.5)
+        premium = treasury.get("equity_premium", "")
+        pe = val.get("current_pe", 12)
+        if pe > 0:
+            eq_yield = 1 / pe * 100
+            spread = eq_yield - y10
+            if spread > 4:
+                tr_score, tr_detail = 60, f"10Y国债{y10}%，股债价差{spread:.1f}%，股市极有吸引力"
+            elif spread > 2:
+                tr_score, tr_detail = 30, f"10Y国债{y10}%，股债价差{spread:.1f}%，股市有吸引力"
+            elif spread > 0:
+                tr_score, tr_detail = 0, f"10Y国债{y10}%，股债价差{spread:.1f}%，股债相当"
+            else:
+                tr_score, tr_detail = -40, f"10Y国债{y10}%，股债价差{spread:.1f}%，债券更有吸引力"
+        else:
+            tr_score, tr_detail = 0, f"10Y国债{y10}%，估值数据不足"
+    else:
+        tr_score, tr_detail = 0, "国债收益率数据暂不可用"
+    scores.append((tr_score, 0.07, "股债性价比", tr_detail, "基本面"))
+
+    # ===== 资金面因子 (权重合计 20%) =====
+
+    # --- 7. 北向资金 (10%) --- NEW 聪明钱风向标
+    north = get_northbound_flow()
+    if north.get("available"):
+        flow_5d = north.get("net_flow_5d", 0)
+        flow_today = north.get("net_flow_today", 0)
+        if flow_5d > 100:
+            north_score, north_detail = 70, f"北向资金5日净流入{flow_5d:.0f}亿，今日{flow_today:.0f}亿，外资大举买入"
+        elif flow_5d > 30:
+            north_score, north_detail = 40, f"北向资金5日净流入{flow_5d:.0f}亿，外资持续流入"
+        elif flow_5d > 0:
+            north_score, north_detail = 15, f"北向资金5日净流入{flow_5d:.0f}亿，小幅流入"
+        elif flow_5d > -30:
+            north_score, north_detail = -15, f"北向资金5日净流出{abs(flow_5d):.0f}亿，小幅流出"
+        elif flow_5d > -100:
+            north_score, north_detail = -40, f"北向资金5日净流出{abs(flow_5d):.0f}亿，外资持续撤退"
+        else:
+            north_score, north_detail = -70, f"北向资金5日净流出{abs(flow_5d):.0f}亿，外资大幅撤退"
+    else:
+        north_score, north_detail = 0, "北向资金数据暂不可用"
+    scores.append((north_score, 0.10, "北向资金", north_detail, "资金面"))
+
+    # --- 8. 融资融券 (5%) --- NEW 市场杠杆情绪
+    margin = get_margin_trading()
+    if margin.get("available"):
+        m_change = margin.get("margin_change_5d", 0)
+        m_bal = margin.get("margin_balance", 0)
+        if m_change > 3:
+            margin_score, margin_detail = -30, f"融资余额{m_bal:.0f}亿，5日增{m_change:.1f}%，杠杆快速上升（过热风险）"
+        elif m_change > 1:
+            margin_score, margin_detail = 15, f"融资余额{m_bal:.0f}亿，5日增{m_change:.1f}%，温和加杠杆"
+        elif m_change < -3:
+            margin_score, margin_detail = 30, f"融资余额{m_bal:.0f}亿，5日降{abs(m_change):.1f}%，去杠杆（恐慌中可能见底）"
+        elif m_change < -1:
+            margin_score, margin_detail = -15, f"融资余额{m_bal:.0f}亿，5日降{abs(m_change):.1f}%，温和去杠杆"
+        else:
+            margin_score, margin_detail = 0, f"融资余额{m_bal:.0f}亿，杠杆水平稳定"
+    else:
+        margin_score, margin_detail = 0, "融资融券数据暂不可用"
+    scores.append((margin_score, 0.05, "融资融券", margin_detail, "资金面"))
+
+    # --- 9. SHIBOR 流动性 (5%) --- NEW
+    shibor = get_shibor()
+    if shibor.get("available"):
+        overnight = shibor.get("overnight", 1.5)
+        shibor_trend = shibor.get("trend", "中性")
+        if "宽松" in shibor_trend:
+            shibor_score, shibor_detail = 30, f"SHIBOR隔夜{overnight}%，{shibor_trend}，利好权益市场"
+        elif "收紧" in shibor_trend:
+            shibor_score, shibor_detail = -30, f"SHIBOR隔夜{overnight}%，{shibor_trend}，流动性承压"
+        else:
+            shibor_score, shibor_detail = 0, f"SHIBOR隔夜{overnight}%，{shibor_trend}"
+    else:
+        shibor_score, shibor_detail = 0, "SHIBOR数据暂不可用"
+    scores.append((shibor_score, 0.05, "SHIBOR", shibor_detail, "资金面"))
+
+    # ===== 情绪面因子 (权重合计 15%) =====
+
+    # --- 10. 恐惧贪婪指数 (8%) ---
+    fgi_data = get_fear_greed_index()
+    fgi = fgi_data.get("score", 50)
+    if fgi >= 80:
+        fgi_score, fgi_detail = 80, f"恐惧指数{fgi:.0f}（极度恐惧），别人恐惧时贪婪"
+    elif fgi >= 65:
+        fgi_score, fgi_detail = 40, f"恐惧指数{fgi:.0f}（恐惧），市场偏悲观"
+    elif fgi >= 40:
+        fgi_score, fgi_detail = 0, f"恐惧指数{fgi:.0f}（中性）"
+    elif fgi >= 25:
+        fgi_score, fgi_detail = -40, f"恐惧指数{fgi:.0f}（贪婪），市场偏乐观"
+    else:
+        fgi_score, fgi_detail = -80, f"恐惧指数{fgi:.0f}（极度贪婪），别人贪婪时恐惧"
+    scores.append((fgi_score, 0.08, "恐贪指数", fgi_detail, "情绪面"))
+
+    # --- 11. LLM新闻情绪 (7%) --- NEW 核心创新
+    sentiment = get_news_sentiment_score()
+    if sentiment.get("available"):
+        sent_score_raw = sentiment.get("score", 0)
+        sent_level = sentiment.get("level", "中性")
+        sent_source = sentiment.get("source", "unknown")
+        # 情绪分数直接映射（-100~+100 → -80~+80）
+        sent_score = max(-80, min(80, int(sent_score_raw * 0.8)))
+        sent_detail = f"新闻情绪{sent_score_raw:+d}分（{sent_level}），来源:{sent_source}"
+        if sentiment.get("reason"):
+            sent_detail += f"，{sentiment['reason']}"
+    else:
+        sent_score, sent_detail = 0, "新闻情绪数据暂不可用"
+    scores.append((sent_score, 0.07, "新闻情绪", sent_detail, "情绪面"))
+    signal["sentiment"] = sentiment
+
+    # ===== 宏观面因子 (权重 10%) =====
+
+    # --- 12. 宏观经济信号 (10%) ---
+    macro = get_macro_calendar()
+    macro_score = 0
+    macro_parts = []
+    for e in macro:
+        v = e.get("value", "")
+        name = e.get("name", "")
+        try:
+            num = float(str(v).replace("%", ""))
+            if "PMI" in name:
+                if num > 50:
+                    macro_score += 15
+                    macro_parts.append(f"PMI={num}(扩张)")
+                else:
+                    macro_score -= 15
+                    macro_parts.append(f"PMI={num}(收缩)")
+            elif "M2" in name:
+                if num > 8:
+                    macro_score += 10
+                    macro_parts.append(f"M2增速{num}%(宽松)")
+                elif num < 6:
+                    macro_score -= 10
+                    macro_parts.append(f"M2增速{num}%(偏紧)")
+        except (ValueError, TypeError):
+            pass
+    macro_detail = "宏观环境：" + ("、".join(macro_parts) if macro_parts else "暂无可量化数据")
+    scores.append((max(-50, min(50, macro_score)), 0.10, "宏观经济", macro_detail, "宏观面"))
+
+    # ===== 加权综合 =====
+    total_score = sum(s * w for s, w, _, _, _ in scores)
+    total_weight = sum(w for _, w, _, _, _ in scores)
+    final_score = total_score / total_weight if total_weight > 0 else 0
+
+    # --- 信号判定 ---
+    if final_score >= 40:
+        signal["overall"] = "STRONG_BUY"
+        signal["summary"] = "🟢 强烈买入信号 — 12维多因子共振看多，是较好的加仓时机"
+    elif final_score >= 20:
+        signal["overall"] = "BUY"
+        signal["summary"] = "🟢 买入信号 — 整体偏向看多，适合按计划定投或小额加仓"
+    elif final_score >= -20:
+        signal["overall"] = "HOLD"
+        signal["summary"] = "🟡 持有观望 — 信号中性，维持当前仓位，不急着操作"
+    elif final_score >= -40:
+        signal["overall"] = "SELL"
+        signal["summary"] = "🟠 减仓信号 — 整体偏空，建议减少定投金额或部分止盈"
+    else:
+        signal["overall"] = "STRONG_SELL"
+        signal["summary"] = "🔴 强烈减仓 — 多个指标共振看空，建议止盈或暂停买入"
+
+    signal["confidence"] = min(abs(final_score), 100)
+    signal["score"] = round(final_score, 1)
+    signal["details"] = [
+        {"name": name, "score": round(s, 1), "weight": f"{w*100:.0f}%", "detail": detail, "category": cat}
+        for s, w, name, detail, cat in scores
+    ]
+
+    # 按类别分组
+    signal["factorGroups"] = {}
+    for s, w, name, detail, cat in scores:
+        if cat not in signal["factorGroups"]:
+            signal["factorGroups"][cat] = {"factors": [], "totalWeight": 0, "weightedScore": 0}
+        signal["factorGroups"][cat]["factors"].append({"name": name, "score": round(s, 1), "weight": f"{w*100:.0f}%"})
+        signal["factorGroups"][cat]["totalWeight"] += w
+        signal["factorGroups"][cat]["weightedScore"] += s * w
+
+    # --- 大师策略 ---
+    signal["masterStrategies"] = _apply_master_strategies(val, fgi_data, tech)
+
+    # --- 智能定投建议 ---
+    signal["smartDca"] = calc_smart_dca(1000, vp)
+
+    return signal
+
+
+def _apply_master_strategies(val: dict, fgi_data: dict, tech: dict) -> list:
+    """应用投资大师策略"""
+    strategies = []
+    vp = val.get("percentile", 50)
+    pe = val.get("current_pe", 0)
+    fgi = fgi_data.get("score", 50)
+    rsi = tech.get("rsi", 50)
+
+    # 巴菲特价值投资（幻方量化逻辑：估值为核心，情绪为辅助）
+    buffett_signal = "HOLD"
+    if vp < 20 and fgi >= 65:
+        buffett_signal = "STRONG_BUY"
+        buffett_msg = f"🔥 极度低估({vp}%) + 市场恐惧({fgi:.0f})！巴菲特的黄金时刻——\"别人恐惧时我贪婪\"。"
+    elif vp < 30 and fgi >= 50:
+        buffett_signal = "BUY"
+        buffett_msg = f"✅ 估值低({vp}%) + 市场偏恐惧({fgi:.0f})，巴菲特会果断买入优质资产。"
+    elif vp < 40:
+        buffett_signal = "HOLD_BUY"
+        buffett_msg = f"估值尚可({vp}%)，巴菲特会耐心等待更好价格，但已可以开始建仓。"
+    elif vp >= 85:
+        buffett_signal = "SELL"
+        buffett_msg = f"⚠️ 极度高估({vp}%)！巴菲特会说\"无论市场情绪如何，这个价格不值得持有\"。建议减仓或暂停买入。"
+    elif vp > 70:
+        buffett_signal = "SELL" if fgi < 40 else "HOLD"
+        buffett_msg = f"⚠️ 估值偏高({vp}%){'+ 市场贪婪(' + str(round(fgi)) + ')' if fgi < 40 else ''}，巴菲特会谨慎——\"别人贪婪时我恐惧\"。" if fgi < 40 else f"估值偏高({vp}%)但市场情绪({fgi:.0f})未极端贪婪，巴菲特会持仓观望但不再加仓。"
+    else:
+        buffett_msg = f"估值{vp}%处于中间区域，巴菲特会说\"价格合理但不便宜\"，保持耐心等待。"
+    strategies.append({
+        "master": "巴菲特",
+        "philosophy": "价值投资：低估时买入优质资产，长期持有",
+        "signal": buffett_signal,
+        "message": buffett_msg,
+        "icon": "🧓",
+    })
+
+    # 格雷厄姆安全边际
+    graham_signal = "HOLD"
+    if vp < 25:
+        graham_signal = "BUY"
+        graham_msg = f"✅ 安全边际充足！估值百分位{vp}%，远低于内在价值。格雷厄姆建议果断买入。"
+    elif vp < 40:
+        graham_signal = "HOLD_BUY"
+        graham_msg = f"安全边际尚可({vp}%)。格雷厄姆会建议分批买入，不要一次性重仓。"
+    elif vp > 75:
+        graham_signal = "SELL"
+        graham_msg = f"⚠️ 安全边际不足！估值百分位{vp}%，格雷厄姆会建议减仓或换入防御性资产。"
+    else:
+        graham_msg = f"估值{vp}%在中间区域。格雷厄姆会说\"保持耐心，等待安全边际出现\"。"
+    strategies.append({
+        "master": "格雷厄姆",
+        "philosophy": "安全边际：只在价格远低于内在价值时买入",
+        "signal": graham_signal,
+        "message": graham_msg,
+        "icon": "📚",
+    })
+
+    # 彼得·林奇成长投资
+    lynch_signal = "HOLD"
+    macro = get_macro_calendar()
+    pmi_val = None
+    for e in macro:
+        if "PMI" in e.get("name", ""):
+            try:
+                pmi_val = float(str(e.get("value", "")).replace("%", ""))
+            except (ValueError, TypeError):
+                pass
+    if pmi_val and pmi_val > 50 and vp < 50:
+        lynch_signal = "BUY"
+        lynch_msg = f"✅ 经济扩张(PMI={pmi_val}) + 估值合理({vp}%)。林奇会说\"跟着经济增长投资\"。"
+    elif pmi_val and pmi_val < 50 and vp > 60:
+        lynch_signal = "SELL"
+        lynch_msg = f"⚠️ 经济收缩(PMI={pmi_val}) + 估值偏高({vp}%)。林奇会建议转向防御性持仓。"
+    else:
+        lynch_msg = f"林奇重视\"用日常观察选股\"。宏观面{'扩张' if (pmi_val and pmi_val > 50) else '收缩' if pmi_val else '未知'}，估值{vp}%，建议关注消费领域基金。"
+    strategies.append({
+        "master": "彼得·林奇",
+        "philosophy": "成长投资：寻找被低估的成长型企业",
+        "signal": lynch_signal,
+        "message": lynch_msg,
+        "icon": "🔍",
+    })
+
+    # 约翰·博格 (Vanguard 指数基金之父)
+    bogle_msg = "📌 博格指数投资策略永远是：坚持定投，不要择时，降低费用，长期持有。"
+    if vp < 30:
+        bogle_msg += f"\n当前估值{vp}%偏低，定投的筹码在未来会更有价值。"
+    elif vp > 70:
+        bogle_msg += f"\n当前估值{vp}%偏高，但博格会说\"不要试图择时，继续你的定投计划\"。"
+    strategies.append({
+        "master": "约翰·博格",
+        "philosophy": "指数投资：低成本指数基金 + 长期持有 + 定期定投",
+        "signal": "HOLD",
+        "message": bogle_msg,
+        "icon": "📊",
+    })
+
+    return strategies
+
+
+# ============================================================
+# 策略回测系统
+# ============================================================
+
+def run_backtest(strategy: str = "smart_dca", years: int = 3, monthly_amount: float = 1000) -> dict:
+    """简易策略回测 — 用沪深300历史数据"""
+    result = {
+        "strategy": strategy,
+        "years": years,
+        "monthlyAmount": monthly_amount,
+        "totalInvested": 0,
+        "finalValue": 0,
+        "totalReturn": 0,
+        "totalReturnPct": 0,
+        "annualizedReturn": 0,
+        "maxDrawdown": 0,
+        "months": [],
+        "comparison": {},
+    }
+
+    try:
+        import akshare as ak
+        df = ak.stock_zh_index_daily(symbol="sh000300")
+        if df is None or len(df) < years * 250:
+            return {**result, "error": "历史数据不足"}
+
+        # 取最近 N 年数据，按月采样
+        total_days = years * 250
+        daily = df.tail(total_days)
+        closes = daily["close"].values
+        dates = daily.index if hasattr(daily.index, '__len__') else list(range(len(daily)))
+
+        # 每月取一个数据点（约每 20 个交易日）
+        monthly_prices = []
+        monthly_dates = []
+        for i in range(0, len(closes), 20):
+            monthly_prices.append(float(closes[i]))
+            if hasattr(dates[i], 'strftime'):
+                monthly_dates.append(dates[i].strftime("%Y-%m"))
+            else:
+                monthly_dates.append(f"M{i//20+1}")
+
+        if len(monthly_prices) < 12:
+            return {**result, "error": "月度数据不足"}
+
+        # 计算近3年估值百分位序列（用价格百分位近似）
+        all_closes = [float(c) for c in df.tail(total_days + 250)["close"].values]
+
+        # --- 固定定投策略 ---
+        fix_shares = 0
+        fix_invested = 0
+        fix_curve = []
+        for i, price in enumerate(monthly_prices):
+            shares_bought = monthly_amount / price
+            fix_shares += shares_bought
+            fix_invested += monthly_amount
+            fix_curve.append({
+                "month": monthly_dates[i] if i < len(monthly_dates) else f"M{i+1}",
+                "invested": round(fix_invested, 2),
+                "value": round(fix_shares * price, 2),
+            })
+
+        fix_final = fix_shares * monthly_prices[-1]
+        fix_return = fix_final - fix_invested
+        fix_return_pct = (fix_return / fix_invested * 100) if fix_invested > 0 else 0
+
+        # --- 智能定投策略 ---
+        smart_shares = 0
+        smart_invested = 0
+        smart_curve = []
+        for i, price in enumerate(monthly_prices):
+            # 计算当月的价格百分位（用前 N 个月的价格范围）
+            lookback = all_closes[:len(all_closes) - len(monthly_prices) + i + 1]
+            if len(lookback) > 60:
+                lookback_recent = lookback[-750:]  # 近3年
+                pct = sum(1 for p in lookback_recent if p <= price) / len(lookback_recent) * 100
+            else:
+                pct = 50
+
+            # 根据估值调整定投金额
+            dca = calc_smart_dca(monthly_amount, pct)
+            actual_amount = dca["smartAmount"]
+
+            shares_bought = actual_amount / price
+            smart_shares += shares_bought
+            smart_invested += actual_amount
+            smart_curve.append({
+                "month": monthly_dates[i] if i < len(monthly_dates) else f"M{i+1}",
+                "invested": round(smart_invested, 2),
+                "value": round(smart_shares * price, 2),
+                "multiplier": dca["multiplier"],
+            })
+
+        smart_final = smart_shares * monthly_prices[-1]
+        smart_return = smart_final - smart_invested
+        smart_return_pct = (smart_return / smart_invested * 100) if smart_invested > 0 else 0
+
+        # --- 计算最大回撤 ---
+        def calc_max_drawdown(curve):
+            peak = 0
+            max_dd = 0
+            for pt in curve:
+                v = pt["value"]
+                if v > peak:
+                    peak = v
+                dd = (peak - v) / peak * 100 if peak > 0 else 0
+                if dd > max_dd:
+                    max_dd = dd
+            return round(max_dd, 2)
+
+        # --- 年化收益率 ---
+        n_years = len(monthly_prices) / 12
+        fix_annual = ((1 + fix_return_pct / 100) ** (1 / n_years) - 1) * 100 if n_years > 0 and fix_return_pct > -100 else 0
+        smart_annual = ((1 + smart_return_pct / 100) ** (1 / n_years) - 1) * 100 if n_years > 0 and smart_return_pct > -100 else 0
+
+        # --- V4.5 增强回测指标（借鉴幻方量化科学化回测）---
+        def calc_advanced_metrics(curve, annual_return):
+            """计算信息比率IR、卡玛比率、胜率、盈亏比、Sortino比率"""
+            metrics = {"ir": 0, "calmar": 0, "winRate": 0, "profitLossRatio": 0, "sortino": 0}
+            if len(curve) < 6:
+                return metrics
+
+            # 月度收益率序列
+            monthly_returns = []
+            for i in range(1, len(curve)):
+                prev_val = curve[i-1]["value"]
+                curr_val = curve[i]["value"]
+                if prev_val > 0:
+                    monthly_returns.append((curr_val - prev_val) / prev_val * 100)
+
+            if not monthly_returns:
+                return metrics
+
+            # 基准月度收益（沪深300指数的月度涨跌）
+            benchmark_returns = []
+            for i in range(1, len(monthly_prices)):
+                if monthly_prices[i-1] > 0:
+                    benchmark_returns.append((monthly_prices[i] - monthly_prices[i-1]) / monthly_prices[i-1] * 100)
+            # 对齐长度
+            min_len = min(len(monthly_returns), len(benchmark_returns))
+            monthly_returns = monthly_returns[:min_len]
+            benchmark_returns = benchmark_returns[:min_len]
+
+            # 1. 信息比率 IR = (策略收益 - 基准收益) / 跟踪误差
+            if min_len > 3:
+                excess = [monthly_returns[i] - benchmark_returns[i] for i in range(min_len)]
+                avg_excess = sum(excess) / len(excess)
+                tracking_error = (sum((e - avg_excess) ** 2 for e in excess) / len(excess)) ** 0.5
+                metrics["ir"] = round(avg_excess / tracking_error * (12 ** 0.5), 2) if tracking_error > 0.01 else 0
+
+            # 2. 卡玛比率 = 年化收益率 / 最大回撤
+            max_dd = calc_max_drawdown(curve)
+            metrics["calmar"] = round(annual_return / max_dd, 2) if max_dd > 0.1 else 99.99
+
+            # 3. 胜率 = 正收益月数 / 总月数
+            wins = sum(1 for r in monthly_returns if r > 0)
+            metrics["winRate"] = round(wins / len(monthly_returns) * 100, 1) if monthly_returns else 0
+
+            # 4. 盈亏比 = 平均盈利 / 平均亏损
+            gains = [r for r in monthly_returns if r > 0]
+            losses = [abs(r) for r in monthly_returns if r < 0]
+            avg_gain = sum(gains) / len(gains) if gains else 0
+            avg_loss = sum(losses) / len(losses) if losses else 0.01
+            metrics["profitLossRatio"] = round(avg_gain / avg_loss, 2) if avg_loss > 0.01 else 99.99
+
+            # 5. Sortino 比率 = (收益-无风险利率) / 下行标准差
+            risk_free_monthly = 0.15  # 假设年化1.8%/12
+            downside = [r for r in monthly_returns if r < risk_free_monthly]
+            if downside:
+                downside_std = (sum((r - risk_free_monthly) ** 2 for r in downside) / len(downside)) ** 0.5
+                avg_return = sum(monthly_returns) / len(monthly_returns)
+                metrics["sortino"] = round((avg_return - risk_free_monthly) / downside_std * (12 ** 0.5), 2) if downside_std > 0.01 else 0
+
+            return metrics
+
+        fix_metrics = calc_advanced_metrics(fix_curve, fix_annual)
+        smart_metrics = calc_advanced_metrics(smart_curve, smart_annual)
+
+        result.update({
+            "totalInvested": round(smart_invested, 2),
+            "finalValue": round(smart_final, 2),
+            "totalReturn": round(smart_return, 2),
+            "totalReturnPct": round(smart_return_pct, 2),
+            "annualizedReturn": round(smart_annual, 2),
+            "maxDrawdown": calc_max_drawdown(smart_curve),
+            "advancedMetrics": smart_metrics,
+            "months": smart_curve,
+            "comparison": {
+                "fixedDca": {
+                    "invested": round(fix_invested, 2),
+                    "finalValue": round(fix_final, 2),
+                    "totalReturn": round(fix_return, 2),
+                    "totalReturnPct": round(fix_return_pct, 2),
+                    "annualizedReturn": round(fix_annual, 2),
+                    "maxDrawdown": calc_max_drawdown(fix_curve),
+                    "advancedMetrics": fix_metrics,
+                    "months": fix_curve,
+                },
+                "smartDca": {
+                    "invested": round(smart_invested, 2),
+                    "finalValue": round(smart_final, 2),
+                    "totalReturn": round(smart_return, 2),
+                    "totalReturnPct": round(smart_return_pct, 2),
+                    "annualizedReturn": round(smart_annual, 2),
+                    "maxDrawdown": calc_max_drawdown(smart_curve),
+                    "advancedMetrics": smart_metrics,
+                    "months": smart_curve,
+                },
+                "advantage": round(smart_return_pct - fix_return_pct, 2),
+            },
+        })
+
+    except Exception as e:
+        print(f"[BACKTEST] Failed: {e}")
+        import traceback; traceback.print_exc()
+        result["error"] = str(e)
+
+    return result
+
 
 # ---- API 路由 ----
 
