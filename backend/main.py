@@ -20,7 +20,7 @@ from fastapi import FastAPI, UploadFile, File, Form, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.staticfiles import StaticFiles
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, StreamingResponse
 
 # ---- 从 services 导入业务逻辑 ----
 from config import DATA_DIR, USERS_DIR, RECEIPTS_DIR
@@ -1123,8 +1123,102 @@ async def chat_analysis(req: ChatRequest):
     return {"reply": reply, "source": "rules"}
 
 
+# ---- API: AI 对话分析（SSE 流式）----
+
+@app.post("/api/chat/stream")
+async def chat_analysis_stream(req: ChatRequest):
+    """AI 对话分析 — SSE 流式响应，逐字输出"""
+    user_msg = req.message.strip()
+    if not user_msg:
+        raise HTTPException(400, "消息不能为空")
+
+    market_ctx = _build_market_context()
+    portfolio_ctx = _build_portfolio_context(req.portfolio) if req.portfolio else "用户尚未建仓。"
+
+    api_key = os.environ.get("OPENAI_API_KEY") or os.environ.get("LLM_API_KEY")
+    api_base = os.environ.get("LLM_API_BASE", "https://api.openai.com/v1")
+    model = os.environ.get("LLM_MODEL", "gpt-4o-mini")
+
+    if not api_key:
+        # 无 API key → 规则引擎降级，一次性返回
+        reply = _rule_based_reply(user_msg, market_ctx, portfolio_ctx)
+        async def rules_gen():
+            yield f"data: {json.dumps({'delta': reply, 'source': 'rules', 'done': True}, ensure_ascii=False)}\n\n"
+        return StreamingResponse(rules_gen(), media_type="text/event-stream",
+                                 headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
+
+    system_prompt = f"""你是「钱袋子」的 AI 理财分析师。你的职责：
+1. 用通俗易懂的中文回答用户的理财问题
+2. 基于真实市场数据给出分析（不编造数据）
+3. 永远提醒用户"投资有风险"
+4. 不推荐具体买卖时点，只分析趋势和逻辑
+5. 回答控制在 200 字以内，简洁有力
+6. 分析政策对行业和基金的影响（如降息利好债券、关税利空出口等）
+7. 根据新闻事件预判可能的市场趋势（用"可能""趋势"等词汇，不用"一定""必然"）
+8. 如果用户问到政策/新闻，结合下方的事件分析给出解读
+
+当前市场数据：
+{market_ctx}
+
+用户持仓：
+{portfolio_ctx}"""
+
+    async def stream_gen():
+        import httpx
+        try:
+            async with httpx.AsyncClient(timeout=60) as client:
+                async with client.stream(
+                    "POST",
+                    f"{api_base}/chat/completions",
+                    headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
+                    json={
+                        "model": model,
+                        "messages": [
+                            {"role": "system", "content": system_prompt},
+                            {"role": "user", "content": user_msg},
+                        ],
+                        "max_tokens": 500,
+                        "temperature": 0.7,
+                        "stream": True,
+                    },
+                ) as resp:
+                    if resp.status_code != 200:
+                        # LLM 返回错误 → 降级规则引擎
+                        reply = _rule_based_reply(user_msg, market_ctx, portfolio_ctx)
+                        yield f"data: {json.dumps({'delta': reply, 'source': 'rules', 'done': True}, ensure_ascii=False)}\n\n"
+                        return
+                    async for line in resp.aiter_lines():
+                        if not line.startswith("data: "):
+                            continue
+                        payload = line[6:]
+                        if payload.strip() == "[DONE]":
+                            yield f"data: {json.dumps({'delta': '', 'source': 'ai', 'done': True}, ensure_ascii=False)}\n\n"
+                            return
+                        try:
+                            chunk = json.loads(payload)
+                            delta = chunk.get("choices", [{}])[0].get("delta", {}).get("content", "")
+                            if delta:
+                                yield f"data: {json.dumps({'delta': delta, 'source': 'ai', 'done': False}, ensure_ascii=False)}\n\n"
+                        except (json.JSONDecodeError, IndexError, KeyError):
+                            continue
+        except Exception as e:
+            print(f"[CHAT-STREAM] LLM stream failed: {e}")
+            reply = _rule_based_reply(user_msg, market_ctx, portfolio_ctx)
+            yield f"data: {json.dumps({'delta': reply, 'source': 'rules', 'done': True}, ensure_ascii=False)}\n\n"
+
+    return StreamingResponse(stream_gen(), media_type="text/event-stream",
+                             headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
+
+
+# ---- 市场上下文缓存（减少每次对话的预处理延迟）----
+_market_ctx_cache = {"text": "", "ts": 0}
+_MARKET_CTX_TTL = 300  # 5 分钟缓存
+
 def _build_market_context() -> str:
-    """构建市场数据上下文（含恐惧贪婪、技术指标、新闻）"""
+    """构建市场数据上下文（含恐惧贪婪、技术指标、新闻），5分钟缓存"""
+    now = time.time()
+    if _market_ctx_cache["text"] and (now - _market_ctx_cache["ts"]) < _MARKET_CTX_TTL:
+        return _market_ctx_cache["text"]
     lines = []
     try:
         fgi_data = get_fear_greed_index()
@@ -1197,7 +1291,10 @@ def _build_market_context() -> str:
     except Exception:
         pass
 
-    return "\n".join(lines) if lines else "暂无市场数据"
+    result = "\n".join(lines) if lines else "暂无市场数据"
+    _market_ctx_cache["text"] = result
+    _market_ctx_cache["ts"] = time.time()
+    return result
 
 
 def _build_portfolio_context(p: Portfolio) -> str:

@@ -265,6 +265,7 @@ body{font-family:'Noto Sans SC',-apple-system,sans-serif;background:var(--bg);co
 .chat-msg.user{background:var(--accent);color:#000;align-self:flex-end;border-bottom-right-radius:4px}.chat-msg.bot{background:var(--bg2);color:var(--text);align-self:flex-start;border-bottom-left-radius:4px}
 .chat-msg .src-tag{display:inline-block;font-size:10px;color:var(--text2);margin-top:8px;padding:2px 6px;background:var(--bg3);border-radius:4px}
 .chat-typing{display:flex;gap:4px;padding:12px 16px}.chat-typing span{width:8px;height:8px;background:var(--text2);border-radius:50%;animation:typingDot 1.4s infinite}.chat-typing span:nth-child(2){animation-delay:.2s}.chat-typing span:nth-child(3){animation-delay:.4s}
+.stream-cursor{display:inline;animation:blink 0.8s step-end infinite;color:var(--accent);font-weight:bold}@keyframes blink{50%{opacity:0}}
 .chat-input-bar{display:flex;gap:8px;padding:12px 0}.chat-input{flex:1;background:var(--bg2);border:2px solid var(--bg3);color:var(--text);padding:12px 16px;font-size:15px;border-radius:24px;outline:none;font-family:inherit}.chat-input:focus{border-color:var(--accent)}
 .chat-send{background:var(--accent);color:#000;border:none;width:44px;height:44px;border-radius:50%;font-size:18px;cursor:pointer;display:flex;align-items:center;justify-content:center}.chat-send:disabled{opacity:.4}
 .chat-suggestions{display:flex;gap:8px;flex-wrap:wrap;padding:8px 0}.chat-suggest-btn{background:var(--bg2);border:1px solid var(--bg3);color:var(--text2);padding:8px 14px;border-radius:20px;font-size:13px;cursor:pointer;font-family:inherit}.chat-suggest-btn:active{background:var(--accent);color:#000}
@@ -723,7 +724,29 @@ $('#app').innerHTML=`<div class="chat-page"><div class="chat-header"><h2>🤖 AI
 async function sendChat(text){const inp=document.getElementById('chatIn');const msg=text||(inp?inp.value.trim():'');if(!msg)return;if(inp)inp.value='';
 const sg=document.getElementById('chatSugs');if(sg)sg.style.display='none';
 chatMessages.push({role:'user',text:msg});appendMsg('user',msg);appendTyping();
-if(API_AVAILABLE){try{const p=loadPortfolio();const r=await fetch(API_BASE+'/chat',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({message:msg,portfolio:p.holdings.length?p:null})});rmTyping();if(r.ok){const d=await r.json();chatMessages.push({role:'bot',text:d.reply,src:d.source});appendMsg('bot',d.reply,d.source);return}}catch{}}
+if(API_AVAILABLE){try{const p=loadPortfolio();
+const r=await fetch(API_BASE+'/chat/stream',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({message:msg,portfolio:p.holdings.length?p:null})});
+rmTyping();
+if(r.ok&&r.body){
+// SSE 流式逐字渲染
+const el=document.getElementById('chatMsgs');if(!el)return;
+const botDiv=document.createElement('div');botDiv.className='chat-msg bot';botDiv.innerHTML='<span class="stream-cursor">▊</span>';el.appendChild(botDiv);scrollChat();
+let fullText='',source='ai';
+const reader=r.body.getReader();const dec=new TextDecoder();let buf='';
+while(true){const{done,value}=await reader.read();if(done)break;
+buf+=dec.decode(value,{stream:true});
+const lines=buf.split('\n');buf=lines.pop()||'';
+for(const line of lines){if(!line.startsWith('data: '))continue;
+try{const d=JSON.parse(line.slice(6));if(d.source)source=d.source;
+if(d.delta){fullText+=d.delta;botDiv.innerHTML=fullText+'<span class="stream-cursor">▊</span>';scrollChat()}
+if(d.done){botDiv.innerHTML=fullText+`<div class="src-tag">${source==='ai'?'AI分析':'规则引擎'}</div>`;scrollChat()}}catch{}}}
+// 处理剩余 buffer
+if(buf.startsWith('data: ')){try{const d=JSON.parse(buf.slice(6));if(d.delta)fullText+=d.delta;if(d.source)source=d.source}catch{}}
+botDiv.innerHTML=fullText+`<div class="src-tag">${source==='ai'?'AI分析':'规则引擎'}</div>`;scrollChat();
+chatMessages.push({role:'bot',text:fullText,src:source});return}
+// 非流式降级（旧接口兼容）
+if(r.ok){const d=await r.json();chatMessages.push({role:'bot',text:d.reply,src:d.source});appendMsg('bot',d.reply,d.source);return}
+}catch(e){console.warn('Chat stream error:',e)}}
 rmTyping();const fb='后端未连接，无法获取实时数据。请确保后端运行中。';chatMessages.push({role:'bot',text:fb,src:'offline'});appendMsg('bot',fb,'offline')}
 
 function appendMsg(r,t,src){const el=document.getElementById('chatMsgs');if(!el)return;const d=document.createElement('div');d.className='chat-msg '+r;d.innerHTML=t+(src?`<div class="src-tag">${src==='ai'?'AI分析':src==='rules'?'规则引擎':'离线'}</div>`:'');el.appendChild(d);scrollChat()}
