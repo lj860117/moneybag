@@ -6,10 +6,13 @@
 // ============================================================
 
 // ---- API 配置 ----
+// 腾讯云数据引擎地址（部署后替换为实际 IP:端口）
+const DATA_ENGINE_URL = localStorage.getItem('moneybag_engine') || '';
 const API_BASE = (() => {
   const h = location.hostname;
   if (h === 'localhost' || h === '127.0.0.1' || h.startsWith('192.168.')) return 'http://localhost:8000/api';
-  return '/api'; // Railway 部署：同源相对路径
+  if (DATA_ENGINE_URL) return DATA_ENGINE_URL + '/api';
+  return '/api'; // Railway 兜底
 })();
 let API_AVAILABLE = false;
 
