@@ -984,23 +984,22 @@ ${macro.length?macro.map((e,i)=>{const mkey=Object.keys(macroKeyMap).find(k=>e.n
 
 // 基金智能筛选页
 let fundPickType='all';let fundPickSort='score';
+function _fundPickBtnsHTML(){
+return `<div id="fundPickTypeBar" style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:10px">
+${[['all','全部'],['stock','股票型'],['bond','债券型'],['index','指数型'],['qdii','QDII']].map(([k,l])=>`<button class="section-tab ${fundPickType===k?'active':''}" onclick="fundPickType='${k}';_updateFundPickBtns();renderFundPickResult()" style="font-size:12px;padding:5px 10px">${l}</button>`).join('')}
+</div>
+<div id="fundPickSortBar" style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:12px">
+${[['score','📊 综合评分'],['1y','📈 近1年'],['3y','📈 近3年'],['ytd','📈 今年来']].map(([k,l])=>`<button class="section-tab ${fundPickSort===k?'active':''}" onclick="fundPickSort='${k}';_updateFundPickBtns();renderFundPickResult()" style="font-size:11px;padding:4px 8px">${l}</button>`).join('')}
+</div>`}
+function _updateFundPickBtns(){
+const tb=document.getElementById('fundPickTypeBar');const sb=document.getElementById('fundPickSortBar');
+if(tb)tb.innerHTML=[['all','全部'],['stock','股票型'],['bond','债券型'],['index','指数型'],['qdii','QDII']].map(([k,l])=>`<button class="section-tab ${fundPickType===k?'active':''}" onclick="fundPickType='${k}';_updateFundPickBtns();renderFundPickResult()" style="font-size:12px;padding:5px 10px">${l}</button>`).join('');
+if(sb)sb.innerHTML=[['score','📊 综合评分'],['1y','📈 近1年'],['3y','📈 近3年'],['ytd','📈 今年来']].map(([k,l])=>`<button class="section-tab ${fundPickSort===k?'active':''}" onclick="fundPickSort='${k}';_updateFundPickBtns();renderFundPickResult()" style="font-size:11px;padding:4px 8px">${l}</button>`).join('')}
 async function renderFundPick(el){
-el.innerHTML=`<div class="dashboard-card">
+el.innerHTML=`<div class="dashboard-card" style="overflow:hidden">
 <div class="dashboard-card-title">🔍 基金智能筛选</div>
-<div style="font-size:12px;color:var(--text2);margin-bottom:12px;word-break:break-all">多维打分：近1年35%+近3年25%+近6月20%+近3月10%+费率</div>
-<div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:10px">
-<button class="section-tab ${fundPickType==='all'?'active':''}" onclick="fundPickType='all';renderFundPickResult()" style="font-size:12px;padding:5px 10px">全部</button>
-<button class="section-tab ${fundPickType==='stock'?'active':''}" onclick="fundPickType='stock';renderFundPickResult()" style="font-size:12px;padding:5px 10px">股票型</button>
-<button class="section-tab ${fundPickType==='bond'?'active':''}" onclick="fundPickType='bond';renderFundPickResult()" style="font-size:12px;padding:5px 10px">债券型</button>
-<button class="section-tab ${fundPickType==='index'?'active':''}" onclick="fundPickType='index';renderFundPickResult()" style="font-size:12px;padding:5px 10px">指数型</button>
-<button class="section-tab ${fundPickType==='qdii'?'active':''}" onclick="fundPickType='qdii';renderFundPickResult()" style="font-size:12px;padding:5px 10px">QDII</button>
-</div>
-<div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:12px">
-<button class="section-tab ${fundPickSort==='score'?'active':''}" onclick="fundPickSort='score';renderFundPickResult()" style="font-size:11px;padding:4px 8px">📊 综合</button>
-<button class="section-tab ${fundPickSort==='1y'?'active':''}" onclick="fundPickSort='1y';renderFundPickResult()" style="font-size:11px;padding:4px 8px">📈 近1年</button>
-<button class="section-tab ${fundPickSort==='3y'?'active':''}" onclick="fundPickSort='3y';renderFundPickResult()" style="font-size:11px;padding:4px 8px">📈 近3年</button>
-<button class="section-tab ${fundPickSort==='ytd'?'active':''}" onclick="fundPickSort='ytd';renderFundPickResult()" style="font-size:11px;padding:4px 8px">📈 今年来</button>
-</div>
+<div style="font-size:12px;color:var(--text2);margin-bottom:12px">多维度打分：近1年(35%)+近3年(25%)+近6月(20%)+近3月(10%)+费率</div>
+${_fundPickBtnsHTML()}
 <div id="fundPickList"><div style="text-align:center;padding:20px;color:var(--text2)"><div class="loading-spinner" style="width:24px;height:24px;margin:0 auto 8px;border-width:2px"></div>正在筛选基金...</div></div>
 </div>`;
 renderFundPickResult()}
@@ -1041,9 +1040,9 @@ setExplain('fund_'+f.code,f.name+' ('+f.code+')',
 
 // AI 多因子选股页
 async function renderStockPick(el){
-el.innerHTML=`<div class="dashboard-card">
+el.innerHTML=`<div class="dashboard-card" style="overflow:hidden">
 <div class="dashboard-card-title">🧠 AI 多因子选股</div>
-<div style="font-size:12px;color:var(--text2);margin-bottom:8px;word-break:break-all">7维打分：价值·成长·质量·动量·风险·流动性·舆情</div>
+<div style="font-size:12px;color:var(--text2);margin-bottom:8px">7维打分：价值·成长·质量·动量·风险·流动性·舆情</div>
 <div style="font-size:11px;color:var(--accent);margin-bottom:12px;padding:6px 8px;background:rgba(245,158,11,.06);border-radius:6px">⚠️ 当前使用规则打分，舆情/成长/质量维度数据有限。仅供参考，不构成投资建议。</div>
 <div id="stockPickList"><div style="text-align:center;padding:20px;color:var(--text2)"><div class="loading-spinner" style="width:24px;height:24px;margin:0 auto 8px;border-width:2px"></div>正在从 5000+ A股中筛选...</div></div>
 </div>`;
