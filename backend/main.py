@@ -1194,7 +1194,7 @@ async def chat_analysis_stream(req: ChatRequest):
     async def stream_gen():
         import httpx
         try:
-            async with httpx.AsyncClient(timeout=60) as client:
+            async with httpx.AsyncClient(timeout=120) as client:
                 async with client.stream(
                     "POST",
                     f"{api_base}/chat/completions",
@@ -1224,9 +1224,14 @@ async def chat_analysis_stream(req: ChatRequest):
                             return
                         try:
                             chunk = json.loads(payload)
-                            delta = chunk.get("choices", [{}])[0].get("delta", {}).get("content", "")
-                            if delta:
-                                yield f"data: {json.dumps({'delta': delta, 'source': 'ai', 'done': False}, ensure_ascii=False)}\n\n"
+                            delta_obj = chunk.get("choices", [{}])[0].get("delta", {})
+                            # R1 模型：先输出 reasoning_content（思考过程），再输出 content（正式回答）
+                            reasoning = delta_obj.get("reasoning_content", "")
+                            content = delta_obj.get("content", "")
+                            if reasoning:
+                                yield f"data: {json.dumps({'delta': reasoning, 'source': 'ai', 'done': False, 'phase': 'thinking'}, ensure_ascii=False)}\n\n"
+                            elif content:
+                                yield f"data: {json.dumps({'delta': content, 'source': 'ai', 'done': False, 'phase': 'answering'}, ensure_ascii=False)}\n\n"
                         except (json.JSONDecodeError, IndexError, KeyError):
                             continue
         except Exception as e:

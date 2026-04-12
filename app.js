@@ -729,17 +729,30 @@ if(r.ok&&r.body){
 // SSE 流式逐字渲染
 const el=document.getElementById('chatMsgs');if(!el)return;
 const botDiv=document.createElement('div');botDiv.className='chat-msg bot';botDiv.innerHTML='<span class="stream-cursor">▊</span>';el.appendChild(botDiv);scrollChat();
-let fullText='',source='ai';
+let fullText='',source='ai',thinkText='',_r1Thinking=false;
 const reader=r.body.getReader();const dec=new TextDecoder();let buf='';
 while(true){const{done,value}=await reader.read();if(done)break;
 buf+=dec.decode(value,{stream:true});
 const lines=buf.split('\n');buf=lines.pop()||'';
 for(const line of lines){if(!line.startsWith('data: '))continue;
 try{const d=JSON.parse(line.slice(6));if(d.source)source=d.source;
-if(d.delta){fullText+=d.delta;botDiv.innerHTML=fullText+'<span class="stream-cursor">▊</span>';scrollChat()}
-if(d.done){botDiv.innerHTML=fullText+`<div class="src-tag">${source==='ai'?'AI分析':'规则引擎'}</div>`;scrollChat()}}catch{}}}
+if(d.delta){
+// R1: phase=thinking 是思考过程，phase=answering 是正式回答
+if(d.phase==='thinking'){
+if(!_r1Thinking){_r1Thinking=true;thinkText=''}
+thinkText+=d.delta;
+botDiv.innerHTML=`<div style="font-size:11px;color:var(--text2);opacity:0.7;border-left:2px solid var(--bg3);padding-left:8px;margin-bottom:8px">🧠 思考中...\n${thinkText}</div><span class="stream-cursor">▊</span>`;scrollChat()
+}else{
+if(_r1Thinking){_r1Thinking=false;fullText=''}
+fullText+=d.delta;
+const thinkBlock=thinkText?`<details style="font-size:11px;color:var(--text2);margin-bottom:8px;border:1px solid var(--bg3);border-radius:8px;padding:6px 8px"><summary style="cursor:pointer;opacity:0.7">🧠 查看思考过程</summary><div style="margin-top:4px;white-space:pre-wrap;opacity:0.6">${thinkText}</div></details>`:'';
+botDiv.innerHTML=thinkBlock+fullText+'<span class="stream-cursor">▊</span>';scrollChat()
+}}
+if(d.done){
+const thinkBlock=thinkText?`<details style="font-size:11px;color:var(--text2);margin-bottom:8px;border:1px solid var(--bg3);border-radius:8px;padding:6px 8px"><summary style="cursor:pointer;opacity:0.7">🧠 查看思考过程</summary><div style="margin-top:4px;white-space:pre-wrap;opacity:0.6">${thinkText}</div></details>`:'';
+botDiv.innerHTML=thinkBlock+fullText+`<div class="src-tag">${source==='ai'?'AI分析':'规则引擎'}</div>`;scrollChat()}}catch{}}}
 // 处理剩余 buffer
-if(buf.startsWith('data: ')){try{const d=JSON.parse(buf.slice(6));if(d.delta)fullText+=d.delta;if(d.source)source=d.source}catch{}}
+if(buf.startsWith('data: ')){try{const d=JSON.parse(buf.slice(6));if(d.delta){if(d.phase==='thinking')thinkText+=d.delta;else fullText+=d.delta}if(d.source)source=d.source}catch{}}
 botDiv.innerHTML=fullText+`<div class="src-tag">${source==='ai'?'AI分析':'规则引擎'}</div>`;scrollChat();
 chatMessages.push({role:'bot',text:fullText,src:source});_setChatLock(false);return}
 // 非流式降级（旧接口兼容）
