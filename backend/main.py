@@ -1780,6 +1780,94 @@ def get_policy_news_api(limit: int = 8):
     return {"news": get_policy_news(limit)}
 
 
+# ---- 新闻→行业→基金 关联分析引擎 ----
+
+# 事件→行业→基金映射表（核心知识库）
+NEWS_IMPACT_MAP = [
+    {"keywords": ["降准", "降息", "LPR", "宽松", "流动性"],
+     "impact": "利好：银行间流动性增加，利率下行推动股债双牛",
+     "bullish": ["110020", "217022"], "bearish": [],
+     "sectors": ["银行", "地产", "债券"], "tag": "货币宽松"},
+    {"keywords": ["加息", "缩表", "收紧", "美联储鹰派"],
+     "impact": "利空：流动性收紧，成长股承压，美元走强",
+     "bullish": ["000216"], "bearish": ["050025", "110020"],
+     "sectors": ["黄金避险"], "tag": "货币收紧"},
+    {"keywords": ["关税", "贸易战", "制裁", "中美对抗"],
+     "impact": "出口承压，内需消费和国产替代受益",
+     "bullish": ["110020", "008114"], "bearish": ["050025"],
+     "sectors": ["内需消费", "国产替代"], "tag": "贸易摩擦"},
+    {"keywords": ["半导体", "芯片", "科技自主", "AI", "人工智能"],
+     "impact": "科技板块活跃，相关ETF受益",
+     "bullish": ["110020"], "bearish": [],
+     "sectors": ["科技", "半导体", "新能源"], "tag": "科技政策"},
+    {"keywords": ["战争", "地缘", "冲突", "中东", "俄乌"],
+     "impact": "避险情绪升温，黄金和债券受益",
+     "bullish": ["000216", "217022"], "bearish": ["110020", "050025"],
+     "sectors": ["黄金", "债券", "军工"], "tag": "地缘风险"},
+    {"keywords": ["刺激", "基建", "财政扩张", "国务院", "发改委"],
+     "impact": "财政刺激利好周期股和基建链",
+     "bullish": ["110020", "008114"], "bearish": [],
+     "sectors": ["基建", "周期", "红利"], "tag": "财政刺激"},
+    {"keywords": ["油价", "OPEC", "原油", "大宗商品"],
+     "impact": "大宗商品价格影响通胀预期和周期股",
+     "bullish": ["000216", "008114"], "bearish": ["217022"],
+     "sectors": ["能源", "黄金", "通胀链"], "tag": "大宗商品"},
+    {"keywords": ["房地产", "楼市", "限购", "房贷"],
+     "impact": "地产政策影响金融和消费",
+     "bullish": ["110020"], "bearish": [],
+     "sectors": ["地产", "银行", "建材"], "tag": "地产政策"},
+    {"keywords": ["汇率", "人民币", "贬值", "升值", "外汇"],
+     "impact": "汇率波动影响QDII基金和外贸企业",
+     "bullish": [], "bearish": [],
+     "sectors": ["外贸", "QDII"], "tag": "汇率波动"},
+]
+
+# 基金代码→名称映射
+FUND_NAME_MAP = {
+    "110020": "沪深300", "050025": "标普500", "217022": "债券",
+    "000216": "黄金", "008114": "红利低波"
+}
+
+
+def analyze_news_impact(news_list: list) -> list:
+    """分析新闻对持仓基金的影响"""
+    impacts = []
+    seen_tags = set()
+    for n in news_list:
+        title = n.get("title", "")
+        for rule in NEWS_IMPACT_MAP:
+            if any(kw in title for kw in rule["keywords"]) and rule["tag"] not in seen_tags:
+                bullish_names = [FUND_NAME_MAP.get(c, c) for c in rule["bullish"]]
+                bearish_names = [FUND_NAME_MAP.get(c, c) for c in rule["bearish"]]
+                impacts.append({
+                    "trigger": title[:40] + ("..." if len(title) > 40 else ""),
+                    "tag": rule["tag"],
+                    "impact": rule["impact"],
+                    "bullish": bullish_names,
+                    "bearish": bearish_names,
+                    "sectors": rule["sectors"],
+                    "bullish_codes": rule["bullish"],
+                    "bearish_codes": rule["bearish"],
+                })
+                seen_tags.add(rule["tag"])
+                break
+    return impacts
+
+
+@app.get("/api/news/impact")
+def get_news_impact_api():
+    """分析最新新闻对持仓基金的影响"""
+    policy_news = get_policy_news(15)
+    market_news = get_market_news(10)
+    all_news = policy_news + market_news
+    impacts = analyze_news_impact(all_news)
+    return {
+        "impacts": impacts[:8],
+        "total_news_analyzed": len(all_news),
+        "timestamp": datetime.now().isoformat(),
+    }
+
+
 # ---- API: 技术指标 ----
 
 @app.get("/api/technical")
@@ -2401,6 +2489,9 @@ async def chat_analysis(req: ChatRequest):
 3. 永远提醒用户"投资有风险"
 4. 不推荐具体买卖时点，只分析趋势和逻辑
 5. 回答控制在 200 字以内，简洁有力
+6. 分析政策对行业和基金的影响（如降息利好债券、关税利空出口等）
+7. 根据新闻事件预判可能的市场趋势（用"可能""趋势"等词汇，不用"一定""必然"）
+8. 如果用户问到政策/新闻，结合下方的事件分析给出解读
 
 当前市场数据：
 {market_ctx}
@@ -2469,6 +2560,45 @@ def _build_market_context() -> str:
         nav = get_fund_nav(code)
         if nav["nav"] != "N/A":
             lines.append(f"{name}({code})：净值 {nav['nav']}，日涨跌 {nav['change']}%")
+
+    # 宏观经济数据
+    try:
+        macro = get_macro_data()
+        macro_parts = []
+        for key, label in [("cpi", "CPI"), ("pmi", "PMI"), ("m2", "M2"), ("ppi", "PPI")]:
+            item = macro.get(key, {})
+            val = item.get("value")
+            if val and val != "N/A":
+                macro_parts.append(f"{label}:{val}")
+        if macro_parts:
+            lines.append(f"宏观数据：{' | '.join(macro_parts)}")
+    except Exception:
+        pass
+
+    # 最新政策/国际新闻摘要
+    try:
+        policy = get_policy_news(5)
+        valid = [n for n in policy if n["title"] != "政策资讯加载中..."]
+        if valid:
+            lines.append("\n最新政策/国际动态：")
+            for n in valid[:5]:
+                lines.append(f"  - {n['title']}")
+    except Exception:
+        pass
+
+    # 新闻→持仓关联分析
+    try:
+        all_news = get_policy_news(10) + get_market_news(5)
+        impacts = analyze_news_impact(all_news)
+        if impacts:
+            lines.append("\n事件对持仓的影响分析：")
+            for imp in impacts[:3]:
+                bull = "📈利好:" + ",".join(imp["bullish"]) if imp["bullish"] else ""
+                bear = "📉利空:" + ",".join(imp["bearish"]) if imp["bearish"] else ""
+                lines.append(f"  - [{imp['tag']}] {imp['impact']} {bull} {bear}")
+    except Exception:
+        pass
+
     return "\n".join(lines) if lines else "暂无市场数据"
 
 
@@ -2542,6 +2672,26 @@ def _rule_based_reply(msg: str, market_ctx: str, portfolio_ctx: str) -> str:
 
     if any(k in msg_lower for k in ["买", "加仓", "什么时候"]):
         return f"💰 关于买入时机：\n\n{market_ctx}\n\n定投的精髓就是「不择时」——每月固定日期买入，无论涨跌。这样长期下来会自动实现低买多、高买少。如果恐惧指数很高（市场极度悲观），可以适当多买一点。\n\n⚠️ 以上仅供参考，不构成投资建议。"
+
+    # 政策/大宗商品/行业影响分析
+    if any(k in msg_lower for k in ["政策", "降息", "降准", "关税", "贸易战", "制裁", "战争", "地缘",
+                                     "大宗", "油价", "原油", "opec", "影响", "利好", "利空",
+                                     "行业", "板块", "半导体", "芯片", "基建"]):
+        try:
+            all_news = get_policy_news(10) + get_market_news(5)
+            impacts = analyze_news_impact(all_news)
+            if impacts:
+                impact_lines = []
+                for imp in impacts[:4]:
+                    bull = "📈利好：" + "、".join(imp["bullish"]) if imp["bullish"] else ""
+                    bear = "📉利空：" + "、".join(imp["bearish"]) if imp["bearish"] else ""
+                    impact_lines.append(f"🏷️ **{imp['tag']}**\n{imp['impact']}\n{bull} {bear}\n涉及行业：{', '.join(imp['sectors'])}")
+                impact_text = "\n\n".join(impact_lines)
+                return f"🏛️ 当前事件对你持仓的影响分析：\n\n{impact_text}\n\n💡 建议：关注事件发展趋势，短期波动不改长期逻辑。如果你是定投模式，保持节奏即可。\n\n⚠️ 以上基于关键词匹配的初步分析，仅供参考，不构成投资建议。"
+            else:
+                return "🏛️ 当前暂未检测到对你持仓有显著影响的政策/事件。\n\n💡 保持定投节奏，不需要每天看新闻做决定。\n\n⚠️ 以上仅供参考，不构成投资建议。"
+        except Exception:
+            return "🏛️ 政策影响分析暂时无法获取，请稍后再试。"
 
     # 新闻/资讯/发生了什么
     if any(k in msg_lower for k in ["新闻", "资讯", "消息", "发生", "怎么了", "什么情况", "为什么"]):
@@ -2973,6 +3123,127 @@ def record_from_source(req: IncomeSourceRecord):
 
     save_user(user)
     return {"ok": True, "entry": entry, "source": src}
+
+
+# ---- API: 数据健康检查 & 自动审计 ----
+
+@app.get("/api/health/data-audit")
+def data_audit():
+    """自动审计所有关键数据源的新鲜度和准确性"""
+    checks = []
+    overall_ok = True
+
+    # 1. 宏观数据新鲜度检查
+    try:
+        macro = get_macro_data()
+        for key, label in [("cpi", "CPI"), ("pmi", "PMI"), ("m2", "M2"), ("ppi", "PPI")]:
+            item = macro.get(key, {})
+            val = item.get("value")
+            period = item.get("period", "")
+            if val is None or val == "N/A":
+                checks.append({"name": f"宏观·{label}", "status": "error", "msg": "数据缺失", "value": None})
+                overall_ok = False
+            else:
+                # 检查数据是否超过60天未更新
+                fresh = True
+                if period:
+                    try:
+                        from datetime import datetime as _dt
+                        p = period.replace("年", "-").replace("月", "").strip()
+                        data_date = _dt.strptime(p, "%Y-%m")
+                        days_old = (datetime.now() - data_date).days
+                        if days_old > 90:
+                            fresh = False
+                    except Exception:
+                        pass
+                status = "ok" if fresh else "warn"
+                if not fresh:
+                    overall_ok = False
+                checks.append({"name": f"宏观·{label}", "status": status, "msg": f"{period} {val}", "value": val})
+    except Exception as e:
+        checks.append({"name": "宏观数据", "status": "error", "msg": f"获取失败: {e}", "value": None})
+        overall_ok = False
+
+    # 2. 估值数据检查
+    try:
+        val = get_valuation_percentile()
+        pe = val.get("pe_ttm")
+        pct = val.get("percentile")
+        source = val.get("source", "未知")
+        if pe and 5 < pe < 50 and pct is not None:
+            checks.append({"name": "估值·PE-TTM", "status": "ok", "msg": f"PE={pe} 百分位={pct}% ({source})", "value": pe})
+        else:
+            checks.append({"name": "估值·PE-TTM", "status": "warn", "msg": f"数据可能异常: PE={pe} ({source})", "value": pe})
+            overall_ok = False
+    except Exception as e:
+        checks.append({"name": "估值数据", "status": "error", "msg": f"获取失败: {e}", "value": None})
+        overall_ok = False
+
+    # 3. 基金净值新鲜度检查
+    fund_codes = ["110020", "050025", "217022", "000216", "008114"]
+    for code in fund_codes:
+        try:
+            nav = get_fund_nav(code)
+            if nav["nav"] == "N/A":
+                checks.append({"name": f"基金净值·{code}", "status": "error", "msg": "获取失败", "value": None})
+                overall_ok = False
+            else:
+                nav_date = nav.get("date", "")
+                is_fresh = True
+                if nav_date:
+                    try:
+                        nd = datetime.strptime(nav_date, "%Y-%m-%d")
+                        # 允许周末和节假日有3天延迟
+                        if (datetime.now() - nd).days > 5:
+                            is_fresh = False
+                    except Exception:
+                        pass
+                status = "ok" if is_fresh else "warn"
+                if not is_fresh:
+                    overall_ok = False
+                checks.append({"name": f"基金净值·{code}", "status": status, "msg": f"净值={nav['nav']} ({nav_date})", "value": nav["nav"]})
+        except Exception as e:
+            checks.append({"name": f"基金净值·{code}", "status": "error", "msg": str(e), "value": None})
+            overall_ok = False
+
+    # 4. 新闻内容相关性检查
+    try:
+        news = get_market_news(10)
+        foreign_keywords = ["伦敦", "荷兰", "法兰克福", "多伦多", "澳洲", "欧洲央行", "英镑"]
+        foreign_count = sum(1 for n in news if any(k in n.get("title", "") for k in foreign_keywords))
+        if foreign_count > 3:
+            checks.append({"name": "新闻相关性", "status": "warn", "msg": f"10条新闻中{foreign_count}条疑似海外无关内容", "value": foreign_count})
+            overall_ok = False
+        else:
+            checks.append({"name": "新闻相关性", "status": "ok", "msg": f"10条新闻中{foreign_count}条海外内容（正常范围）", "value": foreign_count})
+    except Exception as e:
+        checks.append({"name": "新闻数据", "status": "error", "msg": f"获取失败: {e}", "value": None})
+        overall_ok = False
+
+    # 5. API 响应时间检查
+    import time
+    try:
+        t0 = time.time()
+        get_fear_greed_index()
+        elapsed = round((time.time() - t0) * 1000)
+        status = "ok" if elapsed < 5000 else ("warn" if elapsed < 15000 else "error")
+        if status != "ok":
+            overall_ok = False
+        checks.append({"name": "API响应·恐贪指数", "status": status, "msg": f"{elapsed}ms", "value": elapsed})
+    except Exception as e:
+        checks.append({"name": "API响应·恐贪指数", "status": "error", "msg": str(e), "value": None})
+        overall_ok = False
+
+    error_count = sum(1 for c in checks if c["status"] == "error")
+    warn_count = sum(1 for c in checks if c["status"] == "warn")
+    ok_count = sum(1 for c in checks if c["status"] == "ok")
+
+    return {
+        "overall": "healthy" if overall_ok else ("degraded" if error_count == 0 else "unhealthy"),
+        "summary": f"✅{ok_count} ⚠️{warn_count} ❌{error_count}",
+        "checks": checks,
+        "timestamp": datetime.now().isoformat(),
+    }
 
 
 # ---- 静态文件服务（部署时前后端一体）----
