@@ -331,6 +331,8 @@ $('#app').innerHTML=`<div class="result-page fade-up">
 </div>
 </div>
 
+<div id="signalsSection"></div>
+
 ${holdings.length?`<div class="section-title">📊 基金持仓 (${holdings.length})</div>
 ${holdings.map(h=>`<div class="holding-card" onclick="showHoldingActions('${h.code}')">
 <div class="holding-top"><div class="holding-info"><div class="holding-name">${h.name}</div><div class="holding-meta">${h.category} · ${h.shares.toFixed(2)}份 · 均价¥${h.avgPrice.toFixed(4)}</div></div>
@@ -340,7 +342,7 @@ ${holdings.map(h=>`<div class="holding-card" onclick="showHoldingActions('${h.co
 <button class="action-btn primary" onclick="showAddTxn()">➕ 记一笔交易</button>
 <button class="action-btn secondary" onclick="startQuiz()">🔄 重新测评</button>
 </div>
-</div>`;renderNav()}
+</div>`;renderNav();loadSignals()}
 
 // ---- 问卷 ----
 function renderQuiz(){const q=QUESTIONS[currentQuestion];$('#app').innerHTML=`<div class="quiz-header fade-up"><div class="progress-bar-bg"><div class="progress-bar-fill" style="width:${currentQuestion/QUESTIONS.length*100}%"></div></div><div class="quiz-step">第${currentQuestion+1}/${QUESTIONS.length}题</div></div><div class="question-card"><div class="question-emoji">${q.emoji}</div><div class="question-text">${q.question}</div><div class="options stagger">${q.options.map((o,i)=>`<button class="option-btn" onclick="selectAnswer(${i},${o.score})">${o.text}</button>`).join('')}</div></div>`}
@@ -370,7 +372,53 @@ $('#app').innerHTML=`<div class="result-page">
 <div class="footer-disclaimer">⚠️ 本工具仅供参考学习，不构成投资建议。投资有风险，入市需谨慎。</div></div>`;
 renderNav();setTimeout(()=>drawAllocChart(al),100);setTimeout(()=>drawProjChart(amt,mR/amt),200);loadSignals()}
 
-async function loadSignals(){const s=await fetchSignals();const el=document.getElementById('signalsSection');if(!el||!s||!s.length)return;el.innerHTML=`<div class="section-title">🔔 AI买卖信号</div><div class="signals-card">${s.map(x=>`<div class="signal-item"><div class="signal-icon">${x.icon||'📡'}</div><div class="signal-text"><strong>${x.title}</strong><br>${x.message}</div></div>`).join('')}</div>`}
+async function loadSignals(){
+const el=document.getElementById('signalsSection');if(!el)return;
+if(!API_AVAILABLE){return}
+el.innerHTML=`<div style="text-align:center;padding:20px;color:var(--text2)"><div class="loading-spinner" style="width:24px;height:24px;margin:0 auto 8px;border-width:2px"></div>正在分析市场信号...</div>`;
+try{
+const r=await fetch(API_BASE+'/daily-signal',{signal:AbortSignal.timeout(30000)});
+if(!r.ok)throw new Error('signal fetch failed');
+const d=await r.json();
+
+// 综合信号大卡片
+const bgMap={STRONG_BUY:'rgba(16,185,129,.12)',BUY:'rgba(16,185,129,.08)',HOLD:'rgba(245,158,11,.08)',SELL:'rgba(239,68,68,.08)',STRONG_SELL:'rgba(239,68,68,.12)'};
+const borderMap={STRONG_BUY:'rgba(16,185,129,.3)',BUY:'rgba(16,185,129,.2)',HOLD:'rgba(245,158,11,.2)',SELL:'rgba(239,68,68,.2)',STRONG_SELL:'rgba(239,68,68,.3)'};
+const labelMap={STRONG_BUY:'强烈买入 🟢',BUY:'建议买入 🟢',HOLD:'持有观望 🟡',SELL:'建议减仓 🟠',STRONG_SELL:'强烈减仓 🔴'};
+
+let html=`<div class="section-title">🤖 今日量化信号</div>`;
+html+=`<div style="background:${bgMap[d.overall]||bgMap.HOLD};border:1px solid ${borderMap[d.overall]||borderMap.HOLD};border-radius:16px;padding:16px;margin-bottom:12px" onclick="showExplain('量化信号解读','钱袋子的量化信号系统融合了6个维度的数据：\\n\\n📊 技术面(40%)：RSI超买超卖 + MACD趋势 + 布林带位置\\n📈 基本面(40%)：估值百分位 + 恐惧贪婪指数\\n🏛️ 宏观面(20%)：PMI景气度 + M2货币供应\\n\\n每个维度打分(-100~+100)，加权平均后得出综合信号。\\n\\n当前综合得分：${d.score||0}\\n置信度：${Math.round(d.confidence||0)}%\\n\\n${(d.details||[]).map(x=>x.name+"("+x.weight+")："+x.detail).join("\\n")}\\n\\n⚠️ 量化信号仅供参考，不构成投资建议。')" style="cursor:pointer">
+<div style="display:flex;justify-content:space-between;align-items:center">
+<div><div style="font-size:20px;font-weight:900">${labelMap[d.overall]||'持有观望'}</div><div style="font-size:12px;color:var(--text2);margin-top:4px">${d.date||''} · 综合得分 ${d.score||0} · 置信度 ${Math.round(d.confidence||0)}%</div></div>
+<div style="font-size:11px;color:var(--accent)">点击看详情 ›</div></div>
+<div style="font-size:13px;margin-top:8px;line-height:1.6">${d.summary||''}</div></div>`;
+
+// 大师策略
+if(d.masterStrategies&&d.masterStrategies.length){
+html+=`<div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:12px">`;
+for(const ms of d.masterStrategies){
+const msColor=ms.signal==='BUY'||ms.signal==='HOLD_BUY'?'var(--green)':ms.signal==='SELL'?'var(--red)':'var(--accent)';
+html+=`<div style="background:var(--card);border-radius:12px;padding:12px;cursor:pointer" onclick="showExplain('${ms.icon} ${ms.master}的投资策略','💡 核心理念：${ms.philosophy}\\n\\n${ms.message}\\n\\n⚠️ 大师策略基于当前市场数据自动生成分析，仅供参考。')">
+<div style="font-size:14px;font-weight:700">${ms.icon} ${ms.master}</div>
+<div style="font-size:12px;color:${msColor};margin-top:4px;font-weight:600">${ms.signal==='BUY'?'建议买入':ms.signal==='HOLD_BUY'?'可以建仓':ms.signal==='SELL'?'建议减仓':'持有观望'}</div>
+<div style="font-size:11px;color:var(--text2);margin-top:4px;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden">${ms.philosophy}</div></div>`;
+}
+html+=`</div>`}
+
+// 智能定投建议
+if(d.smartDca){
+const sc=d.smartDca;
+html+=`<div style="background:var(--card);border-radius:12px;padding:12px;margin-bottom:12px;cursor:pointer" onclick="showExplain('智能定投策略','🧠 智能定投 vs 固定定投：\\n\\n固定定投：每月投相同金额。\\n智能定投：根据估值动态调整——低估多买、高估少买。\\n\\n当前估值百分位：${sc.valuationPct}%\\n本月倍率：${sc.multiplier}x\\n${sc.advice}\\n\\n| 估值 | 倍率 | 说明 |\\n| <20% | 1.5x | 极度低估，多买 |\\n| 20-30% | 1.3x | 低估，适当多买 |\\n| 30-50% | 1.1x | 偏低，略多 |\\n| 50-70% | 1.0x | 正常 |\\n| 70-85% | 0.7x | 偏高，少买 |\\n| >85% | 0.3x | 高估，大幅减少 |\\n\\n历史回测：智能定投比固定定投长期多赚约15-20%。\\n\\n⚠️ 仅供参考，不构成投资建议。')">
+<div style="display:flex;justify-content:space-between;align-items:center">
+<div><div style="font-size:13px;font-weight:700">🧠 智能定投建议</div><div style="font-size:11px;color:var(--text2);margin-top:2px">${sc.advice}</div></div>
+<div style="text-align:right"><div style="font-size:16px;font-weight:900;color:var(--accent)">${sc.multiplier}x</div><div style="font-size:11px;color:var(--text2)">本月倍率</div></div></div></div>`}
+
+// 回测按钮
+html+=`<div style="text-align:center"><button onclick="showBacktest()" style="background:transparent;border:1px solid var(--accent);color:var(--accent);padding:8px 20px;border-radius:20px;font-size:12px;cursor:pointer">📊 查看历史回测数据</button></div>`;
+
+el.innerHTML=html;
+}catch(e){console.warn('Signal load failed:',e);el.innerHTML=''}
+}
 
 // ---- 持仓盈亏页（V4 交易流水制）----
 async function renderPortfolio(){currentPage='portfolio';renderNav();
@@ -559,6 +607,51 @@ overlay.innerHTML=`<div style="background:var(--card);border-radius:16px;padding
 <button onclick="this.closest('[style*=fixed]').remove()" style="width:100%;margin-top:16px;padding:12px;border:none;border-radius:10px;background:var(--accent);color:#fff;font-size:14px;cursor:pointer">我懂了 👍</button>
 </div>`;
 document.body.appendChild(overlay)}
+
+// ---- 回测可视化弹窗 ----
+async function showBacktest(){
+const overlay=document.createElement('div');
+overlay.style.cssText='position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,0.6);z-index:9999;display:flex;align-items:center;justify-content:center;padding:12px;animation:fadeIn 0.2s';
+overlay.onclick=e=>{if(e.target===overlay)overlay.remove()};
+overlay.innerHTML=`<div style="background:var(--card);border-radius:16px;padding:20px;max-width:420px;width:100%;max-height:85vh;overflow-y:auto;box-shadow:0 20px 60px rgba(0,0,0,0.3)">
+<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px"><h3 style="margin:0;font-size:16px">📊 策略回测（沪深300）</h3><button onclick="this.closest('[style*=fixed]').remove()" style="background:none;border:none;font-size:20px;color:var(--text2);cursor:pointer;padding:4px">✕</button></div>
+<div style="text-align:center;padding:30px;color:var(--text2)"><div class="loading-spinner" style="width:24px;height:24px;margin:0 auto 8px;border-width:2px"></div>正在回测历史数据（约10秒）...</div>
+</div>`;
+document.body.appendChild(overlay);
+try{
+const r=await fetch(API_BASE+'/backtest?years=3&monthly=1000',{signal:AbortSignal.timeout(60000)});
+if(!r.ok)throw new Error('backtest failed');
+const d=await r.json();
+if(d.error){overlay.querySelector('div>div:last-child').innerHTML=`<div style="padding:20px;text-align:center;color:var(--red)">回测失败：${d.error}</div>`;return}
+const c=d.comparison||{};const fix=c.fixedDca||{};const smart=c.smartDca||{};
+const adv=c.advantage||0;
+const content=overlay.querySelector('div>div:last-child');
+content.innerHTML=`
+<div style="text-align:center;margin-bottom:16px"><div style="font-size:12px;color:var(--text2)">近3年 · 每月定投¥1,000 · 沪深300</div></div>
+<div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:16px">
+<div style="background:rgba(245,158,11,.08);border:1px solid rgba(245,158,11,.2);border-radius:12px;padding:14px;text-align:center">
+<div style="font-size:11px;color:var(--text2)">📦 固定定投</div>
+<div style="font-size:18px;font-weight:900;color:var(--accent);margin:6px 0">${fix.totalReturnPct>0?'+':''}${fix.totalReturnPct||0}%</div>
+<div style="font-size:11px;color:var(--text2)">投入 ¥${((fix.invested||0)/1000).toFixed(0)}k → ¥${((fix.finalValue||0)/1000).toFixed(0)}k</div>
+<div style="font-size:11px;color:var(--text2)">年化 ${fix.annualizedReturn||0}%</div>
+<div style="font-size:11px;color:var(--red)">最大回撤 -${fix.maxDrawdown||0}%</div>
+</div>
+<div style="background:rgba(16,185,129,.08);border:2px solid rgba(16,185,129,.3);border-radius:12px;padding:14px;text-align:center">
+<div style="font-size:11px;color:var(--text2)">🧠 智能定投</div>
+<div style="font-size:18px;font-weight:900;color:var(--green);margin:6px 0">${smart.totalReturnPct>0?'+':''}${smart.totalReturnPct||0}%</div>
+<div style="font-size:11px;color:var(--text2)">投入 ¥${((smart.invested||0)/1000).toFixed(0)}k → ¥${((smart.finalValue||0)/1000).toFixed(0)}k</div>
+<div style="font-size:11px;color:var(--text2)">年化 ${smart.annualizedReturn||0}%</div>
+<div style="font-size:11px;color:var(--red)">最大回撤 -${smart.maxDrawdown||0}%</div>
+</div></div>
+<div style="text-align:center;padding:12px;background:rgba(16,185,129,.06);border-radius:10px;margin-bottom:12px">
+<div style="font-size:13px;font-weight:700;color:var(--green)">智能定投多赚 ${adv>0?'+':''}${adv}%</div>
+<div style="font-size:11px;color:var(--text2);margin-top:4px">低估多买 + 高估少买 = 更优收益</div></div>
+<div style="font-size:11px;color:var(--text2);text-align:center;line-height:1.8">
+📌 回测基于沪深300历史数据，过往收益不代表未来表现<br>
+⚠️ 本数据仅供参考，不构成投资建议</div>
+<button onclick="this.closest('[style*=fixed]').remove()" style="width:100%;margin-top:12px;padding:12px;border:none;border-radius:10px;background:var(--accent);color:#fff;font-size:14px;cursor:pointer">我懂了 👍</button>
+`;
+}catch(e){console.warn('Backtest failed:',e);const content=overlay.querySelector('div>div:last-child');if(content)content.innerHTML='<div style="padding:20px;text-align:center;color:var(--red)">回测加载失败，请稍后再试</div>'}}
 
 // ---- 资讯页 ----
 let insightTab='overview';

@@ -882,6 +882,418 @@ def calc_take_profit_strategy(cost: float, market_value: float, profile: str) ->
     }
 
 
+# ============================================================
+# 每日智能信号引擎（综合 RSI + MACD + 估值 + 恐贪 + 大师策略）
+# ============================================================
+
+def generate_daily_signal() -> dict:
+    """生成每日综合交易信号 — 融合技术面 + 基本面 + 大师策略"""
+    signal = {
+        "date": datetime.now().strftime("%Y-%m-%d"),
+        "overall": "HOLD",  # BUY / SELL / HOLD
+        "confidence": 0,
+        "summary": "",
+        "details": [],
+        "masterStrategies": [],
+        "smartDca": None,
+    }
+
+    scores = []  # (score, weight, name, detail)  score: -100(强烈卖出) ~ +100(强烈买入)
+
+    # --- 1. RSI 信号 ---
+    tech = get_technical_indicators()
+    rsi = tech.get("rsi", 50)
+    if rsi < 25:
+        rsi_score, rsi_detail = 80, f"RSI={rsi}，极度超卖，强烈买入信号"
+    elif rsi < 30:
+        rsi_score, rsi_detail = 60, f"RSI={rsi}，超卖区，偏向买入"
+    elif rsi < 45:
+        rsi_score, rsi_detail = 20, f"RSI={rsi}，偏低，轻度看多"
+    elif rsi <= 55:
+        rsi_score, rsi_detail = 0, f"RSI={rsi}，中性区间"
+    elif rsi <= 70:
+        rsi_score, rsi_detail = -20, f"RSI={rsi}，偏高，注意风险"
+    elif rsi <= 80:
+        rsi_score, rsi_detail = -60, f"RSI={rsi}，超买区，偏向卖出"
+    else:
+        rsi_score, rsi_detail = -80, f"RSI={rsi}，极度超买，强烈卖出信号"
+    scores.append((rsi_score, 0.15, "RSI", rsi_detail))
+
+    # --- 2. MACD 信号 ---
+    macd = tech.get("macd", {})
+    trend = macd.get("trend", "")
+    if "金叉" in trend:
+        macd_score, macd_detail = 70, f"MACD金叉（{trend}），趋势转多"
+    elif "多头" in trend:
+        macd_score, macd_detail = 30, f"MACD多头排列，上升趋势持续"
+    elif "死叉" in trend:
+        macd_score, macd_detail = -70, f"MACD死叉（{trend}），趋势转空"
+    elif "空头" in trend:
+        macd_score, macd_detail = -30, f"MACD空头排列，下降趋势持续"
+    else:
+        macd_score, macd_detail = 0, "MACD数据不足"
+    scores.append((macd_score, 0.15, "MACD", macd_detail))
+
+    # --- 3. 布林带信号 ---
+    boll = tech.get("bollinger", {})
+    pos = boll.get("position", "")
+    if "超卖" in pos:
+        boll_score, boll_detail = 60, f"价格低于布林下轨，超卖反弹机会"
+    elif "下方" in pos:
+        boll_score, boll_detail = 15, "价格在中轨下方，偏弱但未到极端"
+    elif "上方" in pos:
+        boll_score, boll_detail = -15, "价格在中轨上方，偏强但注意回调"
+    elif "超买" in pos:
+        boll_score, boll_detail = -60, "价格高于布林上轨，超买回调风险"
+    else:
+        boll_score, boll_detail = 0, "布林带数据不足"
+    scores.append((boll_score, 0.10, "布林带", boll_detail))
+
+    # --- 4. 估值百分位信号 (最重要) ---
+    val = get_valuation_percentile()
+    vp = val.get("percentile", 50)
+    if vp < 15:
+        val_score, val_detail = 90, f"估值百分位{vp}%，极度低估（历史最佳买入区）"
+    elif vp < 30:
+        val_score, val_detail = 60, f"估值百分位{vp}%，低估区间（适合加仓）"
+    elif vp < 50:
+        val_score, val_detail = 20, f"估值百分位{vp}%，偏低估（正常定投）"
+    elif vp < 70:
+        val_score, val_detail = -10, f"估值百分位{vp}%，适中偏高（谨慎加仓）"
+    elif vp < 85:
+        val_score, val_detail = -50, f"估值百分位{vp}%，偏高估（减少定投）"
+    else:
+        val_score, val_detail = -80, f"估值百分位{vp}%，极度高估（建议暂停或减仓）"
+    scores.append((val_score, 0.25, "估值", val_detail))
+
+    # --- 5. 恐惧贪婪指数 ---
+    fgi_data = get_fear_greed_index()
+    fgi = fgi_data.get("score", 50)
+    if fgi >= 80:
+        fgi_score, fgi_detail = 80, f"恐惧指数{fgi:.0f}（极度恐惧），别人恐惧时贪婪"
+    elif fgi >= 65:
+        fgi_score, fgi_detail = 40, f"恐惧指数{fgi:.0f}（恐惧），市场偏悲观"
+    elif fgi >= 40:
+        fgi_score, fgi_detail = 0, f"恐惧指数{fgi:.0f}（中性）"
+    elif fgi >= 25:
+        fgi_score, fgi_detail = -40, f"恐惧指数{fgi:.0f}（贪婪），市场偏乐观"
+    else:
+        fgi_score, fgi_detail = -80, f"恐惧指数{fgi:.0f}（极度贪婪），别人贪婪时恐惧"
+    scores.append((fgi_score, 0.20, "恐贪指数", fgi_detail))
+
+    # --- 6. 宏观经济信号 ---
+    macro = get_macro_calendar()
+    macro_score = 0
+    macro_parts = []
+    for e in macro:
+        v = e.get("value", "")
+        name = e.get("name", "")
+        try:
+            num = float(str(v).replace("%", ""))
+            if "PMI" in name:
+                if num > 50:
+                    macro_score += 15
+                    macro_parts.append(f"PMI={num}(扩张)")
+                else:
+                    macro_score -= 15
+                    macro_parts.append(f"PMI={num}(收缩)")
+            elif "M2" in name:
+                if num > 8:
+                    macro_score += 10
+                    macro_parts.append(f"M2增速{num}%(宽松)")
+                elif num < 6:
+                    macro_score -= 10
+                    macro_parts.append(f"M2增速{num}%(偏紧)")
+        except (ValueError, TypeError):
+            pass
+    macro_detail = "宏观环境：" + ("、".join(macro_parts) if macro_parts else "暂无可量化数据")
+    scores.append((max(-50, min(50, macro_score)), 0.15, "宏观经济", macro_detail))
+
+    # --- 加权综合 ---
+    total_score = sum(s * w for s, w, _, _ in scores)
+    total_weight = sum(w for _, w, _, _ in scores)
+    final_score = total_score / total_weight if total_weight > 0 else 0
+
+    # --- 信号判定 ---
+    if final_score >= 40:
+        signal["overall"] = "STRONG_BUY"
+        signal["summary"] = "🟢 强烈买入信号 — 多个指标共振看多，是较好的加仓时机"
+    elif final_score >= 20:
+        signal["overall"] = "BUY"
+        signal["summary"] = "🟢 买入信号 — 整体偏向看多，适合按计划定投或小额加仓"
+    elif final_score >= -20:
+        signal["overall"] = "HOLD"
+        signal["summary"] = "🟡 持有观望 — 信号中性，维持当前仓位，不急着操作"
+    elif final_score >= -40:
+        signal["overall"] = "SELL"
+        signal["summary"] = "🟠 减仓信号 — 整体偏空，建议减少定投金额或部分止盈"
+    else:
+        signal["overall"] = "STRONG_SELL"
+        signal["summary"] = "🔴 强烈减仓 — 多个指标共振看空，建议止盈或暂停买入"
+
+    signal["confidence"] = min(abs(final_score), 100)
+    signal["score"] = round(final_score, 1)
+    signal["details"] = [
+        {"name": name, "score": round(s, 1), "weight": f"{w*100:.0f}%", "detail": detail}
+        for s, w, name, detail in scores
+    ]
+
+    # --- 大师策略 ---
+    signal["masterStrategies"] = _apply_master_strategies(val, fgi_data, tech)
+
+    # --- 智能定投建议 ---
+    signal["smartDca"] = calc_smart_dca(1000, vp)
+
+    return signal
+
+
+def _apply_master_strategies(val: dict, fgi_data: dict, tech: dict) -> list:
+    """应用投资大师策略"""
+    strategies = []
+    vp = val.get("percentile", 50)
+    pe = val.get("current_pe", 0)
+    fgi = fgi_data.get("score", 50)
+    rsi = tech.get("rsi", 50)
+
+    # 巴菲特价值投资
+    buffett_signal = "HOLD"
+    if vp < 30 and fgi >= 60:
+        buffett_signal = "BUY"
+        buffett_msg = f"✅ 符合巴菲特买入条件！估值低({vp}%) + 市场恐惧({fgi:.0f})。\"别人恐惧时我贪婪\"。"
+    elif vp > 70 and fgi < 35:
+        buffett_signal = "SELL"
+        buffett_msg = f"⚠️ 巴菲特会谨慎！估值高({vp}%) + 市场贪婪({fgi:.0f})。\"别人贪婪时我恐惧\"。"
+    elif vp < 40:
+        buffett_signal = "HOLD_BUY"
+        buffett_msg = f"估值尚可({vp}%)，巴菲特会耐心等待更好价格，但已可以开始建仓。"
+    else:
+        buffett_msg = f"估值{vp}%，巴菲特会说\"价格合理但不便宜\"，不急着买也不急着卖。"
+    strategies.append({
+        "master": "巴菲特",
+        "philosophy": "价值投资：低估时买入优质资产，长期持有",
+        "signal": buffett_signal,
+        "message": buffett_msg,
+        "icon": "🧓",
+    })
+
+    # 格雷厄姆安全边际
+    graham_signal = "HOLD"
+    if vp < 25:
+        graham_signal = "BUY"
+        graham_msg = f"✅ 安全边际充足！估值百分位{vp}%，远低于内在价值。格雷厄姆建议果断买入。"
+    elif vp < 40:
+        graham_signal = "HOLD_BUY"
+        graham_msg = f"安全边际尚可({vp}%)。格雷厄姆会建议分批买入，不要一次性重仓。"
+    elif vp > 75:
+        graham_signal = "SELL"
+        graham_msg = f"⚠️ 安全边际不足！估值百分位{vp}%，格雷厄姆会建议减仓或换入防御性资产。"
+    else:
+        graham_msg = f"估值{vp}%在中间区域。格雷厄姆会说\"保持耐心，等待安全边际出现\"。"
+    strategies.append({
+        "master": "格雷厄姆",
+        "philosophy": "安全边际：只在价格远低于内在价值时买入",
+        "signal": graham_signal,
+        "message": graham_msg,
+        "icon": "📚",
+    })
+
+    # 彼得·林奇成长投资
+    lynch_signal = "HOLD"
+    macro = get_macro_calendar()
+    pmi_val = None
+    for e in macro:
+        if "PMI" in e.get("name", ""):
+            try:
+                pmi_val = float(str(e.get("value", "")).replace("%", ""))
+            except (ValueError, TypeError):
+                pass
+    if pmi_val and pmi_val > 50 and vp < 50:
+        lynch_signal = "BUY"
+        lynch_msg = f"✅ 经济扩张(PMI={pmi_val}) + 估值合理({vp}%)。林奇会说\"跟着经济增长投资\"。"
+    elif pmi_val and pmi_val < 50 and vp > 60:
+        lynch_signal = "SELL"
+        lynch_msg = f"⚠️ 经济收缩(PMI={pmi_val}) + 估值偏高({vp}%)。林奇会建议转向防御性持仓。"
+    else:
+        lynch_msg = f"林奇重视\"用日常观察选股\"。宏观面{'扩张' if (pmi_val and pmi_val > 50) else '收缩' if pmi_val else '未知'}，估值{vp}%，建议关注消费领域基金。"
+    strategies.append({
+        "master": "彼得·林奇",
+        "philosophy": "成长投资：寻找被低估的成长型企业",
+        "signal": lynch_signal,
+        "message": lynch_msg,
+        "icon": "🔍",
+    })
+
+    # 约翰·博格 (Vanguard 指数基金之父)
+    bogle_msg = "📌 博格指数投资策略永远是：坚持定投，不要择时，降低费用，长期持有。"
+    if vp < 30:
+        bogle_msg += f"\n当前估值{vp}%偏低，定投的筹码在未来会更有价值。"
+    elif vp > 70:
+        bogle_msg += f"\n当前估值{vp}%偏高，但博格会说\"不要试图择时，继续你的定投计划\"。"
+    strategies.append({
+        "master": "约翰·博格",
+        "philosophy": "指数投资：低成本指数基金 + 长期持有 + 定期定投",
+        "signal": "HOLD",
+        "message": bogle_msg,
+        "icon": "📊",
+    })
+
+    return strategies
+
+
+# ============================================================
+# 策略回测系统
+# ============================================================
+
+def run_backtest(strategy: str = "smart_dca", years: int = 3, monthly_amount: float = 1000) -> dict:
+    """简易策略回测 — 用沪深300历史数据"""
+    result = {
+        "strategy": strategy,
+        "years": years,
+        "monthlyAmount": monthly_amount,
+        "totalInvested": 0,
+        "finalValue": 0,
+        "totalReturn": 0,
+        "totalReturnPct": 0,
+        "annualizedReturn": 0,
+        "maxDrawdown": 0,
+        "months": [],
+        "comparison": {},
+    }
+
+    try:
+        import akshare as ak
+        df = ak.stock_zh_index_daily(symbol="sh000300")
+        if df is None or len(df) < years * 250:
+            return {**result, "error": "历史数据不足"}
+
+        # 取最近 N 年数据，按月采样
+        total_days = years * 250
+        daily = df.tail(total_days)
+        closes = daily["close"].values
+        dates = daily.index if hasattr(daily.index, '__len__') else list(range(len(daily)))
+
+        # 每月取一个数据点（约每 20 个交易日）
+        monthly_prices = []
+        monthly_dates = []
+        for i in range(0, len(closes), 20):
+            monthly_prices.append(float(closes[i]))
+            if hasattr(dates[i], 'strftime'):
+                monthly_dates.append(dates[i].strftime("%Y-%m"))
+            else:
+                monthly_dates.append(f"M{i//20+1}")
+
+        if len(monthly_prices) < 12:
+            return {**result, "error": "月度数据不足"}
+
+        # 计算近3年估值百分位序列（用价格百分位近似）
+        all_closes = [float(c) for c in df.tail(total_days + 250)["close"].values]
+
+        # --- 固定定投策略 ---
+        fix_shares = 0
+        fix_invested = 0
+        fix_curve = []
+        for i, price in enumerate(monthly_prices):
+            shares_bought = monthly_amount / price
+            fix_shares += shares_bought
+            fix_invested += monthly_amount
+            fix_curve.append({
+                "month": monthly_dates[i] if i < len(monthly_dates) else f"M{i+1}",
+                "invested": round(fix_invested, 2),
+                "value": round(fix_shares * price, 2),
+            })
+
+        fix_final = fix_shares * monthly_prices[-1]
+        fix_return = fix_final - fix_invested
+        fix_return_pct = (fix_return / fix_invested * 100) if fix_invested > 0 else 0
+
+        # --- 智能定投策略 ---
+        smart_shares = 0
+        smart_invested = 0
+        smart_curve = []
+        for i, price in enumerate(monthly_prices):
+            # 计算当月的价格百分位（用前 N 个月的价格范围）
+            lookback = all_closes[:len(all_closes) - len(monthly_prices) + i + 1]
+            if len(lookback) > 60:
+                lookback_recent = lookback[-750:]  # 近3年
+                pct = sum(1 for p in lookback_recent if p <= price) / len(lookback_recent) * 100
+            else:
+                pct = 50
+
+            # 根据估值调整定投金额
+            dca = calc_smart_dca(monthly_amount, pct)
+            actual_amount = dca["smartAmount"]
+
+            shares_bought = actual_amount / price
+            smart_shares += shares_bought
+            smart_invested += actual_amount
+            smart_curve.append({
+                "month": monthly_dates[i] if i < len(monthly_dates) else f"M{i+1}",
+                "invested": round(smart_invested, 2),
+                "value": round(smart_shares * price, 2),
+                "multiplier": dca["multiplier"],
+            })
+
+        smart_final = smart_shares * monthly_prices[-1]
+        smart_return = smart_final - smart_invested
+        smart_return_pct = (smart_return / smart_invested * 100) if smart_invested > 0 else 0
+
+        # --- 计算最大回撤 ---
+        def calc_max_drawdown(curve):
+            peak = 0
+            max_dd = 0
+            for pt in curve:
+                v = pt["value"]
+                if v > peak:
+                    peak = v
+                dd = (peak - v) / peak * 100 if peak > 0 else 0
+                if dd > max_dd:
+                    max_dd = dd
+            return round(max_dd, 2)
+
+        # --- 年化收益率 ---
+        n_years = len(monthly_prices) / 12
+        fix_annual = ((1 + fix_return_pct / 100) ** (1 / n_years) - 1) * 100 if n_years > 0 and fix_return_pct > -100 else 0
+        smart_annual = ((1 + smart_return_pct / 100) ** (1 / n_years) - 1) * 100 if n_years > 0 and smart_return_pct > -100 else 0
+
+        result.update({
+            "totalInvested": round(smart_invested, 2),
+            "finalValue": round(smart_final, 2),
+            "totalReturn": round(smart_return, 2),
+            "totalReturnPct": round(smart_return_pct, 2),
+            "annualizedReturn": round(smart_annual, 2),
+            "maxDrawdown": calc_max_drawdown(smart_curve),
+            "months": smart_curve,
+            "comparison": {
+                "fixedDca": {
+                    "invested": round(fix_invested, 2),
+                    "finalValue": round(fix_final, 2),
+                    "totalReturn": round(fix_return, 2),
+                    "totalReturnPct": round(fix_return_pct, 2),
+                    "annualizedReturn": round(fix_annual, 2),
+                    "maxDrawdown": calc_max_drawdown(fix_curve),
+                    "months": fix_curve,
+                },
+                "smartDca": {
+                    "invested": round(smart_invested, 2),
+                    "finalValue": round(smart_final, 2),
+                    "totalReturn": round(smart_return, 2),
+                    "totalReturnPct": round(smart_return_pct, 2),
+                    "annualizedReturn": round(smart_annual, 2),
+                    "maxDrawdown": calc_max_drawdown(smart_curve),
+                    "months": smart_curve,
+                },
+                "advantage": round(smart_return_pct - fix_return_pct, 2),
+            },
+        })
+
+    except Exception as e:
+        print(f"[BACKTEST] Failed: {e}")
+        import traceback; traceback.print_exc()
+        result["error"] = str(e)
+
+    return result
+
+
 # ---- API 路由 ----
 
 @app.get("/api/health")
@@ -1183,6 +1595,34 @@ def get_market_dashboard():
         "macro": macro,
         "updatedAt": datetime.now().isoformat(),
     }
+
+
+# ---- API: 每日智能信号 ----
+
+@app.get("/api/daily-signal")
+def get_daily_signal():
+    """每日综合交易信号（技术面+基本面+大师策略）"""
+    cache_key = "daily_signal"
+    now = time.time()
+    if cache_key in macro_cache and now - macro_cache[cache_key]["ts"] < 1800:
+        return macro_cache[cache_key]["data"]
+    result = generate_daily_signal()
+    macro_cache[cache_key] = {"data": result, "ts": now}
+    return result
+
+
+# ---- API: 策略回测 ----
+
+@app.get("/api/backtest")
+def get_backtest(strategy: str = "smart_dca", years: int = 3, monthly: float = 1000):
+    """回测智能定投 vs 固定定投（沪深300历史数据）"""
+    cache_key = f"bt_{strategy}_{years}_{monthly}"
+    now = time.time()
+    if cache_key in macro_cache and now - macro_cache[cache_key]["ts"] < 7200:
+        return macro_cache[cache_key]["data"]
+    result = run_backtest(strategy, years, monthly)
+    macro_cache[cache_key] = {"data": result, "ts": now}
+    return result
 
 
 # ---- 持久化工具 ----
