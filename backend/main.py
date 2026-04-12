@@ -575,10 +575,12 @@ def get_fund_news(code: str, limit: int = 3) -> list:
                     title_col = [c for c in df.columns if "标题" in c or "title" in c.lower()]
                     time_col = [c for c in df.columns if "时间" in c or "date" in c.lower() or "发布" in c]
                     source_col = [c for c in df.columns if "来源" in c or "source" in c.lower() or "文章来源" in c]
+                    url_col = [c for c in df.columns if "链接" in c or "url" in c.lower() or "新闻链接" in c]
                     news_list.append({
                         "title": str(row[title_col[0]]) if title_col else str(row.iloc[0]),
                         "time": str(row[time_col[0]]) if time_col else "",
                         "source": str(row[source_col[0]]) if source_col else "东方财富",
+                        "url": str(row[url_col[0]]) if url_col else "",
                     })
         except Exception as e:
             print(f"[NEWS] stock_news_em failed for {keyword}: {e}")
@@ -627,10 +629,12 @@ def get_market_news(limit: int = 10) -> list:
                     title_col = [c for c in df.columns if "标题" in c or "title" in c.lower()]
                     time_col = [c for c in df.columns if "时间" in c or "date" in c.lower() or "发布" in c]
                     source_col = [c for c in df.columns if "来源" in c or "source" in c.lower()]
+                    url_col = [c for c in df.columns if "链接" in c or "url" in c.lower() or "新闻链接" in c]
                     all_news.append({
                         "title": str(row[title_col[0]]) if title_col else str(row.iloc[0]),
                         "time": str(row[time_col[0]]) if time_col else "",
                         "source": str(row[source_col[0]]) if source_col else "东方财富",
+                        "url": str(row[url_col[0]]) if url_col else "",
                     })
         except Exception as e:
             print(f"[NEWS] market news failed: {e}")
@@ -661,18 +665,33 @@ def get_macro_calendar() -> list:
         try:
             df = ak.macro_china_cpi_monthly()
             if df is not None and len(df) > 0:
+                print(f"[MACRO] CPI columns: {list(df.columns)}")
+                print(f"[MACRO] CPI last row: {df.iloc[-1].to_dict()}")
                 latest = df.iloc[-1]
-                date_col = [c for c in df.columns if "月份" in c or "date" in c.lower() or "统计时间" in c]
-                val_col = [c for c in df.columns if "全国" in c or "同比" in c or "cpi" in c.lower()]
+                date_col = [c for c in df.columns if any(k in str(c) for k in ["月份", "date", "统计时间", "时间", "日期"])]
+                val_col = [c for c in df.columns if any(k in str(c).lower() for k in ["全国", "同比", "cpi", "当月", "涨幅"])]
+                # 如果精确匹配失败，用第二列（通常是数值列）
+                if not val_col and len(df.columns) > 1:
+                    val_col = [df.columns[1]]
+                if not date_col and len(df.columns) > 0:
+                    date_col = [df.columns[0]]
+                cpi_value = str(latest[val_col[0]]) if val_col else ""
+                # 如果是数值加上 % 后缀
+                try:
+                    float(cpi_value)
+                    cpi_value = cpi_value + "%"
+                except (ValueError, TypeError):
+                    pass
                 events.append({
                     "name": "CPI 居民消费价格指数",
                     "date": str(latest[date_col[0]]) if date_col else "",
-                    "value": str(latest[val_col[0]]) if val_col else "",
+                    "value": cpi_value,
                     "impact": "通胀指标，影响央行货币政策",
                     "icon": "📊",
                 })
         except Exception as e:
             print(f"[MACRO] CPI failed: {e}")
+            import traceback; traceback.print_exc()
 
         # PMI
         try:
