@@ -18,6 +18,7 @@ sys.path.insert(0, os.path.dirname(__file__))
 
 from fastapi import FastAPI, UploadFile, File, Form, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
 
@@ -63,6 +64,7 @@ from services.data_layer import (
 # ---- FastAPI 应用 ----
 app = FastAPI(title="钱袋子 API", version="5.0.0")
 
+app.add_middleware(GZipMiddleware, minimum_size=1000)  # >1KB 自动 gzip
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -1828,9 +1830,27 @@ def data_audit():
 # ---- 静态文件服务（部署时前后端一体）----
 FRONTEND_DIR = Path(__file__).resolve().parent.parent  # moneybag/
 
+# 静态资源缓存配置（秒）
+_CACHE_RULES = {
+    ".js": "public, max-age=300, stale-while-revalidate=86400",   # 5 min + 后台刷新
+    ".css": "public, max-age=300, stale-while-revalidate=86400",
+    ".png": "public, max-age=604800",  # 图标 7 天
+    ".ico": "public, max-age=604800",
+    ".json": "public, max-age=60",     # manifest 等 1 分钟
+    ".html": "no-cache",               # HTML 每次验证
+}
+
+def _cached_file_response(fp: Path) -> FileResponse:
+    """返回带 Cache-Control 的 FileResponse"""
+    suffix = fp.suffix.lower()
+    headers = {}
+    if suffix in _CACHE_RULES:
+        headers["Cache-Control"] = _CACHE_RULES[suffix]
+    return FileResponse(fp, headers=headers)
+
 @app.get("/")
 def serve_index():
-    return FileResponse(FRONTEND_DIR / "index.html")
+    return _cached_file_response(FRONTEND_DIR / "index.html")
 
 app.mount("/static", StaticFiles(directory=str(FRONTEND_DIR)), name="frontend")
 
@@ -1839,8 +1859,8 @@ app.mount("/static", StaticFiles(directory=str(FRONTEND_DIR)), name="frontend")
 def serve_frontend_file(filename: str):
     fp = FRONTEND_DIR / filename
     if fp.is_file():
-        return FileResponse(fp)
-    return FileResponse(FRONTEND_DIR / "index.html")
+        return _cached_file_response(fp)
+    return _cached_file_response(FRONTEND_DIR / "index.html")
 
 
 if __name__ == "__main__":
