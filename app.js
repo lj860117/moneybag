@@ -680,8 +680,8 @@ ${Object.entries(incCat).map(([c,a])=>`<div class="ledger-cat" style="border-col
 ${Object.entries(expCat).map(([c,a])=>`<div class="ledger-cat"><div class="ledger-cat-icon">${EXPENSE_ICONS[c]||'📌'}</div><div class="ledger-cat-name">${c}</div><div class="ledger-cat-amt">¥${Math.round(a)}</div></div>`).join('')}
 </div>`:''
 }
-<div class="section-title">📸 拍照记账</div>
-<div class="upload-area" onclick="document.getElementById('rcptFile').click()"><div class="icon">📷</div><div class="text">拍一张小票，AI自动识别入账</div><input type="file" id="rcptFile" accept="image/*" capture="environment" style="display:none" onchange="handleReceipt(this)"></div><div id="ocrRes"></div>
+<div class="section-title">📸 拍照/截图记账</div>
+<div class="upload-area" onclick="document.getElementById('rcptFile').click()"><div class="icon">📷</div><div class="text">拍照或上传截图，AI自动识别入账<br><span style="font-size:12px;color:var(--text2)">支持：支付宝/微信账单、银行流水截图、消费小票</span></div><input type="file" id="rcptFile" accept="image/*" style="display:none" onchange="handleReceipt(this)"></div><div id="ocrRes"></div>
 <div class="section-title">✏️ 手动记一笔</div>
 <div class="manual-form">
 <div style="display:flex;gap:0;margin-bottom:12px;border-radius:8px;overflow:hidden;border:1px solid var(--border)">
@@ -773,17 +773,22 @@ const ASSET_TYPES=[
 
 function renderAssets(){currentPage='assets';renderNav();
 const assets=loadAssets();
+const ledger=loadLedger();
 const assetTotal=assets.filter(a=>a.type!=='liability').reduce((s,a)=>s+(a.value||0),0);
 const liabTotal=assets.filter(a=>a.type==='liability').reduce((s,a)=>s+(a.value||0),0);
-const net=assetTotal-liabTotal;
+const ledgerIncome=ledger.filter(e=>e.direction==='income').reduce((s,e)=>s+(e.amount||0),0);
+const ledgerExpense=ledger.filter(e=>e.direction!=='income').reduce((s,e)=>s+(e.amount||0),0);
+const ledgerNet=ledgerIncome-ledgerExpense;
+const net=assetTotal-liabTotal+ledgerNet;
 
 $('#app').innerHTML=`<div class="result-page fade-up">
 <div class="pnl-hero" style="margin-bottom:16px">
 <div class="pnl-label">🏦 资产管理</div>
-<div style="display:flex;gap:16px;justify-content:center;margin-top:8px">
-<div style="text-align:center"><div style="font-size:12px;color:var(--text2)">总资产</div><div style="font-size:22px;font-weight:900;color:var(--green)">¥${fmtMoney(Math.round(assetTotal))}</div></div>
-<div style="text-align:center"><div style="font-size:12px;color:var(--text2)">总负债</div><div style="font-size:22px;font-weight:900;color:var(--red)">¥${fmtMoney(Math.round(liabTotal))}</div></div>
-<div style="text-align:center"><div style="font-size:12px;color:var(--text2)">净值</div><div style="font-size:22px;font-weight:900;color:${net>=0?'var(--accent)':'var(--red)'}">¥${fmtMoney(Math.round(net))}</div></div>
+<div style="display:flex;gap:12px;justify-content:center;margin-top:8px;flex-wrap:wrap">
+<div style="text-align:center"><div style="font-size:12px;color:var(--text2)">总资产</div><div style="font-size:20px;font-weight:900;color:var(--green)">¥${fmtMoney(Math.round(assetTotal))}</div></div>
+<div style="text-align:center"><div style="font-size:12px;color:var(--text2)">总负债</div><div style="font-size:20px;font-weight:900;color:var(--red)">¥${fmtMoney(Math.round(liabTotal))}</div></div>
+<div style="text-align:center"><div style="font-size:12px;color:var(--text2)">记账现金流</div><div style="font-size:20px;font-weight:900;color:${ledgerNet>=0?'var(--green)':'var(--red)'}">${ledgerNet>=0?'+':''}¥${fmtMoney(Math.round(ledgerNet))}</div></div>
+<div style="text-align:center"><div style="font-size:12px;color:var(--text2)">净值</div><div style="font-size:20px;font-weight:900;color:${net>=0?'var(--accent)':'var(--red)'}">¥${fmtMoney(Math.round(net))}</div></div>
 </div></div>
 
 <div class="section-title" style="display:flex;justify-content:space-between;align-items:center">📋 我的资产<button style="background:none;border:none;color:var(--accent);font-size:13px;cursor:pointer" onclick="showAddAsset()">+ 添加</button></div>
@@ -806,8 +811,8 @@ return`<div class="holding-card" style="border-left:3px solid ${t.color}">
 
 <div style="text-align:center;margin-top:16px;font-size:12px;color:var(--text2);line-height:1.8">
 💡 这里管理基金以外的资产<br>
-基金持仓在「📊 持仓」页通过交易记录自动管理<br>
-所有资产汇总到首页净资产仪表盘</div></div>`}
+基金持仓在「📊 持仓」页管理 · 记账收支自动计入净资产<br>
+所有数据汇总到首页净资产仪表盘</div></div>`}
 
 function showAddAsset(){
 const o=document.createElement('div');o.className='modal-overlay';o.onclick=e=>{if(e.target===o)o.remove()};
