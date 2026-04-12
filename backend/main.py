@@ -45,7 +45,8 @@ from services.signal import (
     generate_daily_signal, _apply_master_strategies,
     calc_smart_dca, calc_take_profit_strategy,
 )
-from services.risk import calc_risk_metrics
+from services.risk import calc_risk_metrics, generate_risk_actions
+from services.portfolio import generate_allocation_advice
 from services.backtest import run_backtest
 from services.persistence import load_user, save_user, _user_file
 
@@ -717,6 +718,49 @@ def get_risk_metrics(req: dict):
         user = ensure_v4_portfolio(user)
         txs = user["portfolio"].get("transactions", [])
     return calc_risk_metrics(txs)
+
+
+@app.post("/api/risk-actions")
+def get_risk_actions(req: dict):
+    """风控硬阈值执行建议（借鉴豆包方案+幻方量化）"""
+    user_id = req.get("userId", "")
+    if not user_id:
+        txs = req.get("transactions", [])
+    else:
+        user = load_user(user_id)
+        user = ensure_v4_portfolio(user)
+        txs = user["portfolio"].get("transactions", [])
+    # 获取当前估值百分位
+    try:
+        vp = get_valuation_percentile()
+        val_pct = vp if isinstance(vp, (int, float)) else 50
+    except Exception:
+        val_pct = 50
+    return generate_risk_actions(txs, val_pct)
+
+
+@app.post("/api/allocation-advice")
+def get_allocation_advice(req: dict):
+    """大类资产配置建议（股/债/现金目标比例+偏离度）"""
+    user_id = req.get("userId", "")
+    if not user_id:
+        txs = req.get("transactions", [])
+    else:
+        user = load_user(user_id)
+        user = ensure_v4_portfolio(user)
+        txs = user["portfolio"].get("transactions", [])
+    # 获取当前估值和恐惧贪婪
+    try:
+        vp = get_valuation_percentile()
+        val_pct = vp if isinstance(vp, (int, float)) else 50
+    except Exception:
+        val_pct = 50
+    try:
+        fgi = get_fear_greed_index()
+        fg_val = fgi if isinstance(fgi, (int, float)) else 50
+    except Exception:
+        fg_val = 50
+    return generate_allocation_advice(txs, val_pct, fg_val)
 
 
 # ---- API: 每日智能信号 ----

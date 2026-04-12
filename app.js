@@ -493,6 +493,7 @@ return`<div class="ledger-entry"><div class="ledger-entry-icon">${isBuy?'🟢':'
 <div class="ledger-entry-date">${new Date(t.date).toLocaleString('zh-CN')} · ${t.shares?.toFixed(2)||'-'}份 × ¥${t.price?.toFixed(4)||'-'}</div></div>
 <div class="ledger-entry-amt" style="color:${isBuy?'var(--green)':'var(--red)'}">¥${Math.round(t.amount||t.shares*t.price)}</div></div>`}).join('')}</div>`:''}
 
+<div id="riskActionsSection"></div>
 <div id="riskMetricsSection"><div style="text-align:center;padding:12px;font-size:12px;color:var(--text2)">${API_AVAILABLE?'正在加载风控体检...':''}</div></div>
 
 <div class="bottom-actions" style="margin-top:16px">
@@ -510,7 +511,7 @@ const pe=document.getElementById('pnlSum');
 if(pe){const c=pnl.totalPnl>=0?'pos':'neg';const sg=pnl.totalPnl>=0?'+':'';
 pe.innerHTML=`<div class="pnl-change ${c}">${sg}${fmtFull(Math.round(pnl.totalPnl))}(${sg}${pnl.totalPnlPct.toFixed(2)}%)</div><div class="pnl-sub">当前市值${fmtFull(Math.round(pnl.totalMarket))}</div>`}}}catch{}}
 // 异步加载风控指标
-if(API_AVAILABLE){loadRiskMetrics()}}
+if(API_AVAILABLE){loadRiskMetrics();loadRiskActions()}}
 
 async function loadRiskMetrics(){
 try{const r=await fetch(API_BASE+'/risk-metrics',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({userId:getUserId()}),signal:AbortSignal.timeout(15000)});
@@ -543,6 +544,66 @@ ${alertHtml}
 <div style="font-size:11px;color:var(--text2)">相关性</div>
 <div style="font-size:18px;font-weight:900;color:${corrColor};margin-top:2px">${corr.avg}</div>
 <div style="font-size:10px;color:${corrColor}">${corr.detail.slice(0,8)}</div></div></div>`}catch(e){console.warn('Risk metrics load failed:',e)}}
+
+// 风控硬阈值执行建议（借鉴豆包方案+幻方量化）
+async function loadRiskActions(){
+try{const r=await fetch(API_BASE+'/risk-actions',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({userId:getUserId()}),signal:AbortSignal.timeout(15000)});
+if(!r.ok)return;const data=await r.json();
+const el=document.getElementById('riskActionsSection');if(!el)return;
+const actions=data.actions||[];const summary=data.summary||'';const level=data.risk_level||'safe';
+if(!actions.length){el.innerHTML=`<div style="margin-top:16px;padding:12px 14px;border-radius:12px;background:rgba(34,197,94,.08);border:1px solid rgba(34,197,94,.2)">
+<div style="font-size:13px;font-weight:700;color:var(--green)">🟢 风控指令</div>
+<div style="font-size:12px;color:var(--green);margin-top:4px">${summary}</div></div>`;return}
+const borderColor=level==='danger'?'rgba(239,68,68,.3)':level==='warning'?'rgba(245,158,11,.3)':'rgba(34,197,94,.2)';
+const bgColor=level==='danger'?'rgba(239,68,68,.06)':level==='warning'?'rgba(245,158,11,.06)':'rgba(34,197,94,.06)';
+const headerColor=level==='danger'?'var(--red)':level==='warning'?'var(--accent)':'var(--green)';
+const actionsHtml=actions.map(a=>{
+const bg=a.level==='danger'?'rgba(239,68,68,.1)':a.level==='warning'?'rgba(245,158,11,.1)':'rgba(59,130,246,.08)';
+const border=a.level==='danger'?'rgba(239,68,68,.2)':a.level==='warning'?'rgba(245,158,11,.2)':'rgba(59,130,246,.15)';
+return`<div style="background:${bg};border:1px solid ${border};border-radius:8px;padding:10px 12px;margin-top:6px">
+<div style="font-size:13px;font-weight:600;line-height:1.5">${a.action}</div>
+<div style="font-size:11px;color:var(--text2);margin-top:3px">📋 ${a.rule}｜${a.detail}</div></div>`}).join('');
+el.innerHTML=`<div style="margin-top:16px;padding:14px;border-radius:12px;background:${bgColor};border:1px solid ${borderColor}">
+<div style="display:flex;align-items:center;justify-content:space-between">
+<div style="font-size:14px;font-weight:800;color:${headerColor}">⚡ 风控执行指令</div>
+<div style="font-size:11px;color:${headerColor};font-weight:600">${summary}</div></div>
+${actionsHtml}</div>`}catch(e){console.warn('Risk actions load failed:',e)}}
+
+// 大类资产配置建议（总览页）
+async function loadAllocationAdvice(){
+try{const r=await fetch(API_BASE+'/allocation-advice',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({userId:getUserId()}),signal:AbortSignal.timeout(15000)});
+if(!r.ok)return;const data=await r.json();
+const el=document.getElementById('allocationSection');if(!el)return;
+const t=data.target||{};const c=data.current||{};const dev=data.deviation||{};
+const advice=data.advice||[];const zone=data.valuation_zone||'适中';const valPct=data.valuation_pct||50;
+const zoneColor=zone==='低估'?'var(--green)':zone==='高估'?'var(--red)':'var(--accent)';
+// 配置饼图（简化CSS饼图）
+const stockC=c.stock||0;const bondC=c.bond||0;const cashC=c.cash||0;
+const stockT=t.stock||65;const bondT=t.bond||25;const cashT=t.cash||10;
+// 生成偏离度指示
+function devBar(label,icon,cur,tgt,devVal){
+const color=Math.abs(devVal)>8?(devVal>0?'var(--red)':'var(--accent)'):'var(--green)';
+const sign=devVal>0?'+':'';
+return`<div style="display:flex;align-items:center;gap:8px;padding:6px 0;border-bottom:1px solid rgba(148,163,184,.06)">
+<div style="font-size:16px">${icon}</div>
+<div style="flex:1">
+<div style="display:flex;justify-content:space-between;font-size:12px"><span style="color:var(--text2)">${label}</span><span style="font-weight:700">${cur.toFixed(0)}% <span style="color:var(--text2);font-weight:400">/ 目标${tgt}%</span></span></div>
+<div style="height:4px;background:rgba(148,163,184,.1);border-radius:2px;margin-top:4px;overflow:hidden">
+<div style="height:100%;width:${Math.min(cur/Math.max(tgt,1)*100,150)}%;background:${color};border-radius:2px;transition:width .3s"></div></div>
+</div>
+<div style="font-size:12px;font-weight:700;color:${color};min-width:45px;text-align:right">${sign}${devVal}%</div></div>`}
+const adviceHtml=advice.length?advice.map(a=>{
+const bg=a.direction==='reduce'?'rgba(239,68,68,.08)':'rgba(34,197,94,.08)';
+const border=a.direction==='reduce'?'rgba(239,68,68,.15)':'rgba(34,197,94,.15)';
+return`<div style="background:${bg};border:1px solid ${border};border-radius:8px;padding:8px 10px;margin-top:6px;font-size:12px;line-height:1.5">${a.message}</div>`}).join(''):'<div style="font-size:12px;color:var(--green);margin-top:6px">✅ 各资产类别偏离度在合理范围内</div>';
+el.innerHTML=`<div class="dashboard-card-title">🎯 资产配置建议 <span style="font-size:11px;color:${zoneColor};font-weight:600">估值${zone}(${valPct}%)</span></div>
+<div style="font-size:12px;color:var(--text2);margin-bottom:10px">${data.summary||''}</div>
+${devBar('股票类','📊',stockC,stockT,dev.stock||0)}
+${devBar('债券类','🏦',bondC,bondT,dev.bond||0)}
+${devBar('现金类','💵',cashC,cashT,dev.cash||0)}
+<div style="margin-top:8px;font-size:11px;color:var(--text2);padding:6px 8px;background:rgba(148,163,184,.04);border-radius:6px">📐 目标比例根据估值水平动态调整：低估→股票${ALLOCATION_PROFILES?.low?.stock*100||75}% / 高估→股票${ALLOCATION_PROFILES?.high?.stock*100||45}%</div>
+${adviceHtml}`}catch(e){console.warn('Allocation advice load failed:',e);const el=document.getElementById('allocationSection');if(el)el.innerHTML=''}}
+const ALLOCATION_PROFILES={low:{stock:0.75,bond:0.15,cash:0.10},mid:{stock:0.65,bond:0.25,cash:0.10},high:{stock:0.45,bond:0.35,cash:0.20}};
 
 // 持仓操作弹窗（加仓/卖出/删除）
 function showHoldingActions(code){
@@ -834,8 +895,11 @@ ${Object.keys(dims).length?`<div class="fgi-dims">${Object.values(dims).map(d=>`
 ${news.length?`<div class="dashboard-card"><div class="dashboard-card-title">📰 最新资讯</div>${news.map(n=>`<div class="news-item" onclick="${n.url?`window.open('${n.url}','_blank')`:''}"${n.url?'':' style="cursor:default"'}><div class="news-icon">📰</div><div class="news-content"><div class="news-title">${n.title}</div><div class="news-meta">${n.source||''}${n.time?' · '+n.time:''}</div></div>${n.url?'<div class="news-arrow">›</div>':''}</div>`).join('')}</div>`:''}
 ${macro.length?`<div class="dashboard-card" onclick="insightTab='macro';renderInsight()" style="cursor:pointer"><div class="dashboard-card-title">🏛️ 宏观经济 <span style="font-size:11px;color:var(--accent)">点击查看详情 ›</span></div>${macro.map(e=>`<div class="macro-item"><div class="macro-icon">${e.icon||'📅'}</div><div class="macro-info"><div class="macro-name">${e.name}</div><div class="macro-value">${e.value||'—'}</div><div class="macro-impact">${e.impact||''}</div></div><div class="news-arrow">›</div></div>`).join('')}</div>`:''}
 ${renderV45FactorCards(d)}
+<div id="allocationSection" class="dashboard-card"><div style="text-align:center;padding:12px;font-size:12px;color:var(--text2)">正在计算资产配置建议...</div></div>
 <div id="impactSection" class="dashboard-card"><div class="dashboard-card-title">🔗 事件影响分析</div><div style="text-align:center;padding:16px;font-size:12px;color:var(--text2)">分析新闻对持仓的影响中...</div></div>
 <div style="text-align:center;font-size:11px;color:#475569;margin-top:16px">更新于 ${new Date(d.updatedAt).toLocaleString('zh-CN')}</div>`;
+// 异步加载资产配置建议
+loadAllocationAdvice();
 // 异步加载事件影响分析
 fetch(API_BASE+'/news/impact',{signal:AbortSignal.timeout(30000)}).then(r=>r.json()).then(data=>{const sec=document.getElementById('impactSection');if(!sec||!data.impacts||!data.impacts.length){if(sec)sec.innerHTML='<div class="dashboard-card-title">🔗 事件影响分析</div><div style="padding:12px;font-size:12px;color:var(--text2)">暂无显著影响事件</div>';return}sec.innerHTML='<div class="dashboard-card-title">🔗 事件对你持仓的影响</div>'+data.impacts.map(imp=>{const bull=imp.bullish.length?'<span style="color:var(--green);font-size:11px">📈'+imp.bullish.join(',')+'</span>':'';const bear=imp.bearish.length?'<span style="color:var(--red);font-size:11px">📉'+imp.bearish.join(',')+'</span>':'';return'<div style="padding:8px 0;border-bottom:1px solid rgba(148,163,184,.08)"><div style="display:flex;align-items:center;gap:6px"><span style="background:rgba(245,158,11,.12);color:#F59E0B;font-size:11px;padding:2px 6px;border-radius:4px">'+imp.tag+'</span>'+bull+' '+bear+'</div><div style="font-size:12px;color:var(--text2);margin-top:4px">'+imp.impact+'</div></div>'}).join('')+'<div style="font-size:11px;color:#475569;margin-top:8px;padding-top:8px;border-top:1px solid rgba(148,163,184,.08)">分析了 '+data.total_news_analyzed+' 条新闻 · 基于关键词匹配</div>'}).catch(()=>{})}
 
