@@ -719,8 +719,9 @@ sugs.forEach(s=>{s.disabled=locked;s.style.opacity=locked?'0.4':'1';s.style.poin
 async function sendChat(text){if(_chatSending)return;const inp=document.getElementById('chatIn');const msg=text||(inp?inp.value.trim():'');if(!msg)return;_setChatLock(true);if(inp)inp.value='';
 const sg=document.getElementById('chatSugs');if(sg)sg.style.display='none';
 chatMessages.push({role:'user',text:msg});appendMsg('user',msg);appendTyping();
-const body=JSON.stringify({message:msg,model:chatModel});
-chatMessages.push({role:'user',text:msg});appendMsg('user',msg);appendTyping();
+// 思考进度计时
+const isR1=chatModel.includes('reasoner');
+let _thinkSec=0;_thinkTimer=setInterval(()=>{_thinkSec++;const el=document.getElementById('chatTyp');if(!el)return;const tips=isR1?['🧠 深度推理模型思考中...','💭 正在多角度分析...','📊 综合大师观点中...','⏳ R1 深度思考需要 15-30 秒，请耐心等待']:['🤖 AI 分析中...','📊 查询实时数据...','💭 综合分析中...'];const tip=tips[Math.min(Math.floor(_thinkSec/5),tips.length-1)];el.innerHTML=`<span></span><span></span><span></span><div style="font-size:11px;color:var(--text2);margin-top:4px">${tip}（${_thinkSec}s）</div>`},1000);
 if(API_AVAILABLE){try{const p=loadPortfolio();
 const r=await fetch(API_BASE+'/chat/stream',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({message:msg,model:chatModel,portfolio:p.holdings.length?p:null})});
 rmTyping();
@@ -747,8 +748,9 @@ if(r.ok){const d=await r.json();chatMessages.push({role:'bot',text:d.reply,src:d
 rmTyping();const fb='后端未连接，无法获取实时数据。请确保后端运行中。';chatMessages.push({role:'bot',text:fb,src:'offline'});appendMsg('bot',fb,'offline');_setChatLock(false)}
 
 function appendMsg(r,t,src){const el=document.getElementById('chatMsgs');if(!el)return;const d=document.createElement('div');d.className='chat-msg '+r;d.innerHTML=t+(src?`<div class="src-tag">${src==='ai'?'AI分析':src==='rules'?'规则引擎':'离线'}</div>`:'');el.appendChild(d);scrollChat()}
+let _thinkTimer=null;
 function appendTyping(){const el=document.getElementById('chatMsgs');if(!el)return;const d=document.createElement('div');d.className='chat-typing';d.id='chatTyp';d.innerHTML='<span></span><span></span><span></span>';el.appendChild(d);scrollChat()}
-function rmTyping(){const el=document.getElementById('chatTyp');if(el)el.remove()}
+function rmTyping(){if(_thinkTimer){clearInterval(_thinkTimer);_thinkTimer=null}const el=document.getElementById('chatTyp');if(el)el.remove()}
 function scrollChat(){const el=document.getElementById('chatMsgs');if(el)setTimeout(()=>el.scrollTop=el.scrollHeight,50)}
 
 // ---- 白话解释弹窗（数据驱动，避免 onclick 引号冲突）----
