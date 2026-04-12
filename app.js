@@ -547,6 +547,19 @@ function appendTyping(){const el=document.getElementById('chatMsgs');if(!el)retu
 function rmTyping(){const el=document.getElementById('chatTyp');if(el)el.remove()}
 function scrollChat(){const el=document.getElementById('chatMsgs');if(el)setTimeout(()=>el.scrollTop=el.scrollHeight,50)}
 
+// ---- 白话解释弹窗 ----
+function showExplain(title,text){
+const overlay=document.createElement('div');
+overlay.style.cssText='position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,0.6);z-index:9999;display:flex;align-items:center;justify-content:center;padding:20px;animation:fadeIn 0.2s';
+overlay.onclick=e=>{if(e.target===overlay)overlay.remove()};
+const lines=text.replace(/\\n/g,'\n').split('\n').map(l=>l.trim()?`<p style="margin:4px 0;${l.startsWith('•')||l.startsWith('📊')||l.startsWith('🔍')||l.startsWith('🎯')||l.startsWith('💡')||l.startsWith('⚠️')?'':''}${l.startsWith('📊')||l.startsWith('🔍')||l.startsWith('🎯')||l.startsWith('💡')||l.startsWith('⚠️')?'font-weight:600;margin-top:12px;':''}">${l}</p>`:'').join('');
+overlay.innerHTML=`<div style="background:var(--card);border-radius:16px;padding:24px;max-width:380px;width:100%;max-height:80vh;overflow-y:auto;box-shadow:0 20px 60px rgba(0,0,0,0.3)">
+<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px"><h3 style="margin:0;font-size:16px;color:var(--text1)">${title}</h3><button onclick="this.closest('[style*=fixed]').remove()" style="background:none;border:none;font-size:20px;color:var(--text2);cursor:pointer;padding:4px">✕</button></div>
+<div style="font-size:13px;line-height:1.8;color:var(--text2)">${lines}</div>
+<button onclick="this.closest('[style*=fixed]').remove()" style="width:100%;margin-top:16px;padding:12px;border:none;border-radius:10px;background:var(--accent);color:#fff;font-size:14px;cursor:pointer">我懂了 👍</button>
+</div>`;
+document.body.appendChild(overlay)}
+
 // ---- 资讯页 ----
 let insightTab='overview';
 async function renderInsight(){currentPage='insight';renderNav();
@@ -568,16 +581,16 @@ const valColor=val.percentile<30?'var(--green)':val.percentile>70?'var(--red)':'
 const valPct=Math.min(Math.max(val.percentile||50,0),100);
 const dims=fgi.dimensions||{};
 el.innerHTML=`
-<div class="dashboard-card"><div class="dashboard-card-title">😱 恐惧贪婪指数</div>
+<div class="dashboard-card" onclick="showExplain('恐惧贪婪指数','这个指数衡量市场情绪——大家是"怕得要死"还是"贪得无厌"。\\n\\n📊 怎么理解：\\n• 0~25 = 极度恐惧（别人恐惧时贪婪？）\\n• 25~45 = 恐惧\\n• 45~55 = 中性\\n• 55~75 = 贪婪\\n• 75~100 = 极度贪婪（别人贪婪时恐惧？）\\n\\n🎯 当前：${(fgi.score||50).toFixed(0)} - ${fgi.level||'中性'}\\n\\n🔍 怎么用：\\n• 巴菲特说"别人恐惧我贪婪"\\n• 极度恐惧(<25)往往是好的买入时机\\n• 极度贪婪(>75)要小心追高\\n\\n💡 但这只是参考，不是万能的买卖信号。')" style="cursor:pointer"><div class="dashboard-card-title">😱 恐惧贪婪指数 <span style="font-size:11px;color:var(--accent)">点击了解 ›</span></div>
 <div class="fgi-gauge"><div class="fgi-score" style="color:${fgiColor}">${(fgi.score||50).toFixed(0)}</div><div class="fgi-label">${fgi.level||'中性'}</div></div>
 ${Object.keys(dims).length?`<div class="fgi-dims">${Object.values(dims).map(d=>`<div class="fgi-dim"><div class="fgi-dim-label">${d.label}</div><div class="fgi-dim-val">${d.value}</div></div>`).join('')}</div>`:''}
 </div>
-<div class="dashboard-card"><div class="dashboard-card-title">📊 估值水平</div>
+<div class="dashboard-card" onclick="showExplain('估值水平','估值就是看"这个市场现在贵不贵"。\\n\\n📊 核心指标 PE（市盈率）：\\n• PE = 股价 ÷ 每股收益\\n• PE 低 → 相对便宜\\n• PE 高 → 相对贵\\n\\n🔍 百分位怎么看：\\n• 当前：${val.percentile||50}%\\n• 意思是"历史上只有 ${val.percentile||50}% 的时候比现在便宜"\\n• <30% → 便宜区间，适合加仓\\n• 30~70% → 正常区间\\n• >70% → 偏贵，谨慎追高\\n\\n🎯 PE: ${val.current_pe||'-'}\\n\\n💡 一句话：估值越低，安全边际越高，长期赚钱概率越大。')" style="cursor:pointer"><div class="dashboard-card-title">📊 估值水平 <span style="font-size:11px;color:var(--accent)">点击了解 ›</span></div>
 <div style="display:flex;justify-content:space-between;align-items:center"><div><div style="font-size:24px;font-weight:900;color:${valColor}">${val.percentile||50}%</div><div style="font-size:13px;color:var(--text2)">${val.index||'沪深300'}·${val.level||'适中'}</div></div><div style="text-align:right;font-size:12px;color:var(--text2)">${val.metric||''}<br>PE: ${val.current_pe||'-'}</div></div>
 <div class="val-bar"><div class="val-bar-fill" style="width:${valPct}%;background:${valColor}"></div><div class="val-bar-marker" style="left:${valPct}%;background:${valColor}"></div></div>
 <div style="display:flex;justify-content:space-between;font-size:11px;color:var(--text2)"><span>低估</span><span>适中</span><span>高估</span></div>
 </div>
-<div class="dashboard-card"><div class="dashboard-card-title">📈 技术指标</div>
+<div class="dashboard-card" onclick="insightTab='tech';renderInsight()" style="cursor:pointer"><div class="dashboard-card-title">📈 技术指标 <span style="font-size:11px;color:var(--accent)">点击查看详情 ›</span></div>
 <div class="tech-grid">
 <div class="tech-item"><div class="tech-label">RSI(14)</div><div class="tech-value">${tech.rsi||'-'}</div><div class="tech-signal ${tech.rsi>70?'sell':tech.rsi<30?'buy':'neutral'}">${tech.rsi_signal||'—'}</div></div>
 <div class="tech-item"><div class="tech-label">MACD</div><div class="tech-value" style="font-size:12px">${tech.macd?.trend||'—'}</div></div>
@@ -585,7 +598,7 @@ ${Object.keys(dims).length?`<div class="fgi-dims">${Object.values(dims).map(d=>`
 <div class="tech-item"><div class="tech-label">现价</div><div class="tech-value">${tech.bollinger?.current||'—'}</div></div>
 </div></div>
 ${news.length?`<div class="dashboard-card"><div class="dashboard-card-title">📰 最新资讯</div>${news.map(n=>`<div class="news-item" onclick="${n.url?`window.open('${n.url}','_blank')`:''}"${n.url?'':' style="cursor:default"'}><div class="news-icon">📰</div><div class="news-content"><div class="news-title">${n.title}</div><div class="news-meta">${n.source||''}${n.time?' · '+n.time:''}</div></div>${n.url?'<div class="news-arrow">›</div>':''}</div>`).join('')}</div>`:''}
-${macro.length?`<div class="dashboard-card"><div class="dashboard-card-title">🏛️ 宏观经济</div>${macro.map(e=>`<div class="macro-item" onclick="window.open('https://www.baidu.com/s?wd='+encodeURIComponent('${e.name} 最新数据'),'_blank')"><div class="macro-icon">${e.icon||'📅'}</div><div class="macro-info"><div class="macro-name">${e.name}</div><div class="macro-value">${e.value||'—'}</div><div class="macro-impact">${e.impact||''}</div></div><div class="news-arrow">›</div></div>`).join('')}</div>`:''}
+${macro.length?`<div class="dashboard-card" onclick="insightTab='macro';renderInsight()" style="cursor:pointer"><div class="dashboard-card-title">🏛️ 宏观经济 <span style="font-size:11px;color:var(--accent)">点击查看详情 ›</span></div>${macro.map(e=>`<div class="macro-item"><div class="macro-icon">${e.icon||'📅'}</div><div class="macro-info"><div class="macro-name">${e.name}</div><div class="macro-value">${e.value||'—'}</div><div class="macro-impact">${e.impact||''}</div></div><div class="news-arrow">›</div></div>`).join('')}</div>`:''}
 <div style="text-align:center;font-size:11px;color:#475569;margin-top:16px">更新于 ${new Date(d.updatedAt).toLocaleString('zh-CN')}</div>`}
 
 function renderInsightNews(el,d){
@@ -596,30 +609,31 @@ el.innerHTML=`<div class="dashboard-card"><div class="dashboard-card-title">📰
 function renderInsightTech(el,d){
 const tech=d.technical||{};const m=tech.macd||{};const b=tech.bollinger||{};
 el.innerHTML=`
-<div class="dashboard-card"><div class="dashboard-card-title">📊 RSI 相对强弱指标</div>
+<div class="dashboard-card" onclick="showExplain('RSI 相对强弱指标','RSI 就像温度计，测量市场的"热度"。\\n\\n📊 数值含义：\\n• 50 = 中性，多空力量平衡\\n• 超过 70 = 市场过热（大家都在买，可能快到顶了）\\n• 低于 30 = 市场过冷（大家都在卖，可能快到底了）\\n\\n🎯 当前 RSI = ${tech.rsi||50}\\n${tech.rsi>70?'⚠️ 偏高，短期可能回调，不宜追涨':tech.rsi<30?'💡 偏低，可能被超卖，可以关注抄底机会':'✅ 中性区间，市场情绪正常'}\\n\\n💡 小贴士：RSI 不能单独使用，要结合其他指标一起看。')" style="cursor:pointer"><div class="dashboard-card-title">📊 RSI 相对强弱指标 <span style="font-size:11px;color:var(--accent)">点击了解 ›</span></div>
 <div style="text-align:center"><div style="font-size:48px;font-weight:900;color:${tech.rsi>70?'var(--red)':tech.rsi<30?'var(--green)':'var(--accent)'}">${tech.rsi||50}</div>
 <div style="font-size:14px;color:var(--text2);margin-top:4px">${tech.rsi_signal||'中性'}</div>
 <div class="val-bar" style="margin:12px 0"><div class="val-bar-fill" style="width:${tech.rsi||50}%;background:${tech.rsi>70?'var(--red)':tech.rsi<30?'var(--green)':'var(--accent)'}"></div></div>
 <div style="display:flex;justify-content:space-between;font-size:11px;color:var(--text2)"><span>超卖 (&lt;30)</span><span>中性</span><span>超买 (&gt;70)</span></div></div></div>
-<div class="dashboard-card"><div class="dashboard-card-title">📈 MACD 指数平滑移动平均</div>
+<div class="dashboard-card" onclick="showExplain('MACD 指标','MACD 就像两条"均线赛跑"——快线(DIF)和慢线(DEA)。\\n\\n📊 核心概念：\\n• DIF(快线) 和 DEA(慢线) 是两条趋势线\\n• MACD柱 = 两线差值，代表动能强弱\\n\\n🔍 怎么看：\\n• 金叉（快线上穿慢线）→ 可能要涨\\n• 死叉（快线下穿慢线）→ 可能要跌\\n• 柱子变长 = 趋势在加强\\n• 柱子变短 = 趋势在减弱\\n\\n🎯 当前：${m.trend||'—'}\\nDIF=${m.dif?.toFixed(2)||'—'} DEA=${m.dea?.toFixed(2)||'—'}\\n\\n💡 小贴士：MACD 反应较慢，适合看中长期趋势，不适合抓短线。')" style="cursor:pointer"><div class="dashboard-card-title">📈 MACD 指数平滑移动平均 <span style="font-size:11px;color:var(--accent)">点击了解 ›</span></div>
 <div class="tech-grid"><div class="tech-item"><div class="tech-label">趋势</div><div class="tech-value" style="font-size:13px;color:${m.trend?.includes('金叉')||m.trend?.includes('多头')?'var(--green)':'var(--red)'}">${m.trend||'—'}</div></div>
 <div class="tech-item"><div class="tech-label">DIF</div><div class="tech-value">${m.dif?.toFixed(2)||'—'}</div></div>
 <div class="tech-item"><div class="tech-label">DEA</div><div class="tech-value">${m.dea?.toFixed(2)||'—'}</div></div>
 <div class="tech-item"><div class="tech-label">MACD柱</div><div class="tech-value" style="color:${m.macd>0?'var(--green)':'var(--red)'}">${m.macd?.toFixed(2)||'—'}</div></div></div></div>
-<div class="dashboard-card"><div class="dashboard-card-title">📐 布林带</div>
+<div class="dashboard-card" onclick="showExplain('布林带','布林带就像给股价画了一条"通道"，有上中下三条线。\\n\\n📊 三条线：\\n• 上轨(${b.upper||'—'}) = 压力线，价格碰到容易回落\\n• 中轨(${b.middle||'—'}) = 移动平均线，大趋势方向\\n• 下轨(${b.lower||'—'}) = 支撑线，价格碰到容易反弹\\n\\n🔍 怎么看：\\n• 现价在上轨附近 → 偏贵，可能回调\\n• 现价在下轨附近 → 偏便宜，可能反弹\\n• 通道变窄 → 即将有大波动（变盘信号）\\n• 通道变宽 → 波动剧烈，注意风险\\n\\n🎯 当前：现价 ${b.current||'—'}，${b.position||''}\\n\\n💡 小贴士：布林带帮你判断价格"贵不贵"，但不能预测方向。')" style="cursor:pointer"><div class="dashboard-card-title">📐 布林带 <span style="font-size:11px;color:var(--accent)">点击了解 ›</span></div>
 <div class="tech-grid"><div class="tech-item"><div class="tech-label">上轨</div><div class="tech-value">${b.upper||'—'}</div></div>
 <div class="tech-item"><div class="tech-label">中轨</div><div class="tech-value">${b.middle||'—'}</div></div>
 <div class="tech-item"><div class="tech-label">下轨</div><div class="tech-value">${b.lower||'—'}</div></div>
 <div class="tech-item"><div class="tech-label">现价</div><div class="tech-value">${b.current||'—'}</div></div></div>
 <div style="text-align:center;margin-top:12px;font-size:13px;color:var(--text2)">${b.position||''}</div></div>
-<div style="text-align:center;padding:16px;font-size:12px;color:#475569;line-height:1.6">💡 技术指标是辅助参考，需结合估值和基本面综合判断。<br>RSI>70可能超买，<30可能超卖；MACD金叉看多、死叉看空。</div>`}
+<div style="text-align:center;padding:16px;font-size:12px;color:#475569;line-height:1.6">💡 点击任意卡片查看白话解释 · 技术指标是辅助参考，需结合估值和基本面综合判断</div>`}
 
 function renderInsightMacro(el,d){
 const macro=d.macro||[];
-el.innerHTML=`<div class="dashboard-card"><div class="dashboard-card-title">🏛️ 宏观经济数据</div>
-${macro.length?macro.map(e=>`<div class="macro-item" onclick="window.open('https://www.baidu.com/s?wd='+encodeURIComponent('${e.name} 最新数据'),'_blank')"><div class="macro-icon">${e.icon||'📅'}</div><div class="macro-info"><div class="macro-name">${e.name}</div><div class="macro-value">${e.value||'—'}</div><div class="macro-date">${e.date||''}</div><div class="macro-impact">${e.impact||''}</div></div><div class="news-arrow">›</div></div>`).join(''):'<div style="text-align:center;padding:20px;color:var(--text2)">暂无数据</div>'}
+const explainMap={'CPI 居民消费价格指数':'CPI 就是"物价涨了多少"。\\n\\n📊 怎么理解：\\n• CPI = 0% → 物价没变\\n• CPI > 0% → 东西涨价了（通胀）\\n• CPI < 0% → 东西降价了（通缩）\\n\\n🔍 对你的影响：\\n• CPI 涨太快(>3%) → 央行可能加息 → 存款收益↑，股市债市承压\\n• CPI 下降/为负 → 央行可能降息 → 贷款便宜，利好股市和房产\\n\\n💡 一句话：CPI 涨，你手里的钱在贬值；CPI 跌，你的钱更值钱了。','PMI 采购经理指数':'PMI 就是"企业老板们觉得生意怎么样"。\\n\\n📊 怎么理解：\\n• PMI = 50 是分水岭\\n• PMI > 50 → 多数企业觉得在扩张，经济向好\\n• PMI < 50 → 多数企业觉得在收缩，经济下行\\n\\n🔍 对你的影响：\\n• PMI 连续 > 50 → 经济回暖，股市通常表现较好\\n• PMI 连续 < 50 → 经济承压，投资需谨慎\\n\\n💡 一句话：PMI 是经济的"体温计"，>50 说明经济在"发烧式增长"。','M2 广义货币供应量':'M2 就是"市场上钱的总量"。\\n\\n📊 怎么理解：\\n• M2 增速高 → 央行在"放水"，市场上钱多\\n• M2 增速低 → 央行在"收水"，市场上钱紧\\n\\n🔍 对你的影响：\\n• M2 增速上升 → 钱多了要找去处，利好股市和房产\\n• M2 增速下降 → 资金收紧，资产价格可能承压\\n\\n💡 一句话：M2 就是印钞机的"速度表"，转得越快，资产越容易涨。','PPI 工业生产者出厂价格指数':'PPI 就是"工厂出货价涨了多少"。\\n\\n📊 怎么理解：\\n• PPI > 0% → 工厂涨价了（原材料贵了）\\n• PPI < 0% → 工厂降价了（需求不足）\\n\\n🔍 和 CPI 的关系：\\n• PPI 是"上游"，CPI 是"下游"\\n• PPI 涨 → 几个月后 CPI 也可能涨（成本传导）\\n• PPI 领先 CPI，是通胀的"早期预警"\\n\\n💡 一句话：PPI 涨了，你的生活成本迟早也会涨。'};
+el.innerHTML=`<div class="dashboard-card"><div class="dashboard-card-title">🏛️ 宏观经济数据 <span style="font-size:11px;color:var(--accent)">点击查看白话解释</span></div>
+${macro.length?macro.map(e=>{const key=Object.keys(explainMap).find(k=>e.name.includes(k.split(' ')[0]))||e.name;const explain=explainMap[key]||('📊 '+e.name+'\\n\\n'+e.impact+'\\n\\n点击查看更多：可在百度搜索「'+e.name+' 最新数据」了解详情。');return`<div class="macro-item" onclick="showExplain('${e.name}','${explain}')" style="cursor:pointer"><div class="macro-icon">${e.icon||'📅'}</div><div class="macro-info"><div class="macro-name">${e.name}</div><div class="macro-value">${e.value||'—'}</div><div class="macro-date">${e.date||''}</div><div class="macro-impact">${e.impact||''}</div></div><div class="news-arrow">›</div></div>`}).join(''):'<div style="text-align:center;padding:20px;color:var(--text2)">暂无数据</div>'}
 </div>
-<div style="padding:16px;font-size:12px;color:#475569;line-height:1.6">💡 宏观经济数据影响市场整体方向：<br>• CPI 上升 → 通胀压力 → 可能加息 → 股市承压<br>• PMI > 50 → 经济扩张 → 利好股市<br>• M2 增速加快 → 流动性宽松 → 利好资产价格</div>`}
+<div style="padding:16px;font-size:12px;color:#475569;line-height:1.6">💡 点击任意数据查看白话解释 · 宏观数据影响市场整体方向</div>`}
 
 // ---- 记账页 ----
 function renderLedger(){currentPage='ledger';renderNav();const entries=loadLedger();const sources=loadSources();

@@ -765,6 +765,36 @@ def get_macro_calendar() -> list:
         except Exception as e:
             print(f"[MACRO] M2 failed: {e}")
 
+        # PPI 工业生产者出厂价格指数
+        try:
+            df = ak.macro_china_ppi_yearly()
+            if df is not None and len(df) > 0:
+                print(f"[MACRO] PPI columns: {list(df.columns)}")
+                print(f"[MACRO] PPI last 3 rows: {df.tail(3).to_dict('records')}")
+                val_col = _find_col(df.columns, ["今值", "ppi", "value", "今"]) or (df.columns[2] if len(df.columns) > 2 else None)
+                date_col = _find_col(df.columns, ["日期", "date", "时间"]) or (df.columns[1] if len(df.columns) > 1 else None)
+                if val_col:
+                    ppi_val, ppi_date = _get_latest_valid(df, val_col, date_col)
+                    if ppi_val:
+                        try:
+                            float(ppi_val)
+                            ppi_val = ppi_val + "%"
+                        except (ValueError, TypeError):
+                            pass
+                        events.append({
+                            "name": "PPI 工业生产者出厂价格指数",
+                            "date": ppi_date,
+                            "value": ppi_val,
+                            "impact": "上游价格指标，领先CPI反映通胀趋势",
+                            "icon": "🏭",
+                        })
+                    else:
+                        print("[MACRO] PPI: all recent values are NaN")
+                else:
+                    print(f"[MACRO] PPI: cannot find value column in {list(df.columns)}")
+        except Exception as e:
+            print(f"[MACRO] PPI failed: {e}")
+
     except Exception as e:
         print(f"[MACRO] Failed: {e}")
 
