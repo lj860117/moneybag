@@ -683,17 +683,31 @@ def get_macro_calendar() -> list:
                     return str(v), str(row[date_col]) if date_col else ""
             return "", ""
 
-        # 尝试获取中国宏观数据（CPI）
+        # 尝试获取中国宏观数据（CPI，改用国家统计局月度接口）
         try:
-            df = ak.macro_china_cpi_monthly()
+            df = ak.macro_china_cpi()
             if df is not None and len(df) > 0:
                 print(f"[MACRO] CPI columns: {list(df.columns)}")
-                print(f"[MACRO] CPI last 3 rows: {df.tail(3).to_dict('records')}")
-                # AKShare 列名: ['商品', '日期', '今值', '预测值', '前值']
-                val_col = _find_col(df.columns, ["今值", "value", "今"]) or (df.columns[2] if len(df.columns) > 2 else None)
-                date_col = _find_col(df.columns, ["日期", "date", "时间"]) or (df.columns[1] if len(df.columns) > 1 else None)
+                print(f"[MACRO] CPI first 3 rows: {df.head(3).to_dict('records')}")
+                # macro_china_cpi() 列: ['月份', '全国-当月', '全国-同比增长', ...]
+                # 数据按时间倒序，第一行是最新
+                val_col = _find_col(df.columns, ["全国-同比增长", "全国-同比", "同比增长"]) or (df.columns[2] if len(df.columns) > 2 else None)
+                date_col = _find_col(df.columns, ["月份", "日期"]) or (df.columns[0] if len(df.columns) > 0 else None)
                 if val_col:
-                    cpi_value, cpi_date = _get_latest_valid(df, val_col, date_col)
+                    cpi_value = ""
+                    cpi_date = ""
+                    for i in range(min(5, len(df))):
+                        row = df.iloc[i]
+                        v = row[val_col]
+                        try:
+                            if v is not None and not (isinstance(v, float) and __import__('math').isnan(v)):
+                                cpi_value = str(v)
+                                cpi_date = str(row[date_col]) if date_col else ""
+                                break
+                        except (TypeError, ValueError):
+                            cpi_value = str(v)
+                            cpi_date = str(row[date_col]) if date_col else ""
+                            break
                     if cpi_value:
                         try:
                             float(cpi_value)
@@ -715,15 +729,30 @@ def get_macro_calendar() -> list:
             print(f"[MACRO] CPI failed: {e}")
             import traceback; traceback.print_exc()
 
-        # PMI
+        # PMI（数据倒序排列，最新在头部）
         try:
             df = ak.macro_china_pmi()
             if df is not None and len(df) > 0:
                 print(f"[MACRO] PMI columns: {list(df.columns)}")
-                val_col = _find_col(df.columns, ["今值", "制造业", "pmi", "value", "今"]) or (df.columns[2] if len(df.columns) > 2 else None)
-                date_col = _find_col(df.columns, ["日期", "月份", "date", "时间"]) or (df.columns[1] if len(df.columns) > 1 else None)
+                print(f"[MACRO] PMI first 3 rows: {df.head(3).to_dict('records')}")
+                # macro_china_pmi() 列: ['月份', '制造业-指数', '制造业-同比增长', '非制造业-指数', '非制造业-同比增长']
+                val_col = _find_col(df.columns, ["制造业-指数", "制造业", "pmi"]) or (df.columns[1] if len(df.columns) > 1 else None)
+                date_col = _find_col(df.columns, ["月份", "日期"]) or (df.columns[0] if len(df.columns) > 0 else None)
                 if val_col:
-                    pmi_value, pmi_date = _get_latest_valid(df, val_col, date_col)
+                    pmi_value = ""
+                    pmi_date = ""
+                    for i in range(min(5, len(df))):
+                        row = df.iloc[i]
+                        v = row[val_col]
+                        try:
+                            if v is not None and not (isinstance(v, float) and __import__('math').isnan(v)):
+                                pmi_value = str(v)
+                                pmi_date = str(row[date_col]) if date_col else ""
+                                break
+                        except (TypeError, ValueError):
+                            pmi_value = str(v)
+                            pmi_date = str(row[date_col]) if date_col else ""
+                            break
                     if pmi_value:
                         events.append({
                             "name": "PMI 采购经理指数",
@@ -735,16 +764,31 @@ def get_macro_calendar() -> list:
         except Exception as e:
             print(f"[MACRO] PMI failed: {e}")
 
-        # M2 货币供应
+        # M2 货币供应（改用国家统计局月度接口）
         try:
-            df = ak.macro_china_m2_yearly()
+            df = ak.macro_china_money_supply()
             if df is not None and len(df) > 0:
                 print(f"[MACRO] M2 columns: {list(df.columns)}")
-                print(f"[MACRO] M2 last 3 rows: {df.tail(3).to_dict('records')}")
-                val_col = _find_col(df.columns, ["今值", "m2", "value", "今"]) or (df.columns[2] if len(df.columns) > 2 else None)
-                date_col = _find_col(df.columns, ["日期", "date", "时间"]) or (df.columns[1] if len(df.columns) > 1 else None)
+                print(f"[MACRO] M2 first 3 rows: {df.head(3).to_dict('records')}")
+                # macro_china_money_supply() 列: ['月份', '货币和准货币(M2)-数量(亿元)', '货币和准货币(M2)-同比增长', ...]
+                # 数据按时间倒序，第一行是最新
+                val_col = _find_col(df.columns, ["货币和准货币(M2)-同比增长", "M2-同比", "M2同比"]) or (df.columns[2] if len(df.columns) > 2 else None)
+                date_col = _find_col(df.columns, ["月份", "日期"]) or (df.columns[0] if len(df.columns) > 0 else None)
                 if val_col:
-                    m2_val, m2_date = _get_latest_valid(df, val_col, date_col)
+                    m2_val = ""
+                    m2_date = ""
+                    for i in range(min(5, len(df))):
+                        row = df.iloc[i]
+                        v = row[val_col]
+                        try:
+                            if v is not None and not (isinstance(v, float) and __import__('math').isnan(v)):
+                                m2_val = str(v)
+                                m2_date = str(row[date_col]) if date_col else ""
+                                break
+                        except (TypeError, ValueError):
+                            m2_val = str(v)
+                            m2_date = str(row[date_col]) if date_col else ""
+                            break
                     if m2_val:
                         try:
                             float(m2_val)
@@ -765,16 +809,32 @@ def get_macro_calendar() -> list:
         except Exception as e:
             print(f"[MACRO] M2 failed: {e}")
 
-        # PPI 工业生产者出厂价格指数
+        # PPI 工业生产者出厂价格指数（改用月度接口，数据更及时）
         try:
-            df = ak.macro_china_ppi_yearly()
+            df = ak.macro_china_ppi()
             if df is not None and len(df) > 0:
                 print(f"[MACRO] PPI columns: {list(df.columns)}")
-                print(f"[MACRO] PPI last 3 rows: {df.tail(3).to_dict('records')}")
-                val_col = _find_col(df.columns, ["今值", "ppi", "value", "今"]) or (df.columns[2] if len(df.columns) > 2 else None)
-                date_col = _find_col(df.columns, ["日期", "date", "时间"]) or (df.columns[1] if len(df.columns) > 1 else None)
+                print(f"[MACRO] PPI first 3 rows: {df.head(3).to_dict('records')}")
+                # macro_china_ppi() 列: ['月份', '当月', '当月同比增长', '累计']
+                # 数据按时间倒序，第一行就是最新的
+                val_col = _find_col(df.columns, ["当月同比增长", "当月同比", "同比"]) or (df.columns[2] if len(df.columns) > 2 else None)
+                date_col = _find_col(df.columns, ["月份", "日期", "date"]) or (df.columns[0] if len(df.columns) > 0 else None)
                 if val_col:
-                    ppi_val, ppi_date = _get_latest_valid(df, val_col, date_col)
+                    # 数据倒序排列，从头部找第一条有效值
+                    ppi_val = ""
+                    ppi_date = ""
+                    for i in range(min(5, len(df))):
+                        row = df.iloc[i]
+                        v = row[val_col]
+                        try:
+                            if v is not None and not (isinstance(v, float) and __import__('math').isnan(v)):
+                                ppi_val = str(v)
+                                ppi_date = str(row[date_col]) if date_col else ""
+                                break
+                        except (TypeError, ValueError):
+                            ppi_val = str(v)
+                            ppi_date = str(row[date_col]) if date_col else ""
+                            break
                     if ppi_val:
                         try:
                             float(ppi_val)
