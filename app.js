@@ -813,8 +813,10 @@ return `<div style="margin-bottom:12px"><div style="font-size:12px;font-weight:7
 // ---- 资讯页 ----
 let insightTab='overview';
 async function renderInsight(){currentPage='insight';renderNav();
-$('#app').innerHTML=`<div class="insight-page fade-up"><div class="insight-header"><h2>📰 市场资讯</h2><p>${API_AVAILABLE?'实时数据更新中':'后端离线'} <button onclick="runDataAudit()" style="background:rgba(245,158,11,.15);border:1px solid rgba(245,158,11,.3);border-radius:6px;padding:2px 8px;font-size:11px;color:#F59E0B;cursor:pointer;margin-left:4px" id="auditBtn">🔍 数据体检</button></p></div><div class="section-tab-bar"><button class="section-tab ${insightTab==='overview'?'active':''}" onclick="insightTab='overview';renderInsight()">📊 总览</button><button class="section-tab ${insightTab==='news'?'active':''}" onclick="insightTab='news';renderInsight()">📰 新闻</button><button class="section-tab ${insightTab==='policy'?'active':''}" onclick="insightTab='policy';renderInsight()">🏛️ 政策</button><button class="section-tab ${insightTab==='tech'?'active':''}" onclick="insightTab='tech';renderInsight()">📈 技术</button><button class="section-tab ${insightTab==='macro'?'active':''}" onclick="insightTab='macro';renderInsight()">📊 宏观</button></div><div id="insightContent"><div style="text-align:center;padding:40px;color:var(--text2)"><div class="loading-spinner" style="width:32px;height:32px;margin:0 auto 12px;border-width:3px"></div><div id="loadingMsg" style="margin-top:8px">正在加载市场数据...</div><div style="font-size:12px;color:var(--text3,#94a3b8);margin-top:8px">☁️ 免费云服务器，首次加载可能需要 10~30 秒</div></div></div></div>`;
+$('#app').innerHTML=`<div class="insight-page fade-up"><div class="insight-header"><h2>📰 市场资讯</h2><p>${API_AVAILABLE?'实时数据更新中':'后端离线'} <button onclick="runDataAudit()" style="background:rgba(245,158,11,.15);border:1px solid rgba(245,158,11,.3);border-radius:6px;padding:2px 8px;font-size:11px;color:#F59E0B;cursor:pointer;margin-left:4px" id="auditBtn">🔍 数据体检</button></p></div><div class="section-tab-bar"><button class="section-tab ${insightTab==='overview'?'active':''}" onclick="insightTab='overview';renderInsight()">📊 总览</button><button class="section-tab ${insightTab==='news'?'active':''}" onclick="insightTab='news';renderInsight()">📰 新闻</button><button class="section-tab ${insightTab==='policy'?'active':''}" onclick="insightTab='policy';renderInsight()">🏛️ 政策</button><button class="section-tab ${insightTab==='tech'?'active':''}" onclick="insightTab='tech';renderInsight()">📈 技术</button><button class="section-tab ${insightTab==='macro'?'active':''}" onclick="insightTab='macro';renderInsight()">📊 宏观</button><button class="section-tab ${insightTab==='fundpick'?'active':''}" onclick="insightTab='fundpick';renderInsight()">🔍 选基</button></div><div id="insightContent"><div style="text-align:center;padding:40px;color:var(--text2)"><div class="loading-spinner" style="width:32px;height:32px;margin:0 auto 12px;border-width:3px"></div><div id="loadingMsg" style="margin-top:8px">正在加载市场数据...</div><div style="font-size:12px;color:var(--text3,#94a3b8);margin-top:8px">☁️ 免费云服务器，首次加载可能需要 10~30 秒</div></div></div></div>`;
 if(!API_AVAILABLE){document.getElementById('insightContent').innerHTML='<div style="text-align:center;padding:40px;color:var(--text2)">后端离线，请启动后端服务获取实时数据</div>';return}
+// fundpick 不需要 dashboard 数据
+if(insightTab==='fundpick'){const el=document.getElementById('insightContent');if(el)renderFundPick(el);return}
 // 加载进度动态提示
 const loadStart=Date.now();const loadTimer=setInterval(()=>{const el=document.getElementById('loadingMsg');if(!el){clearInterval(loadTimer);return}const sec=Math.round((Date.now()-loadStart)/1000);if(sec>=5&&sec<15)el.textContent='正在从数据源抓取实时行情...';else if(sec>=15&&sec<25)el.textContent='数据量较大，还在努力加载中...';else if(sec>=25)el.textContent='快好了，感谢耐心等待 🙏'},3000);
 const dash=await fetchDashboard();clearInterval(loadTimer);if(!dash){document.getElementById('insightContent').innerHTML='<div style="text-align:center;padding:40px;color:var(--text2)">数据加载失败，请稍后再试<br><button onclick="renderInsight()" style="margin-top:12px;padding:8px 20px;border-radius:8px;border:none;background:var(--accent);color:#fff;cursor:pointer">🔄 重新加载</button></div>';return}
@@ -952,6 +954,63 @@ el.innerHTML=`<div class="dashboard-card"><div class="dashboard-card-title">🏛
 ${macro.length?macro.map((e,i)=>{const mkey=Object.keys(macroKeyMap).find(k=>e.name.includes(k));const explainKey=mkey?macroKeyMap[mkey]:'macro_'+i;if(!mkey){setExplain(explainKey,e.name,'📊 '+e.name+'\n\n'+e.impact+'\n\n点击查看更多：可在百度搜索「'+e.name+' 最新数据」了解详情。')}return`<div class="macro-item" onclick="showExplain('${explainKey}')" style="cursor:pointer"><div class="macro-icon">${e.icon||'📅'}</div><div class="macro-info"><div class="macro-name">${e.name}</div><div class="macro-value">${e.value||'—'}</div><div class="macro-date">${e.date||''}</div><div class="macro-impact">${e.impact||''}</div></div><div class="news-arrow">›</div></div>`}).join(''):'<div style="text-align:center;padding:20px;color:var(--text2)">暂无数据</div>'}
 </div>
 <div style="padding:16px;font-size:12px;color:#475569;line-height:1.6">💡 点击任意数据查看白话解释 · 宏观数据影响市场整体方向</div>`}
+
+// 基金智能筛选页
+let fundPickType='all';let fundPickSort='score';
+async function renderFundPick(el){
+el.innerHTML=`<div class="dashboard-card">
+<div class="dashboard-card-title">🔍 基金智能筛选</div>
+<div style="font-size:12px;color:var(--text2);margin-bottom:12px">多维度打分：近1年(35%)+近3年(25%)+近6月(20%)+近3月(10%)+费率</div>
+<div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:10px">
+<button class="section-tab ${fundPickType==='all'?'active':''}" onclick="fundPickType='all';renderFundPickResult()">全部</button>
+<button class="section-tab ${fundPickType==='stock'?'active':''}" onclick="fundPickType='stock';renderFundPickResult()">股票型</button>
+<button class="section-tab ${fundPickType==='bond'?'active':''}" onclick="fundPickType='bond';renderFundPickResult()">债券型</button>
+<button class="section-tab ${fundPickType==='index'?'active':''}" onclick="fundPickType='index';renderFundPickResult()">指数型</button>
+<button class="section-tab ${fundPickType==='qdii'?'active':''}" onclick="fundPickType='qdii';renderFundPickResult()">QDII</button>
+</div>
+<div style="display:flex;gap:6px;margin-bottom:12px">
+<button class="section-tab ${fundPickSort==='score'?'active':''}" onclick="fundPickSort='score';renderFundPickResult()" style="font-size:11px">📊 综合评分</button>
+<button class="section-tab ${fundPickSort==='1y'?'active':''}" onclick="fundPickSort='1y';renderFundPickResult()" style="font-size:11px">📈 近1年</button>
+<button class="section-tab ${fundPickSort==='3y'?'active':''}" onclick="fundPickSort='3y';renderFundPickResult()" style="font-size:11px">📈 近3年</button>
+<button class="section-tab ${fundPickSort==='ytd'?'active':''}" onclick="fundPickSort='ytd';renderFundPickResult()" style="font-size:11px">📈 今年来</button>
+</div>
+<div id="fundPickList"><div style="text-align:center;padding:20px;color:var(--text2)"><div class="loading-spinner" style="width:24px;height:24px;margin:0 auto 8px;border-width:2px"></div>正在筛选基金...</div></div>
+</div>`;
+renderFundPickResult()}
+
+async function renderFundPickResult(){
+const listEl=document.getElementById('fundPickList');
+if(!listEl)return;
+listEl.innerHTML='<div style="text-align:center;padding:20px;color:var(--text2)"><div class="loading-spinner" style="width:24px;height:24px;margin:0 auto 8px;border-width:2px"></div>正在筛选基金...</div>';
+try{
+const r=await fetch(API_BASE+'/fund-screen?fund_type='+fundPickType+'&sort_by='+fundPickSort+'&top_n=20',{signal:AbortSignal.timeout(30000)});
+if(!r.ok)throw new Error('fetch failed');
+const data=await r.json();
+const funds=data.funds||[];
+if(!funds.length){listEl.innerHTML='<div style="text-align:center;padding:20px;color:var(--text2)">暂无符合条件的基金</div>';return}
+listEl.innerHTML=`<div style="font-size:11px;color:var(--text2);margin-bottom:8px">共筛选 ${data.total} 只基金，显示 TOP ${funds.length}</div>
+${funds.map((f,i)=>{
+const scoreColor=f.score>15?'var(--green)':f.score>5?'var(--accent)':'var(--red)';
+const r1y=f.returns['1y'];const r3y=f.returns['3y'];const rytd=f.returns.ytd;
+const r1yColor=r1y>0?'var(--green)':'var(--red)';
+return`<div style="display:flex;align-items:center;gap:10px;padding:10px 0;border-bottom:1px solid rgba(148,163,184,.06);cursor:pointer" onclick="showExplain('fund_${f.code}')">
+<div style="font-size:12px;color:var(--text2);min-width:20px;text-align:center;font-weight:700">${i+1}</div>
+<div style="flex:1;min-width:0">
+<div style="font-size:13px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${f.name}</div>
+<div style="font-size:11px;color:var(--text2);margin-top:2px">${f.code} · 费率${f.fee||'-'}</div></div>
+<div style="text-align:right;min-width:70px">
+<div style="font-size:14px;font-weight:800;color:${r1yColor}">${r1y!=null?(r1y>0?'+':'')+r1y+'%':'—'}</div>
+<div style="font-size:10px;color:var(--text2)">近1年</div></div>
+<div style="min-width:40px;text-align:right">
+<div style="font-size:12px;font-weight:700;color:${scoreColor}">${f.score}</div>
+<div style="font-size:10px;color:var(--text2)">评分</div></div></div>`}).join('')}
+<div style="text-align:center;margin-top:12px"><button class="action-btn secondary" style="display:inline-block;min-width:auto;padding:10px 24px" onclick="renderFundPickResult()">🔄 刷新</button></div>`;
+// 注册每只基金的白话弹窗
+funds.forEach(f=>{
+const r=f.returns;
+setExplain('fund_'+f.code,f.name+' ('+f.code+')',
+'📊 综合评分：'+f.score+'\n\n📈 收益表现：\n• 近3月：'+(r['3m']!=null?r['3m']+'%':'—')+'\n• 近6月：'+(r['6m']!=null?r['6m']+'%':'—')+'\n• 近1年：'+(r['1y']!=null?r['1y']+'%':'—')+'\n• 近3年：'+(r['3y']!=null?r['3y']+'%':'—')+'\n• 今年来：'+(r.ytd!=null?r.ytd+'%':'—')+'\n\n💰 费率：'+(f.fee||'—')+'\n\n💡 评分方法：近1年35%+近3年25%+近6月20%+近3月10%+费率加减分。仅供参考，不构成投资建议。')
+})}catch(e){console.warn('Fund pick failed:',e);listEl.innerHTML='<div style="text-align:center;padding:20px;color:var(--text2)">筛选失败，请稍后重试<br><button onclick="renderFundPickResult()" style="margin-top:8px;padding:6px 16px;border-radius:6px;border:none;background:var(--accent);color:#fff;cursor:pointer;font-size:12px">重试</button></div>'}}
 
 // ---- 记账页 ----
 function renderLedger(){currentPage='ledger';renderNav();const entries=loadLedger();const sources=loadSources();

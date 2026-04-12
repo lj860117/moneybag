@@ -47,6 +47,7 @@ from services.signal import (
 )
 from services.risk import calc_risk_metrics, generate_risk_actions
 from services.portfolio import generate_allocation_advice
+from services.fund_screen import screen_funds
 from services.backtest import run_backtest
 from services.persistence import load_user, save_user, _user_file
 
@@ -761,6 +762,12 @@ def get_allocation_advice(req: dict):
     except Exception:
         fg_val = 50
     return generate_allocation_advice(txs, val_pct, fg_val)
+
+
+@app.get("/api/fund-screen")
+def get_fund_screen(fund_type: str = "all", sort_by: str = "score", top_n: int = 20):
+    """基金智能筛选：多维打分排序，返回TOP推荐"""
+    return screen_funds(fund_type, sort_by, top_n)
 
 
 # ---- API: 每日智能信号 ----
