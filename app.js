@@ -124,8 +124,12 @@ function saveSources(d){localStorage.setItem(SOURCES_KEY,JSON.stringify(d))}
 function addSource(name,type,expectedAmt,note){
 const ss=loadSources();
 ss.push({id:'src_'+Date.now().toString(36),name,type,expectedAmt:parseFloat(expectedAmt)||0,note:note||'',createdAt:new Date().toISOString(),lastRecordAt:null,totalRecorded:0,recordCount:0});
-saveSources(ss);return ss}
-function deleteSource(id){const ss=loadSources().filter(s=>s.id!==id);saveSources(ss);return ss}
+saveSources(ss);
+if(API_AVAILABLE)fetch(API_BASE+'/income-sources/add',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({userId:getUserId(),name,type,expectedAmt:parseFloat(expectedAmt)||0,note:note||''})}).catch(()=>{});
+return ss}
+function deleteSource(id){const ss=loadSources().filter(s=>s.id!==id);saveSources(ss);
+if(API_AVAILABLE)fetch(API_BASE+'/income-sources/'+getUserId()+'/'+id,{method:'DELETE'}).catch(()=>{});
+return ss}
 function quickRecord(id){
 const ss=loadSources();const src=ss.find(s=>s.id===id);if(!src)return;
 // 弹出确认/修改金额
@@ -136,7 +140,7 @@ const realAmt=parseFloat(amt);
 const es=loadLedger();es.push({date:new Date().toISOString(),amount:realAmt,category:src.type,note:src.name,direction:'income',source:'income_source',sourceId:src.id});saveLedger(es);
 // 更新收入源统计
 src.lastRecordAt=new Date().toISOString();src.totalRecorded+=realAmt;src.recordCount++;saveSources(ss);
-if(API_AVAILABLE)fetch(API_BASE+'/ledger/add',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({userId:getUserId(),amount:realAmt,category:src.type,note:src.name,direction:'income'})}).catch(()=>{});
+if(API_AVAILABLE)fetch(API_BASE+'/income-sources/record',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({userId:getUserId(),sourceId:src.id,amount:realAmt})}).catch(()=>{});
 renderLedger()}
 
 function loadPortfolio(){try{return JSON.parse(localStorage.getItem(STORAGE_KEY))||{holdings:[],history:[],profile:null,amount:0}}catch{return{holdings:[],history:[],profile:null,amount:0}}}
@@ -858,9 +862,12 @@ a.value=parseFloat(document.getElementById('editAssetValue')?.value)||a.value;
 a.note=document.getElementById('editAssetNote')?.value?.trim()||'';
 a.updatedAt=new Date().toISOString();
 saveAssets(assets);
+if(API_AVAILABLE)fetch(API_BASE+'/assets',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({userId:getUserId(),asset:{id:a.id,type:a.type,name:a.name,value:a.value,note:a.note}})}).catch(()=>{});
 document.querySelector('.modal-overlay')?.remove();renderAssets()}
 
-function deleteAsset(id){const assets=loadAssets().filter(a=>a.id!==id);saveAssets(assets);renderAssets()}
+function deleteAsset(id){const assets=loadAssets().filter(a=>a.id!==id);saveAssets(assets);
+if(API_AVAILABLE)fetch(API_BASE+'/assets/'+id+'?userId='+getUserId(),{method:'DELETE'}).catch(()=>{});
+renderAssets()}
 
 // ---- 启动 ----
 injectStyles();
