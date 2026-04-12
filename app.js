@@ -281,7 +281,7 @@ body{font-family:'Noto Sans SC',-apple-system,sans-serif;background:var(--bg);co
 .nav-item{flex:1;display:flex;flex-direction:column;align-items:center;gap:2px;padding:6px 0;cursor:pointer;color:var(--text2);font-size:10px}.nav-item.active{color:var(--accent)}.nav-icon{font-size:22px}
 .footer-disclaimer{text-align:center;font-size:11px;color:#475569;margin-top:32px;padding:16px;line-height:1.5}
 .insight-page{padding-bottom:20px}.insight-header{text-align:center;margin-bottom:24px}.insight-header h2{font-size:22px;font-weight:700}.insight-header p{font-size:13px;color:var(--text2);margin-top:4px}
-.dashboard-card{background:var(--bg2);border-radius:var(--radius);padding:20px;margin-bottom:16px}
+.dashboard-card{background:var(--bg2);border-radius:var(--radius);padding:20px;margin-bottom:16px;overflow:hidden}
 .dashboard-card-title{font-size:15px;font-weight:700;margin-bottom:12px;display:flex;align-items:center;gap:8px}
 .fgi-gauge{text-align:center;padding:16px 0}.fgi-score{font-size:48px;font-weight:900}.fgi-label{font-size:14px;color:var(--text2);margin-top:4px}
 .fgi-dims{display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px;margin-top:12px}.fgi-dim{text-align:center;background:var(--bg);border-radius:8px;padding:8px}.fgi-dim-label{font-size:11px;color:var(--text2)}.fgi-dim-val{font-size:14px;font-weight:700;margin-top:2px}
@@ -290,7 +290,7 @@ body{font-family:'Noto Sans SC',-apple-system,sans-serif;background:var(--bg);co
 .news-item{padding:12px 0;border-bottom:1px solid var(--bg3);display:flex;gap:10px;align-items:flex-start;cursor:pointer;transition:background .2s;border-radius:8px;padding:10px 8px;margin:0 -8px}.news-item:active{background:rgba(255,255,255,.05)}.news-item:last-child{border-bottom:none}.news-icon{font-size:18px;flex-shrink:0;margin-top:2px}.news-content{flex:1}.news-title{font-size:14px;line-height:1.5}.news-meta{font-size:11px;color:var(--text2);margin-top:4px}.news-arrow{color:var(--text2);font-size:12px;flex-shrink:0;align-self:center}
 .macro-item{display:flex;gap:12px;padding:12px 0;border-bottom:1px solid var(--bg3);align-items:flex-start;cursor:pointer;transition:background .2s;border-radius:8px;padding:10px 8px;margin:0 -8px}.macro-item:active{background:rgba(255,255,255,.05)}.macro-item:last-child{border-bottom:none}.macro-icon{font-size:24px;flex-shrink:0}.macro-info{flex:1}.macro-name{font-size:14px;font-weight:600}.macro-value{font-size:18px;font-weight:900;color:var(--accent);margin:4px 0}.macro-impact{font-size:12px;color:var(--text2);line-height:1.4}.macro-date{font-size:11px;color:var(--text2)}
 .val-bar{height:8px;background:var(--bg3);border-radius:4px;margin:8px 0;position:relative;overflow:visible}.val-bar-fill{height:100%;border-radius:4px;transition:width .5s ease}.val-bar-marker{position:absolute;top:-4px;width:16px;height:16px;border-radius:50%;border:2px solid var(--bg);transform:translateX(-50%)}
-.section-tab-bar{display:flex;gap:6px;margin-bottom:16px;overflow-x:auto;padding-bottom:4px}.section-tab{padding:6px 14px;border-radius:20px;font-size:13px;background:var(--bg3);color:var(--text2);border:none;cursor:pointer;font-family:inherit;white-space:nowrap}.section-tab.active{background:var(--accent);color:#000;font-weight:600}
+.section-tab-bar{display:flex;gap:4px;margin-bottom:16px;overflow-x:auto;padding-bottom:4px;-webkit-overflow-scrolling:touch;scrollbar-width:none}.section-tab-bar::-webkit-scrollbar{display:none}.section-tab{padding:5px 10px;border-radius:20px;font-size:12px;background:var(--bg3);color:var(--text2);border:none;cursor:pointer;font-family:inherit;white-space:nowrap;flex-shrink:0}.section-tab.active{background:var(--accent);color:#000;font-weight:600}
 `;document.head.appendChild(s)}
 
 // ---- 底部导航 ----
@@ -623,7 +623,7 @@ ${h?`<div class="modal-stat-grid" style="margin-bottom:16px">
 <button class="action-btn green" onclick="document.querySelector('.modal-overlay')?.remove();showAddTxnFor('${code}','BUY')">🟢 加仓买入</button>
 ${h?`<button class="action-btn primary" style="background:linear-gradient(135deg,var(--red),#DC2626);color:#fff" onclick="document.querySelector('.modal-overlay')?.remove();showAddTxnFor('${code}','SELL')">🔴 卖出</button>`:''}
 <button class="action-btn secondary" onclick="document.querySelector('.modal-overlay')?.remove();showFundDetail('${code}')">📋 基金详情</button>
-${h?`<button class="action-btn secondary" style="color:var(--red)" onclick="if(confirm('删除${h.name}所有交易记录？')){deleteFundTxns('${code}');document.querySelector('.modal-overlay')?.remove();renderPortfolio()}">🗑️ 删除持仓</button>`:''}
+${h?`<button class="action-btn secondary" style="color:var(--red)" onclick="if(confirm('删除所有交易记录？')){document.querySelector('.modal-overlay')?.remove();deleteFundTxns('${code}')}">🗑️ 删除持仓</button>`:''}
 </div></div>`;
 document.body.appendChild(o)}
 
@@ -682,7 +682,10 @@ body:JSON.stringify({userId:getUserId(),transaction:{type,code,name:name||code,s
 document.querySelector('.modal-overlay')?.remove();
 renderPortfolio()}
 
-function deleteFundTxns(code){const txns=loadTxns().filter(t=>t.code!==code);saveTxns(txns)}
+function deleteFundTxns(code){const txns=loadTxns().filter(t=>t.code!==code);saveTxns(txns);
+if(API_AVAILABLE)fetch(API_BASE+'/portfolio/transaction/delete',{method:'POST',headers:{'Content-Type':'application/json'},
+body:JSON.stringify({userId:getUserId(),code})}).catch(()=>{});
+renderPortfolio()}
 
 // 添加自选基金弹窗
 function showAddCustomFund(){
@@ -984,19 +987,19 @@ let fundPickType='all';let fundPickSort='score';
 async function renderFundPick(el){
 el.innerHTML=`<div class="dashboard-card">
 <div class="dashboard-card-title">🔍 基金智能筛选</div>
-<div style="font-size:12px;color:var(--text2);margin-bottom:12px">多维度打分：近1年(35%)+近3年(25%)+近6月(20%)+近3月(10%)+费率</div>
+<div style="font-size:12px;color:var(--text2);margin-bottom:12px;word-break:break-all">多维打分：近1年35%+近3年25%+近6月20%+近3月10%+费率</div>
 <div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:10px">
-<button class="section-tab ${fundPickType==='all'?'active':''}" onclick="fundPickType='all';renderFundPickResult()">全部</button>
-<button class="section-tab ${fundPickType==='stock'?'active':''}" onclick="fundPickType='stock';renderFundPickResult()">股票型</button>
-<button class="section-tab ${fundPickType==='bond'?'active':''}" onclick="fundPickType='bond';renderFundPickResult()">债券型</button>
-<button class="section-tab ${fundPickType==='index'?'active':''}" onclick="fundPickType='index';renderFundPickResult()">指数型</button>
-<button class="section-tab ${fundPickType==='qdii'?'active':''}" onclick="fundPickType='qdii';renderFundPickResult()">QDII</button>
+<button class="section-tab ${fundPickType==='all'?'active':''}" onclick="fundPickType='all';renderFundPickResult()" style="font-size:12px;padding:5px 10px">全部</button>
+<button class="section-tab ${fundPickType==='stock'?'active':''}" onclick="fundPickType='stock';renderFundPickResult()" style="font-size:12px;padding:5px 10px">股票型</button>
+<button class="section-tab ${fundPickType==='bond'?'active':''}" onclick="fundPickType='bond';renderFundPickResult()" style="font-size:12px;padding:5px 10px">债券型</button>
+<button class="section-tab ${fundPickType==='index'?'active':''}" onclick="fundPickType='index';renderFundPickResult()" style="font-size:12px;padding:5px 10px">指数型</button>
+<button class="section-tab ${fundPickType==='qdii'?'active':''}" onclick="fundPickType='qdii';renderFundPickResult()" style="font-size:12px;padding:5px 10px">QDII</button>
 </div>
-<div style="display:flex;gap:6px;margin-bottom:12px">
-<button class="section-tab ${fundPickSort==='score'?'active':''}" onclick="fundPickSort='score';renderFundPickResult()" style="font-size:11px">📊 综合评分</button>
-<button class="section-tab ${fundPickSort==='1y'?'active':''}" onclick="fundPickSort='1y';renderFundPickResult()" style="font-size:11px">📈 近1年</button>
-<button class="section-tab ${fundPickSort==='3y'?'active':''}" onclick="fundPickSort='3y';renderFundPickResult()" style="font-size:11px">📈 近3年</button>
-<button class="section-tab ${fundPickSort==='ytd'?'active':''}" onclick="fundPickSort='ytd';renderFundPickResult()" style="font-size:11px">📈 今年来</button>
+<div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:12px">
+<button class="section-tab ${fundPickSort==='score'?'active':''}" onclick="fundPickSort='score';renderFundPickResult()" style="font-size:11px;padding:4px 8px">📊 综合</button>
+<button class="section-tab ${fundPickSort==='1y'?'active':''}" onclick="fundPickSort='1y';renderFundPickResult()" style="font-size:11px;padding:4px 8px">📈 近1年</button>
+<button class="section-tab ${fundPickSort==='3y'?'active':''}" onclick="fundPickSort='3y';renderFundPickResult()" style="font-size:11px;padding:4px 8px">📈 近3年</button>
+<button class="section-tab ${fundPickSort==='ytd'?'active':''}" onclick="fundPickSort='ytd';renderFundPickResult()" style="font-size:11px;padding:4px 8px">📈 今年来</button>
 </div>
 <div id="fundPickList"><div style="text-align:center;padding:20px;color:var(--text2)"><div class="loading-spinner" style="width:24px;height:24px;margin:0 auto 8px;border-width:2px"></div>正在筛选基金...</div></div>
 </div>`;
@@ -1040,7 +1043,7 @@ setExplain('fund_'+f.code,f.name+' ('+f.code+')',
 async function renderStockPick(el){
 el.innerHTML=`<div class="dashboard-card">
 <div class="dashboard-card-title">🧠 AI 多因子选股</div>
-<div style="font-size:12px;color:var(--text2);margin-bottom:8px">7维打分：价值20%+成长15%+质量15%+动量15%+风险15%+流动性10%+舆情10%</div>
+<div style="font-size:12px;color:var(--text2);margin-bottom:8px;word-break:break-all">7维打分：价值·成长·质量·动量·风险·流动性·舆情</div>
 <div style="font-size:11px;color:var(--accent);margin-bottom:12px;padding:6px 8px;background:rgba(245,158,11,.06);border-radius:6px">⚠️ 当前使用规则打分，舆情/成长/质量维度数据有限。仅供参考，不构成投资建议。</div>
 <div id="stockPickList"><div style="text-align:center;padding:20px;color:var(--text2)"><div class="loading-spinner" style="width:24px;height:24px;margin:0 auto 8px;border-width:2px"></div>正在从 5000+ A股中筛选...</div></div>
 </div>`;
