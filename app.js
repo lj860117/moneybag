@@ -6,8 +6,8 @@
 // ============================================================
 
 // ---- API 配置 ----
-// 腾讯云数据引擎地址（部署后替换为实际 IP:端口）
-const DATA_ENGINE_URL = localStorage.getItem('moneybag_engine') || '';
+// 腾讯云数据引擎（上海 2C2G，国内访问 AKShare 数据源快 10 倍）
+const DATA_ENGINE_URL = localStorage.getItem('moneybag_engine') || 'http://150.158.47.189:8000';
 const API_BASE = (() => {
   const h = location.hostname;
   if (h === 'localhost' || h === '127.0.0.1' || h.startsWith('192.168.')) return 'http://localhost:8000/api';
