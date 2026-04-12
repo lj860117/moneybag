@@ -6,13 +6,12 @@
 // ============================================================
 
 // ---- API 配置 ----
-// 腾讯云数据引擎（上海 2C2G，国内访问 AKShare 数据源快 10 倍）
-const DATA_ENGINE_URL = localStorage.getItem('moneybag_engine') || 'http://150.158.47.189:8000';
+// 优先相对路径（同源请求，无 Mixed Content 问题）
+// 用户直接访问腾讯云 http://150.158.47.189:8000 或 Railway https://...railway.app 都走 /api
 const API_BASE = (() => {
   const h = location.hostname;
   if (h === 'localhost' || h === '127.0.0.1' || h.startsWith('192.168.')) return 'http://localhost:8000/api';
-  if (DATA_ENGINE_URL) return DATA_ENGINE_URL + '/api';
-  return '/api'; // Railway 兜底
+  return '/api'; // 同源，自动匹配当前协议和域名
 })();
 let API_AVAILABLE = false;
 
