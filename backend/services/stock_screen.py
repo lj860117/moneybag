@@ -62,9 +62,8 @@ def screen_stocks(top_n: int = 50) -> dict:
                     continue  # 排除市值<50亿
                 if turnover is not None and turnover < 0.5:
                     continue  # 排除流动性极差的
-                # 新浪+雪球源：无 PE 数据的跳过（未被雪球补充的）
-                if pe is None and source == "sina+xq":
-                    continue
+                # 注意：雪球接口不稳定，PE 可能为 None
+                # 此时用其他因子（动量/流动性/风险）继续选股，不强制跳过
 
                 # --- 7 维打分（每维 0-100）---
                 scores = {}
