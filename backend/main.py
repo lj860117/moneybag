@@ -653,6 +653,49 @@ def get_ml_stock_screen(top_n: int = 30):
     return ml_stock_screen(top_n)
 
 
+# ---- 全球市场 API ----
+from services.global_market import (
+    get_us_indices, get_forex_data, get_fed_rate,
+    get_global_pe, get_global_snapshot,
+    analyze_global_impact_on_a_shares, get_decision_data_pack,
+)
+
+@app.get("/api/global/indices")
+def global_indices():
+    """美股三大指数（道琼斯/标普/纳斯达克）"""
+    return get_us_indices()
+
+@app.get("/api/global/forex")
+def global_forex():
+    """外汇数据（美元/人民币）"""
+    return get_forex_data()
+
+@app.get("/api/global/fed-rate")
+def global_fed_rate():
+    """美联储利率"""
+    return get_fed_rate()
+
+@app.get("/api/global/pe")
+def global_pe():
+    """全球 PE 估值对比"""
+    return get_global_pe()
+
+@app.get("/api/global/snapshot")
+def global_snapshot():
+    """全球市场综合快照"""
+    return get_global_snapshot()
+
+@app.get("/api/global/impact")
+def global_impact():
+    """DeepSeek 分析全球→A股影响"""
+    return analyze_global_impact_on_a_shares()
+
+@app.get("/api/decision-data")
+def decision_data():
+    """全量决策数据包（供 Claude 决策用）"""
+    return get_decision_data_pack()
+
+
 # ---- 股票持仓盯盘 API ----
 from services.stock_monitor import (
     load_stock_holdings, add_stock_holding, remove_stock_holding,
@@ -1677,6 +1720,16 @@ def _build_market_context() -> str:
                 bull = "📈利好:" + ",".join(imp["bullish"]) if imp["bullish"] else ""
                 bear = "📉利空:" + ",".join(imp["bearish"]) if imp["bearish"] else ""
                 lines.append(f"  - [{imp['tag']}] {imp['impact']} {bull} {bear}")
+    except Exception:
+        pass
+
+    # 全球市场数据（美股/外汇/美联储/PE 对比）
+    try:
+        from services.global_market import get_global_snapshot
+        gs = get_global_snapshot()
+        if gs.get("summary"):
+            lines.append("")
+            lines.append(gs["summary"])
     except Exception:
         pass
 

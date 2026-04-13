@@ -872,7 +872,7 @@ return `<div style="margin-bottom:12px"><div style="font-size:12px;font-weight:7
 // ---- 资讯页 ----
 let insightTab='overview';
 async function renderInsight(){currentPage='insight';renderNav();
-$('#app').innerHTML=`<div class="insight-page fade-up"><div class="insight-header"><h2>📰 市场资讯</h2><p>${API_AVAILABLE?'实时数据更新中':'后端离线'} <button onclick="runDataAudit()" style="background:rgba(245,158,11,.15);border:1px solid rgba(245,158,11,.3);border-radius:6px;padding:2px 8px;font-size:11px;color:#F59E0B;cursor:pointer;margin-left:4px" id="auditBtn">🔍 数据体检</button></p></div><div class="section-tab-bar"><button class="section-tab ${insightTab==='overview'?'active':''}" onclick="insightTab='overview';renderInsight()">📊 总览</button><button class="section-tab ${insightTab==='fundpick'?'active':''}" onclick="insightTab='fundpick';renderInsight()">🔍 选基</button><button class="section-tab ${insightTab==='stockpick'?'active':''}" onclick="insightTab='stockpick';renderInsight()">🧠 选股</button><button class="section-tab ${insightTab==='news'?'active':''}" onclick="insightTab='news';renderInsight()">📰 新闻</button><button class="section-tab ${insightTab==='policy'?'active':''}" onclick="insightTab='policy';renderInsight()">🏛️ 政策</button><button class="section-tab ${insightTab==='tech'?'active':''}" onclick="insightTab='tech';renderInsight()">📈 技术</button><button class="section-tab ${insightTab==='macro'?'active':''}" onclick="insightTab='macro';renderInsight()">📊 宏观</button></div><div id="insightContent"><div style="text-align:center;padding:40px;color:var(--text2)"><div class="loading-spinner" style="width:32px;height:32px;margin:0 auto 12px;border-width:3px"></div><div id="loadingMsg" style="margin-top:8px">正在加载市场数据...</div><div style="font-size:12px;color:var(--text3,#94a3b8);margin-top:8px">☁️ 免费云服务器，首次加载可能需要 10~30 秒</div></div></div></div>`;
+$('#app').innerHTML=`<div class="insight-page fade-up"><div class="insight-header"><h2>📰 市场资讯</h2><p>${API_AVAILABLE?'实时数据更新中':'后端离线'} <button onclick="runDataAudit()" style="background:rgba(245,158,11,.15);border:1px solid rgba(245,158,11,.3);border-radius:6px;padding:2px 8px;font-size:11px;color:#F59E0B;cursor:pointer;margin-left:4px" id="auditBtn">🔍 数据体检</button></p></div><div class="section-tab-bar"><button class="section-tab ${insightTab==='overview'?'active':''}" onclick="insightTab='overview';renderInsight()">📊 总览</button><button class="section-tab ${insightTab==='fundpick'?'active':''}" onclick="insightTab='fundpick';renderInsight()">🔍 选基</button><button class="section-tab ${insightTab==='stockpick'?'active':''}" onclick="insightTab='stockpick';renderInsight()">🧠 选股</button><button class="section-tab ${insightTab==='news'?'active':''}" onclick="insightTab='news';renderInsight()">📰 新闻</button><button class="section-tab ${insightTab==='policy'?'active':''}" onclick="insightTab='policy';renderInsight()">🏛️ 政策</button><button class="section-tab ${insightTab==='tech'?'active':''}" onclick="insightTab='tech';renderInsight()">📈 技术</button><button class="section-tab ${insightTab==='macro'?'active':''}" onclick="insightTab='macro';renderInsight()">📊 宏观</button><button class="section-tab ${insightTab==='global'?'active':''}" onclick="insightTab='global';renderInsight()">🌐 全球</button></div><div id="insightContent"><div style="text-align:center;padding:40px;color:var(--text2)"><div class="loading-spinner" style="width:32px;height:32px;margin:0 auto 12px;border-width:3px"></div><div id="loadingMsg" style="margin-top:8px">正在加载市场数据...</div><div style="font-size:12px;color:var(--text3,#94a3b8);margin-top:8px">☁️ 免费云服务器，首次加载可能需要 10~30 秒</div></div></div></div>`;
 if(!API_AVAILABLE){document.getElementById('insightContent').innerHTML='<div style="text-align:center;padding:40px;color:var(--text2)">后端离线，请启动后端服务获取实时数据</div>';return}
 // 独立 tab 不需要 dashboard 数据，秒开
 if(insightTab==='fundpick'){const el=document.getElementById('insightContent');if(el)renderFundPick(el);return}
@@ -885,7 +885,8 @@ const dash=await fetchDashboard();clearInterval(loadTimer);if(!dash){document.ge
 const el=document.getElementById('insightContent');if(!el)return;
 if(insightTab==='overview')renderInsightOverview(el,dash);
 else if(insightTab==='tech')renderInsightTech(el,dash);
-else if(insightTab==='macro')renderInsightMacro(el,dash)}
+else if(insightTab==='macro')renderInsightMacro(el,dash);
+else if(insightTab==='global')renderInsightGlobal(el)}
 
 function renderV45FactorCards(d){
 const nb=d.northbound||{};const mg=d.margin||{};const tr=d.treasury||{};const sh=d.shibor||{};const dv=d.dividend||{};
@@ -1017,6 +1018,31 @@ el.innerHTML=`<div class="dashboard-card"><div class="dashboard-card-title">🏛
 ${macro.length?macro.map((e,i)=>{const mkey=Object.keys(macroKeyMap).find(k=>e.name.includes(k));const explainKey=mkey?macroKeyMap[mkey]:'macro_'+i;if(!mkey){setExplain(explainKey,e.name,'📊 '+e.name+'\n\n'+e.impact+'\n\n点击查看更多：可在百度搜索「'+e.name+' 最新数据」了解详情。')}return`<div class="macro-item" onclick="showExplain('${explainKey}')" style="cursor:pointer"><div class="macro-icon">${e.icon||'📅'}</div><div class="macro-info"><div class="macro-name">${e.name}</div><div class="macro-value">${e.value||'—'}</div><div class="macro-date">${e.date||''}</div><div class="macro-impact">${e.impact||''}</div></div><div class="news-arrow">›</div></div>`}).join(''):'<div style="text-align:center;padding:20px;color:var(--text2)">暂无数据</div>'}
 </div>
 <div style="padding:16px;font-size:12px;color:#475569;line-height:1.6">💡 点击任意数据查看白话解释 · 宏观数据影响市场整体方向</div>`}
+
+// 全球市场数据页
+async function renderInsightGlobal(el){
+el.innerHTML='<div style="text-align:center;padding:40px;color:var(--text2)"><div class="loading-spinner" style="width:32px;height:32px;margin:0 auto 12px;border-width:3px"></div>正在加载全球市场数据...</div>';
+try{
+const [snap,impact]=await Promise.all([
+fetch(API_BASE+'/global/snapshot').then(r=>r.json()),
+fetch(API_BASE+'/global/impact').then(r=>r.json()).catch(()=>({analysis:'暂不可用',source:'none'}))
+]);
+const us=snap.us_indices||{};const fx=snap.forex||{};const fed=snap.fed_rate||{};const gpe=snap.global_pe||{};
+let h='<div class="dashboard-card"><div class="dashboard-card-title">🌐 全球市场实时</div>';
+// 美股三大指数
+const idxArr=[['dji','道琼斯'],['spx','标普500'],['ixic','纳斯达克']];
+h+=idxArr.map(([k,n])=>{const d=us[k];if(!d)return'';const c=d.change_pct>0?'var(--green)':d.change_pct<0?'var(--red)':'var(--text2)';return`<div style="display:flex;justify-content:space-between;align-items:center;padding:10px 0;border-bottom:1px solid var(--bg3)"><div style="font-size:13px;font-weight:600">${d.change_pct>0?'📈':'📉'} ${n}</div><div style="text-align:right"><div style="font-size:14px;font-weight:700">${d.close.toLocaleString()}</div><div style="font-size:12px;color:${c};font-weight:600">${d.change_pct>0?'+':''}${d.change_pct}%</div></div></div>`}).join('');
+// 外汇
+if(fx.usdcny)h+=`<div style="display:flex;justify-content:space-between;padding:10px 0;border-bottom:1px solid var(--bg3)"><div style="font-size:13px">💱 美元/人民币</div><div style="font-size:14px;font-weight:700">${fx.usdcny.rate.toFixed(4)}</div></div>`;
+// 美联储
+if(fed.available)h+=`<div style="display:flex;justify-content:space-between;padding:10px 0;border-bottom:1px solid var(--bg3)"><div style="font-size:13px">🏛️ 美联储利率</div><div style="text-align:right"><div style="font-size:14px;font-weight:700">${fed.current_rate}%</div><div style="font-size:11px;color:var(--text2)">${fed.trend==='hiking'?'⬆️加息周期':fed.trend==='cutting'?'⬇️降息周期':'按兵不动'}</div></div></div>`;
+// PE 对比
+if(gpe.available&&gpe.us_pe&&gpe.cn_pe)h+=`<div style="display:flex;justify-content:space-between;padding:10px 0"><div style="font-size:13px">📊 PE 估值对比</div><div style="text-align:right"><div style="font-size:12px">🇺🇸 ${gpe.us_pe} vs 🇨🇳 ${gpe.cn_pe}</div><div style="font-size:11px;color:var(--text2)">${gpe.assessment||''}</div></div></div>`;
+h+='</div>';
+// DeepSeek 影响分析
+if(impact.analysis){h+=`<div class="dashboard-card"><div class="dashboard-card-title">🤖 AI 全球→A股影响分析 <span style="font-size:10px;color:var(--text2)">${impact.source==='ai'?'DeepSeek':'数据'}</span></div><div style="font-size:13px;line-height:1.8;white-space:pre-wrap">${impact.analysis}</div></div>`}
+el.innerHTML=h;
+}catch(e){el.innerHTML=`<div style="text-align:center;padding:40px;color:var(--text2)">全球数据加载失败: ${e.message}</div>`}}
 
 // 基金智能筛选页
 let fundPickType='all';let fundPickSort='score';
