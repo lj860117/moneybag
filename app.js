@@ -249,7 +249,28 @@ const tabs=[{id:'landing',icon:'🏠',label:'首页'},{id:'stocks',icon:'📈',l
 n.innerHTML=tabs.map(t=>`<div class="nav-item ${currentPage===t.id?'active':''}" onclick="navigateTo('${t.id}')"><div class="nav-icon">${t.icon}</div><div>${t.label}</div></div>`).join('');
 // 顶部用户名条
 let hdr=document.getElementById('profileHeader');if(!hdr){hdr=document.createElement('div');hdr.id='profileHeader';hdr.style.cssText='position:fixed;top:0;left:0;right:0;z-index:100;padding:6px 16px;font-size:12px;color:var(--text2,#94a3b8);background:var(--bg,#0f172a);display:flex;justify-content:space-between;align-items:center;border-bottom:1px solid var(--bg3,#334155)';document.body.appendChild(hdr);document.body.style.paddingTop='32px'}
-hdr.innerHTML=`<span>👋 ${_profileName||'未登录'}</span><span style="font-size:10px;color:var(--text3,#64748b)">${getProfileId().slice(0,8)}</span>`}
+hdr.innerHTML=`<span onclick="showProfileSettings()" style="cursor:pointer">👋 ${_profileName||'未登录'} ⚙️</span><span style="font-size:10px;color:var(--text3,#64748b)">${getProfileId().slice(0,8)}</span>`}
+
+function showProfileSettings(){
+const pid=getProfileId();const wxId=localStorage.getItem('moneybag_wxwork_uid')||'';
+const o=document.createElement('div');o.className='modal-overlay';o.onclick=e=>{if(e.target===o)o.remove()};
+o.innerHTML=`<div class="modal-sheet" onclick="event.stopPropagation()"><div class="modal-handle"></div>
+<div class="modal-title">⚙️ 个人设置</div>
+<div class="modal-subtitle">Profile: ${_profileName} (${pid.slice(0,8)})</div>
+<div class="manual-form" style="background:transparent;padding:0;margin-top:16px">
+<div class="form-row"><div class="form-label">企业微信账号 (用于个人推送)</div>
+<input class="form-input" type="text" id="wxworkUidInput" placeholder="如 LeiJiang" value="${wxId}">
+<div style="font-size:11px;color:var(--text2);margin-top:4px">绑定后盯盘异动会推送到你的微信，不会推给别人</div></div>
+<button class="form-submit" onclick="saveProfileSettings()">💾 保存</button>
+</div></div>`;document.body.appendChild(o)}
+
+async function saveProfileSettings(){
+const wxId=document.getElementById('wxworkUidInput')?.value?.trim()||'';
+const pid=getProfileId();
+localStorage.setItem('moneybag_wxwork_uid',wxId);
+if(API_AVAILABLE){try{await fetch(API_BASE+'/profiles/'+encodeURIComponent(pid),{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({wxworkUserId:wxId})})}catch{}}
+document.querySelector('.modal-overlay')?.remove();
+alert(wxId?'✅ 企微绑定成功！盯盘信号将推送给: '+wxId:'已清除企微绑定')}
 
 function navigateTo(p){currentPage=p;renderNav();if(p==='landing')renderLanding();else if(p==='portfolio')renderPortfolio();else if(p==='stocks')renderStocks();else if(p==='insight')renderInsight();else if(p==='chat')renderChat();else if(p==='ledger')renderLedger();else if(p==='assets')renderAssets()}
 

@@ -916,6 +916,21 @@ def create_profile(req: dict):
     return {"ok": True, "profile": profile, "exists": False}
 
 
+@app.put("/api/profiles/{profile_id}")
+def update_profile(profile_id: str, req: dict):
+    """更新 Profile（绑定企微 userid 等）"""
+    profiles = _load_profiles()
+    for p in profiles:
+        if p["id"] == profile_id:
+            if "wxworkUserId" in req:
+                p["wxworkUserId"] = req["wxworkUserId"].strip()
+            if "name" in req:
+                p["name"] = req["name"].strip()
+            _save_profiles(profiles)
+            return {"ok": True, "profile": p}
+    raise HTTPException(404, "Profile not found")
+
+
 # ---- 资产总览 API ----
 from services.portfolio_overview import get_portfolio_overview
 from services.unified_networth import calc_unified_networth

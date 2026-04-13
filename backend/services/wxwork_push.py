@@ -131,6 +131,29 @@ def send_daily_report(report: str) -> dict:
     return send_markdown(content)
 
 
+# ---- 按用户推送（cron 多用户场景）----
+
+def send_stock_alert_to(wxwork_userid: str, signals: list) -> dict:
+    """发送股票异动预警给指定用户"""
+    if not signals:
+        return {"ok": True, "msg": "无异动"}
+
+    lines = ["**🚨 钱袋子盯盘预警**\n"]
+    for sig in signals[:10]:
+        emoji = "🔴" if sig.get("level") == "warning" else "🟡"
+        lines.append(f"{emoji} **{sig.get('name', '')}**({sig.get('code', '')})")
+        lines.append(f"> {sig.get('message', sig.get('msg', ''))}\n")
+    lines.append(f"⏰ {time.strftime('%H:%M:%S')}")
+    content = "\n".join(lines)
+    return send_markdown(content, user_id=wxwork_userid)
+
+
+def send_daily_report_to(wxwork_userid: str, report: str) -> dict:
+    """发送每日复盘给指定用户"""
+    content = f"**📊 钱袋子每日复盘**\n\n{report}\n\n⏰ {time.strftime('%Y-%m-%d %H:%M')}"
+    return send_markdown(content, user_id=wxwork_userid)
+
+
 # ============================================================
 # 回调验证（企业微信 URL 验证 + 消息接收）
 # ============================================================
