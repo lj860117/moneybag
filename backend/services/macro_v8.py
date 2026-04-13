@@ -282,7 +282,7 @@ def check_holding_management_change(stock_codes: list) -> list:
 # ============================================================
 
 def get_all_v8_macro() -> dict:
-    return {
+    raw = {
         "gdp": get_gdp(),
         "industrial": get_industrial_value_added(),
         "retail": get_consumer_goods_retail(),
@@ -291,6 +291,20 @@ def get_all_v8_macro() -> dict:
         "management": get_management_holdings(),
         "updatedAt": datetime.now().isoformat(),
     }
+    return _clean_nan(raw)
+
+
+def _clean_nan(obj):
+    """递归清洗 dict/list 中的 NaN/Inf → None"""
+    if isinstance(obj, dict):
+        return {k: _clean_nan(v) for k, v in obj.items()}
+    elif isinstance(obj, list):
+        return [_clean_nan(v) for v in obj]
+    elif isinstance(obj, float):
+        if math.isnan(obj) or math.isinf(obj):
+            return None
+        return obj
+    return obj
 
 
 # ============================================================
