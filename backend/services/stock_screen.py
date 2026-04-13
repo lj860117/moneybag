@@ -297,8 +297,14 @@ def _fetch_financials_batch(codes: list) -> dict:
 
     def _fetch_one(code):
         try:
-            return code, get_stock_financials(code)
-        except Exception:
+            # 去掉 sh/sz 前缀（Tushare 需要纯数字代码）
+            clean_code = code.replace("sh", "").replace("sz", "").replace("SH", "").replace("SZ", "")
+            result = get_stock_financials(clean_code)
+            if result.get("available"):
+                print(f"[SCREEN_FIN] {code}→{clean_code} OK [{result.get('source','')}]")
+            return code, result
+        except Exception as e:
+            print(f"[SCREEN_FIN] {code} ERROR: {e}")
             return code, {}
 
     with ThreadPoolExecutor(max_workers=20) as pool:
@@ -432,13 +438,22 @@ def screen_stocks(top_n: int = 50) -> dict:
                     "market_cap": s.get("market_cap"),
                     "score": round(total, 1),
                     "scores": {k: round(v, 0) for k, v in scores.items()},
-                    # 展示用的财务指标
+                    # 展示用的财务指标（顶层 + financials 子对象兼容前端）
                     "roe": fin.get("roe"),
                     "eps": fin.get("eps"),
                     "gross_margin": fin.get("gross_margin"),
                     "net_margin": fin.get("net_margin"),
                     "debt_ratio": fin.get("debt_ratio"),
                     "revenue_growth": fin.get("revenue_growth"),
+                    "financials": {
+                        "roe": fin.get("roe"),
+                        "eps": fin.get("eps"),
+                        "gross_margin": fin.get("gross_margin"),
+                        "net_margin": fin.get("net_margin"),
+                        "debt_ratio": fin.get("debt_ratio"),
+                        "source": fin.get("source", "none"),
+                        "available": fin.get("available", False),
+                    },
                 })
             except Exception:
                 continue
@@ -466,7 +481,7 @@ def screen_stocks(top_n: int = 50) -> dict:
             "version": "V2_30factors",
             "method": factor_desc,
             "financials_available": fin_count,
-            "note": f"数据源: {source} | 财务数据: {fin_count}/{len(codes_200)}",
+            "note": f"数据源: {source} | 财务数据: {fin_count}/{len(codes_50)}",
         }
         _stock_cache[cache_key] = {"data": result, "ts": time.time()}
         print(f"[STOCK_SCREEN_V2] Final: {len(scored)} scored → TOP {len(top)}")

@@ -350,7 +350,7 @@ def get_main_money_flow() -> dict:
 
 
 def get_stock_financials(code: str) -> dict:
-    """获取个股核心财务数据（ROE/EPS/营收增速 + V8扩展：毛利率/净利率/现金流/负债率）"""
+    """获取个股核心财务数据 — 优先 Tushare Pro → 降级 AKShare"""
     cache_key = f"fin_{code}"
     now = time.time()
     if cache_key in factor_cache and now - factor_cache[cache_key]["ts"] < 86400:  # 24h 缓存
@@ -359,8 +359,33 @@ def get_stock_financials(code: str) -> dict:
     result = {
         "code": code, "roe": None, "eps": None, "revenue_growth": None,
         "gross_margin": None, "net_margin": None, "debt_ratio": None,
-        "cash_flow_per_share": None, "available": False,
+        "cash_flow_per_share": None, "available": False, "source": "none",
     }
+
+    # 方案 A：Tushare Pro（稳定+快速）
+    try:
+        from services.tushare_data import is_configured, get_financials as ts_fin
+        if is_configured():
+            ts = ts_fin(code)
+            if ts.get("available"):
+                result["roe"] = ts.get("roe")
+                result["eps"] = ts.get("eps")
+                result["revenue_growth"] = ts.get("revenue_yoy")
+                result["gross_margin"] = ts.get("gross_margin")
+                result["net_margin"] = ts.get("net_margin")
+                result["debt_ratio"] = ts.get("debt_ratio")
+                result["cash_flow_per_share"] = ts.get("cash_flow_per_share")
+                result["netprofit_yoy"] = ts.get("netprofit_yoy")
+                result["current_ratio"] = ts.get("current_ratio")
+                result["available"] = True
+                result["source"] = "tushare"
+                print(f"[FIN] {code} Tushare OK: ROE={result['roe']}, GM={result['gross_margin']}")
+                factor_cache[cache_key] = {"data": result, "ts": now}
+                return result
+    except Exception as e:
+        print(f"[FIN] {code} Tushare failed, fallback AKShare: {e}")
+
+    # 方案 B：AKShare 降级
     try:
         import akshare as ak
         df = ak.stock_financial_analysis_indicator(symbol=code, start_year="2024")
@@ -384,10 +409,11 @@ def get_stock_financials(code: str) -> dict:
             result["debt_ratio"] = _extract(["资产负债率"])
             result["cash_flow_per_share"] = _extract(["每股经营现金"])
 
-            result["available"] = any(v is not None for k, v in result.items() if k not in ("code", "available"))
-            print(f"[FIN] {code} ROE={result['roe']}, GM={result['gross_margin']}, DR={result['debt_ratio']}")
+            result["available"] = any(v is not None for k, v in result.items() if k not in ("code", "available", "source"))
+            result["source"] = "akshare"
+            print(f"[FIN] {code} AKShare OK: ROE={result['roe']}, GM={result['gross_margin']}")
     except Exception as e:
-        print(f"[FIN] {code} Failed: {e}")
+        print(f"[FIN] {code} AKShare also failed: {e}")
 
     factor_cache[cache_key] = {"data": result, "ts": now}
     return result
