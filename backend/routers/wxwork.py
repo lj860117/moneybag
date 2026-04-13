@@ -54,7 +54,7 @@ async def callback_receive(
     def async_reply():
         try:
             # 找到用户的 profileId（名字=企微userid）
-            from main import _load_profiles, _build_market_context, _build_portfolio_context, _load_system_prompt
+            from main import _load_profiles, _build_market_context, _build_portfolio_context, _load_prompt_template
             profiles = _load_profiles()
             user_profile = None
             for p in profiles:
@@ -91,7 +91,7 @@ async def callback_receive(
                 except Exception:
                     pass
 
-            system_prompt = _load_system_prompt()
+            system_prompt = _load_prompt_template()
             full_system = f"{system_prompt}\n\n## 实时市场数据\n{market_ctx}\n\n## 用户持仓\n{portfolio_ctx}"
 
             import httpx
