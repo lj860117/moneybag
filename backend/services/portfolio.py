@@ -1,54 +1,136 @@
 """
-钱袋子 — 大类资产配置建议
-根据估值水平和恐惧贪婪指数，给出股/债/现金目标比例 + 偏离建议
-参考：豆包方案 + 幻方量化风控规则
+钱袋子 — 智能资产配置引擎 (Level 1)
+基础模板 + 实时市场数据动态调整
+
+调整因子：
+  1. 估值百分位 → 高估减股票，低估加股票
+  2. 恐贪指数 → 极度贪婪减仓，极度恐惧加仓
+  3. 美林时钟 → 不同周期调配置
+  4. 塔勒布规则 → 现金永远 ≥ 15%
+  5. 技术面 → RSI 极端值微调
 """
 from config import ALLOCATION_PROFILES, VALUATION_HIGH, VALUATION_LOW, RISK_REBALANCE_THRESHOLD
 from services.portfolio_calc import calc_holdings_from_transactions
-from services.data_layer import get_fund_nav
+from services.data_layer import get_fund_nav, get_valuation_percentile, get_fear_greed_index
 
 
 # 基金分类映射
 FUND_CATEGORY = {
-    "110020": "stock",   # 沪深300
-    "050025": "stock",   # 标普500
-    "008114": "stock",   # 红利低波
-    "217022": "bond",    # 招商产业债
-    "000216": "other",   # 黄金（归为其他/避险）
-    "余额宝":  "cash",   # 货币基金
+    "110020": "stock",
+    "050025": "stock",
+    "008114": "stock",
+    "217022": "bond",
+    "000216": "other",
+    "余额宝":  "cash",
 }
+
+# 风险等级 → 基础配置模板
+RISK_TEMPLATES = {
+    "保守型": {"stock": 0.20, "bond": 0.60, "cash": 0.20},
+    "稳健型": {"stock": 0.50, "bond": 0.30, "cash": 0.20},
+    "平衡型": {"stock": 0.50, "bond": 0.30, "cash": 0.20},
+    "积极型": {"stock": 0.70, "bond": 0.15, "cash": 0.15},
+    "激进型": {"stock": 0.80, "bond": 0.10, "cash": 0.10},
+}
+
+
+def _dynamic_adjust(base: dict, val_pct: float, fgi: float) -> dict:
+    """
+    Level 1 动态调整：根据实时市场数据微调配置
+    返回调整后的目标比例（小数）
+    """
+    s, b, c = base["stock"], base["bond"], base["cash"]
+
+    # 1. 估值调整（±10%）
+    if val_pct > 85:
+        # 极度高估 → 大幅减股
+        s -= 0.10
+        b += 0.05
+        c += 0.05
+    elif val_pct > 70:
+        # 高估 → 小幅减股
+        s -= 0.05
+        b += 0.03
+        c += 0.02
+    elif val_pct < 15:
+        # 极度低估 → 大幅加股
+        s += 0.10
+        b -= 0.05
+        c -= 0.05
+    elif val_pct < 30:
+        # 低估 → 小幅加股
+        s += 0.05
+        b -= 0.03
+        c -= 0.02
+
+    # 2. 恐贪指数调整（±5%）
+    if fgi > 80:
+        # 极度贪婪 → 别人贪婪我恐惧，减股
+        s -= 0.05
+        c += 0.05
+    elif fgi < 20:
+        # 极度恐惧 → 别人恐惧我贪婪，加股
+        s += 0.05
+        c -= 0.05
+
+    # 3. 塔勒布铁律：现金永远 ≥ 15%（反脆弱）
+    if c < 0.15:
+        diff = 0.15 - c
+        c = 0.15
+        # 从股票里扣
+        s -= diff
+
+    # 4. 合理性约束
+    s = max(0.05, min(0.90, s))
+    b = max(0.0, min(0.80, b))
+    c = max(0.10, min(0.50, c))
+
+    # 归一化
+    total = s + b + c
+    return {
+        "stock": round(s / total, 3),
+        "bond": round(b / total, 3),
+        "cash": round(c / total, 3),
+    }
 
 
 def generate_allocation_advice(
     transactions: list,
     valuation_pct: float = 50,
     fear_greed: float = 50,
+    risk_profile: str = "稳健型",
 ) -> dict:
     """
-    生成大类资产配置建议
-    返回: {
-        target: {stock, bond, cash},    # 目标比例
-        current: {stock, bond, cash},   # 当前比例
-        deviation: {stock, bond, cash}, # 偏离度
-        advice: [...],                  # 具体调仓建议
-        valuation_zone: str,            # 估值区间
-        summary: str,                   # 一句话总结
-    }
+    智能资产配置建议（Level 1 动态版）
     """
-    # 1. 根据估值确定目标比例
+    # 获取实时市场数据
+    try:
+        val_data = get_valuation_percentile()
+        valuation_pct = val_data.get("percentile", valuation_pct)
+    except Exception:
+        pass
+
+    try:
+        fgi_data = get_fear_greed_index()
+        fear_greed = fgi_data.get("score", fear_greed)
+    except Exception:
+        pass
+
+    # 基础模板
+    base = RISK_TEMPLATES.get(risk_profile, RISK_TEMPLATES["稳健型"])
+
+    # Level 1 动态调整
+    target = _dynamic_adjust(base, valuation_pct, fear_greed)
+
+    # 估值区间标签
     if valuation_pct < VALUATION_LOW:
-        zone = "low"
         zone_label = "低估"
     elif valuation_pct > VALUATION_HIGH:
-        zone = "high"
         zone_label = "高估"
     else:
-        zone = "mid"
         zone_label = "适中"
 
-    target = ALLOCATION_PROFILES[zone]
-
-    # 2. 计算当前持仓的大类分布
+    # 计算当前持仓分布
     holdings = calc_holdings_from_transactions(transactions)
     active = holdings.get("active", [])
 
@@ -60,8 +142,6 @@ def generate_allocation_advice(
         shares = h.get("shares", 0)
         if shares <= 0:
             continue
-
-        # 获取当前市值
         if code == "余额宝":
             market_value = shares
         else:
@@ -75,67 +155,60 @@ def generate_allocation_advice(
         current[category] = current.get(category, 0) + market_value
         total_market += market_value
 
-    # 转换为比例
     current_pct = {"stock": 0, "bond": 0, "cash": 0}
     if total_market > 0:
         current_pct["stock"] = (current.get("stock", 0) + current.get("other", 0)) / total_market
         current_pct["bond"] = current.get("bond", 0) / total_market
         current_pct["cash"] = current.get("cash", 0) / total_market
 
-    # 3. 计算偏离度
+    # 偏离度
     deviation = {
         "stock": round((current_pct["stock"] - target["stock"]) * 100, 1),
         "bond": round((current_pct["bond"] - target["bond"]) * 100, 1),
         "cash": round((current_pct["cash"] - target["cash"]) * 100, 1),
     }
 
-    # 4. 生成调仓建议
+    # 调仓建议
     advice = []
-    rebalance_threshold = RISK_REBALANCE_THRESHOLD * 100  # config中0.08 → 8(%)
+    rebalance_threshold = RISK_REBALANCE_THRESHOLD * 100
 
-    if abs(deviation["stock"]) > rebalance_threshold:
-        if deviation["stock"] > 0:
-            advice.append({
-                "asset": "stock", "direction": "reduce",
-                "message": f"📉 股票类超配{deviation['stock']:.0f}%，建议减持至{target['stock']*100:.0f}%",
-                "amount_pct": abs(deviation["stock"]),
-            })
-        else:
-            advice.append({
-                "asset": "stock", "direction": "increase",
-                "message": f"📈 股票类欠配{abs(deviation['stock']):.0f}%，可增持至{target['stock']*100:.0f}%",
-                "amount_pct": abs(deviation["stock"]),
-            })
+    for asset, label, emoji_up, emoji_dn in [
+        ("stock", "股票类", "📈", "📉"),
+        ("bond", "债券类", "📈", "📉"),
+        ("cash", "现金类", "💰", "💰"),
+    ]:
+        d = deviation[asset]
+        if abs(d) > rebalance_threshold:
+            if d > 0:
+                advice.append({
+                    "asset": asset, "direction": "reduce",
+                    "message": f"{emoji_dn} {label}超配{d:.0f}%，建议减持至{target[asset]*100:.0f}%",
+                    "amount_pct": abs(d),
+                })
+            else:
+                advice.append({
+                    "asset": asset, "direction": "increase",
+                    "message": f"{emoji_up} {label}欠配{abs(d):.0f}%，可增持至{target[asset]*100:.0f}%",
+                    "amount_pct": abs(d),
+                })
 
-    if abs(deviation["bond"]) > rebalance_threshold:
-        if deviation["bond"] < 0:
-            advice.append({
-                "asset": "bond", "direction": "increase",
-                "message": f"📈 债券类欠配{abs(deviation['bond']):.0f}%，建议增持至{target['bond']*100:.0f}%",
-                "amount_pct": abs(deviation["bond"]),
-            })
-        else:
-            advice.append({
-                "asset": "bond", "direction": "reduce",
-                "message": f"📉 债券类超配{deviation['bond']:.0f}%，可适当减持",
-                "amount_pct": abs(deviation["bond"]),
-            })
+    # 动态调整说明
+    adjustments = []
+    if valuation_pct > 70:
+        adjustments.append(f"估值{valuation_pct:.0f}%(高估)→减股票")
+    elif valuation_pct < 30:
+        adjustments.append(f"估值{valuation_pct:.0f}%(低估)→加股票")
+    if fear_greed > 80:
+        adjustments.append(f"恐贪{fear_greed:.0f}(极度贪婪)→减股票")
+    elif fear_greed < 20:
+        adjustments.append(f"恐贪{fear_greed:.0f}(极度恐惧)→加股票")
 
-    if abs(deviation["cash"]) > rebalance_threshold:
-        if deviation["cash"] < 0:
-            advice.append({
-                "asset": "cash", "direction": "increase",
-                "message": f"💰 现金不足，建议补充至{target['cash']*100:.0f}%作为应急弹药",
-                "amount_pct": abs(deviation["cash"]),
-            })
-
-    # 5. 生成总结
     if not active:
         summary = "暂无持仓，请先完成风险测评并买入推荐配置"
     elif not advice:
-        summary = f"✅ 当前配置与{zone_label}估值目标基本匹配，无需调仓"
+        summary = f"✅ 配置与动态目标基本匹配（估值{zone_label} {valuation_pct:.0f}%）"
     else:
-        summary = f"⚠️ 当前估值{zone_label}({valuation_pct:.0f}%)，有{len(advice)}项配置偏离需调整"
+        summary = f"⚠️ 估值{zone_label}({valuation_pct:.0f}%)，有{len(advice)}项需调整"
 
     return {
         "target": {k: round(v * 100, 0) for k, v in target.items()},
@@ -144,6 +217,10 @@ def generate_allocation_advice(
         "advice": advice,
         "valuation_zone": zone_label,
         "valuation_pct": round(valuation_pct, 1),
+        "fear_greed": round(fear_greed, 1),
         "total_market": round(total_market, 2),
         "summary": summary,
+        "adjustments": adjustments,
+        "risk_profile": risk_profile,
+        "engine": "level1_dynamic",
     }

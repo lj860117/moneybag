@@ -649,6 +649,15 @@ from services.stock_monitor import (
     update_stock_holding, get_stock_realtime, scan_all_holdings,
 )
 
+# ---- 资产总览 API ----
+from services.portfolio_overview import get_portfolio_overview
+
+@app.get("/api/portfolio/overview")
+def portfolio_overview_api():
+    """汇总全资产概览（股票+基金+配置占比+健康评分）"""
+    return get_portfolio_overview()
+
+
 @app.get("/api/stock-holdings")
 def get_stock_holdings_api():
     """获取股票持仓列表"""

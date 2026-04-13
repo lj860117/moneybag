@@ -59,25 +59,38 @@ def screen_funds(
             if r1y is None:
                 continue
 
-            # 多维评分
+            # 多维评分（含风险调整）
             score = 0
-            # 近1年收益占35%
-            score += min(max(r1y, -50), 100) * 0.35
-            # 近3年收益占25%
+            # 近1年收益占 30%
+            score += min(max(r1y, -50), 100) * 0.30
+            # 近3年年化收益占 20%
             if r3y is not None:
-                score += min(max(r3y / 3, -30), 50) * 0.25  # 年化
-            # 近6月收益占20%（短期动量）
+                score += min(max(r3y / 3, -30), 50) * 0.20
+            # 近6月占 15%（短期动量）
             if r6m is not None:
-                score += min(max(r6m, -30), 50) * 0.20
-            # 近3月收益占10%
+                score += min(max(r6m, -30), 50) * 0.15
+            # 近3月占 10%
             if r3m is not None:
                 score += min(max(r3m, -20), 30) * 0.10
-            # 费率扣分：费率越低越好
+
+            # 稳定性加分（收益率一致性）15%
+            periods = [x for x in [r3m, r6m, r1y] if x is not None]
+            if len(periods) >= 2:
+                # 所有周期都为正 = 稳定上涨
+                all_pos = all(x > 0 for x in periods)
+                if all_pos:
+                    score += 8
+                # 波动惩罚：长短期收益差距大 = 不稳定
+                spread = max(periods) - min(periods)
+                if spread > 50:
+                    score -= 5  # 大波动惩罚
+
+            # 费率调整 10%
             fee_pct = _parse_fee(fee)
             if fee_pct is not None and fee_pct < 0.5:
-                score += 2  # 低费率加分
+                score += 3  # 低费率加分
             elif fee_pct is not None and fee_pct > 1.5:
-                score -= 2  # 高费率扣分
+                score -= 3  # 高费率扣分
 
             candidates.append({
                 "code": code,

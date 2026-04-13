@@ -1446,11 +1446,53 @@ if(API_AVAILABLE)fetch(API_BASE+'/assets/'+id+'?userId='+getUserId(),{method:'DE
 renderAssets()}
 
 // ---- 📈 持仓盯盘页（股票+基金统一） ----
-let _stockScanData=null;let _fundScanData=null;let _holdingsSubTab='stock';
+let _stockScanData=null;let _fundScanData=null;let _holdingsSubTab='stock';let _overviewData=null;
 async function renderStocks(){currentPage='stocks';renderNav();
-$('#app').innerHTML=`<div class="insight-page fade-up"><div class="insight-header"><h2>📈 持仓盯盘</h2><p>实时行情 · AI盯盘 · 异动预警</p></div><div style="display:flex;gap:8px;margin-bottom:16px"><button id="subTabStock" class="action-btn ${_holdingsSubTab==='stock'?'primary':'secondary'}" onclick="_holdingsSubTab='stock';renderStocksContent()" style="flex:1">📊 股票</button><button id="subTabFund" class="action-btn ${_holdingsSubTab==='fund'?'primary':'secondary'}" onclick="_holdingsSubTab='fund';renderFundsContent()" style="flex:1">💰 基金</button></div><div id="holdingsContent"><div style="text-align:center;padding:40px"><div class="loading-spinner"></div><div style="color:var(--text2);margin-top:12px">加载持仓数据...</div></div></div></div>`;
+$('#app').innerHTML=`<div class="insight-page fade-up"><div id="overviewHero"><div style="text-align:center;padding:20px"><div class="loading-spinner"></div></div></div><div style="display:flex;gap:8px;margin-bottom:16px"><button id="subTabStock" class="action-btn ${_holdingsSubTab==='stock'?'primary':'secondary'}" onclick="_holdingsSubTab='stock';renderStocksContent()" style="flex:1">📊 股票</button><button id="subTabFund" class="action-btn ${_holdingsSubTab==='fund'?'primary':'secondary'}" onclick="_holdingsSubTab='fund';renderFundsContent()" style="flex:1">💰 基金</button></div><div id="holdingsContent"><div style="text-align:center;padding:40px"><div class="loading-spinner"></div><div style="color:var(--text2);margin-top:12px">加载持仓数据...</div></div></div></div>`;
 if(!API_AVAILABLE){document.getElementById('holdingsContent').innerHTML='<div style="text-align:center;padding:40px;color:var(--text2)">后端离线</div>';return}
+// 加载总览 + 子页面并行
+loadOverviewHero();
 if(_holdingsSubTab==='fund')renderFundsContent();else renderStocksContent()}
+
+async function loadOverviewHero(){
+try{const ov=await fetch(API_BASE+'/portfolio/overview').then(r=>r.json());_overviewData=ov;
+const el=document.getElementById('overviewHero');if(!el)return;
+const pnlC=ov.totalPnl>=0?'var(--green)':'var(--red)';
+const hC=ov.healthScore>=80?'var(--green)':ov.healthScore>=60?'#F59E0B':'var(--red)';
+// 环形图 SVG（股/债/现 三段）
+const eq=ov.allocation?.equity||0;const bd=ov.allocation?.bond||0;const ca=ov.allocation?.cash||0;
+const r=36;const c=2*Math.PI*r;
+const eqLen=c*eq/100;const bdLen=c*bd/100;const caLen=c*(ca||100-eq-bd)/100;
+const eqOff=0;const bdOff=-(eqLen);const caOff=-(eqLen+bdLen);
+const ringSvg=ov.totalMarketValue>0?`<svg width="90" height="90" viewBox="0 0 90 90" style="transform:rotate(-90deg)">
+<circle cx="45" cy="45" r="${r}" fill="none" stroke="var(--bg3)" stroke-width="10"/>
+<circle cx="45" cy="45" r="${r}" fill="none" stroke="var(--accent)" stroke-width="10" stroke-dasharray="${eqLen} ${c-eqLen}" stroke-dashoffset="${eqOff}"/>
+<circle cx="45" cy="45" r="${r}" fill="none" stroke="#60A5FA" stroke-width="10" stroke-dasharray="${bdLen} ${c-bdLen}" stroke-dashoffset="${bdOff}"/>
+<circle cx="45" cy="45" r="${r}" fill="none" stroke="#A78BFA" stroke-width="10" stroke-dasharray="${caLen} ${c-caLen}" stroke-dashoffset="${caOff}"/>
+</svg>`:'';
+const legendHtml=ov.totalMarketValue>0?`<div style="display:flex;gap:12px;justify-content:center;margin-top:8px;font-size:11px;color:var(--text2)">
+<span><span style="display:inline-block;width:8px;height:8px;border-radius:50%;background:var(--accent);margin-right:3px"></span>股票 ${eq}%</span>
+<span><span style="display:inline-block;width:8px;height:8px;border-radius:50%;background:#60A5FA;margin-right:3px"></span>债券 ${bd}%</span>
+<span><span style="display:inline-block;width:8px;height:8px;border-radius:50%;background:#A78BFA;margin-right:3px"></span>现金 ${ca}%</span>
+</div>`:'';
+const devHtml=ov.totalMarketValue>0&&ov.deviation?Object.entries({equity:'股票',bond:'债券',cash:'现金'}).map(([k,label])=>{
+const d=ov.deviation[k]||0;const dc=Math.abs(d)>15?'var(--red)':Math.abs(d)>5?'#F59E0B':'var(--green)';
+return`<span style="font-size:11px;color:${dc}">${label}${d>0?'+':''}${d}%</span>`}).join(' · '):'';
+el.innerHTML=`<div class="pnl-hero" style="position:relative">
+<div style="display:flex;align-items:center;gap:16px;justify-content:center">
+<div>${ringSvg}</div>
+<div><div class="pnl-label">总持仓资产</div>
+<div class="pnl-total-value">¥${ov.totalMarketValue>0?ov.totalMarketValue.toLocaleString():'0'}</div>
+${ov.totalCost>0?`<div class="pnl-change ${ov.totalPnl>=0?'pos':'neg'}" style="color:${pnlC}">盈亏 ${ov.totalPnl>=0?'+':''}¥${ov.totalPnl.toFixed(0)} (${ov.totalPnlPct>=0?'+':''}${ov.totalPnlPct.toFixed(1)}%)</div>`:''}</div></div>
+${legendHtml}
+${devHtml?`<div style="text-align:center;margin-top:4px">偏离: ${devHtml}</div>`:''}
+<div style="display:flex;justify-content:center;gap:16px;margin-top:10px;font-size:12px">
+<span>📊 股票 ${ov.stockCount}只</span><span>💰 基金 ${ov.fundCount}只</span>
+<span style="color:${hC};font-weight:600">${ov.healthGrade} ${ov.healthScore}分</span>
+</div>
+${ov.healthIssues&&ov.healthIssues.length?`<div style="margin-top:8px;padding:8px 12px;background:rgba(245,158,11,.08);border-radius:8px;font-size:11px;color:#F59E0B">${ov.healthIssues.join(' · ')}</div>`:''}
+</div>`;
+}catch(e){console.warn('Overview load error:',e)}}
 
 async function renderStocksContent(){
 _holdingsSubTab='stock';
