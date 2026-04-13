@@ -81,6 +81,23 @@ def health():
     return {"status": "ok", "time": datetime.now().isoformat()}
 
 
+# ---- 企业微信推送配置 ----
+from services.wxwork_push import is_configured as wxwork_configured, send_text as wxwork_send
+
+@app.get("/api/wxwork/status")
+def wxwork_status():
+    """企业微信推送配置状态"""
+    return {"configured": wxwork_configured()}
+
+@app.post("/api/wxwork/test")
+def wxwork_test():
+    """测试企业微信推送"""
+    if not wxwork_configured():
+        return {"ok": False, "error": "企业微信未配置。需要设置环境变量：WXWORK_CORP_ID, WXWORK_SECRET, WXWORK_AGENT_ID"}
+    result = wxwork_send("🧪 钱袋子推送测试\n如果你能看到这条消息，说明企业微信推送配置成功！")
+    return result
+
+
 # ---- 可用模型列表（前端下拉选择）----
 AVAILABLE_MODELS = [
     {"id": "deepseek-chat", "name": "DeepSeek V3", "provider": "deepseek", "base": "https://api.deepseek.com/v1", "env_key": "LLM_API_KEY"},
@@ -768,11 +785,27 @@ def get_fund_screen(fund_type: str = "all", sort_by: str = "score", top_n: int =
 
 @app.get("/api/stock-screen")
 def get_stock_screen(top_n: int = 50):
-    """AI多因子选股：7维打分 + DeepSeek 点评 TOP5"""
+    """AI多因子选股：30因子7维打分 V2 + DeepSeek 点评 TOP5"""
     result = screen_stocks(top_n)
     if result.get("stocks"):
         result["stocks"] = comment_stock_picks(result["stocks"])
     return result
+
+
+# ---- 回测引擎 API ----
+from services.backtest_engine import backtest_single, backtest_portfolio
+
+@app.get("/api/backtest/{code}")
+def api_backtest_single(code: str, asset_type: str = "stock", years: int = 3):
+    """单只股票/基金回测"""
+    return backtest_single(code, asset_type, years)
+
+@app.post("/api/backtest/portfolio")
+def api_backtest_portfolio(req: dict):
+    """组合回测（按权重加权）"""
+    holdings = req.get("holdings", [])
+    years = req.get("years", 3)
+    return backtest_portfolio(holdings, years)
 
 
 # ---- Phase 4: LightGBM ML 选股 ----

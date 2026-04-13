@@ -90,26 +90,25 @@ def run_scan():
 
 
 def push_alerts(signals: list):
-    """推送异动信号到企业微信（待接入）"""
-    # TODO: 企业微信推送（Phase 5 用户注册后接入）
-    # 目前先打印到日志
+    """推送异动信号到企业微信"""
+    # 打印到日志
     print(f"[PUSH] {len(signals)} 条预警信号:")
     for s in signals:
         print(f"  [{s['level']}] {s['msg']}")
 
-    # 占位：企业微信 Webhook
-    webhook_url = os.environ.get("WECHAT_WEBHOOK")
-    if webhook_url:
-        try:
-            import httpx
-            content = "\n".join([s["msg"] for s in signals])
-            httpx.post(webhook_url, json={
-                "msgtype": "text",
-                "text": {"content": f"📈 钱袋子盯盘预警\n\n{content}"}
-            }, timeout=10)
-            print("[PUSH] 企业微信推送成功")
-        except Exception as e:
-            print(f"[PUSH] 企业微信推送失败: {e}")
+    # 企业微信应用消息推送
+    try:
+        from services.wxwork_push import is_configured, send_stock_alert
+        if is_configured():
+            result = send_stock_alert(signals)
+            if result.get("ok"):
+                print("[PUSH] 企业微信推送成功")
+            else:
+                print(f"[PUSH] 企业微信推送失败: {result.get('error', 'unknown')}")
+        else:
+            print("[PUSH] 企业微信未配置，跳过推送")
+    except Exception as e:
+        print(f"[PUSH] 推送异常: {e}")
 
 
 def run_close_review():
