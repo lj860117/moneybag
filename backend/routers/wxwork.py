@@ -77,8 +77,44 @@ async def callback_receive(
                 _handle_help(from_user)
                 return
 
+            # 模型切换指令
+            MODEL_MAP = {
+                "deepseek-chat": "DeepSeek V3 (快速)",
+                "deepseek-reasoner": "DeepSeek R1 (深度推理)",
+            }
+            if cmd.startswith("模型"):
+                model_name = content.strip()[2:].strip()
+                if model_name in MODEL_MAP:
+                    # 存到 Profile
+                    if user_profile:
+                        user_profile["preferredModel"] = model_name
+                        _save_profiles = None
+                        try:
+                            from main import _load_profiles as _lp
+                            import json
+                            from pathlib import Path
+                            pf = Path(os.getenv("DATA_DIR", "data")) / "profiles.json"
+                            all_p = _lp()
+                            for p in all_p:
+                                if p["id"] == user_profile["id"]:
+                                    p["preferredModel"] = model_name
+                            pf.write_text(json.dumps(all_p, ensure_ascii=False, indent=2), encoding="utf-8")
+                        except Exception:
+                            pass
+                    send_markdown(f"✅ 已切换到 {model_name}\n{MODEL_MAP[model_name]}", user_id=from_user)
+                else:
+                    models_list = "\n".join([f"  {k} — {v}" for k, v in MODEL_MAP.items()])
+                    send_markdown(f"可用模型：\n{models_list}\n\n发送「模型 deepseek-reasoner」切换", user_id=from_user)
+                return
+
+            # 获取用户偏好模型
+            user_model = (user_profile or {}).get("preferredModel", "deepseek-chat")
+            if user_model not in MODEL_MAP:
+                user_model = "deepseek-chat"
+            model_label = MODEL_MAP[user_model]
+
             # 先发一条"思考中"让用户知道没死机
-            send_markdown(f"🧠 收到！正在分析「{content[:20]}{'...' if len(content)>20 else ''}」\n预计 10-20 秒回复...", user_id=from_user)
+            send_markdown(f"🧠 收到！正在用 {model_label} 分析「{content[:20]}{'...' if len(content)>20 else ''}」\n预计 10-20 秒回复...", user_id=from_user)
 
             # 通用问题 → 调 DeepSeek AI 聊天
             market_ctx = _build_market_context()
@@ -108,7 +144,7 @@ async def callback_receive(
                     "https://api.deepseek.com/v1/chat/completions",
                     headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
                     json={
-                        "model": "deepseek-chat",
+                        "model": user_model,
                         "messages": [
                             {"role": "system", "content": full_system},
                             {"role": "user", "content": content},
@@ -120,7 +156,7 @@ async def callback_receive(
                 data = resp.json()
                 reply = data["choices"][0]["message"]["content"]
 
-            reply_md = f"**🤖 AI 分析师**\n\n{reply}\n\n> 来自: {user_name} 的提问"
+            reply_md = f"🤖 AI分析师 ({model_label})\n\n{reply}"
             send_markdown(reply_md, user_id=from_user)
 
         except Exception as e:
