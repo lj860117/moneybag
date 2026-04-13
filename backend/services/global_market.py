@@ -452,4 +452,11 @@ def get_decision_data_pack() -> dict:
     except Exception:
         pack["holding_intelligence"] = {"error": "unavailable"}
 
+    # V8 扩展宏观（GDP/工业增加值/社零/固投/龙虎榜/管理层增减持）
+    try:
+        from services.macro_v8 import get_all_v8_macro
+        pack["macro_v8"] = get_all_v8_macro()
+    except Exception:
+        pack["macro_v8"] = {"error": "unavailable"}
+
     return pack

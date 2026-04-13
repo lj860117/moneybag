@@ -350,38 +350,42 @@ def get_main_money_flow() -> dict:
 
 
 def get_stock_financials(code: str) -> dict:
-    """获取个股核心财务数据（ROE/EPS/营收增速）"""
+    """获取个股核心财务数据（ROE/EPS/营收增速 + V8扩展：毛利率/净利率/现金流/负债率）"""
     cache_key = f"fin_{code}"
     now = time.time()
     if cache_key in factor_cache and now - factor_cache[cache_key]["ts"] < 86400:  # 24h 缓存
         return factor_cache[cache_key]["data"]
 
-    result = {"code": code, "roe": None, "eps": None, "revenue_growth": None, "available": False}
+    result = {
+        "code": code, "roe": None, "eps": None, "revenue_growth": None,
+        "gross_margin": None, "net_margin": None, "debt_ratio": None,
+        "cash_flow_per_share": None, "available": False,
+    }
     try:
         import akshare as ak
         df = ak.stock_financial_analysis_indicator(symbol=code, start_year="2024")
         if df is not None and len(df) > 0:
             cols = list(df.columns)
-            roe_col = next((c for c in cols if "净资产收益率" in c and "摊薄" not in c), None)
-            eps_col = next((c for c in cols if "每股收益" in c), None)
-            rev_col = next((c for c in cols if "营业收入" in c and "增长" in c), None)
-            if roe_col:
-                try:
-                    result["roe"] = round(float(df[roe_col].iloc[0]), 2)
-                except (ValueError, TypeError):
-                    pass
-            if eps_col:
-                try:
-                    result["eps"] = round(float(df[eps_col].iloc[0]), 4)
-                except (ValueError, TypeError):
-                    pass
-            if rev_col:
-                try:
-                    result["revenue_growth"] = round(float(df[rev_col].iloc[0]), 2)
-                except (ValueError, TypeError):
-                    pass
-            result["available"] = any([result["roe"], result["eps"], result["revenue_growth"]])
-            print(f"[FIN] {code} ROE={result['roe']}, EPS={result['eps']}")
+
+            def _extract(keywords):
+                col = next((c for c in cols if all(k in str(c) for k in keywords)), None)
+                if col:
+                    try:
+                        return round(float(df[col].iloc[0]), 2)
+                    except (ValueError, TypeError):
+                        pass
+                return None
+
+            result["roe"] = _extract(["净资产收益率"])
+            result["eps"] = _extract(["每股收益"])
+            result["revenue_growth"] = _extract(["营业收入", "增长"])
+            result["gross_margin"] = _extract(["毛利率"]) or _extract(["销售毛利率"])
+            result["net_margin"] = _extract(["净利率"]) or _extract(["销售净利率"])
+            result["debt_ratio"] = _extract(["资产负债率"])
+            result["cash_flow_per_share"] = _extract(["每股经营现金"])
+
+            result["available"] = any(v is not None for k, v in result.items() if k not in ("code", "available"))
+            print(f"[FIN] {code} ROE={result['roe']}, GM={result['gross_margin']}, DR={result['debt_ratio']}")
     except Exception as e:
         print(f"[FIN] {code} Failed: {e}")
 

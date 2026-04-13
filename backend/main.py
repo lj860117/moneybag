@@ -609,6 +609,28 @@ def holding_intel_api(userId: str = "default"):
     return scan_all_holding_intelligence(userId)
 
 
+# ---- V8 扩展宏观因子 API ----
+from services.macro_v8 import (
+    get_gdp, get_industrial_value_added, get_consumer_goods_retail,
+    get_fixed_asset_investment, get_lhb_summary, get_management_holdings,
+    get_all_v8_macro,
+)
+
+@app.get("/api/macro/v8")
+def macro_v8_all():
+    """V8 全部扩展宏观因子（GDP/工业增加值/社零/固投/龙虎榜/管理层增减持）"""
+    return get_all_v8_macro()
+
+@app.get("/api/macro/gdp")
+def macro_gdp():
+    return get_gdp()
+
+@app.get("/api/macro/lhb")
+def macro_lhb():
+    """龙虎榜（机构+游资动向）"""
+    return get_lhb_summary()
+
+
 @app.get("/api/factors/all")
 def get_all_factors():
     """一次性获取全部新因子数据"""
@@ -1861,6 +1883,16 @@ def _build_market_context() -> str:
     except Exception:
         pass
 
+    # V8 扩展宏观（GDP/工业增加值/社零/固投/龙虎榜）
+    try:
+        from services.macro_v8 import get_v8_macro_summary
+        v8_ctx = get_v8_macro_summary()
+        if v8_ctx:
+            lines.append("\n经济基本面：")
+            lines.append(v8_ctx)
+    except Exception:
+        pass
+
     # 大宗商品 + 限售解禁 + ETF 资金流
     try:
         comm = get_commodity_prices()
@@ -1948,6 +1980,21 @@ def _build_portfolio_context(p=None) -> str:
         intel_ctx = build_holding_context()
         if intel_ctx:
             lines.append(intel_ctx)
+    except Exception:
+        pass
+
+    # 5. 管理层增减持检查
+    try:
+        from services.macro_v8 import check_holding_management_change
+        from services.stock_monitor import load_stock_holdings
+        holdings = load_stock_holdings()
+        codes = [h.get("code", "") for h in holdings if h.get("code")]
+        if codes:
+            mgmt_alerts = check_holding_management_change(codes)
+            if mgmt_alerts:
+                lines.append("\n【管理层增减持】")
+                for a in mgmt_alerts[:3]:
+                    lines.append(f"  {a['msg']}")
     except Exception:
         pass
 
