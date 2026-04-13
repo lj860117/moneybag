@@ -159,12 +159,27 @@ def get_all_policy_topics() -> dict:
 
     # 中文→英文 key 映射（前端 topicMap 用英文 key）
     KEY_MAP = {"房地产": "realestate", "公积金": "gongjijin", "科技": "tech", "经济": "economy", "房改": "fanggai"}
+
+    # 并发抓取 5 个主题（避免串行 15-25 秒超时）
+    from concurrent.futures import ThreadPoolExecutor, as_completed
     topics = {}
-    for topic_cn in POLICY_TOPICS:
+
+    def _fetch_topic(topic_cn):
         en_key = KEY_MAP.get(topic_cn, topic_cn)
         data = get_policy_news_by_topic(topic_cn, 5)
-        # 直接返回 news 数组（前端需要 topics[key] = [{title,time,url}]）
-        topics[en_key] = data.get("news", [])
+        return en_key, data.get("news", [])
+
+    with ThreadPoolExecutor(max_workers=5) as pool:
+        futures = {pool.submit(_fetch_topic, t): t for t in POLICY_TOPICS}
+        for f in as_completed(futures):
+            try:
+                en_key, news_list = f.result(timeout=10)
+                topics[en_key] = news_list
+            except Exception as e:
+                topic_cn = futures[f]
+                en_key = KEY_MAP.get(topic_cn, topic_cn)
+                topics[en_key] = []
+                print(f"[POLICY] topic {topic_cn} failed: {e}")
 
     result = {"topics": topics, "updatedAt": datetime.now().isoformat()}
     _policy_cache[cache_key] = {"data": result, "ts": now}

@@ -1057,12 +1057,15 @@ el.innerHTML=`<div class="dashboard-card"><div class="dashboard-card-title">📰
 
 async function renderInsightPolicy(el){
 el.innerHTML='<div style="text-align:center;padding:40px;color:var(--text2)"><div class="loading-spinner" style="width:32px;height:32px;margin:0 auto 12px;border-width:3px"></div>正在加载政策新闻...</div>';
-// 并行加载：传统政策新闻 + 分主题政策新闻 + AI影响分析
-const [news, topicsResp, impactResp] = await Promise.all([
+// 并行加载：传统政策新闻 + 分主题政策新闻 + AI影响分析（allSettled 防止一个超时拖垮全部）
+const results = await Promise.allSettled([
   fetchPolicyNews(),
-  API_AVAILABLE ? fetch(API_BASE+'/policy/all-topics',{signal:AbortSignal.timeout(15000)}).then(r=>r.ok?r.json():{}).catch(()=>({})) : Promise.resolve({}),
-  API_AVAILABLE ? fetch(API_BASE+'/policy/impact',{signal:AbortSignal.timeout(20000)}).then(r=>r.ok?r.json():{}).catch(()=>({})) : Promise.resolve({})
+  API_AVAILABLE ? fetch(API_BASE+'/policy/all-topics',{signal:AbortSignal.timeout(45000)}).then(r=>r.ok?r.json():{}).catch(()=>({})) : Promise.resolve({}),
+  API_AVAILABLE ? fetch(API_BASE+'/policy/impact',{signal:AbortSignal.timeout(30000)}).then(r=>r.ok?r.json():{}).catch(()=>({})) : Promise.resolve({})
 ]);
+const news = results[0].status==='fulfilled' ? results[0].value : [];
+const topicsResp = results[1].status==='fulfilled' ? results[1].value : {};
+const impactResp = results[2].status==='fulfilled' ? results[2].value : {};
 const topics = topicsResp.topics || topicsResp || {};
 if(!news.length&&!Object.keys(topics).length){el.innerHTML='<div style="text-align:center;padding:40px;color:var(--text2)">暂无政策新闻</div>';return}
 const policyNews=news.filter(n=>n.category==='policy');
