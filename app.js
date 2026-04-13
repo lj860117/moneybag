@@ -146,16 +146,26 @@ function calcHoldingsFromTxns(txns){
   return Object.values(map).filter(h=>h.shares>0);
 }
 
-// 计算净资产
+// 计算净资产（本地 fallback — 后端统一 API 不可用时使用）
 function calcNetWorth(){
   const txns=loadTxns();const assets=loadAssets();const ledger=loadLedger();
   const holdings=calcHoldingsFromTxns(txns);
-  const fundValue=holdings.reduce((s,h)=>s+h.totalCost,0); // 用成本估算（有实时净值时替换）
+  const fundValue=holdings.reduce((s,h)=>s+h.totalCost,0);
   const assetTotal=assets.filter(a=>a.type!=='liability').reduce((s,a)=>s+(a.value||0),0);
   const liabilities=assets.filter(a=>a.type==='liability').reduce((s,a)=>s+(a.value||0),0);
   const ledgerIncome=ledger.filter(e=>e.direction==='income').reduce((s,e)=>s+(e.amount||0),0);
   const ledgerExpense=ledger.filter(e=>e.direction!=='income').reduce((s,e)=>s+(e.amount||0),0);
   return {fundValue,assetTotal,liabilities,ledgerIncome,ledgerExpense,ledgerNet:ledgerIncome-ledgerExpense,netWorth:fundValue+assetTotal-liabilities+ledgerIncome-ledgerExpense,holdings};
+}
+
+// 从后端获取统一净资产（包含股票+基金+手动资产+负债）
+async function fetchUnifiedNetworth(){
+  if(!API_AVAILABLE)return null;
+  const uid=getProfileId();if(!uid)return null;
+  try{
+    const r=await fetch(`${API_BASE}/unified-networth?userId=${uid}`,{signal:AbortSignal.timeout(10000)});
+    if(!r.ok)return null;return await r.json();
+  }catch(e){console.warn('unified-networth:',e);return null}
 }
 
 // V3→V4 数据迁移：如果有旧holdings但没有交易记录，自动生成
@@ -259,13 +269,13 @@ const monthExp=monthLedger.filter(e=>e.direction!=='income').reduce((s,e)=>s+(e.
 $('#app').innerHTML=`<div class="result-page fade-up">
 <div class="pnl-hero" style="margin-bottom:16px">
 <div class="pnl-label">💰 我的净资产 <span onclick="showExplain('networth')" style="font-size:14px;cursor:pointer;opacity:0.6">ℹ️</span></div>
-<div class="pnl-total-value">${fmtFull(Math.round(nw.netWorth))}</div>
-<div style="display:flex;gap:16px;justify-content:center;margin-top:12px;font-size:12px">
-<div style="text-align:center"><div style="color:var(--text2)">基金持仓</div><div style="font-weight:700;color:var(--accent)">¥${fmtMoney(Math.round(nw.fundValue))}</div></div>
-<div style="text-align:center"><div style="color:var(--text2)">其他资产</div><div style="font-weight:700;color:var(--blue)">¥${fmtMoney(Math.round(nw.assetTotal))}</div></div>
-<div style="text-align:center"><div style="color:var(--text2)">负债</div><div style="font-weight:700;color:var(--red)">¥${fmtMoney(Math.round(nw.liabilities))}</div></div>
-<div style="text-align:center"><div style="color:var(--text2)">现金流</div><div style="font-weight:700;color:${nw.ledgerNet>=0?'var(--green)':'var(--red)'}">¥${fmtMoney(Math.round(nw.ledgerNet))}</div></div>
+<div class="pnl-total-value" id="heroNetWorth">${fmtFull(Math.round(nw.netWorth))}</div>
+<div id="heroBreakdown" style="display:flex;gap:12px;justify-content:center;margin-top:12px;font-size:12px;flex-wrap:wrap">
+<div style="text-align:center"><div style="color:var(--text2)">📈 投资</div><div style="font-weight:700;color:var(--accent)">¥${fmtMoney(Math.round(nw.fundValue))}</div></div>
+<div style="text-align:center"><div style="color:var(--text2)">💵 现金</div><div style="font-weight:700;color:var(--green)">¥${fmtMoney(Math.round(nw.assetTotal))}</div></div>
+<div style="text-align:center"><div style="color:var(--text2)">💳 负债</div><div style="font-weight:700;color:var(--red)">-¥${fmtMoney(Math.round(nw.liabilities))}</div></div>
 </div>
+<div id="heroHealth" style="margin-top:8px;font-size:12px;color:var(--text2)"></div>
 </div>
 
 <div style="display:flex;gap:8px;margin-bottom:16px">
@@ -292,7 +302,21 @@ $('#app').innerHTML=`<div class="result-page fade-up">
 <button class="action-btn secondary" onclick="showAddTxn()">➕ 记交易</button>
 <button class="action-btn secondary" onclick="startQuiz()">🔄 重新测评</button>
 </div>
-</div>`;renderNav();loadSignals();loadDailyFocus();loadHomeRiskAlert();loadHomeAllocationAdvice()}
+</div>`;renderNav();loadSignals();loadDailyFocus();loadHomeRiskAlert();loadHomeAllocationAdvice();loadUnifiedHero()}
+
+// ---- 首页：统一净资产 Hero 更新 ----
+async function loadUnifiedHero(){
+const d=await fetchUnifiedNetworth();if(!d||!d.netWorth)return;
+const el=document.getElementById('heroNetWorth');if(el)el.textContent=fmtFull(Math.round(d.netWorth));
+const bd=document.getElementById('heroBreakdown');
+if(bd){const b=d.breakdown||{};
+bd.innerHTML=`
+<div style="text-align:center"><div style="color:var(--text2)">📈 投资</div><div style="font-weight:700;color:var(--accent)">¥${fmtMoney(Math.round((b.investment||{}).total||0))}</div></div>
+<div style="text-align:center"><div style="color:var(--text2)">💵 现金</div><div style="font-weight:700;color:var(--green)">¥${fmtMoney(Math.round((b.cash||{}).total||0))}</div></div>
+<div style="text-align:center"><div style="color:var(--text2)">🏠 房产</div><div style="font-weight:700;color:#F59E0B">¥${fmtMoney(Math.round((b.property||{}).total||0))}</div></div>
+<div style="text-align:center"><div style="color:var(--text2)">💳 负债</div><div style="font-weight:700;color:var(--red)">-¥${fmtMoney(Math.round((b.liability||{}).total||0))}</div></div>`}
+const hel=document.getElementById('heroHealth');
+if(hel&&d.healthGrade)hel.innerHTML=`${d.healthGrade} · ${d.healthScore}分${d.healthIssues?.length?` · <span style="color:var(--red)">${d.healthIssues[0]}</span>`:''}`}
 
 // ---- 首页：今日关注（DeepSeek 个性化）----
 async function loadDailyFocus(){
@@ -1448,17 +1472,16 @@ const liabTotal=assets.filter(a=>a.type==='liability').reduce((s,a)=>s+(a.value|
 const ledgerIncome=ledger.filter(e=>e.direction==='income').reduce((s,e)=>s+(e.amount||0),0);
 const ledgerExpense=ledger.filter(e=>e.direction!=='income').reduce((s,e)=>s+(e.amount||0),0);
 const ledgerNet=ledgerIncome-ledgerExpense;
-const net=assetTotal-liabTotal+ledgerNet;
+const net=assetTotal-liabTotal;
 
 $('#app').innerHTML=`<div class="result-page fade-up">
 <div class="pnl-hero" style="margin-bottom:16px">
-<div class="pnl-label">🏦 资产管理</div>
-<div style="display:flex;gap:12px;justify-content:center;margin-top:8px;flex-wrap:wrap">
-<div style="text-align:center"><div style="font-size:12px;color:var(--text2)">总资产</div><div style="font-size:20px;font-weight:900;color:var(--green)">¥${fmtMoney(Math.round(assetTotal))}</div></div>
-<div style="text-align:center"><div style="font-size:12px;color:var(--text2)">总负债</div><div style="font-size:20px;font-weight:900;color:var(--red)">¥${fmtMoney(Math.round(liabTotal))}</div></div>
-<div style="text-align:center"><div style="font-size:12px;color:var(--text2)">记账现金流</div><div style="font-size:20px;font-weight:900;color:${ledgerNet>=0?'var(--green)':'var(--red)'}">${ledgerNet>=0?'+':''}¥${fmtMoney(Math.round(ledgerNet))}</div></div>
-<div style="text-align:center"><div style="font-size:12px;color:var(--text2)">净值</div><div style="font-size:20px;font-weight:900;color:${net>=0?'var(--accent)':'var(--red)'}">¥${fmtMoney(Math.round(net))}</div></div>
-</div></div>
+<div class="pnl-label">🏦 统一净资产 <span style="font-size:11px;color:var(--text2)">(投资+资产-负债)</span></div>
+<div class="pnl-total-value" id="assetPageNW">¥${fmtMoney(Math.round(net))}</div>
+<div id="assetPageHealth" style="font-size:12px;color:var(--text2);margin-top:4px">加载中…</div>
+<div id="assetPageRing" style="display:flex;justify-content:center;margin-top:12px"></div>
+<div id="assetPageBuckets" style="display:flex;gap:8px;justify-content:center;margin-top:8px;font-size:11px;flex-wrap:wrap"></div>
+</div>
 
 <div id="cashAdviceCard" style="display:none"></div>
 
@@ -1488,12 +1511,38 @@ return`<div class="holding-card" style="border-left:3px solid ${t.color}">
 <div id="ledgerPanelInAssets" style="display:none;margin-top:16px"></div>
 
 <div style="text-align:center;margin-top:16px;font-size:12px;color:var(--text2);line-height:1.8">
-💡 这里管理基金以外的资产<br>
-基金持仓在「📊 持仓」页管理 · 记账收支自动计入净资产<br>
-所有数据汇总到首页净资产仪表盘</div></div>`;
+💡 投资持仓在「📊 持仓」页管理<br>
+所有数据自动汇总到统一净资产</div></div>`;
+// 异步加载后端统一净资产
+loadAssetPageData();
 // 加载存款智能建议
 if(API_AVAILABLE&&assetTotal>0){const cashAmt=assets.filter(a=>a.type==='cash').reduce((s,a)=>s+(a.value||a.balance||0),0);if(cashAmt>0){const el=document.getElementById('cashAdviceCard');el.style.display='block';el.innerHTML='<div class="dashboard-card" style="border-left:3px solid var(--accent);padding:12px"><div style="font-size:13px;font-weight:700;margin-bottom:8px">💡 AI 存款建议</div><div style="font-size:12px;color:var(--text2)">分析中...</div></div>';fetch(`${API_BASE}/assets/advice`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({cashAmount:cashAmt,monthlyExpense:ledgerExpense/Math.max(1,Math.ceil(ledger.length/30))*30,riskProfile:localStorage.getItem('moneybag_profile')||'稳健型'})}).then(r=>r.json()).then(d=>{el.innerHTML=`<div class="dashboard-card" style="border-left:3px solid var(--accent);padding:12px"><div style="font-size:13px;font-weight:700;margin-bottom:8px">💡 AI 存款建议 <span style="font-size:10px;color:var(--text2);font-weight:400">${d.source==='ai'?'DeepSeek':'规则'}</span></div><div style="font-size:12px;line-height:1.6">${d.advice}</div><div style="font-size:11px;color:var(--text2);margin-top:8px">应急储备 ¥${fmtMoney(d.emergencyFund||0)} | 闲置 ¥${fmtMoney(d.idleCash||0)} | 年损失 ¥${fmtMoney(d.annualLoss||0)}</div></div>`}).catch(()=>{el.style.display='none'})}}
 }
+
+// 资产页：异步加载后端统一净资产
+async function loadAssetPageData(){
+const d=await fetchUnifiedNetworth();if(!d)return;
+const el=document.getElementById('assetPageNW');if(el)el.textContent=`¥${fmtMoney(Math.round(d.netWorth))}`;
+const hel=document.getElementById('assetPageHealth');
+if(hel)hel.innerHTML=`${d.healthGrade||''} · ${d.healthScore||0}分${(d.healthIssues||[]).length?` · <span style="color:var(--red);font-size:11px">${d.healthIssues[0]}</span>`:''}`;
+// SVG 环形图
+const ring=document.getElementById('assetPageRing');
+if(ring&&d.allocation){const al=d.allocation;const segs=[
+{pct:al.investment||0,color:'#F59E0B',label:'投资'},{pct:al.cash||0,color:'#10B981',label:'现金'},
+{pct:al.property||0,color:'#3B82F6',label:'房产'},{pct:(al.car||0)+(al.insurance||0)+(al.other||0),color:'#6B7280',label:'其他'}
+].filter(s=>s.pct>0);
+let offset=0;const r=50,cx=60,cy=60,C=2*Math.PI*r;
+let paths='';segs.forEach(s=>{const len=s.pct/100*C;paths+=`<circle cx="${cx}" cy="${cy}" r="${r}" fill="none" stroke="${s.color}" stroke-width="12" stroke-dasharray="${len} ${C-len}" stroke-dashoffset="${-offset}" transform="rotate(-90 ${cx} ${cy})"/>`;offset+=len});
+ring.innerHTML=`<svg width="120" height="120" viewBox="0 0 120 120">${paths}<text x="${cx}" y="${cy-4}" text-anchor="middle" fill="var(--text)" font-size="11" font-weight="700">¥${d.netWorth>10000?(d.netWorth/10000).toFixed(1)+'万':Math.round(d.netWorth)}</text><text x="${cx}" y="${cy+10}" text-anchor="middle" fill="var(--text2)" font-size="9">净资产</text></svg>`}
+// 分桶标签
+const bk=document.getElementById('assetPageBuckets');
+if(bk&&d.breakdown){const b=d.breakdown;const items=[
+{icon:'📈',label:'投资',val:(b.investment||{}).total||0,color:'#F59E0B'},
+{icon:'💵',label:'现金',val:(b.cash||{}).total||0,color:'#10B981'},
+{icon:'🏠',label:'房产',val:(b.property||{}).total||0,color:'#3B82F6'},
+{icon:'💳',label:'负债',val:(b.liability||{}).total||0,color:'#EF4444'}
+].filter(i=>i.val>0);
+bk.innerHTML=items.map(i=>`<span style="background:${i.color}15;color:${i.color};padding:2px 8px;border-radius:6px;border:1px solid ${i.color}30">${i.icon} ${i.label} ¥${fmtMoney(Math.round(i.val))}</span>`).join('')}}
 
 function showAddAsset(){
 const o=document.createElement('div');o.className='modal-overlay';o.onclick=e=>{if(e.target===o)o.remove()};

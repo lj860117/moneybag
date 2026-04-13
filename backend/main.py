@@ -871,11 +871,19 @@ def create_profile(req: dict):
 
 # ---- 资产总览 API ----
 from services.portfolio_overview import get_portfolio_overview
+from services.unified_networth import calc_unified_networth
 
 @app.get("/api/portfolio/overview")
 def portfolio_overview_api(userId: str = "default"):
     """汇总全资产概览（股票+基金+配置占比+健康评分）"""
     return get_portfolio_overview(userId)
+
+@app.get("/api/unified-networth")
+def unified_networth_api(userId: str = ""):
+    """统一净资产 — 合并所有数据源（股票+基金+手动资产+负债）"""
+    if not userId:
+        return {"netWorth": 0, "breakdown": {}}
+    return calc_unified_networth(userId)
 
 
 # ---- DeepSeek 智能增强 API ----
@@ -1476,12 +1484,15 @@ def calc_networth(req: dict):
         else:
             investment_value += h["shares"] * h["avgNav"]
 
-    # 计算各类资产
+    # 计算各类资产（统一读 value 字段，兼容 balance）
     assets = p.get("assets", [])
-    cash_total = sum(a.get("balance", 0) for a in assets if a.get("type") == "cash")
-    property_total = sum(a.get("value", 0) for a in assets if a.get("type") == "property")
-    other_total = sum(a.get("value", 0) for a in assets if a.get("type") == "other")
-    liability_total = sum(abs(a.get("balance", 0)) for a in assets if a.get("type") == "liability")
+    def _av(a): return a.get("value", 0) or a.get("balance", 0) or 0
+    cash_total = sum(_av(a) for a in assets if a.get("type") == "cash")
+    property_total = sum(_av(a) for a in assets if a.get("type") == "property")
+    car_total = sum(_av(a) for a in assets if a.get("type") == "car")
+    insurance_total = sum(_av(a) for a in assets if a.get("type") == "insurance")
+    other_total = sum(_av(a) for a in assets if a.get("type") == "other")
+    liability_total = sum(abs(_av(a)) for a in assets if a.get("type") == "liability")
 
     # 计算记账收支净额（收入 - 支出）
     ledger = user.get("ledger", [])
@@ -1489,7 +1500,7 @@ def calc_networth(req: dict):
     ledger_expense = sum(e.get("amount", 0) for e in ledger if e.get("direction", "expense") == "expense")
     ledger_net = ledger_income - ledger_expense
 
-    net_worth = investment_value + cash_total + property_total + other_total + ledger_net - liability_total
+    net_worth = investment_value + cash_total + property_total + car_total + insurance_total + other_total + ledger_net - liability_total
 
     return {
         "netWorth": round(net_worth, 2),
@@ -1497,6 +1508,8 @@ def calc_networth(req: dict):
             "investment": round(investment_value, 2),
             "cash": round(cash_total, 2),
             "property": round(property_total, 2),
+            "car": round(car_total, 2),
+            "insurance": round(insurance_total, 2),
             "other": round(other_total, 2),
             "liability": round(liability_total, 2),
             "ledgerIncome": round(ledger_income, 2),

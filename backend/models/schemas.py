@@ -41,11 +41,12 @@ class Transaction(BaseModel):
 
 class Asset(BaseModel):
     id: str = ""
-    type: Literal["cash", "property", "liability", "other"] = "cash"
+    type: Literal["cash", "property", "car", "insurance", "liability", "other"] = "cash"
     name: str = ""
-    balance: float = 0       # cash/liability 用 balance
-    value: float = 0         # property/other 用 value
+    balance: float = 0       # 兼容旧数据
+    value: float = 0         # 统一金额字段（前端统一用 value）
     icon: str = ""
+    note: str = ""
     updated: str = ""
 
 class PortfolioV4(BaseModel):
