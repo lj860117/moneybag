@@ -540,6 +540,18 @@ from services.policy_data import (
     analyze_policy_impact_ds,
 )
 
+# ---- 市场微观因子 API ----
+from services.market_factors import (
+    get_commodity_prices, get_stock_unlock_schedule,
+    get_etf_fund_flow, get_all_market_factors,
+    check_holding_unlock,
+)
+
+# ---- 持仓关联智能 API ----
+from services.holding_intelligence import (
+    scan_all_holding_intelligence, build_holding_context,
+)
+
 @app.get("/api/policy/real-estate")
 def policy_real_estate():
     """房地产开发投资/销售数据"""
@@ -564,6 +576,37 @@ def policy_all_topics():
 def policy_impact():
     """DeepSeek 分析政策→A股影响"""
     return analyze_policy_impact_ds()
+
+
+# ---- 市场微观因子 API ----
+
+@app.get("/api/market-factors/commodities")
+def commodities_api():
+    """大宗商品期货（黄金/铜）"""
+    return get_commodity_prices()
+
+@app.get("/api/market-factors/unlock")
+def unlock_api():
+    """限售股解禁计划"""
+    return get_stock_unlock_schedule()
+
+@app.get("/api/market-factors/etf-flow")
+def etf_flow_api():
+    """ETF 资金流向"""
+    return get_etf_fund_flow()
+
+@app.get("/api/market-factors/all")
+def market_factors_all():
+    """全部市场微观因子"""
+    return get_all_market_factors()
+
+
+# ---- 持仓关联智能 API ----
+
+@app.get("/api/holding-intelligence")
+def holding_intel_api(userId: str = "default"):
+    """全持仓智能扫描（个股新闻+资金流+行业+解禁）"""
+    return scan_all_holding_intelligence(userId)
 
 
 @app.get("/api/factors/all")
@@ -1818,6 +1861,28 @@ def _build_market_context() -> str:
     except Exception:
         pass
 
+    # 大宗商品 + 限售解禁 + ETF 资金流
+    try:
+        comm = get_commodity_prices()
+        if comm.get("available"):
+            parts = []
+            if comm.get("gold"):
+                parts.append(f"黄金{comm['gold']['price']}{comm['gold']['unit']}({comm['gold']['change_pct']:+.1f}%)")
+            if comm.get("copper"):
+                parts.append(f"铜{comm['copper']['price']}{comm['copper']['unit']}({comm['copper']['change_pct']:+.1f}%)")
+            if parts:
+                lines.append(f"\n大宗商品：{'，'.join(parts)}")
+    except Exception:
+        pass
+
+    try:
+        etf = get_etf_fund_flow()
+        if etf.get("available") and etf.get("top_inflow"):
+            top = etf["top_inflow"][0]
+            lines.append(f"ETF资金流：TOP流入 {top['name']}({top['flow']:.0f}万)")
+    except Exception:
+        pass
+
     result = "\n".join(lines) if lines else "暂无市场数据"
     _market_ctx_cache["text"] = result
     _market_ctx_cache["ts"] = time.time()
@@ -1875,6 +1940,14 @@ def _build_portfolio_context(p=None) -> str:
                 lines.append(f"  {label}：目标{tgt}%，偏离{d:+d}%")
             if advice.get("summary"):
                 lines.append(f"  建议：{advice['summary']}")
+    except Exception:
+        pass
+
+    # 4. 持仓关联智能（个股新闻/资金流/行业/解禁）
+    try:
+        intel_ctx = build_holding_context()
+        if intel_ctx:
+            lines.append(intel_ctx)
     except Exception:
         pass
 

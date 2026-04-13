@@ -438,4 +438,18 @@ def get_decision_data_pack() -> dict:
     except Exception:
         pack["policy_topics"] = {"error": "unavailable"}
 
+    # 市场微观因子（大宗商品+限售解禁+ETF 资金流）
+    try:
+        from services.market_factors import get_all_market_factors
+        pack["market_factors"] = get_all_market_factors()
+    except Exception:
+        pack["market_factors"] = {"error": "unavailable"}
+
+    # 持仓关联智能（个股新闻+资金流+行业+解禁）
+    try:
+        from services.holding_intelligence import scan_all_holding_intelligence
+        pack["holding_intelligence"] = scan_all_holding_intelligence()
+    except Exception:
+        pack["holding_intelligence"] = {"error": "unavailable"}
+
     return pack
