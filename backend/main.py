@@ -919,11 +919,17 @@ def create_profile(req: dict):
 @app.put("/api/profiles/{profile_id}")
 def update_profile(profile_id: str, req: dict):
     """更新 Profile（绑定企微 userid 等）"""
+    # 企微 userid 白名单（只有这些人能绑定）
+    VALID_WXWORK_USERS = {"LeiJiang", "BuLuoGeLi"}
+
     profiles = _load_profiles()
     for p in profiles:
         if p["id"] == profile_id:
             if "wxworkUserId" in req:
-                p["wxworkUserId"] = req["wxworkUserId"].strip()
+                wx_id = req["wxworkUserId"].strip()
+                if wx_id and wx_id not in VALID_WXWORK_USERS:
+                    raise HTTPException(400, f"企微账号 '{wx_id}' 不在白名单中。请联系管理员添加。当前允许：{', '.join(sorted(VALID_WXWORK_USERS))}")
+                p["wxworkUserId"] = wx_id
             if "name" in req:
                 p["name"] = req["name"].strip()
             _save_profiles(profiles)
