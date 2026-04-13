@@ -761,6 +761,126 @@ async def analyze_stock_holdings(req: dict = {}):
     return {"analysis": stock_ctx, "source": "data_only", "scan": scan}
 
 
+# ---- 基金持仓盯盘 API ----
+from services.fund_monitor import (
+    load_fund_holdings, add_fund_holding, remove_fund_holding,
+    update_fund_holding, get_fund_realtime, scan_all_fund_holdings,
+)
+
+@app.get("/api/fund-holdings")
+def get_fund_holdings_api():
+    """获取基金持仓列表"""
+    return {"holdings": load_fund_holdings()}
+
+@app.post("/api/fund-holdings")
+def add_fund_holding_api(req: dict):
+    """添加基金持仓"""
+    code = req.get("code", "").strip()
+    if not code:
+        raise HTTPException(400, "基金代码不能为空")
+    return add_fund_holding(
+        code=code,
+        name=req.get("name", ""),
+        cost_nav=float(req.get("costNav", 0)),
+        shares=float(req.get("shares", 0)),
+        note=req.get("note", ""),
+    )
+
+@app.delete("/api/fund-holdings/{code}")
+def remove_fund_holding_api(code: str):
+    """删除基金持仓"""
+    return remove_fund_holding(code)
+
+@app.put("/api/fund-holdings/{code}")
+def update_fund_holding_api(code: str, req: dict):
+    """更新基金持仓信息"""
+    return update_fund_holding(code, **{
+        k: v for k, v in req.items()
+        if k in ("costNav", "shares", "note", "name")
+    })
+
+@app.get("/api/fund-holdings/realtime/{code}")
+def get_fund_rt_api(code: str):
+    """获取单只基金实时估值"""
+    return get_fund_realtime(code)
+
+@app.get("/api/fund-holdings/scan")
+def scan_fund_holdings_api():
+    """扫描全基金持仓 — 估值 + 风控 + 异动"""
+    return scan_all_fund_holdings()
+
+@app.post("/api/fund-holdings/analyze")
+async def analyze_fund_holdings(req: dict = {}):
+    """DeepSeek 深度分析全基金持仓（7 Skill 框架）"""
+    scan = scan_all_fund_holdings()
+    if not scan.get("holdings"):
+        return {"analysis": "暂无基金持仓，请先添加。", "source": "none"}
+
+    lines = ["【基金持仓盯盘数据】"]
+    for h in scan["holdings"]:
+        rt = h.get("realtime") or {}
+        risk = h.get("risk") or {}
+        pnl_str = f"盈亏{h['pnlPct']:+.1f}%" if h.get("pnlPct") is not None else ""
+        est_str = f"估算{rt.get('estRate', 'N/A')}%" if rt.get("estRate") is not None else ""
+        lines.append(
+            f"  {h['name']}({h['code']}) 估值¥{rt.get('estNav','N/A')} "
+            f"{est_str} {pnl_str} "
+            f"回撤={risk.get('maxDrawdown','N/A')} 波动={risk.get('volatility','N/A')} "
+            f"连跌{risk.get('downDays',0)}天"
+        )
+    if scan.get("alerts"):
+        lines.append("\n【基金异动信号】")
+        for a in scan["alerts"]:
+            lines.append(f"  [{a['level']}] {a.get('fund','')} {a['msg']}")
+
+    fund_ctx = "\n".join(lines)
+    market_ctx = _build_market_context()
+
+    api_key = os.environ.get("LLM_API_KEY")
+    if not api_key:
+        return {"analysis": fund_ctx, "source": "data_only"}
+
+    system_prompt = _load_prompt_template()
+    user_prompt = f"""请对我的基金持仓做一次全面深度分析。
+
+{fund_ctx}
+
+{market_ctx}
+
+请按以下结构回答：
+1. 📊 总体评估（一句话结论）
+2. 逐只分析（每只基金：估值判断+回撤风险+配置建议）
+3. 🛡️ 风控经理总结（组合风险+配置调整建议）"""
+
+    try:
+        import httpx
+        async with httpx.AsyncClient(timeout=60) as client:
+            resp = await client.post(
+                "https://api.deepseek.com/v1/chat/completions",
+                headers={"Authorization": f"Bearer {api_key}"},
+                json={
+                    "model": req.get("model", "deepseek-chat"),
+                    "messages": [
+                        {"role": "system", "content": system_prompt},
+                        {"role": "user", "content": user_prompt},
+                    ],
+                    "max_tokens": 1200,
+                    "temperature": 0.7,
+                },
+            )
+            if resp.status_code == 200:
+                data = resp.json()
+                return {
+                    "analysis": data["choices"][0]["message"]["content"],
+                    "source": "ai",
+                    "scan": scan,
+                }
+    except Exception as e:
+        print(f"[FUND_ANALYZE] DeepSeek fail: {e}")
+
+    return {"analysis": fund_ctx, "source": "data_only", "scan": scan}
+
+
 # ---- API: 每日智能信号 ----
 
 @app.get("/api/daily-signal")

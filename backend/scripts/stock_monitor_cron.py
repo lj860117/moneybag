@@ -1,13 +1,12 @@
 #!/usr/bin/env python3
 """
-股票盯盘 cron 脚本
+持仓盯盘 cron 脚本（股票 + 基金统一）
 用法：crontab 每 10 分钟执行一次（交易时段）
   */10 9-11,13-14 * * 1-5 cd /opt/moneybag/backend && /opt/moneybag/venv/bin/python scripts/stock_monitor_cron.py
   30 15 * * 1-5 cd /opt/moneybag/backend && /opt/moneybag/venv/bin/python scripts/stock_monitor_cron.py --close
-  0 20 * * 1-5 cd /opt/moneybag/backend && /opt/moneybag/venv/bin/python scripts/stock_monitor_cron.py --review
 
 功能：
-  1. 扫描全持仓实时行情+计算技术指标
+  1. 扫描全持仓（股票+基金）实时行情 + 计算指标
   2. 检测异动信号
   3. 结果保存到 JSON 文件（供前端/Claude 读取）
   4. 有异动时推送到企业微信（待接入）
@@ -23,6 +22,7 @@ from datetime import datetime
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from services.stock_monitor import scan_all_holdings, load_stock_holdings
+from services.fund_monitor import scan_all_fund_holdings, load_fund_holdings
 
 # ---- 配置 ----
 MONITOR_DIR = Path(os.environ.get("MONITOR_DIR",
@@ -31,44 +31,62 @@ MONITOR_DIR.mkdir(parents=True, exist_ok=True)
 
 
 def run_scan():
-    """执行盯盘扫描"""
-    holdings = load_stock_holdings()
-    if not holdings:
-        print("[CRON] 无持仓股票，跳过")
-        return
+    """执行盯盘扫描（股票 + 基金）"""
+    all_alerts = []
 
-    print(f"[CRON] 扫描 {len(holdings)} 只持仓股票...")
-    result = scan_all_holdings()
+    # ---- 股票扫描 ----
+    stock_holdings = load_stock_holdings()
+    stock_result = None
+    if stock_holdings:
+        print(f"[CRON] 扫描 {len(stock_holdings)} 只持仓股票...")
+        stock_result = scan_all_holdings()
+        stock_signals = stock_result.get("signals", [])
+        all_alerts.extend([s for s in stock_signals if s["level"] in ("danger", "warning")])
+        print(f"[CRON] 股票: {stock_result['holdingCount']} 只, {stock_result['signalCount']} 个信号")
+    else:
+        print("[CRON] 无持仓股票")
 
-    # 保存最新结果
+    # ---- 基金扫描 ----
+    fund_holdings = load_fund_holdings()
+    fund_result = None
+    if fund_holdings:
+        print(f"[CRON] 扫描 {len(fund_holdings)} 只持仓基金...")
+        fund_result = scan_all_fund_holdings()
+        fund_alerts = fund_result.get("alerts", [])
+        all_alerts.extend([a for a in fund_alerts if a["level"] == "warning"])
+        print(f"[CRON] 基金: {len(fund_result['holdings'])} 只, {len(fund_alerts)} 个信号")
+    else:
+        print("[CRON] 无持仓基金")
+
+    # 保存统一最新结果
+    combined = {
+        "stock": stock_result,
+        "fund": fund_result,
+        "totalAlerts": len(all_alerts),
+        "scannedAt": datetime.now().isoformat(),
+    }
     latest_file = MONITOR_DIR / "latest.json"
     latest_file.write_text(
-        json.dumps(result, ensure_ascii=False, indent=2),
+        json.dumps(combined, ensure_ascii=False, indent=2),
         encoding="utf-8"
     )
 
-    # 保存历史快照（按时间戳）
+    # 保存历史快照
     ts = datetime.now().strftime("%Y%m%d_%H%M")
     snapshot_file = MONITOR_DIR / f"scan_{ts}.json"
     snapshot_file.write_text(
-        json.dumps(result, ensure_ascii=False, indent=2),
+        json.dumps(combined, ensure_ascii=False, indent=2),
         encoding="utf-8"
     )
 
-    # 输出摘要
-    signals = result.get("signals", [])
-    danger = [s for s in signals if s["level"] in ("danger", "warning")]
-    print(f"[CRON] 扫描完成: {result['holdingCount']} 只股票, "
-          f"{result['signalCount']} 个信号, {len(danger)} 个预警")
+    # 推送预警
+    if all_alerts:
+        push_alerts(all_alerts)
 
-    # 如果有危险/警告信号，推送通知
-    if danger:
-        push_alerts(danger)
-
-    # 清理超过 7 天的历史快照
+    # 清理旧快照
     cleanup_old_snapshots()
 
-    return result
+    return combined
 
 
 def push_alerts(signals: list):
@@ -120,7 +138,7 @@ def cleanup_old_snapshots(max_days: int = 7):
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="股票盯盘 cron")
+    parser = argparse.ArgumentParser(description="持仓盯盘 cron（股票+基金）")
     parser.add_argument("--close", action="store_true", help="收盘复盘模式")
     parser.add_argument("--review", action="store_true", help="晚间复盘模式")
     args = parser.parse_args()
