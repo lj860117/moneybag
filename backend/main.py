@@ -2674,6 +2674,112 @@ def serve_index():
 
 app.mount("/static", StaticFiles(directory=str(FRONTEND_DIR)), name="frontend")
 
+# ---- Agent 决策引擎 API ----
+from services.agent_memory import (
+    get_preferences, save_preferences, get_decisions, add_decision,
+    get_rules, add_rule, remove_rule, get_context, build_memory_summary,
+)
+from services.agent_engine import run_analysis_cycle, save_signal_file
+
+@app.get("/api/agent/memory/{user_id}")
+def get_agent_memory(user_id: str):
+    """获取用户记忆摘要"""
+    return {
+        "preferences": get_preferences(user_id),
+        "decisions": get_decisions(user_id, limit=10),
+        "rules": get_rules(user_id),
+        "context": get_context(user_id),
+        "summary": build_memory_summary(user_id),
+    }
+
+@app.post("/api/agent/preferences")
+def save_agent_preferences(req: dict):
+    """保存用户偏好"""
+    user_id = req.pop("userId", "")
+    if not user_id:
+        raise HTTPException(400, "userId required")
+    return save_preferences(user_id, req)
+
+@app.post("/api/agent/rules")
+def add_agent_rule(req: dict):
+    """添加自定义预警规则"""
+    user_id = req.pop("userId", "")
+    if not user_id:
+        raise HTTPException(400, "userId required")
+    return add_rule(user_id, req)
+
+@app.delete("/api/agent/rules/{user_id}/{rule_id}")
+def delete_agent_rule(user_id: str, rule_id: str):
+    """删除自定义规则"""
+    return {"ok": remove_rule(user_id, rule_id)}
+
+@app.post("/api/agent/analyze")
+async def agent_analyze(req: dict):
+    """Agent 决策引擎 — 手动触发分析"""
+    user_id = req.get("userId", "default_user")
+    force = req.get("force", False)
+    model = req.get("model", "deepseek-chat")
+
+    # 收集数据
+    market_ctx = _build_market_context()
+    portfolio_ctx = _build_portfolio_context()
+    memory = build_memory_summary(user_id)
+
+    # 收集预警
+    alerts = []
+    try:
+        from services.stock_monitor import scan_all_holdings
+        stock_scan = scan_all_holdings(user_id)
+        alerts.extend(stock_scan.get("signals", []))
+    except Exception:
+        pass
+    try:
+        from services.fund_monitor import scan_all_fund_holdings
+        fund_scan = scan_all_fund_holdings(user_id)
+        alerts.extend(fund_scan.get("alerts", []))
+    except Exception:
+        pass
+    try:
+        from services.agent_memory import check_rules
+        rule_alerts = check_rules(user_id, stock_scan if 'stock_scan' in dir() else {})
+        alerts.extend(rule_alerts)
+    except Exception:
+        pass
+
+    # 运行决策引擎
+    result = run_analysis_cycle(
+        user_id=user_id,
+        market_context=market_ctx,
+        portfolio_context=portfolio_ctx,
+        alerts=alerts,
+        memory_summary=memory,
+        force_deepseek=force or len(alerts) > 0,
+        model=model,
+    )
+
+    # 保存信号文件 + 决策日志
+    save_signal_file(user_id, result)
+    if result.get("source") == "ai":
+        add_decision(user_id, {
+            "action": "auto_analyze",
+            "summary": result.get("analysis", "")[:200],
+            "direction": result.get("direction", "neutral"),
+            "confidence": result.get("confidence", 0),
+            "alerts_count": len(alerts),
+            "skill_used": result.get("skill_used", ""),
+        })
+
+    return result
+
+@app.get("/api/agent/signals/{user_id}")
+def get_agent_signals(user_id: str):
+    """获取最新信号文件"""
+    fp = DATA_DIR / user_id / "monitor" / "latest_signal.json"
+    if fp.exists():
+        return json.loads(fp.read_text(encoding="utf-8"))
+    return {"analysis": "暂无信号数据", "source": "none"}
+
+
 # 兜底：让 /app.js 等直接路径也能访问
 @app.get("/{filename:path}")
 def serve_frontend_file(filename: str):
