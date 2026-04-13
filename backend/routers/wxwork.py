@@ -79,8 +79,8 @@ async def callback_receive(
 
             # 模型切换指令
             MODEL_MAP = {
-                "deepseek-chat": "DeepSeek V3 (快速)",
-                "deepseek-reasoner": "DeepSeek R1 (深度推理)",
+                "deepseek-chat": "DeepSeek V3",
+                "deepseek-reasoner": "DeepSeek R1",
             }
             if cmd.startswith("模型"):
                 model_name = content.strip()[2:].strip()
