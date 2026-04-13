@@ -1909,14 +1909,24 @@ def _build_market_context() -> str:
     except Exception:
         pass
 
-    # 最新政策/国际新闻摘要
+    # 最新政策/国际新闻摘要（增强：标题+情绪标签）
     try:
-        policy = get_policy_news(5)
+        policy = get_policy_news(10)
         valid = [n for n in policy if n["title"] != "政策资讯加载中..."]
         if valid:
+            # 简易情绪标签
+            BULL_KW = ["降息", "降准", "宽松", "利好", "上涨", "增持", "反弹", "刺激"]
+            BEAR_KW = ["加息", "收紧", "利空", "下跌", "减持", "暴跌", "制裁", "关税"]
             lines.append("\n最新政策/国际动态：")
-            for n in valid[:5]:
-                lines.append(f"  - {n['title']}")
+            for n in valid[:10]:
+                title = n["title"]
+                if any(k in title for k in BULL_KW):
+                    mood = "[利好🟢]"
+                elif any(k in title for k in BEAR_KW):
+                    mood = "[利空🔴]"
+                else:
+                    mood = "[中性]"
+                lines.append(f"  - {mood} {title}")
     except Exception:
         pass
 

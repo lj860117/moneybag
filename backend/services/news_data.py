@@ -73,7 +73,7 @@ def get_fund_news(code: str, limit: int = 3) -> list:
     return news_list
 
 
-def get_market_news(limit: int = 10) -> list:
+def get_market_news(limit: int = 30) -> list:
     """获取综合市场新闻（优先 A 股相关，过滤无用信息）"""
     cache_key = "market_news_all"
     now = time.time()
@@ -150,7 +150,7 @@ def get_market_news(limit: int = 10) -> list:
 
 # ---- 宏观经济日历 ----
 
-def get_policy_news(limit: int = 8) -> list:
+def get_policy_news(limit: int = 20) -> list:
     """获取政策经济新闻（政府经济政策 + 中美贸易/外交）"""
     cache_key = "policy_news"
     now = time.time()

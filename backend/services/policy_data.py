@@ -151,15 +151,20 @@ def get_policy_news_by_topic(topic: str = "房地产", limit: int = 5) -> dict:
 
 
 def get_all_policy_topics() -> dict:
-    """一次性获取全部主题的政策新闻"""
+    """一次性获取全部主题的政策新闻（key 用英文，与前端对齐）"""
     cache_key = "all_policy_topics"
     now = time.time()
     if cache_key in _policy_cache and now - _policy_cache[cache_key]["ts"] < _NEWS_TTL:
         return _policy_cache[cache_key]["data"]
 
+    # 中文→英文 key 映射（前端 topicMap 用英文 key）
+    KEY_MAP = {"房地产": "realestate", "公积金": "gongjijin", "科技": "tech", "经济": "economy", "房改": "fanggai"}
     topics = {}
-    for topic in POLICY_TOPICS:
-        topics[topic] = get_policy_news_by_topic(topic, 3)
+    for topic_cn in POLICY_TOPICS:
+        en_key = KEY_MAP.get(topic_cn, topic_cn)
+        data = get_policy_news_by_topic(topic_cn, 5)
+        # 直接返回 news 数组（前端需要 topics[key] = [{title,time,url}]）
+        topics[en_key] = data.get("news", [])
 
     result = {"topics": topics, "updatedAt": datetime.now().isoformat()}
     _policy_cache[cache_key] = {"data": result, "ts": now}

@@ -1050,19 +1050,21 @@ fetch(API_BASE+'/news/impact',{signal:AbortSignal.timeout(30000)}).then(r=>r.jso
 
 function renderInsightNews(el,d){
 const news=d.news||[];
-// 简易影响标签匹配
-const tagMap=[{kw:['降息','降准','宽松','LPR'],tag:'💚 利好',color:'var(--green)'},{kw:['加息','收紧','缩表'],tag:'❤️ 利空',color:'var(--red)'},{kw:['关税','制裁','贸易战'],tag:'⚠️ 贸易',color:'#F59E0B'},{kw:['战争','冲突','地缘'],tag:'🛡️ 避险',color:'#F59E0B'},{kw:['半导体','芯片','AI','科技'],tag:'🚀 科技',color:'var(--blue)'}];
+// 情绪/影响标签匹配（增强版7类）
+const tagMap=[{kw:['降息','降准','宽松','LPR','利好','上涨','增持','加仓','反弹'],tag:'🟢 利好',color:'var(--green)'},{kw:['加息','收紧','缩表','利空','下跌','减持','暴跌','回调'],tag:'🔴 利空',color:'var(--red)'},{kw:['关税','制裁','贸易战','中美'],tag:'⚠️ 贸易',color:'#F59E0B'},{kw:['战争','冲突','地缘','中东','俄乌'],tag:'🛡️ 地缘',color:'#F59E0B'},{kw:['半导体','芯片','AI','科技','人工智能'],tag:'🚀 科技',color:'var(--blue)'},{kw:['房地产','楼市','房价','限购'],tag:'🏠 地产',color:'#A78BFA'},{kw:['央行','货币','MLF','逆回购'],tag:'🏦 央行',color:'#06B6D4'}];
 function getTag(title){for(const t of tagMap){if(t.kw.some(k=>title.includes(k)))return t}return null}
-el.innerHTML=`<div class="dashboard-card"><div class="dashboard-card-title">📰 市场新闻</div>${news.length?news.map(n=>{const t=getTag(n.title);const tagHtml=t?`<span style="font-size:10px;padding:1px 5px;border-radius:3px;background:rgba(255,255,255,.06);color:${t.color};margin-left:4px">${t.tag}</span>`:'';return`<div class="news-item" onclick="${n.url?`window.open('${n.url}','_blank')`:''}"${n.url?'':' style="cursor:default"'}><div class="news-icon">📰</div><div class="news-content"><div class="news-title">${n.title}${tagHtml}</div><div class="news-meta">${n.source||''}${n.time?' · '+n.time:''}</div></div>${n.url?'<div class="news-arrow">›</div>':''}</div>`}).join(''):'<div style="text-align:center;padding:20px;color:var(--text2)">暂无新闻</div>'}</div>
+el.innerHTML=`<div class="dashboard-card"><div class="dashboard-card-title">📰 市场新闻（${news.length}条）</div>${news.length?news.map(n=>{const t=getTag(n.title);const tagHtml=t?`<span style="font-size:10px;padding:1px 6px;border-radius:3px;background:rgba(255,255,255,.06);color:${t.color};margin-left:4px;white-space:nowrap">${t.tag}</span>`:'';return`<div class="news-item" onclick="${n.url?`window.open('${n.url}','_blank')`:''}"${n.url?'':' style="cursor:default"'}><div class="news-icon">📰</div><div class="news-content"><div class="news-title">${n.title}${tagHtml}</div><div class="news-meta">${n.source||''}${n.time?' · '+n.time:''}</div></div>${n.url?'<div class="news-arrow">›</div>':''}</div>`}).join(''):'<div style="text-align:center;padding:20px;color:var(--text2)">暂无新闻</div>'}</div>
 <div style="text-align:center;margin-top:12px"><button class="action-btn secondary" style="display:inline-block;min-width:auto;padding:10px 24px" onclick="renderInsight()">🔄 刷新</button></div>`}
 
 async function renderInsightPolicy(el){
 el.innerHTML='<div style="text-align:center;padding:40px;color:var(--text2)"><div class="loading-spinner" style="width:32px;height:32px;margin:0 auto 12px;border-width:3px"></div>正在加载政策新闻...</div>';
-// 并行加载：传统政策新闻 + 分主题政策新闻
-const [news, topics] = await Promise.all([
+// 并行加载：传统政策新闻 + 分主题政策新闻 + AI影响分析
+const [news, topicsResp, impactResp] = await Promise.all([
   fetchPolicyNews(),
-  API_AVAILABLE ? fetch(API_BASE+'/policy/all-topics',{signal:AbortSignal.timeout(15000)}).then(r=>r.ok?r.json():{}).catch(()=>({})) : Promise.resolve({})
+  API_AVAILABLE ? fetch(API_BASE+'/policy/all-topics',{signal:AbortSignal.timeout(15000)}).then(r=>r.ok?r.json():{}).catch(()=>({})) : Promise.resolve({}),
+  API_AVAILABLE ? fetch(API_BASE+'/policy/impact',{signal:AbortSignal.timeout(20000)}).then(r=>r.ok?r.json():{}).catch(()=>({})) : Promise.resolve({})
 ]);
+const topics = topicsResp.topics || topicsResp || {};
 if(!news.length&&!Object.keys(topics).length){el.innerHTML='<div style="text-align:center;padding:40px;color:var(--text2)">暂无政策新闻</div>';return}
 const policyNews=news.filter(n=>n.category==='policy');
 const intlNews=news.filter(n=>n.category==='international');
@@ -1070,15 +1072,20 @@ const intlNews=news.filter(n=>n.category==='international');
 const topicMap=[['房地产','🏠','realestate'],['科技','🚀','tech'],['公积金','🏦','gongjijin'],['经济','📊','economy'],['房改','🏗️','fanggai']];
 let topicHtml='';
 topicMap.forEach(([label,icon,key])=>{
-const items=topics[key]||[];
-if(items.length){topicHtml+=`<div class="dashboard-card"><div class="dashboard-card-title">${icon} ${label}政策</div>${items.slice(0,5).map(n=>`<div class="news-item" onclick="${n.url?`window.open('${n.url}','_blank')`:''}" ${n.url?'':'style="cursor:default"'}><div class="news-icon">${icon}</div><div class="news-content"><div class="news-title">${n.title}</div><div class="news-meta">${n.source||''}${n.time?' · '+n.time:''}</div></div>${n.url?'<div class="news-arrow">›</div>':''}</div>`).join('')}</div>`}});
+const items=Array.isArray(topics[key])?topics[key]:(topics[key]?.news||[]);
+if(items.length){topicHtml+=`<div class="dashboard-card"><div class="dashboard-card-title">${icon} ${label}政策（${items.length}条）</div>${items.slice(0,5).map(n=>`<div class="news-item" onclick="${n.url?`window.open('${n.url}','_blank')`:''}"><div class="news-icon">${icon}</div><div class="news-content"><div class="news-title">${n.title}</div><div class="news-meta">${n.source||''}${n.time?' · '+n.time:''}</div></div>${n.url?'<div class="news-arrow">›</div>':''}</div>`).join('')}</div>`}});
+// AI 影响分析卡
+let impactHtml='';
+if(impactResp.analysis&&impactResp.source==='ai'){
+impactHtml=`<div class="dashboard-card" style="border:1px solid rgba(245,158,11,.2)"><div class="dashboard-card-title">🤖 AI 政策影响分析</div><div style="font-size:13px;color:var(--text1);line-height:1.7;white-space:pre-wrap;padding:8px 0">${impactResp.analysis}</div><div style="font-size:11px;color:#475569;margin-top:8px">分析了 ${impactResp.newsCount||0} 条政策新闻 · DeepSeek</div></div>`}
 el.innerHTML=`
+${impactHtml}
 ${topicHtml}
 ${policyNews.length?`<div class="dashboard-card"><div class="dashboard-card-title">🇨🇳 国内政策</div>${policyNews.map(n=>`<div class="news-item" onclick="${n.url?`window.open('${n.url}','_blank')`:''}"${n.url?'':' style="cursor:default"'}><div class="news-icon">📜</div><div class="news-content"><div class="news-title">${n.title}</div><div class="news-meta">${n.source||''}${n.time?' · '+n.time:''}</div></div>${n.url?'<div class="news-arrow">›</div>':''}</div>`).join('')}</div>`:''}
 ${intlNews.length?`<div class="dashboard-card"><div class="dashboard-card-title">🌍 国际动态</div>${intlNews.map(n=>`<div class="news-item" onclick="${n.url?`window.open('${n.url}','_blank')`:''}"${n.url?'':' style="cursor:default"'}><div class="news-icon">🌐</div><div class="news-content"><div class="news-title">${n.title}</div><div class="news-meta">${n.source||''}${n.time?' · '+n.time:''}</div></div>${n.url?'<div class="news-arrow">›</div>':''}</div>`).join('')}</div>`:''}
 ${!policyNews.length&&!intlNews.length&&!topicHtml?news.map(n=>`<div class="news-item"><div class="news-icon">📰</div><div class="news-content"><div class="news-title">${n.title}</div></div></div>`).join(''):''}
 <div style="text-align:center;margin-top:12px"><button class="action-btn secondary" style="display:inline-block;min-width:auto;padding:10px 24px" onclick="insightTab='policy';renderInsight()">🔄 刷新</button></div>
-<div style="text-align:center;font-size:11px;color:#475569;margin-top:8px">数据源：东方财富+AKShare · 主题：房地产/科技/公积金/经济/房改</div>`}
+<div style="text-align:center;font-size:11px;color:#475569;margin-top:8px">关键词: 政策/央行/关税/中美/美联储/地缘/半导体等</div>`}
 
 function renderInsightTech(el,d){
 const tech=d.technical||{};const m=tech.macd||{};const b=tech.bollinger||{};
