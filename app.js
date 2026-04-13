@@ -224,6 +224,8 @@ $('#app').innerHTML=`<div class="result-page fade-up">
 </div>
 </div>
 
+<div id="dailyFocusSection"></div>
+
 <div id="signalsSection"></div>
 
 <div id="riskAlertSection"></div>
@@ -235,7 +237,15 @@ $('#app').innerHTML=`<div class="result-page fade-up">
 <button class="action-btn secondary" onclick="showAddTxn()">➕ 记交易</button>
 <button class="action-btn secondary" onclick="startQuiz()">🔄 重新测评</button>
 </div>
-</div>`;renderNav();loadSignals();loadHomeRiskAlert();loadHomeAllocationAdvice()}
+</div>`;renderNav();loadSignals();loadDailyFocus();loadHomeRiskAlert();loadHomeAllocationAdvice()}
+
+// ---- 首页：今日关注（DeepSeek 个性化）----
+async function loadDailyFocus(){
+const el=document.getElementById('dailyFocusSection');if(!el||!API_AVAILABLE)return;
+try{const r=await fetch(`${API_BASE}/daily-focus`,{signal:AbortSignal.timeout(15000)});
+if(!r.ok)return;const d=await r.json();const tips=d.tips||[];
+if(tips.length)el.innerHTML=`<div style="background:rgba(99,102,241,.06);border:1px solid rgba(99,102,241,.15);border-radius:12px;padding:12px 14px;margin-bottom:12px"><div style="font-size:13px;font-weight:700;margin-bottom:8px">🎯 今日关注 <span style="font-size:10px;color:var(--text2);font-weight:400">${d.source==='ai'?'AI':'默认'}</span></div>${tips.map(t=>`<div style="font-size:12px;line-height:1.8">${t}</div>`).join('')}</div>`
+}catch(e){console.warn('dailyFocus:',e)}}
 
 // ---- 首页：风控预警摘要 ----
 async function loadHomeRiskAlert(){
@@ -1055,7 +1065,7 @@ return`<div style="display:flex;align-items:center;gap:10px;padding:10px 0;borde
 <div style="font-size:10px;color:var(--text2)">近1年</div></div>
 <div style="min-width:40px;text-align:right">
 <div style="font-size:12px;font-weight:700;color:${scoreColor}">${f.score}</div>
-<div style="font-size:10px;color:var(--text2)">评分</div></div></div>`}).join('')}
+<div style="font-size:10px;color:var(--text2)">评分</div></div></div>${f.aiComment?`<div style="font-size:11px;color:var(--accent);margin-top:4px;padding-top:4px;border-top:1px solid var(--bg3)">🤖 ${f.aiComment}</div>`:''}`}).join('')}
 <div style="text-align:center;margin-top:12px"><button class="action-btn secondary" style="display:inline-block;min-width:auto;padding:10px 24px" onclick="renderFundPickResult()">🔄 刷新</button></div>`;
 // 注册每只基金的白话弹窗
 funds.forEach(f=>{
@@ -1090,7 +1100,7 @@ return`<div style="display:grid;grid-template-columns:30px 1fr 70px 50px;gap:4px
 <div><div style="font-size:13px;font-weight:600">${s.name}</div>
 <div style="font-size:10px;color:var(--text2)">${s.code} · PE${s.pe||'-'} · ${s.market_cap?s.market_cap+'亿':'-'}</div></div>
 <div style="text-align:right;font-size:13px;font-weight:700;color:${chgColor}">${s.change_pct!=null?(s.change_pct>0?'+':'')+s.change_pct+'%':'—'}</div>
-<div style="text-align:right;font-size:13px;font-weight:800;color:${scoreColor}">${s.score}</div></div>`}).join('')}
+<div style="text-align:right;font-size:13px;font-weight:800;color:${scoreColor}">${s.score}</div></div>${s.aiComment?`<div style="font-size:11px;color:var(--accent);padding:2px 0 6px 34px;border-bottom:1px solid rgba(148,163,184,.04)">🤖 ${s.aiComment}</div>`:''}`}).join('')}
 <div style="text-align:center;margin-top:12px"><button class="action-btn secondary" style="display:inline-block;min-width:auto;padding:10px 24px" onclick="insightTab='stockpick';renderInsight()">🔄 刷新</button></div>
 <div style="font-size:11px;color:#475569;margin-top:8px;line-height:1.5">${data.method||''}<br>${data.note||''}</div>`;
 stocks.forEach(s=>{
@@ -1355,6 +1365,8 @@ $('#app').innerHTML=`<div class="result-page fade-up">
 <div style="text-align:center"><div style="font-size:12px;color:var(--text2)">净值</div><div style="font-size:20px;font-weight:900;color:${net>=0?'var(--accent)':'var(--red)'}">¥${fmtMoney(Math.round(net))}</div></div>
 </div></div>
 
+<div id="cashAdviceCard" style="display:none"></div>
+
 <div class="section-title" style="display:flex;justify-content:space-between;align-items:center">📋 我的资产<button style="background:none;border:none;color:var(--accent);font-size:13px;cursor:pointer" onclick="showAddAsset()">+ 添加</button></div>
 
 ${assets.length?assets.map(a=>{
@@ -1383,7 +1395,10 @@ return`<div class="holding-card" style="border-left:3px solid ${t.color}">
 <div style="text-align:center;margin-top:16px;font-size:12px;color:var(--text2);line-height:1.8">
 💡 这里管理基金以外的资产<br>
 基金持仓在「📊 持仓」页管理 · 记账收支自动计入净资产<br>
-所有数据汇总到首页净资产仪表盘</div></div>`}
+所有数据汇总到首页净资产仪表盘</div></div>`;
+// 加载存款智能建议
+if(API_AVAILABLE&&assetTotal>0){const cashAmt=assets.filter(a=>a.type==='cash').reduce((s,a)=>s+(a.value||a.balance||0),0);if(cashAmt>0){const el=document.getElementById('cashAdviceCard');el.style.display='block';el.innerHTML='<div class="dashboard-card" style="border-left:3px solid var(--accent);padding:12px"><div style="font-size:13px;font-weight:700;margin-bottom:8px">💡 AI 存款建议</div><div style="font-size:12px;color:var(--text2)">分析中...</div></div>';fetch(`${API_BASE}/assets/advice`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({cashAmount:cashAmt,monthlyExpense:ledgerExpense/Math.max(1,Math.ceil(ledger.length/30))*30,riskProfile:localStorage.getItem('moneybag_profile')||'稳健型'})}).then(r=>r.json()).then(d=>{el.innerHTML=`<div class="dashboard-card" style="border-left:3px solid var(--accent);padding:12px"><div style="font-size:13px;font-weight:700;margin-bottom:8px">💡 AI 存款建议 <span style="font-size:10px;color:var(--text2);font-weight:400">${d.source==='ai'?'DeepSeek':'规则'}</span></div><div style="font-size:12px;line-height:1.6">${d.advice}</div><div style="font-size:11px;color:var(--text2);margin-top:8px">应急储备 ¥${fmtMoney(d.emergencyFund||0)} | 闲置 ¥${fmtMoney(d.idleCash||0)} | 年损失 ¥${fmtMoney(d.annualLoss||0)}</div></div>`}).catch(()=>{el.style.display='none'})}}
+}
 
 function showAddAsset(){
 const o=document.createElement('div');o.className='modal-overlay';o.onclick=e=>{if(e.target===o)o.remove()};

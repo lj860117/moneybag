@@ -619,19 +619,29 @@ def get_allocation_advice(req: dict):
         fg_val = fgi.get("score", 50) if isinstance(fgi, dict) else 50
     except Exception:
         fg_val = 50
-    return generate_allocation_advice(txs, val_pct, fg_val)
+    result = generate_allocation_advice(txs, val_pct, fg_val)
+    # DeepSeek 增强：接入新闻/市场数据维度
+    market_ctx = _build_market_context()
+    result = enhance_allocation_advice(result, market_ctx=market_ctx)
+    return result
 
 
 @app.get("/api/fund-screen")
 def get_fund_screen(fund_type: str = "all", sort_by: str = "score", top_n: int = 20):
-    """基金智能筛选：多维打分排序，返回TOP推荐"""
-    return screen_funds(fund_type, sort_by, top_n)
+    """基金智能筛选：多维打分排序 + DeepSeek 点评 TOP5"""
+    result = screen_funds(fund_type, sort_by, top_n)
+    if result.get("funds"):
+        result["funds"] = comment_fund_picks(result["funds"])
+    return result
 
 
 @app.get("/api/stock-screen")
 def get_stock_screen(top_n: int = 50):
-    """AI多因子选股：7维打分，返回TOP推荐"""
-    return screen_stocks(top_n)
+    """AI多因子选股：7维打分 + DeepSeek 点评 TOP5"""
+    result = screen_stocks(top_n)
+    if result.get("stocks"):
+        result["stocks"] = comment_stock_picks(result["stocks"])
+    return result
 
 
 # ---- Phase 4: LightGBM ML 选股 ----
@@ -656,6 +666,52 @@ from services.portfolio_overview import get_portfolio_overview
 def portfolio_overview_api():
     """汇总全资产概览（股票+基金+配置占比+健康评分）"""
     return get_portfolio_overview()
+
+
+# ---- DeepSeek 智能增强 API ----
+from services.ds_enhance import (
+    analyze_idle_cash, comment_fund_picks, comment_stock_picks,
+    generate_daily_focus, assess_news_risk, interpret_daily_signal,
+    deep_analyze_news_impact, enhance_allocation_advice,
+)
+
+@app.post("/api/assets/advice")
+def get_asset_advice(req: dict):
+    """存款智能建议 — DeepSeek 分析闲置资金配置"""
+    return analyze_idle_cash(
+        cash_amount=float(req.get("cashAmount", 0)),
+        monthly_expense=float(req.get("monthlyExpense", 0)),
+        risk_profile=req.get("riskProfile", "稳健型"),
+    )
+
+@app.get("/api/daily-focus")
+def get_daily_focus():
+    """首页'今日关注' — DeepSeek 个性化生成"""
+    market_ctx = _build_market_context()
+    return generate_daily_focus(market_ctx)
+
+@app.get("/api/news/deep-impact")
+def get_deep_news_impact():
+    """新闻深度影响分析 — DeepSeek 分析事件→行业→持仓"""
+    policy = get_policy_news(8)
+    market = get_market_news(5)
+    return {"impacts": deep_analyze_news_impact(policy + market)}
+
+@app.get("/api/news/risk-assess")
+def get_news_risk():
+    """新闻风控评估 — DeepSeek 评估新闻对持仓风险影响"""
+    policy = get_policy_news(8)
+    market = get_market_news(5)
+    headlines = [n["title"] for n in (policy + market) if "加载中" not in n.get("title", "")]
+    return assess_news_risk(headlines)
+
+@app.get("/api/daily-signal/interpret")
+def get_signal_interpretation():
+    """每日信号 DeepSeek 解读 — 把 12 维信号翻译成人话"""
+    signal = generate_daily_signal()
+    interpretation = interpret_daily_signal(signal)
+    signal["interpretation"] = interpretation
+    return signal
 
 
 @app.get("/api/stock-holdings")
