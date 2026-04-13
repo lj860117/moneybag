@@ -91,9 +91,14 @@ async function ensureProfile(){
     const inp=document.getElementById('profileNameIn');
     const codeInp=document.getElementById('profileCodeIn');
     const btn=document.getElementById('profileConfirmBtn');
+    // URL 参数自动填充（邀请链接带 ?name=xxx&code=xxx）
+    const urlP=new URLSearchParams(window.location.search);
+    if(urlP.get('name'))inp.value=urlP.get('name');
+    if(urlP.get('code'))codeInp.value=urlP.get('code');
     inp.focus();
     const checkReady=()=>{const v=inp.value.trim()&&codeInp.value.trim();btn.disabled=!v;btn.style.opacity=v?'1':'.5'};
     inp.oninput=checkReady;codeInp.oninput=checkReady;
+    checkReady();  // 检查一次（自动填充后可能已就绪）
     codeInp.onkeydown=(e)=>{if(e.key==='Enter'&&inp.value.trim()&&codeInp.value.trim())confirmProfile()};
     window._profileOverlay=overlay;
     window._profileResolve=resolve;
