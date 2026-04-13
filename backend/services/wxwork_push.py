@@ -87,26 +87,12 @@ def send_text(content: str, user_id: str = "") -> dict:
 
 
 def send_markdown(content: str, user_id: str = "") -> dict:
-    """发送 Markdown 消息（企业微信支持简单 Markdown）"""
-    token = _get_token()
-    if not token:
-        return {"ok": False, "error": "未配置或获取 token 失败"}
-
-    try:
-        url = f"https://qyapi.weixin.qq.com/cgi-bin/message/send?access_token={token}"
-        payload = {
-            "touser": user_id or _USER_ID,
-            "msgtype": "markdown",
-            "agentid": int(_AGENT_ID),
-            "markdown": {"content": content},
-        }
-        with httpx.Client(timeout=10) as client:
-            resp = client.post(url, json=payload)
-            data = resp.json()
-            ok = data.get("errcode") == 0
-            return {"ok": ok, "data": data}
-    except Exception as e:
-        return {"ok": False, "error": str(e)}
+    """发送消息（统一用纯文本，微信不支持 Markdown）"""
+    # 去掉 Markdown 格式符号，变成纯文本
+    import re
+    plain = content.replace("**", "").replace("`", "")
+    plain = re.sub(r"^>\s*", "  ", plain, flags=re.MULTILINE)  # 引用变缩进
+    return send_text(plain, user_id=user_id)
 
 
 def send_stock_alert(signals: list) -> dict:
