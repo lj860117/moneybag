@@ -399,7 +399,10 @@ function renderQuiz(){const q=QUESTIONS[currentQuestion];$('#app').innerHTML=`<d
 function renderAmountInput(){const presets=[100000,200000,300000,500000,1000000];$('#app').innerHTML=`<div class="quiz-header"><div class="progress-bar-bg"><div class="progress-bar-fill" style="width:100%"></div></div><div class="quiz-step">最后一步 ✨</div></div><div class="amount-section"><div class="question-emoji">🎯</div><div class="question-text">你具体想投多少钱？</div><div style="font-size:14px;color:var(--text2);margin-bottom:12px">输入金额，算出每个篮子该放多少</div><div class="amount-input-wrap"><span class="amount-prefix">¥</span><input class="amount-input" type="number" id="amtIn" placeholder="500000" value="${AMOUNT_MAP[answers[0]]||''}" oninput="onAmtChange()" inputmode="numeric"><span class="amount-suffix">元</span></div><div class="amount-quick">${presets.map(a=>`<button class="quick-btn" onclick="setAmt(${a})">${fmtMoney(a)}</button>`).join('')}</div><button class="generate-btn" id="genBtn" onclick="genResult()" ${AMOUNT_MAP[answers[0]]?'':'disabled'}>生成我的配置方案 →</button></div>`;onAmtChange()}
 
 // ---- 结果页 ----
-function renderResult(){const ts=answers.reduce((s,a)=>s+a,0);const pf=getProfile(ts);const al=ALLOCATIONS[pf.name];const amt=selectedAmount;currentProfile=pf;currentAllocs=al;
+async function renderResult(){const ts=answers.reduce((s,a)=>s+a,0);const pf=getProfile(ts);let al=ALLOCATIONS[pf.name];const amt=selectedAmount;currentProfile=pf;
+// 尝试从后端获取动态配置（替代硬编码）
+if(API_AVAILABLE){try{const r=await fetch(API_BASE+'/recommend-alloc?profile='+encodeURIComponent(pf.name),{signal:AbortSignal.timeout(5000)});if(r.ok){const d=await r.json();if(d.allocations&&d.allocations.length)al=d.allocations}}catch(e){console.warn('recommend-alloc fallback:',e)}}
+currentAllocs=al;
 const gR=calcReturns(al,amt,'good'),mR=calcReturns(al,amt,'mid'),bR=calcReturns(al,amt,'bad');
 $('#app').innerHTML=`<div class="result-page">
 <div class="profile-card"><div class="profile-emoji">${pf.emoji}</div><div class="profile-name" style="color:${pf.color}">你是「${pf.name}」投资者</div><div class="profile-desc">${pf.desc}</div><div class="profile-period">建议投资周期：${pf.period}</div></div>
@@ -1031,16 +1034,27 @@ el.innerHTML=`<div class="dashboard-card"><div class="dashboard-card-title">📰
 
 async function renderInsightPolicy(el){
 el.innerHTML='<div style="text-align:center;padding:40px;color:var(--text2)"><div class="loading-spinner" style="width:32px;height:32px;margin:0 auto 12px;border-width:3px"></div>正在加载政策新闻...</div>';
-const news=await fetchPolicyNews();
-if(!news.length){el.innerHTML='<div style="text-align:center;padding:40px;color:var(--text2)">暂无政策新闻</div>';return}
+// 并行加载：传统政策新闻 + 分主题政策新闻
+const [news, topics] = await Promise.all([
+  fetchPolicyNews(),
+  API_AVAILABLE ? fetch(API_BASE+'/policy/all-topics',{signal:AbortSignal.timeout(15000)}).then(r=>r.ok?r.json():{}).catch(()=>({})) : Promise.resolve({})
+]);
+if(!news.length&&!Object.keys(topics).length){el.innerHTML='<div style="text-align:center;padding:40px;color:var(--text2)">暂无政策新闻</div>';return}
 const policyNews=news.filter(n=>n.category==='policy');
 const intlNews=news.filter(n=>n.category==='international');
+// 主题分类
+const topicMap=[['房地产','🏠','realestate'],['科技','🚀','tech'],['公积金','🏦','gongjijin'],['经济','📊','economy'],['房改','🏗️','fanggai']];
+let topicHtml='';
+topicMap.forEach(([label,icon,key])=>{
+const items=topics[key]||[];
+if(items.length){topicHtml+=`<div class="dashboard-card"><div class="dashboard-card-title">${icon} ${label}政策</div>${items.slice(0,5).map(n=>`<div class="news-item" onclick="${n.url?`window.open('${n.url}','_blank')`:''}" ${n.url?'':'style="cursor:default"'}><div class="news-icon">${icon}</div><div class="news-content"><div class="news-title">${n.title}</div><div class="news-meta">${n.source||''}${n.time?' · '+n.time:''}</div></div>${n.url?'<div class="news-arrow">›</div>':''}</div>`).join('')}</div>`}});
 el.innerHTML=`
+${topicHtml}
 ${policyNews.length?`<div class="dashboard-card"><div class="dashboard-card-title">🇨🇳 国内政策</div>${policyNews.map(n=>`<div class="news-item" onclick="${n.url?`window.open('${n.url}','_blank')`:''}"${n.url?'':' style="cursor:default"'}><div class="news-icon">📜</div><div class="news-content"><div class="news-title">${n.title}</div><div class="news-meta">${n.source||''}${n.time?' · '+n.time:''}</div></div>${n.url?'<div class="news-arrow">›</div>':''}</div>`).join('')}</div>`:''}
 ${intlNews.length?`<div class="dashboard-card"><div class="dashboard-card-title">🌍 国际动态</div>${intlNews.map(n=>`<div class="news-item" onclick="${n.url?`window.open('${n.url}','_blank')`:''}"${n.url?'':' style="cursor:default"'}><div class="news-icon">🌐</div><div class="news-content"><div class="news-title">${n.title}</div><div class="news-meta">${n.source||''}${n.time?' · '+n.time:''}</div></div>${n.url?'<div class="news-arrow">›</div>':''}</div>`).join('')}</div>`:''}
-${!policyNews.length&&!intlNews.length?news.map(n=>`<div class="news-item" onclick="${n.url?`window.open('${n.url}','_blank')`:''}"${n.url?'':' style="cursor:default"'}><div class="news-icon">📰</div><div class="news-content"><div class="news-title">${n.title}</div><div class="news-meta">${n.source||''}${n.time?' · '+n.time:''}</div></div>${n.url?'<div class="news-arrow">›</div>':''}</div>`).join(''):''}
+${!policyNews.length&&!intlNews.length&&!topicHtml?news.map(n=>`<div class="news-item"><div class="news-icon">📰</div><div class="news-content"><div class="news-title">${n.title}</div></div></div>`).join(''):''}
 <div style="text-align:center;margin-top:12px"><button class="action-btn secondary" style="display:inline-block;min-width:auto;padding:10px 24px" onclick="insightTab='policy';renderInsight()">🔄 刷新</button></div>
-<div style="text-align:center;font-size:11px;color:#475569;margin-top:8px">关键词：政策/央行/关税/中美/美联储/地缘/半导体等</div>`}
+<div style="text-align:center;font-size:11px;color:#475569;margin-top:8px">数据源：东方财富+AKShare · 主题：房地产/科技/公积金/经济/房改</div>`}
 
 function renderInsightTech(el,d){
 const tech=d.technical||{};const m=tech.macd||{};const b=tech.bollinger||{};
@@ -1625,8 +1639,18 @@ const d=await r.json();if(d.error){alert(d.error);return}document.querySelector(
 function showStockDetail(code){const h=(_stockScanData?.holdings||[]).find(x=>x.code===code);if(!h)return;
 const overlay=document.createElement('div');overlay.className='modal-overlay';overlay.onclick=e=>{if(e.target===overlay)overlay.remove()};
 const ind=h.indicators||{};const sigs=h.signals||[];
-overlay.innerHTML=`<div class="modal-sheet"><div class="modal-handle"></div><div class="modal-title">${h.name||h.code}</div><div class="modal-subtitle">${h.code} · ${h.changePct!=null?(h.changePct>=0?'+':'')+h.changePct.toFixed(2)+'%':'--'}</div><div class="modal-stat-grid"><div class="modal-stat"><div class="modal-stat-label">当前价</div><div class="modal-stat-value">${h.price?'¥'+h.price.toFixed(2):'--'}</div></div><div class="modal-stat"><div class="modal-stat-label">RSI14</div><div class="modal-stat-value" style="color:${ind.rsi14>70?'var(--red)':ind.rsi14<30?'var(--green)':'var(--text)'}">${ind.rsi14||'--'}</div></div><div class="modal-stat"><div class="modal-stat-label">MACD</div><div class="modal-stat-value">${ind.macd_trend||'--'}</div></div><div class="modal-stat"><div class="modal-stat-label">量比</div><div class="modal-stat-value" style="color:${ind.volume_ratio>2?'var(--red)':'var(--text)'}">${ind.volume_ratio||'--'}</div></div></div>${sigs.length?'<div style="margin-top:16px"><div style="font-size:13px;font-weight:700;margin-bottom:8px">📡 信号</div>'+sigs.map(s=>`<div style="padding:6px 0;font-size:13px;border-bottom:1px solid var(--bg3)">${s.msg}</div>`).join('')+'</div>':''}<div style="margin-top:16px;display:flex;gap:8px"><button class="action-btn secondary" style="flex:1" onclick="if(confirm('删除 ${h.name}？'))deleteStock('${h.code}')">🗑️ 删除</button></div></div>`;
-document.body.appendChild(overlay)}
+overlay.innerHTML=`<div class="modal-sheet"><div class="modal-handle"></div><div class="modal-title">${h.name||h.code}</div><div class="modal-subtitle">${h.code} · ${h.changePct!=null?(h.changePct>=0?'+':'')+h.changePct.toFixed(2)+'%':'--'}</div><div class="modal-stat-grid"><div class="modal-stat"><div class="modal-stat-label">当前价</div><div class="modal-stat-value">${h.price?'¥'+h.price.toFixed(2):'--'}</div></div><div class="modal-stat"><div class="modal-stat-label">RSI14</div><div class="modal-stat-value" style="color:${ind.rsi14>70?'var(--red)':ind.rsi14<30?'var(--green)':'var(--text)'}">${ind.rsi14||'--'}</div></div><div class="modal-stat"><div class="modal-stat-label">MACD</div><div class="modal-stat-value">${ind.macd_trend||'--'}</div></div><div class="modal-stat"><div class="modal-stat-label">量比</div><div class="modal-stat-value" style="color:${ind.volume_ratio>2?'var(--red)':'var(--text)'}">${ind.volume_ratio||'--'}</div></div></div>${sigs.length?'<div style="margin-top:16px"><div style="font-size:13px;font-weight:700;margin-bottom:8px">📡 信号</div>'+sigs.map(s=>`<div style="padding:6px 0;font-size:13px;border-bottom:1px solid var(--bg3)">${s.msg}</div>`).join('')+'</div>':''}<div id="stockIntel_${code}" style="margin-top:16px"><div style="text-align:center;padding:12px;color:var(--text2);font-size:12px">📰 加载个股情报...</div></div><div style="margin-top:16px;display:flex;gap:8px"><button class="action-btn secondary" style="flex:1" onclick="if(confirm('删除 ${h.name}？'))deleteStock('${h.code}')">🗑️ 删除</button></div></div>`;
+document.body.appendChild(overlay);
+// 异步加载持仓关联智能
+if(API_AVAILABLE){fetch(API_BASE+'/holding-intelligence/'+code+'?'+getProfileParam(),{signal:AbortSignal.timeout(15000)}).then(r=>r.json()).then(d=>{
+const el=document.getElementById('stockIntel_'+code);if(!el)return;
+let h='';
+if(d.news&&d.news.length){h+=`<div style="font-size:13px;font-weight:700;margin-bottom:6px">📰 个股新闻</div>`;h+=d.news.slice(0,3).map(n=>`<div style="padding:4px 0;font-size:12px;border-bottom:1px solid var(--bg3)">${n.title}</div>`).join('')}
+if(d.fund_flow){const ff=d.fund_flow;h+=`<div style="font-size:13px;font-weight:700;margin-top:10px;margin-bottom:4px">💰 主力资金</div><div style="font-size:12px;color:${ff.net_amount>0?'var(--green)':'var(--red)'}">今日主力净${ff.net_amount>0?'流入':'流出'} ${Math.abs(ff.net_amount||0).toFixed(0)}万</div>`}
+if(d.industry){h+=`<div style="font-size:12px;color:var(--text2);margin-top:8px">🏭 所属行业：${d.industry}</div>`}
+if(d.unlock_risk){h+=`<div style="font-size:12px;color:var(--red);margin-top:6px;padding:6px;background:rgba(239,68,68,.06);border-radius:6px">🔓 解禁预警：${d.unlock_risk}</div>`}
+el.innerHTML=h||'<div style="font-size:12px;color:var(--text2)">暂无关联情报</div>'
+}).catch(()=>{const el=document.getElementById('stockIntel_'+code);if(el)el.innerHTML=''})}}
 
 async function deleteStock(code){try{await fetch(API_BASE+'/stock-holdings/'+code+'?'+getProfileParam(),{method:'DELETE'});document.querySelector('.modal-overlay')?.remove();renderStocksContent()}catch(e){alert('删除失败')}}
 

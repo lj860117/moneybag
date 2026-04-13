@@ -48,7 +48,7 @@ from services.signal import (
     calc_smart_dca, calc_take_profit_strategy,
 )
 from services.risk import calc_risk_metrics, generate_risk_actions
-from services.portfolio import generate_allocation_advice
+from services.portfolio import generate_allocation_advice, get_recommend_allocations
 from services.fund_screen import screen_funds
 from services.stock_screen import screen_stocks
 from services.backtest import run_backtest
@@ -550,7 +550,34 @@ from services.market_factors import (
 # ---- 持仓关联智能 API ----
 from services.holding_intelligence import (
     scan_all_holding_intelligence, build_holding_context,
+    get_stock_news as get_stock_related_news, get_stock_fund_flow, get_stock_industry,
 )
+
+@app.get("/api/holding-intelligence/{code}")
+def get_single_holding_intel(code: str):
+    """获取单只持仓股票的关联智能（新闻+资金流+行业+解禁）"""
+    result = {}
+    try:
+        result["news"] = get_stock_related_news(code)
+    except Exception:
+        result["news"] = []
+    try:
+        result["fund_flow"] = get_stock_fund_flow(code)
+    except Exception:
+        result["fund_flow"] = None
+    try:
+        result["industry"] = get_stock_industry(code)
+    except Exception:
+        result["industry"] = ""
+    # 检查解禁
+    try:
+        from services.market_factors import check_holding_unlock
+        unlocks = check_holding_unlock([code])
+        if unlocks:
+            result["unlock_risk"] = unlocks[0].get("msg", "")
+    except Exception:
+        pass
+    return result
 
 @app.get("/api/policy/real-estate")
 def policy_real_estate():
@@ -722,6 +749,12 @@ def get_allocation_advice(req: dict):
     market_ctx = _build_market_context()
     result = enhance_allocation_advice(result, market_ctx=market_ctx)
     return result
+
+
+@app.get("/api/recommend-alloc")
+def get_recommend_alloc(profile: str = "稳健型"):
+    """推荐基金配置列表（替代前端硬编码 ALLOCATIONS）"""
+    return get_recommend_allocations(profile)
 
 
 @app.get("/api/fund-screen")

@@ -224,3 +224,45 @@ def generate_allocation_advice(
         "risk_profile": risk_profile,
         "engine": "level1_dynamic",
     }
+
+
+# ---- 推荐配置基金列表（后端提供，前端不再硬编码）----
+
+RECOMMENDED_FUNDS = [
+    {"name": "沪深300", "code": "110020", "fullName": "易方达沪深300ETF联接A", "color": "#3B82F6",
+     "returns": {"good": 0.15, "mid": 0.08, "bad": -0.10}, "category": "stock", "etfCode": "510300"},
+    {"name": "标普500", "code": "050025", "fullName": "博时标普500ETF联接A", "color": "#10B981",
+     "returns": {"good": 0.18, "mid": 0.10, "bad": -0.12}, "category": "stock"},
+    {"name": "债券", "code": "217022", "fullName": "招商产业债A", "color": "#F59E0B",
+     "returns": {"good": 0.06, "mid": 0.04, "bad": 0.01}, "category": "bond"},
+    {"name": "黄金", "code": "000216", "fullName": "华安黄金ETF联接A", "color": "#F97316",
+     "returns": {"good": 0.15, "mid": 0.08, "bad": -0.05}, "category": "other", "etfCode": "518880"},
+    {"name": "红利低波", "code": "008114", "fullName": "天弘红利低波100联接A", "color": "#EF4444",
+     "returns": {"good": 0.12, "mid": 0.07, "bad": -0.05}, "category": "stock", "etfCode": "515100"},
+    {"name": "货币(应急)", "code": "余额宝", "fullName": "余额宝", "color": "#E5E7EB",
+     "returns": {"good": 0.02, "mid": 0.018, "bad": 0.015}, "category": "cash"},
+]
+
+# 风险等级 → 各基金占比
+ALLOC_PCTS = {
+    "保守型":  [10, 5, 50, 15, 10, 10],
+    "稳健型":  [20, 10, 35, 15, 10, 10],
+    "平衡型":  [30, 20, 20, 15, 10, 5],
+    "进取型":  [35, 25, 10, 10, 15, 5],
+    "激进型":  [40, 30, 5, 5, 15, 5],
+}
+
+
+def get_recommend_allocations(risk_profile: str = "稳健型") -> dict:
+    """返回推荐基金配置列表（前端不再硬编码）"""
+    pcts = ALLOC_PCTS.get(risk_profile, ALLOC_PCTS["稳健型"])
+    allocations = []
+    for i, fund in enumerate(RECOMMENDED_FUNDS):
+        f = dict(fund)
+        f["pct"] = pcts[i] if i < len(pcts) else 0
+        allocations.append(f)
+    return {
+        "profile": risk_profile,
+        "allocations": allocations,
+        "profiles": list(ALLOC_PCTS.keys()),
+    }
