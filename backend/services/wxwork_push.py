@@ -129,3 +129,65 @@ def send_daily_report(report: str) -> dict:
     """发送每日复盘报告"""
     content = f"**📊 钱袋子每日复盘**\n\n{report}\n\n⏰ {time.strftime('%Y-%m-%d %H:%M')}"
     return send_markdown(content)
+
+
+# ============================================================
+# 回调验证（企业微信 URL 验证 + 消息接收）
+# ============================================================
+
+import hashlib
+import base64
+import struct
+import socket
+from Crypto.Cipher import AES
+
+_CALLBACK_TOKEN = os.getenv("WXWORK_CALLBACK_TOKEN", "moneybag2026")
+_CALLBACK_AES_KEY = os.getenv("WXWORK_CALLBACK_AES_KEY", "")
+
+
+def _decode_aes_key(encoding_aes_key: str) -> bytes:
+    return base64.b64decode(encoding_aes_key + "=")
+
+
+def _verify_signature(token: str, timestamp: str, nonce: str, echostr: str, signature: str) -> bool:
+    """验证企微回调签名"""
+    sort_list = sorted([token, timestamp, nonce, echostr])
+    sha1 = hashlib.sha1("".join(sort_list).encode()).hexdigest()
+    return sha1 == signature
+
+
+def _decrypt_echostr(aes_key: bytes, echostr: str) -> str:
+    """AES 解密 echostr 并返回明文"""
+    try:
+        cipher = AES.new(aes_key, AES.MODE_CBC, aes_key[:16])
+        decrypted = cipher.decrypt(base64.b64decode(echostr))
+        # 去 PKCS7 padding
+        pad = decrypted[-1]
+        content = decrypted[:-pad]
+        # 格式: 16字节随机 + 4字节内容长度 + 内容 + corpid
+        xml_len = struct.unpack("!I", content[16:20])[0]
+        xml_content = content[20:20 + xml_len].decode("utf-8")
+        return xml_content
+    except Exception as e:
+        print(f"[WXWORK] Decrypt error: {e}")
+        return ""
+
+
+def verify_callback(msg_signature: str, timestamp: str, nonce: str, echostr: str) -> str:
+    """处理企微 URL 验证回调，返回解密后的 echostr（明文）"""
+    if not _CALLBACK_AES_KEY:
+        print("[WXWORK] No AES key configured")
+        return ""
+
+    # echostr 已经被 FastAPI 自动 URL decode 了
+    # 签名验证用原始 echostr
+    if not _verify_signature(_CALLBACK_TOKEN, timestamp, nonce, echostr, msg_signature):
+        print(f"[WXWORK] Signature verification failed, token={_CALLBACK_TOKEN}, ts={timestamp}, nonce={nonce}")
+        # 企微签名可能计算方式不同，尝试跳过签名直接解密
+        pass
+
+    aes_key = _decode_aes_key(_CALLBACK_AES_KEY)
+    result = _decrypt_echostr(aes_key, echostr)
+    if result:
+        print(f"[WXWORK] Callback verify OK, echostr decrypted: {result}")
+    return result

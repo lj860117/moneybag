@@ -82,7 +82,21 @@ def health():
 
 
 # ---- 企业微信推送配置 ----
-from services.wxwork_push import is_configured as wxwork_configured, send_text as wxwork_send
+from services.wxwork_push import is_configured as wxwork_configured, send_text as wxwork_send, verify_callback as wxwork_verify
+
+@app.get("/api/wxwork/callback")
+def wxwork_callback_verify(msg_signature: str = "", timestamp: str = "", nonce: str = "", echostr: str = ""):
+    """企业微信 URL 验证回调（GET 请求）"""
+    from fastapi.responses import PlainTextResponse
+    result = wxwork_verify(msg_signature, timestamp, nonce, echostr)
+    if result:
+        return PlainTextResponse(result)
+    return PlainTextResponse("verify failed", status_code=403)
+
+@app.post("/api/wxwork/callback")
+def wxwork_callback_receive():
+    """企业微信消息接收回调（POST 请求，暂不处理）"""
+    return {"ok": True}
 
 @app.get("/api/wxwork/status")
 def wxwork_status():
