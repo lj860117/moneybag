@@ -489,6 +489,50 @@ def get_sentiment_api():
     """LLM 新闻情绪评分"""
     return get_news_sentiment_score()
 
+
+# ---- Phase 2: 扩展宏观数据 API（量化文档核心数据维度补齐）----
+from services.macro_extended import (
+    get_m1_data, get_social_financing, get_lpr_rate,
+    get_market_activity, get_merrill_lynch_clock,
+)
+
+@app.get("/api/macro/m1")
+def macro_m1():
+    """M1 货币供应量 + M1-M2 剪刀差"""
+    return get_m1_data()
+
+@app.get("/api/macro/social-financing")
+def macro_shrzgm():
+    """社会融资规模"""
+    return get_social_financing()
+
+@app.get("/api/macro/lpr")
+def macro_lpr():
+    """LPR 贷款市场报价利率"""
+    return get_lpr_rate()
+
+@app.get("/api/market/activity")
+def market_activity():
+    """市场涨跌家数/赚钱效应"""
+    return get_market_activity()
+
+@app.get("/api/macro/clock")
+def merrill_clock():
+    """美林时钟经济周期判断"""
+    return get_merrill_lynch_clock()
+
+@app.get("/api/macro/extended")
+def macro_extended_all():
+    """一次性获取所有扩展宏观数据"""
+    return {
+        "m1": get_m1_data(),
+        "social_financing": get_social_financing(),
+        "lpr": get_lpr_rate(),
+        "activity": get_market_activity(),
+        "clock": get_merrill_lynch_clock(),
+    }
+
+
 @app.get("/api/factors/all")
 def get_all_factors():
     """一次性获取全部新因子数据"""
