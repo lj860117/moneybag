@@ -8,12 +8,26 @@ GDP / 工业增加值 / 社零 / 固投 / 龙虎榜 / 管理层增减持
   二.4 股东增减持
 """
 import time
+import math
 import traceback
 from datetime import datetime
 
 _v8_cache = {}
 _V8_TTL = 86400  # 宏观数据月度更新，缓存 24h
 _V8_DAILY_TTL = 3600  # 龙虎榜/增减持缓存 1h
+
+
+def _safe_val(v):
+    """安全转换值，处理 NaN/Inf/None"""
+    if v is None:
+        return None
+    try:
+        f = float(v)
+        if math.isnan(f) or math.isinf(f):
+            return None
+        return f
+    except (ValueError, TypeError):
+        return str(v)
 
 
 # ============================================================
@@ -173,11 +187,8 @@ def get_lhb_summary() -> dict:
                 item = {}
                 for c in cols[:6]:  # 取前 6 列
                     v = row[c]
-                    try:
-                        if v != v:  # NaN
-                            v = None
-                    except Exception:
-                        pass
+                    sv = _safe_val(v)
+                    item[c] = str(sv) if sv is not None else ""
                     item[c] = str(v) if v is not None else ""
                 items.append(item)
             result["items"] = items
@@ -212,12 +223,8 @@ def get_management_holdings() -> dict:
                 item = {}
                 for c in cols[:6]:
                     v = row[c]
-                    try:
-                        if v != v:
-                            v = None
-                    except Exception:
-                        pass
-                    item[c] = str(v) if v is not None else ""
+                    sv = _safe_val(v)
+                    item[c] = str(sv) if sv is not None else ""
                 items.append(item)
             result["items"] = items
             result["count"] = len(df)
