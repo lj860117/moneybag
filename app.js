@@ -263,24 +263,32 @@ hdr.innerHTML=`<span onclick="showProfileSettings()" style="cursor:pointer">👋
 
 function showProfileSettings(){
 const pid=getProfileId();const wxId=localStorage.getItem('moneybag_wxwork_uid')||'';
+const statusText=wxId?`<div style="background:rgba(16,185,129,.1);border:1px solid rgba(16,185,129,.3);border-radius:8px;padding:8px 12px;margin-bottom:12px;font-size:12px;color:#10B981">✅ 已绑定企微：<b>${wxId}</b>　盯盘信号会推送到你的微信</div>`:`<div style="background:rgba(245,158,11,.1);border:1px solid rgba(245,158,11,.3);border-radius:8px;padding:8px 12px;margin-bottom:12px;font-size:12px;color:#F59E0B">⚠️ 未绑定企微　绑定后才能收到盯盘推送</div>`;
 const o=document.createElement('div');o.className='modal-overlay';o.onclick=e=>{if(e.target===o)o.remove()};
 o.innerHTML=`<div class="modal-sheet" onclick="event.stopPropagation()"><div class="modal-handle"></div>
 <div class="modal-title">⚙️ 个人设置</div>
 <div class="modal-subtitle">Profile: ${_profileName} (${pid.slice(0,8)})</div>
 <div class="manual-form" style="background:transparent;padding:0;margin-top:16px">
+${statusText}
 <div class="form-row"><div class="form-label">企业微信账号 (用于个人推送)</div>
 <input class="form-input" type="text" id="wxworkUidInput" placeholder="如 LeiJiang" value="${wxId}">
-<div style="font-size:11px;color:var(--text2);margin-top:4px">绑定后盯盘异动会推送到你的微信，不会推给别人</div></div>
-<button class="form-submit" onclick="saveProfileSettings()">💾 保存</button>
+<div style="font-size:11px;color:var(--text2);margin-top:4px">填写你的企微账号（在企微通讯录→个人信息→账号）</div></div>
+<button class="form-submit" id="wxSaveBtn" onclick="saveProfileSettings()">💾 保存</button>
 </div></div>`;document.body.appendChild(o)}
 
 async function saveProfileSettings(){
 const wxId=document.getElementById('wxworkUidInput')?.value?.trim()||'';
 const pid=getProfileId();
+const btn=document.getElementById('wxSaveBtn');
+if(btn){btn.textContent='保存中...';btn.disabled=true}
+if(API_AVAILABLE){try{
+  const r=await fetch(API_BASE+'/profiles/'+encodeURIComponent(pid),{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({wxworkUserId:wxId})});
+  const d=await r.json();
+  if(!r.ok){alert('❌ '+( d.detail||'保存失败'));if(btn){btn.textContent='💾 保存';btn.disabled=false};return}
+}catch(e){alert('❌ 网络错误');if(btn){btn.textContent='💾 保存';btn.disabled=false};return}}
 localStorage.setItem('moneybag_wxwork_uid',wxId);
-if(API_AVAILABLE){try{await fetch(API_BASE+'/profiles/'+encodeURIComponent(pid),{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({wxworkUserId:wxId})})}catch{}}
 document.querySelector('.modal-overlay')?.remove();
-alert(wxId?'✅ 企微绑定成功！盯盘信号将推送给: '+wxId:'已清除企微绑定')}
+if(wxId){alert('✅ 绑定成功！盯盘异动将推送给: '+wxId)}else{alert('已清除企微绑定')}}
 
 function navigateTo(p){currentPage=p;renderNav();if(p==='landing')renderLanding();else if(p==='portfolio')renderPortfolio();else if(p==='stocks')renderStocks();else if(p==='insight')renderInsight();else if(p==='chat')renderChat();else if(p==='ledger')renderLedger();else if(p==='assets')renderAssets()}
 
