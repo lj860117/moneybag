@@ -365,7 +365,7 @@ def analyze_global_impact_on_a_shares() -> dict:
 # 7. 决策数据包（供 Claude 快速拉取）
 # ============================================================
 
-def get_decision_data_pack() -> dict:
+def get_decision_data_pack(user_id: str = "default") -> dict:
     """一次性返回全量决策数据包 — 供 Claude 做投资决策用"""
     from services.stock_monitor import load_stock_holdings, scan_all_holdings
     from services.fund_monitor import load_fund_holdings, scan_all_fund_holdings
@@ -410,17 +410,17 @@ def get_decision_data_pack() -> dict:
 
     # 持仓数据
     try:
-        pack["stock_holdings"] = scan_all_holdings()
+        pack["stock_holdings"] = scan_all_holdings(user_id)
     except Exception:
         pack["stock_holdings"] = {"error": "unavailable"}
 
     try:
-        pack["fund_holdings"] = scan_all_fund_holdings()
+        pack["fund_holdings"] = scan_all_fund_holdings(user_id)
     except Exception:
         pack["fund_holdings"] = {"error": "unavailable"}
 
     try:
-        pack["portfolio_overview"] = get_portfolio_overview()
+        pack["portfolio_overview"] = get_portfolio_overview(user_id)
     except Exception:
         pack["portfolio_overview"] = {"error": "unavailable"}
 

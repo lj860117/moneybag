@@ -789,9 +789,9 @@ def global_impact():
     return analyze_global_impact_on_a_shares()
 
 @app.get("/api/decision-data")
-def decision_data():
+def decision_data(userId: str = "default"):
     """全量决策数据包（供 Claude 决策用）"""
-    return get_decision_data_pack()
+    return get_decision_data_pack(userId)
 
 
 # ---- 股票持仓盯盘 API ----
@@ -940,7 +940,8 @@ def scan_holdings_api(userId: str = "default"):
 @app.post("/api/stock-holdings/analyze")
 async def analyze_stock_holdings(req: dict = {}):
     """收盘后 DeepSeek 深度分析全持仓（7 Skill 框架）"""
-    scan = scan_all_holdings()
+    uid = req.get("userId", "default")
+    scan = scan_all_holdings(uid)
     if not scan.get("holdings"):
         return {"analysis": "暂无持仓股票，请先添加。", "source": "none"}
 
@@ -1060,7 +1061,8 @@ def scan_fund_holdings_api(userId: str = "default"):
 @app.post("/api/fund-holdings/analyze")
 async def analyze_fund_holdings(req: dict = {}):
     """DeepSeek 深度分析全基金持仓（7 Skill 框架）"""
-    scan = scan_all_fund_holdings()
+    uid = req.get("userId", "default")
+    scan = scan_all_fund_holdings(uid)
     if not scan.get("holdings"):
         return {"analysis": "暂无基金持仓，请先添加。", "source": "none"}
 
@@ -1646,7 +1648,8 @@ async def chat_analysis(req: ChatRequest):
 
     # 构建市场上下文
     market_ctx = _build_market_context()
-    portfolio_ctx = _build_portfolio_context(req.portfolio) if req.portfolio else "用户尚未建仓。"
+    uid = req.userId or "default"
+    portfolio_ctx = _build_portfolio_context(req.portfolio, user_id=uid) if req.portfolio else _build_portfolio_context(user_id=uid)
 
     # 多用户记忆注入
     if req.userId:
@@ -1718,7 +1721,8 @@ async def chat_analysis_stream(req: ChatRequest):
         raise HTTPException(400, "消息不能为空")
 
     market_ctx = _build_market_context()
-    portfolio_ctx = _build_portfolio_context(req.portfolio) if req.portfolio else "用户尚未建仓。"
+    uid = req.userId or "default"
+    portfolio_ctx = _build_portfolio_context(req.portfolio, user_id=uid) if req.portfolio else _build_portfolio_context(user_id=uid)
 
     # 多用户记忆注入
     if req.userId:
@@ -1941,8 +1945,8 @@ def _build_market_context() -> str:
     return result
 
 
-def _build_portfolio_context(p=None) -> str:
-    """构建用户持仓+盈亏+风控+配置建议的完整上下文"""
+def _build_portfolio_context(p=None, user_id: str = "default") -> str:
+    """构建用户持仓+盈亏+风控+配置建议的完整上下文（多用户隔离）"""
     lines = []
 
     # 1. 基本持仓信息
@@ -1997,7 +2001,7 @@ def _build_portfolio_context(p=None) -> str:
 
     # 4. 持仓关联智能（个股新闻/资金流/行业/解禁）
     try:
-        intel_ctx = build_holding_context()
+        intel_ctx = build_holding_context(user_id)
         if intel_ctx:
             lines.append(intel_ctx)
     except Exception:
@@ -2007,7 +2011,7 @@ def _build_portfolio_context(p=None) -> str:
     try:
         from services.macro_v8 import check_holding_management_change
         from services.stock_monitor import load_stock_holdings
-        holdings = load_stock_holdings()
+        holdings = load_stock_holdings(user_id)
         codes = [h.get("code", "") for h in holdings if h.get("code")]
         if codes:
             mgmt_alerts = check_holding_management_change(codes)
@@ -2742,7 +2746,7 @@ async def agent_analyze(req: dict):
 
     # 收集数据
     market_ctx = _build_market_context()
-    portfolio_ctx = _build_portfolio_context()
+    portfolio_ctx = _build_portfolio_context(user_id=user_id)
     memory = build_memory_summary(user_id)
 
     # 收集预警

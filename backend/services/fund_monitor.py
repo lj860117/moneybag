@@ -410,15 +410,19 @@ def scan_all_fund_holdings(user_id: str = "default") -> dict:
         "scannedAt": datetime.now().isoformat(),
     }
 
-    # 保存结果文件
-    _save_scan_result(scan_result)
+    # 保存结果文件（按用户隔离）
+    _save_scan_result(scan_result, user_id)
     return scan_result
 
 
-def _save_scan_result(result: dict):
-    """保存扫描结果到 monitor 目录"""
-    _MONITOR_DIR.mkdir(parents=True, exist_ok=True)
-    out = _MONITOR_DIR / "fund_latest.json"
+def _save_scan_result(result: dict, user_id: str = "default"):
+    """保存扫描结果到 monitor 目录（按用户隔离）"""
+    if user_id and user_id != "default":
+        d = _DATA_DIR / user_id / "monitor"
+    else:
+        d = _MONITOR_DIR
+    d.mkdir(parents=True, exist_ok=True)
+    out = d / "fund_latest.json"
     out.write_text(json.dumps(result, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
