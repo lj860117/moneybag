@@ -184,10 +184,10 @@ async function runDataAudit(){const btn=document.getElementById('auditBtn');if(b
 
 // ---- 底部导航 ----
 function renderNav(){let n=document.getElementById('btmNav');if(!n){n=document.createElement('div');n.id='btmNav';n.className='bottom-nav';document.body.appendChild(n)}
-const tabs=[{id:'landing',icon:'🏠',label:'首页'},{id:'portfolio',icon:'📊',label:'持仓'},{id:'insight',icon:'📰',label:'资讯'},{id:'chat',icon:'🤖',label:'AI分析'},{id:'assets',icon:'🏦',label:'资产'}];
+const tabs=[{id:'landing',icon:'🏠',label:'首页'},{id:'portfolio',icon:'📊',label:'持仓'},{id:'stocks',icon:'📈',label:'持股'},{id:'insight',icon:'📰',label:'资讯'},{id:'chat',icon:'🤖',label:'AI分析'},{id:'assets',icon:'🏦',label:'资产'}];
 n.innerHTML=tabs.map(t=>`<div class="nav-item ${currentPage===t.id?'active':''}" onclick="navigateTo('${t.id}')"><div class="nav-icon">${t.icon}</div><div>${t.label}</div></div>`).join('')}
 
-function navigateTo(p){currentPage=p;renderNav();if(p==='landing')renderLanding();else if(p==='portfolio')renderPortfolio();else if(p==='insight')renderInsight();else if(p==='chat')renderChat();else if(p==='ledger')renderLedger();else if(p==='assets')renderAssets()}
+function navigateTo(p){currentPage=p;renderNav();if(p==='landing')renderLanding();else if(p==='portfolio')renderPortfolio();else if(p==='stocks')renderStocks();else if(p==='insight')renderInsight();else if(p==='chat')renderChat();else if(p==='ledger')renderLedger();else if(p==='assets')renderAssets()}
 
 // ---- 落地页（智能决策中心）----
 function renderLanding(){currentPage='landing';const p=loadPortfolio();const txns=loadTxns();const assets=loadAssets();const ledger=loadLedger();
@@ -1444,6 +1444,45 @@ document.querySelector('.modal-overlay')?.remove();renderAssets()}
 function deleteAsset(id){const assets=loadAssets().filter(a=>a.id!==id);saveAssets(assets);
 if(API_AVAILABLE)fetch(API_BASE+'/assets/'+id+'?userId='+getUserId(),{method:'DELETE'}).catch(()=>{});
 renderAssets()}
+
+// ---- 📈 股票持仓盯盘页 ----
+let _stockScanData=null;
+async function renderStocks(){currentPage='stocks';renderNav();
+$('#app').innerHTML=`<div class="insight-page fade-up"><div class="insight-header"><h2>📈 股票持仓</h2><p>实时行情 · AI盯盘 · 异动预警</p></div><div id="stockContent"><div style="text-align:center;padding:40px"><div class="loading-spinner"></div><div style="color:var(--text2);margin-top:12px">加载持仓数据...</div></div></div></div>`;
+if(!API_AVAILABLE){document.getElementById('stockContent').innerHTML='<div style="text-align:center;padding:40px;color:var(--text2)">后端离线</div>';return}
+try{const[hRes,scanRes]=await Promise.all([fetch(API_BASE+'/stock-holdings').then(r=>r.json()),fetch(API_BASE+'/stock-holdings/scan').then(r=>r.json())]);
+_stockScanData=scanRes;const holdings=scanRes.holdings||[];const signals=scanRes.signals||[];
+const el=document.getElementById('stockContent');if(!el)return;
+// 异动信号汇总
+let signalHtml='';if(signals.length>0){const dangerS=signals.filter(s=>s.level==='danger'||s.level==='warning');const opS=signals.filter(s=>s.level==='opportunity');
+signalHtml=`<div class="dashboard-card" style="border-left:3px solid ${dangerS.length?'var(--red)':'var(--green)'}"><div class="dashboard-card-title">⚡ 盯盘信号 (${signals.length})</div>${signals.map(s=>{const c=s.level==='danger'?'var(--red)':s.level==='warning'?'#F59E0B':s.level==='opportunity'?'var(--green)':'var(--text2)';return`<div style="padding:6px 0;font-size:13px;border-bottom:1px solid var(--bg3);color:${c}">${s.msg}</div>`}).join('')}</div>`}
+// 持仓列表
+let listHtml='';if(holdings.length===0){listHtml=`<div style="text-align:center;padding:40px;color:var(--text2)"><div style="font-size:48px;margin-bottom:16px">📈</div><div style="font-size:16px;margin-bottom:8px">还没有持仓股票</div><div style="font-size:13px">点击下方按钮添加你的第一只股票</div></div>`}else{
+listHtml=holdings.map(h=>{const pctC=h.changePct>=0?'var(--green)':'var(--red)';const pnlC=(h.pnlPct||0)>=0?'var(--green)':'var(--red)';
+return`<div class="holding-card" onclick="showStockDetail('${h.code}')"><div class="holding-top"><div class="holding-info"><div class="holding-name">${h.name||h.code}</div><div class="holding-meta">${h.code} · PE ${h.indicators?.rsi14?'RSI '+h.indicators.rsi14:'--'}</div></div><div class="holding-amount"><div class="holding-money" style="color:${pctC}">${h.price?'¥'+h.price.toFixed(2):'--'}</div><div class="holding-pct" style="color:${pctC}">${h.changePct!=null?(h.changePct>=0?'+':'')+h.changePct.toFixed(2)+'%':'--'}</div></div></div>${h.costPrice&&h.shares?`<div class="holding-pnl-row"><div class="holding-pnl-item"><div class="holding-pnl-label">持仓市值</div><div class="holding-pnl-val">¥${(h.marketValue||0).toLocaleString()}</div></div><div class="holding-pnl-item"><div class="holding-pnl-label">盈亏</div><div class="holding-pnl-val ${(h.pnlPct||0)>=0?'pos':'neg'}" style="color:${pnlC}">${h.pnl!=null?((h.pnl>=0?'+':'')+h.pnl.toFixed(0)):''} ${h.pnlPct!=null?'('+((h.pnlPct>=0?'+':'')+h.pnlPct.toFixed(1))+'%)':''}</div></div><div class="holding-pnl-item"><div class="holding-pnl-label">成本价</div><div class="holding-pnl-val">¥${h.costPrice}</div></div></div>`:''}</div>`}).join('')}
+// 汇总
+let totalMV=holdings.reduce((s,h)=>s+(h.marketValue||0),0);let totalPnl=holdings.reduce((s,h)=>s+(h.pnl||0),0);
+let heroHtml='';if(holdings.length>0&&totalMV>0){const pnlC=totalPnl>=0?'var(--green)':'var(--red)';
+heroHtml=`<div class="pnl-hero"><div class="pnl-label">股票持仓总市值</div><div class="pnl-total-value">¥${totalMV.toLocaleString()}</div><div class="pnl-change ${totalPnl>=0?'pos':'neg'}" style="color:${pnlC}">${totalPnl>=0?'+':''}${totalPnl.toFixed(0)}</div><div class="pnl-sub">${holdings.length} 只股票 · ${scanRes.scannedAt?'更新于 '+scanRes.scannedAt.slice(11,16):''}</div></div>`}
+el.innerHTML=heroHtml+signalHtml+listHtml+`<div style="margin-top:16px"><button class="action-btn primary" onclick="showAddStockModal()" style="width:100%">➕ 添加股票</button></div><div style="margin-top:8px"><button class="action-btn secondary" onclick="renderStocks()" style="width:100%">🔄 刷新行情</button></div>`;
+}catch(e){console.error('Stock load error:',e);document.getElementById('stockContent').innerHTML='<div style="text-align:center;padding:40px;color:var(--red)">加载失败: '+e.message+'</div>'}}
+
+function showAddStockModal(){const overlay=document.createElement('div');overlay.className='modal-overlay';overlay.onclick=e=>{if(e.target===overlay)overlay.remove()};
+overlay.innerHTML=`<div class="modal-sheet"><div class="modal-handle"></div><div class="modal-title">➕ 添加股票</div><div class="modal-subtitle">输入A股代码（如 600519、002594）</div><div class="form-row"><div class="form-label">股票代码 *</div><input class="form-input" id="addStockCode" placeholder="600519" inputmode="numeric"></div><div class="form-row"><div class="form-label">成本价（选填）</div><input class="form-input" id="addStockCost" type="number" placeholder="0" step="0.01" inputmode="decimal"></div><div class="form-row"><div class="form-label">持有股数（选填）</div><input class="form-input" id="addStockShares" type="number" placeholder="0" inputmode="numeric"></div><div class="form-row"><div class="form-label">备注（选填）</div><input class="form-input" id="addStockNote" placeholder=""></div><button class="form-submit" onclick="doAddStock()">添加</button></div>`;
+document.body.appendChild(overlay)}
+
+async function doAddStock(){const code=$('#addStockCode')?.value?.trim();if(!code){alert('请输入股票代码');return}
+const cost=parseFloat($('#addStockCost')?.value)||0;const shares=parseInt($('#addStockShares')?.value)||0;const note=$('#addStockNote')?.value||'';
+try{const r=await fetch(API_BASE+'/stock-holdings',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({code,costPrice:cost,shares,note})});
+const d=await r.json();if(d.error){alert(d.error);return}document.querySelector('.modal-overlay')?.remove();renderStocks()}catch(e){alert('添加失败: '+e.message)}}
+
+function showStockDetail(code){const h=(_stockScanData?.holdings||[]).find(x=>x.code===code);if(!h)return;
+const overlay=document.createElement('div');overlay.className='modal-overlay';overlay.onclick=e=>{if(e.target===overlay)overlay.remove()};
+const ind=h.indicators||{};const sigs=h.signals||[];
+overlay.innerHTML=`<div class="modal-sheet"><div class="modal-handle"></div><div class="modal-title">${h.name||h.code}</div><div class="modal-subtitle">${h.code} · ${h.changePct!=null?(h.changePct>=0?'+':'')+h.changePct.toFixed(2)+'%':'--'}</div><div class="modal-stat-grid"><div class="modal-stat"><div class="modal-stat-label">当前价</div><div class="modal-stat-value">${h.price?'¥'+h.price.toFixed(2):'--'}</div></div><div class="modal-stat"><div class="modal-stat-label">RSI14</div><div class="modal-stat-value" style="color:${ind.rsi14>70?'var(--red)':ind.rsi14<30?'var(--green)':'var(--text)'}">${ind.rsi14||'--'}</div></div><div class="modal-stat"><div class="modal-stat-label">MACD</div><div class="modal-stat-value">${ind.macd_trend||'--'}</div></div><div class="modal-stat"><div class="modal-stat-label">量比</div><div class="modal-stat-value" style="color:${ind.volume_ratio>2?'var(--red)':'var(--text)'}">${ind.volume_ratio||'--'}</div></div></div>${sigs.length?'<div style="margin-top:16px"><div style="font-size:13px;font-weight:700;margin-bottom:8px">📡 信号</div>'+sigs.map(s=>`<div style="padding:6px 0;font-size:13px;border-bottom:1px solid var(--bg3)">${s.msg}</div>`).join('')+'</div>':''}<div style="margin-top:16px;display:flex;gap:8px"><button class="action-btn secondary" style="flex:1" onclick="if(confirm('删除 ${h.name}？'))deleteStock('${h.code}')">🗑️ 删除</button></div></div>`;
+document.body.appendChild(overlay)}
+
+async function deleteStock(code){try{await fetch(API_BASE+'/stock-holdings/'+code,{method:'DELETE'});document.querySelector('.modal-overlay')?.remove();renderStocks()}catch(e){alert('删除失败')}}
 
 // ---- 启动 ----
 migrateV3toV4();

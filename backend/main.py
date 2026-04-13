@@ -643,6 +643,124 @@ def get_ml_stock_screen(top_n: int = 30):
     return ml_stock_screen(top_n)
 
 
+# ---- 股票持仓盯盘 API ----
+from services.stock_monitor import (
+    load_stock_holdings, add_stock_holding, remove_stock_holding,
+    update_stock_holding, get_stock_realtime, scan_all_holdings,
+)
+
+@app.get("/api/stock-holdings")
+def get_stock_holdings_api():
+    """获取股票持仓列表"""
+    return {"holdings": load_stock_holdings()}
+
+@app.post("/api/stock-holdings")
+def add_stock_holding_api(req: dict):
+    """添加股票持仓"""
+    code = req.get("code", "").strip()
+    if not code:
+        raise HTTPException(400, "股票代码不能为空")
+    return add_stock_holding(
+        code=code,
+        name=req.get("name", ""),
+        cost_price=float(req.get("costPrice", 0)),
+        shares=int(req.get("shares", 0)),
+        note=req.get("note", ""),
+    )
+
+@app.delete("/api/stock-holdings/{code}")
+def remove_stock_holding_api(code: str):
+    """删除股票持仓"""
+    return remove_stock_holding(code)
+
+@app.put("/api/stock-holdings/{code}")
+def update_stock_holding_api(code: str, req: dict):
+    """更新股票持仓信息"""
+    return update_stock_holding(code, **{
+        k: v for k, v in req.items()
+        if k in ("costPrice", "shares", "note", "name")
+    })
+
+@app.get("/api/stock-holdings/realtime/{code}")
+def get_stock_rt_api(code: str):
+    """获取单只股票实时行情"""
+    return get_stock_realtime(code)
+
+@app.get("/api/stock-holdings/scan")
+def scan_holdings_api():
+    """扫描全持仓 — 实时行情 + 异动信号"""
+    return scan_all_holdings()
+
+
+@app.post("/api/stock-holdings/analyze")
+async def analyze_stock_holdings(req: dict = {}):
+    """收盘后 DeepSeek 深度分析全持仓（7 Skill 框架）"""
+    scan = scan_all_holdings()
+    if not scan.get("holdings"):
+        return {"analysis": "暂无持仓股票，请先添加。", "source": "none"}
+
+    # 构建持仓摘要给 DeepSeek
+    lines = ["【股票持仓盯盘数据】"]
+    for h in scan["holdings"]:
+        ind = h.get("indicators", {})
+        pnl_str = f"盈亏{h['pnlPct']:+.1f}%" if h.get("pnlPct") is not None else ""
+        lines.append(
+            f"  {h['name']}({h['code']}) 现价¥{h.get('price','N/A')} "
+            f"涨跌{h.get('changePct','N/A')}% {pnl_str} "
+            f"RSI={ind.get('rsi14','N/A')} MACD={ind.get('macd_trend','N/A')} "
+            f"量比={ind.get('volume_ratio','N/A')}"
+        )
+    if scan.get("signals"):
+        lines.append("\n【异动信号】")
+        for s in scan["signals"]:
+            lines.append(f"  [{s['level']}] {s['msg']}")
+
+    stock_ctx = "\n".join(lines)
+    market_ctx = _build_market_context()
+
+    # 调用 DeepSeek 做深度分析
+    api_key = os.environ.get("LLM_API_KEY")
+    if not api_key:
+        return {"analysis": stock_ctx, "source": "data_only"}
+
+    system_prompt = _load_prompt_template()
+    user_prompt = f"""请对我的股票持仓做一次全面深度分析。
+
+{stock_ctx}
+
+{market_ctx}
+
+请按以下结构回答：
+1. 📊 总体评估（一句话结论）
+2. 逐只分析（每只股票：趋势判断+风险提示+操作建议）
+3. 🛡️ 风控经理总结（组合风险+操作优先级）"""
+
+    try:
+        import httpx
+        async with httpx.AsyncClient(timeout=60) as client:
+            resp = await client.post(
+                "https://api.deepseek.com/v1/chat/completions",
+                headers={"Authorization": f"Bearer {api_key}"},
+                json={
+                    "model": req.get("model", "deepseek-chat"),
+                    "messages": [
+                        {"role": "system", "content": system_prompt},
+                        {"role": "user", "content": user_prompt},
+                    ],
+                    "max_tokens": 1200,
+                    "temperature": 0.7,
+                },
+            )
+            if resp.status_code == 200:
+                data = resp.json()
+                reply = data["choices"][0]["message"]["content"]
+                return {"analysis": reply, "source": "ai", "scan": scan}
+    except Exception as e:
+        print(f"[STOCK_ANALYZE] DeepSeek fail: {e}")
+
+    return {"analysis": stock_ctx, "source": "data_only", "scan": scan}
+
+
 # ---- API: 每日智能信号 ----
 
 @app.get("/api/daily-signal")
@@ -1461,61 +1579,6 @@ def _build_system_prompt(market_ctx: str, portfolio_ctx: str) -> str:
 
 ## 用户持仓与风控
 {portfolio_ctx}"""
-    """构建用户持仓+盈亏+风控+配置建议的完整上下文"""
-    lines = []
-
-    # 1. 基本持仓信息（从前端传入的 Portfolio 对象）
-    if p and p.holdings:
-        lines.append(f"【用户画像】风险类型：{p.profile}，总投入：¥{p.amount:,.0f}")
-        lines.append("【持仓明细】")
-        for h in p.holdings:
-            lines.append(f"  - {h.name}({h.code})：¥{h.amount:,.0f}，目标占比 {h.targetPct}%")
-    else:
-        # 尝试从 localStorage 同步的后端数据获取
-        lines.append("用户尚未通过前端传入持仓数据。")
-
-    # 2. 风控状态
-    try:
-        vp = get_valuation_percentile()
-        vp_val = vp.get("percentile", 50)
-        fgi_data = get_fear_greed_index()
-        fgi_val = fgi_data.get("score", 50)
-        from services.risk import generate_risk_actions
-        actions = generate_risk_actions(vp_val, fgi_val)
-        if actions:
-            danger = [a for a in actions if a.get("level") == "danger"]
-            warning = [a for a in actions if a.get("level") == "warning"]
-            if danger or warning:
-                lines.append("\n【⚠️ 风控预警】")
-                for a in danger:
-                    lines.append(f"  🔴 {a['message']}")
-                for a in warning:
-                    lines.append(f"  ⚠️ {a['message']}")
-            else:
-                lines.append("\n【风控状态】✅ 当前无风险预警")
-    except Exception:
-        pass
-
-    # 3. 资产配置建议
-    try:
-        from services.portfolio import get_allocation_advice
-        advice = get_allocation_advice(vp_val)
-        if advice:
-            t = advice.get("target", {})
-            c = advice.get("current", {})
-            dev = advice.get("deviation", {})
-            lines.append("\n【资产配置建议】")
-            lines.append(f"  估值区间：{advice.get('valuation_zone', '未知')}")
-            for k, label in [("stock", "股票"), ("bond", "债券"), ("cash", "现金")]:
-                tgt = round(t.get(k, 0))
-                d = round(dev.get(k, 0))
-                lines.append(f"  {label}：目标{tgt}%，偏离{d:+d}%")
-            if advice.get("summary"):
-                lines.append(f"  建议：{advice['summary']}")
-    except Exception:
-        pass
-
-    return "\n".join(lines) if lines else "用户尚未建仓。"
 
 
 def _rule_based_reply(msg: str, market_ctx: str, portfolio_ctx: str) -> str:
