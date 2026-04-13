@@ -202,15 +202,90 @@ def verify_callback(msg_signature: str, timestamp: str, nonce: str, echostr: str
         print("[WXWORK] No AES key configured")
         return ""
 
-    # echostr 已经被 FastAPI 自动 URL decode 了
-    # 签名验证用原始 echostr
     if not _verify_signature(_CALLBACK_TOKEN, timestamp, nonce, echostr, msg_signature):
-        print(f"[WXWORK] Signature verification failed, token={_CALLBACK_TOKEN}, ts={timestamp}, nonce={nonce}")
-        # 企微签名可能计算方式不同，尝试跳过签名直接解密
+        print(f"[WXWORK] Signature verification failed")
         pass
 
     aes_key = _decode_aes_key(_CALLBACK_AES_KEY)
     result = _decrypt_echostr(aes_key, echostr)
     if result:
-        print(f"[WXWORK] Callback verify OK, echostr decrypted: {result}")
+        print(f"[WXWORK] Callback verify OK")
     return result
+
+
+def decrypt_message(msg_signature: str, timestamp: str, nonce: str, xml_body: str) -> dict:
+    """解密企微推送的消息，返回 {from_user, content, msg_type}"""
+    import xml.etree.ElementTree as ET
+    if not _CALLBACK_AES_KEY:
+        return {}
+    try:
+        root = ET.fromstring(xml_body)
+        encrypt_node = root.find("Encrypt")
+        if encrypt_node is None:
+            return {}
+        encrypted = encrypt_node.text
+
+        # 验签
+        _verify_signature(_CALLBACK_TOKEN, timestamp, nonce, encrypted, msg_signature)
+
+        # AES 解密
+        aes_key = _decode_aes_key(_CALLBACK_AES_KEY)
+        decrypted = _decrypt_echostr(aes_key, encrypted)
+        if not decrypted:
+            return {}
+
+        # 解析明文 XML
+        msg_root = ET.fromstring(decrypted)
+        return {
+            "from_user": msg_root.findtext("FromUserName", ""),
+            "content": msg_root.findtext("Content", "").strip(),
+            "msg_type": msg_root.findtext("MsgType", "text"),
+            "msg_id": msg_root.findtext("MsgId", ""),
+            "create_time": msg_root.findtext("CreateTime", ""),
+        }
+    except Exception as e:
+        print(f"[WXWORK] Decrypt message error: {e}")
+        return {}
+
+
+def encrypt_reply(reply_text: str, to_user: str, nonce: str) -> str:
+    """加密回复消息为企微要求的 XML 格式"""
+    import xml.etree.ElementTree as ET
+    import random
+    import string
+
+    if not _CALLBACK_AES_KEY:
+        return ""
+    try:
+        aes_key = _decode_aes_key(_CALLBACK_AES_KEY)
+        corp_id = _CORP_ID or ""
+
+        # 构造明文: 16字节随机 + 4字节长度 + 内容 + corpid
+        reply_bytes = reply_text.encode("utf-8")
+        random_bytes = ''.join(random.choices(string.ascii_letters + string.digits, k=16)).encode()
+        content = random_bytes + struct.pack("!I", len(reply_bytes)) + reply_bytes + corp_id.encode()
+
+        # PKCS7 padding
+        pad_len = 32 - (len(content) % 32)
+        content += bytes([pad_len] * pad_len)
+
+        # AES CBC 加密
+        cipher = AES.new(aes_key, AES.MODE_CBC, aes_key[:16])
+        encrypted = base64.b64encode(cipher.encrypt(content)).decode()
+
+        # 生成签名
+        timestamp = str(int(time.time()))
+        sign_list = sorted([_CALLBACK_TOKEN, timestamp, nonce, encrypted])
+        signature = hashlib.sha1("".join(sign_list).encode()).hexdigest()
+
+        # 构造 XML
+        xml = f"""<xml>
+<Encrypt><![CDATA[{encrypted}]]></Encrypt>
+<MsgSignature><![CDATA[{signature}]]></MsgSignature>
+<TimeStamp>{timestamp}</TimeStamp>
+<Nonce><![CDATA[{nonce}]]></Nonce>
+</xml>"""
+        return xml
+    except Exception as e:
+        print(f"[WXWORK] Encrypt reply error: {e}")
+        return ""
