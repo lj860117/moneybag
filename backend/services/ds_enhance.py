@@ -372,6 +372,71 @@ def enhance_allocation_advice(base_advice: dict, market_ctx: str = "", news_summ
         cache_key=f"alloc_enhance_{target.get('stock',0)}_{time.strftime('%Y%m%d_%H')}",
     )
 
+
+# ============================================================
+# 8. 资产诊断 — 全量分析用户资产结构，给出个性化建议
+# ============================================================
+
+def diagnose_user_assets(user_id: str) -> dict:
+    """
+    读取用户全部资产（现金/房产/负债/投资持仓），
+    结合市场数据，给出资产结构诊断和优化建议
+    """
+    # 获取统一净资产数据
+    try:
+        from services.unified_networth import calc_unified_networth
+        nw = calc_unified_networth(user_id)
+    except Exception:
+        return {"source": "error", "advice": "资产数据加载失败"}
+
+    if nw.get("netWorth", 0) == 0:
+        return {"source": "rule", "advice": "您还没有添加资产，添加后 AI 会自动诊断您的资产健康状况。"}
+
+    breakdown = nw.get("breakdown", {})
+    allocation = nw.get("allocation", {})
+
+    # 构建资产摘要
+    summary_parts = []
+    summary_parts.append(f"净资产: ¥{nw['netWorth']:,.0f}")
+    if breakdown.get("investment", {}).get("total", 0):
+        inv = breakdown["investment"]
+        summary_parts.append(f"投资: ¥{inv['total']:,.0f}(股{inv.get('stockCount',0)}只+基{inv.get('fundCount',0)}只)")
+    if breakdown.get("cash", {}).get("total", 0):
+        summary_parts.append(f"现金: ¥{breakdown['cash']['total']:,.0f}")
+    if breakdown.get("property", {}).get("total", 0):
+        summary_parts.append(f"房产: ¥{breakdown['property']['total']:,.0f}")
+    if breakdown.get("liability", {}).get("total", 0):
+        summary_parts.append(f"负债: ¥{breakdown['liability']['total']:,.0f}")
+    if allocation:
+        alloc_str = " | ".join(f"{k}:{v:.0f}%" for k, v in allocation.items() if v > 0)
+        summary_parts.append(f"配置: {alloc_str}")
+
+    health_issues = nw.get("healthIssues", [])
+    if health_issues:
+        summary_parts.append(f"健康问题: {'; '.join(health_issues)}")
+
+    prompt = f"""用户资产概况：
+{chr(10).join(summary_parts)}
+
+请基于以上数据，给出简洁的资产诊断（3-5条要点，每条一行，带emoji）：
+1. 资产结构是否合理？（房产占比过高？投资过于集中？）
+2. 现金是否闲置过多？利率损失估算
+3. 负债风险（负债率是否过高？月供压力？）
+4. 具体优化建议（增加什么/减少什么）
+5. 下一步行动建议
+
+保持简洁、直接、有数据支撑。总共不超过200字。"""
+
+    result = _call_deepseek(
+        prompt=prompt,
+        system="你是资深理财规划师。用户给你看他的资产全貌，你要像医生问诊一样给出精准诊断。",
+        max_tokens=300,
+        cache_key=f"asset_diag_{user_id}_{time.strftime('%Y%m%d_%H')}",
+    )
+    if result:
+        return {"source": "ai", "advice": result}
+    return {"source": "rule", "advice": f"您的净资产 ¥{nw['netWorth']:,.0f}，健康评分 {nw.get('healthScore', 0)} 分。" + (f" 问题：{'; '.join(health_issues)}" if health_issues else "")}
+
     if result:
         base_advice["aiEnhancement"] = result
         base_advice["enhanced"] = True

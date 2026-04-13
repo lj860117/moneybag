@@ -891,6 +891,7 @@ from services.ds_enhance import (
     analyze_idle_cash, comment_fund_picks, comment_stock_picks,
     generate_daily_focus, assess_news_risk, interpret_daily_signal,
     deep_analyze_news_impact, enhance_allocation_advice,
+    diagnose_user_assets,
 )
 
 @app.post("/api/assets/advice")
@@ -901,6 +902,15 @@ def get_asset_advice(req: dict):
         monthly_expense=float(req.get("monthlyExpense", 0)),
         risk_profile=req.get("riskProfile", "稳健型"),
     )
+
+
+@app.post("/api/ds/asset-diagnosis")
+def get_asset_diagnosis(req: dict):
+    """AI 资产诊断 — DeepSeek 全量分析用户资产结构"""
+    user_id = req.get("userId", "")
+    if not user_id:
+        raise HTTPException(400, "userId required")
+    return diagnose_user_assets(user_id)
 
 @app.get("/api/daily-focus")
 def get_daily_focus():
