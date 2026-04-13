@@ -977,6 +977,11 @@ def create_profile(req: dict):
     if not invite_code:
         raise HTTPException(403, "请输入邀请码。联系管理员获取。")
 
+    # 白名单验证（名字就是企微 userid）
+    VALID_USERS = {"LeiJiang", "BuLuoGeLi"}
+    if name not in VALID_USERS:
+        raise HTTPException(403, f"名字 '{name}' 不在白名单中。请使用管理员分配的名字。")
+
     # 验证邀请码
     codes = _load_invite_codes()
     valid_code = next((c for c in codes if c["code"] == invite_code and not c["used"]), None)
@@ -989,13 +994,14 @@ def create_profile(req: dict):
     valid_code["usedAt"] = datetime.now().isoformat()
     _save_invite_codes(codes)
 
-    # 创建或更新 Profile
+    # 创建或更新 Profile（名字=企微userid，自动绑定）
     if existing:
         existing["verified"] = True
+        existing["wxworkUserId"] = name
         _save_profiles(profiles)
         return {"ok": True, "profile": existing, "exists": True}
 
-    profile = {"id": pid, "name": name, "createdAt": datetime.now().isoformat(), "verified": True}
+    profile = {"id": pid, "name": name, "createdAt": datetime.now().isoformat(), "verified": True, "wxworkUserId": name}
     profiles.append(profile)
     _save_profiles(profiles)
     return {"ok": True, "profile": profile, "exists": False}
