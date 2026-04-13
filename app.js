@@ -78,42 +78,47 @@ async function ensureProfile(){
     overlay.innerHTML=`<div style="background:var(--bg2,#1e293b);border-radius:16px;padding:32px;max-width:320px;width:90%;text-align:center">
       <div style="font-size:48px;margin-bottom:16px">👋</div>
       <h2 style="color:var(--text,#f1f5f9);margin-bottom:8px">欢迎使用钱袋子</h2>
-      <p style="color:var(--text2,#94a3b8);font-size:14px;margin-bottom:20px">输入你的名字，数据会安全保存在你名下</p>
+      <p style="color:var(--text2,#94a3b8);font-size:14px;margin-bottom:20px">输入名字和邀请码开始使用</p>
       <input id="profileNameIn" type="text" placeholder="你的名字" maxlength="20"
-        style="width:100%;box-sizing:border-box;padding:12px;border-radius:10px;border:1px solid var(--bg3,#334155);background:var(--bg,#0f172a);color:var(--text,#f1f5f9);font-size:16px;text-align:center;margin-bottom:16px">
+        style="width:100%;box-sizing:border-box;padding:12px;border-radius:10px;border:1px solid var(--bg3,#334155);background:var(--bg,#0f172a);color:var(--text,#f1f5f9);font-size:16px;text-align:center;margin-bottom:12px">
+      <input id="profileCodeIn" type="text" placeholder="邀请码（联系管理员获取）" maxlength="10"
+        style="width:100%;box-sizing:border-box;padding:12px;border-radius:10px;border:1px solid var(--bg3,#334155);background:var(--bg,#0f172a);color:var(--text,#f1f5f9);font-size:16px;text-align:center;margin-bottom:16px;text-transform:uppercase">
+      <div id="profileError" style="color:#EF4444;font-size:13px;margin-bottom:12px;display:none"></div>
       <button id="profileConfirmBtn" disabled onclick="confirmProfile()"
         style="width:100%;padding:12px;border-radius:10px;border:none;background:var(--accent,#F59E0B);color:#000;font-size:16px;font-weight:700;cursor:pointer;opacity:.5">确认</button>
     </div>`;
     document.body.appendChild(overlay);
     const inp=document.getElementById('profileNameIn');
+    const codeInp=document.getElementById('profileCodeIn');
     const btn=document.getElementById('profileConfirmBtn');
     inp.focus();
-    inp.oninput=()=>{const v=inp.value.trim();btn.disabled=!v;btn.style.opacity=v?'1':'.5'};
-    inp.onkeydown=(e)=>{if(e.key==='Enter'&&inp.value.trim())confirmProfile()};
+    const checkReady=()=>{const v=inp.value.trim()&&codeInp.value.trim();btn.disabled=!v;btn.style.opacity=v?'1':'.5'};
+    inp.oninput=checkReady;codeInp.oninput=checkReady;
+    codeInp.onkeydown=(e)=>{if(e.key==='Enter'&&inp.value.trim()&&codeInp.value.trim())confirmProfile()};
     window._profileOverlay=overlay;
     window._profileResolve=resolve;
   });
 }
 async function confirmProfile(){
   const name=document.getElementById('profileNameIn').value.trim();
-  if(!name)return;
+  const code=document.getElementById('profileCodeIn').value.trim();
+  const errEl=document.getElementById('profileError');
+  if(!name||!code)return;
   try{
-    const r=await fetch(`${API_BASE}/profiles`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name})});
+    const r=await fetch(`${API_BASE}/profiles`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name,inviteCode:code})});
     const d=await r.json();
-    if(d.ok){
+    if(r.ok&&d.ok){
       _profileId=d.profile.id;_profileName=d.profile.name;
       localStorage.setItem('moneybag_profile_id',_profileId);
       localStorage.setItem('moneybag_profile_name',_profileName);
+      if(window._profileOverlay)window._profileOverlay.remove();
+      if(window._profileResolve)window._profileResolve();
+    }else{
+      if(errEl){errEl.style.display='block';errEl.textContent=d.detail||'注册失败，请检查邀请码'}
     }
   }catch(e){
-    // 离线时用本地 hash
-    _profileId='u_'+name.split('').reduce((a,c)=>((a<<5)-a)+c.charCodeAt(0),0).toString(16).slice(-8);
-    _profileName=name;
-    localStorage.setItem('moneybag_profile_id',_profileId);
-    localStorage.setItem('moneybag_profile_name',_profileName);
+    if(errEl){errEl.style.display='block';errEl.textContent='网络错误，请重试'}
   }
-  if(window._profileOverlay)window._profileOverlay.remove();
-  if(window._profileResolve)window._profileResolve();
 }
 const EXPENSE_ICONS={'餐饮':'🍜','交通':'🚗','购物':'🛍️','娱乐':'🎮','医疗':'🏥','教育':'📚','房租':'🏠','日用':'🧴','通讯':'📱','其他':'📌'};
 const INCOME_ICONS={'工资':'💰','兼职':'🔧','民宿':'🏡','外包':'💻','理财收益':'📈','红包':'🧧','退款':'↩️','出租房':'🏘️','其他收入':'💵'};
