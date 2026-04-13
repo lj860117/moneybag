@@ -77,6 +77,9 @@ async def callback_receive(
                 _handle_help(from_user)
                 return
 
+            # 先发一条"思考中"让用户知道没死机
+            send_markdown(f"🧠 收到！正在分析「{content[:20]}{'...' if len(content)>20 else ''}」\n预计 10-20 秒回复...", user_id=from_user)
+
             # 通用问题 → 调 DeepSeek AI 聊天
             market_ctx = _build_market_context()
             portfolio_ctx = _build_portfolio_context(user_id=user_id) if user_id else "用户尚未建仓。"
