@@ -15,10 +15,10 @@ from services.stock_monitor import load_stock_holdings, scan_all_holdings
 from services.fund_monitor import load_fund_holdings, scan_all_fund_holdings
 
 
-def get_portfolio_overview() -> dict:
+def get_portfolio_overview(user_id: str = "default") -> dict:
     """汇总全资产，返回统一概览数据"""
     # 1. 股票持仓
-    stock_holdings = load_stock_holdings()
+    stock_holdings = load_stock_holdings(user_id)
     stock_total_mv = 0
     stock_total_cost = 0
     stock_count = 0
@@ -30,7 +30,7 @@ def get_portfolio_overview() -> dict:
         stock_total_mv += h.get("costPrice", 0) * h.get("shares", 0)
 
     # 2. 基金持仓
-    fund_holdings = load_fund_holdings()
+    fund_holdings = load_fund_holdings(user_id)
     fund_total_mv = 0
     fund_total_cost = 0
     fund_count = 0

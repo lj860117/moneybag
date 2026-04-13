@@ -19,7 +19,6 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 
 # ---- 持仓数据路径 ----
 _DATA_DIR = Path(os.environ.get("DATA_DIR", Path(__file__).parent.parent / "data"))
-_FUND_HOLDINGS_FILE = _DATA_DIR / "fund_holdings.json"
 _MONITOR_DIR = _DATA_DIR / "monitor"
 
 # ---- 缓存 ----
@@ -31,34 +30,40 @@ _name_cache = {"data": None, "ts": 0}
 _NAME_TTL = 86400  # 名称表缓存 24 小时
 
 
+def _fund_file(user_id: str = "default") -> Path:
+    """按 userId 隔离基金持仓文件"""
+    if user_id == "default":
+        return _DATA_DIR / "fund_holdings.json"  # 向后兼容
+    return _DATA_DIR / f"fund_holdings_{user_id}.json"
+
+
 # ============================================================
-# 1. 基金持仓 CRUD
+# 1. 基金持仓 CRUD（支持多用户）
 # ============================================================
 
-def load_fund_holdings() -> list:
+def load_fund_holdings(user_id: str = "default") -> list:
     """加载基金持仓列表"""
-    if _FUND_HOLDINGS_FILE.exists():
+    f = _fund_file(user_id)
+    if f.exists():
         try:
-            data = json.loads(_FUND_HOLDINGS_FILE.read_text(encoding="utf-8"))
+            data = json.loads(f.read_text(encoding="utf-8"))
             return data if isinstance(data, list) else []
         except Exception:
             return []
     return []
 
 
-def save_fund_holdings(holdings: list):
+def save_fund_holdings(holdings: list, user_id: str = "default"):
     """保存基金持仓列表"""
-    _FUND_HOLDINGS_FILE.parent.mkdir(parents=True, exist_ok=True)
-    _FUND_HOLDINGS_FILE.write_text(
-        json.dumps(holdings, ensure_ascii=False, indent=2),
-        encoding="utf-8"
-    )
+    f = _fund_file(user_id)
+    f.parent.mkdir(parents=True, exist_ok=True)
+    f.write_text(json.dumps(holdings, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
 def add_fund_holding(code: str, name: str = "", cost_nav: float = 0,
-                     shares: float = 0, note: str = "") -> dict:
+                     shares: float = 0, note: str = "", user_id: str = "default") -> dict:
     """添加一只持仓基金"""
-    holdings = load_fund_holdings()
+    holdings = load_fund_holdings(user_id)
     if any(h["code"] == code for h in holdings):
         return {"error": f"{code} 已在持仓中"}
 
@@ -74,30 +79,30 @@ def add_fund_holding(code: str, name: str = "", cost_nav: float = 0,
         "addedAt": datetime.now().isoformat(),
     }
     holdings.append(holding)
-    save_fund_holdings(holdings)
+    save_fund_holdings(holdings, user_id)
     return {"ok": True, "holding": holding}
 
 
-def remove_fund_holding(code: str) -> dict:
+def remove_fund_holding(code: str, user_id: str = "default") -> dict:
     """删除一只持仓基金"""
-    holdings = load_fund_holdings()
+    holdings = load_fund_holdings(user_id)
     before = len(holdings)
     holdings = [h for h in holdings if h["code"] != code]
     if len(holdings) == before:
         return {"error": f"{code} 不在持仓中"}
-    save_fund_holdings(holdings)
+    save_fund_holdings(holdings, user_id)
     return {"ok": True}
 
 
-def update_fund_holding(code: str, **kwargs) -> dict:
+def update_fund_holding(code: str, user_id: str = "default", **kwargs) -> dict:
     """更新持仓信息"""
-    holdings = load_fund_holdings()
+    holdings = load_fund_holdings(user_id)
     for h in holdings:
         if h["code"] == code:
             for k, v in kwargs.items():
                 if k in ("costNav", "shares", "note", "name"):
                     h[k] = v
-            save_fund_holdings(holdings)
+            save_fund_holdings(holdings, user_id)
             return {"ok": True, "holding": h}
     return {"error": f"{code} 不在持仓中"}
 
@@ -337,9 +342,9 @@ def detect_fund_alerts(code: str, realtime: dict, risk: dict) -> list:
 # 6. 全持仓扫描
 # ============================================================
 
-def scan_all_fund_holdings() -> dict:
+def scan_all_fund_holdings(user_id: str = "default") -> dict:
     """扫描全部基金持仓，返回汇总结果"""
-    holdings = load_fund_holdings()
+    holdings = load_fund_holdings(user_id)
     if not holdings:
         return {"holdings": [], "alerts": [], "scannedAt": datetime.now().isoformat()}
 

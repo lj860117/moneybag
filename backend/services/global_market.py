@@ -430,4 +430,12 @@ def get_decision_data_pack() -> dict:
     except Exception:
         pack["news"] = []
 
+    # 国内政策数据
+    try:
+        from services.policy_data import get_all_policy_topics, get_real_estate_data
+        pack["policy_topics"] = get_all_policy_topics()
+        pack["real_estate"] = get_real_estate_data()
+    except Exception:
+        pack["policy_topics"] = {"error": "unavailable"}
+
     return pack

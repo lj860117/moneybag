@@ -533,6 +533,39 @@ def macro_extended_all():
     }
 
 
+# ---- 国内政策数据 API ----
+from services.policy_data import (
+    get_real_estate_data, get_house_price_index,
+    get_policy_news_by_topic, get_all_policy_topics,
+    analyze_policy_impact_ds,
+)
+
+@app.get("/api/policy/real-estate")
+def policy_real_estate():
+    """房地产开发投资/销售数据"""
+    return get_real_estate_data()
+
+@app.get("/api/policy/house-price")
+def policy_house_price():
+    """70城新房价格指数"""
+    return get_house_price_index()
+
+@app.get("/api/policy/news")
+def policy_news_by_topic(topic: str = "房地产", limit: int = 5):
+    """按主题获取政策新闻"""
+    return get_policy_news_by_topic(topic, limit)
+
+@app.get("/api/policy/all-topics")
+def policy_all_topics():
+    """一次性获取全部主题政策新闻"""
+    return get_all_policy_topics()
+
+@app.get("/api/policy/impact")
+def policy_impact():
+    """DeepSeek 分析政策→A股影响"""
+    return analyze_policy_impact_ds()
+
+
 @app.get("/api/factors/all")
 def get_all_factors():
     """一次性获取全部新因子数据"""
@@ -702,13 +735,49 @@ from services.stock_monitor import (
     update_stock_holding, get_stock_realtime, scan_all_holdings,
 )
 
+# ---- 多用户 Profile 管理 ----
+_PROFILES_FILE = DATA_DIR / "profiles.json"
+
+def _load_profiles() -> list:
+    if _PROFILES_FILE.exists():
+        try: return json.loads(_PROFILES_FILE.read_text(encoding="utf-8"))
+        except: return []
+    return []
+
+def _save_profiles(profiles: list):
+    _PROFILES_FILE.parent.mkdir(parents=True, exist_ok=True)
+    _PROFILES_FILE.write_text(json.dumps(profiles, ensure_ascii=False, indent=2), encoding="utf-8")
+
+@app.get("/api/profiles")
+def get_profiles():
+    """获取所有 Profile 列表"""
+    return {"profiles": _load_profiles()}
+
+@app.post("/api/profiles")
+def create_profile(req: dict):
+    """创建新 Profile（首次使用时）"""
+    name = req.get("name", "").strip()
+    if not name:
+        raise HTTPException(400, "名字不能为空")
+    profiles = _load_profiles()
+    # 生成唯一 ID
+    pid = f"u_{hashlib.md5(name.encode()).hexdigest()[:8]}"
+    if any(p["id"] == pid for p in profiles):
+        # 已存在，直接返回
+        return {"ok": True, "profile": next(p for p in profiles if p["id"] == pid), "exists": True}
+    profile = {"id": pid, "name": name, "createdAt": datetime.now().isoformat()}
+    profiles.append(profile)
+    _save_profiles(profiles)
+    return {"ok": True, "profile": profile, "exists": False}
+
+
 # ---- 资产总览 API ----
 from services.portfolio_overview import get_portfolio_overview
 
 @app.get("/api/portfolio/overview")
-def portfolio_overview_api():
+def portfolio_overview_api(userId: str = "default"):
     """汇总全资产概览（股票+基金+配置占比+健康评分）"""
-    return get_portfolio_overview()
+    return get_portfolio_overview(userId)
 
 
 # ---- DeepSeek 智能增强 API ----
@@ -758,9 +827,9 @@ def get_signal_interpretation():
 
 
 @app.get("/api/stock-holdings")
-def get_stock_holdings_api():
+def get_stock_holdings_api(userId: str = "default"):
     """获取股票持仓列表"""
-    return {"holdings": load_stock_holdings()}
+    return {"holdings": load_stock_holdings(userId)}
 
 @app.post("/api/stock-holdings")
 def add_stock_holding_api(req: dict):
@@ -768,23 +837,26 @@ def add_stock_holding_api(req: dict):
     code = req.get("code", "").strip()
     if not code:
         raise HTTPException(400, "股票代码不能为空")
+    uid = req.get("userId", "default")
     return add_stock_holding(
         code=code,
         name=req.get("name", ""),
         cost_price=float(req.get("costPrice", 0)),
         shares=int(req.get("shares", 0)),
         note=req.get("note", ""),
+        user_id=uid,
     )
 
 @app.delete("/api/stock-holdings/{code}")
-def remove_stock_holding_api(code: str):
+def remove_stock_holding_api(code: str, userId: str = "default"):
     """删除股票持仓"""
-    return remove_stock_holding(code)
+    return remove_stock_holding(code, userId)
 
 @app.put("/api/stock-holdings/{code}")
 def update_stock_holding_api(code: str, req: dict):
     """更新股票持仓信息"""
-    return update_stock_holding(code, **{
+    uid = req.pop("userId", "default")
+    return update_stock_holding(code, user_id=uid, **{
         k: v for k, v in req.items()
         if k in ("costPrice", "shares", "note", "name")
     })
@@ -795,9 +867,9 @@ def get_stock_rt_api(code: str):
     return get_stock_realtime(code)
 
 @app.get("/api/stock-holdings/scan")
-def scan_holdings_api():
+def scan_holdings_api(userId: str = "default"):
     """扫描全持仓 — 实时行情 + 异动信号"""
-    return scan_all_holdings()
+    return scan_all_holdings(userId)
 
 
 @app.post("/api/stock-holdings/analyze")
@@ -876,9 +948,9 @@ from services.fund_monitor import (
 )
 
 @app.get("/api/fund-holdings")
-def get_fund_holdings_api():
+def get_fund_holdings_api(userId: str = "default"):
     """获取基金持仓列表"""
-    return {"holdings": load_fund_holdings()}
+    return {"holdings": load_fund_holdings(userId)}
 
 @app.post("/api/fund-holdings")
 def add_fund_holding_api(req: dict):
@@ -886,23 +958,26 @@ def add_fund_holding_api(req: dict):
     code = req.get("code", "").strip()
     if not code:
         raise HTTPException(400, "基金代码不能为空")
+    uid = req.get("userId", "default")
     return add_fund_holding(
         code=code,
         name=req.get("name", ""),
         cost_nav=float(req.get("costNav", 0)),
         shares=float(req.get("shares", 0)),
         note=req.get("note", ""),
+        user_id=uid,
     )
 
 @app.delete("/api/fund-holdings/{code}")
-def remove_fund_holding_api(code: str):
+def remove_fund_holding_api(code: str, userId: str = "default"):
     """删除基金持仓"""
-    return remove_fund_holding(code)
+    return remove_fund_holding(code, userId)
 
 @app.put("/api/fund-holdings/{code}")
 def update_fund_holding_api(code: str, req: dict):
     """更新基金持仓信息"""
-    return update_fund_holding(code, **{
+    uid = req.pop("userId", "default")
+    return update_fund_holding(code, user_id=uid, **{
         k: v for k, v in req.items()
         if k in ("costNav", "shares", "note", "name")
     })
@@ -913,9 +988,9 @@ def get_fund_rt_api(code: str):
     return get_fund_realtime(code)
 
 @app.get("/api/fund-holdings/scan")
-def scan_fund_holdings_api():
+def scan_fund_holdings_api(userId: str = "default"):
     """扫描全基金持仓 — 估值 + 风控 + 异动"""
-    return scan_all_fund_holdings()
+    return scan_all_fund_holdings(userId)
 
 @app.post("/api/fund-holdings/analyze")
 async def analyze_fund_holdings(req: dict = {}):
@@ -1730,6 +1805,16 @@ def _build_market_context() -> str:
         if gs.get("summary"):
             lines.append("")
             lines.append(gs["summary"])
+    except Exception:
+        pass
+
+    # 国内政策数据（房地产/房价/政策新闻）
+    try:
+        from services.policy_data import get_policy_summary_for_context
+        policy_ctx = get_policy_summary_for_context()
+        if policy_ctx:
+            lines.append("\n国内政策动态：")
+            lines.append(policy_ctx)
     except Exception:
         pass
 

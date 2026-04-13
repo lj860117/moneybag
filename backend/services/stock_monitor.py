@@ -16,41 +16,46 @@ from typing import Optional
 
 # ---- 持仓数据路径 ----
 _DATA_DIR = Path(os.environ.get("DATA_DIR", Path(__file__).parent.parent / "data"))
-_STOCK_HOLDINGS_FILE = _DATA_DIR / "stock_holdings.json"
 
 # ---- 缓存 ----
 _monitor_cache = {}
 _MONITOR_TTL = 600  # 10 分钟
 
 
+def _stock_file(user_id: str = "default") -> Path:
+    """按 userId 隔离持仓文件"""
+    if user_id == "default":
+        return _DATA_DIR / "stock_holdings.json"  # 向后兼容
+    return _DATA_DIR / f"stock_holdings_{user_id}.json"
+
+
 # ============================================================
-# 1. 股票持仓 CRUD
+# 1. 股票持仓 CRUD（支持多用户）
 # ============================================================
 
-def load_stock_holdings() -> list:
+def load_stock_holdings(user_id: str = "default") -> list:
     """加载股票持仓列表"""
-    if _STOCK_HOLDINGS_FILE.exists():
+    f = _stock_file(user_id)
+    if f.exists():
         try:
-            data = json.loads(_STOCK_HOLDINGS_FILE.read_text(encoding="utf-8"))
+            data = json.loads(f.read_text(encoding="utf-8"))
             return data if isinstance(data, list) else []
         except Exception:
             return []
     return []
 
 
-def save_stock_holdings(holdings: list):
+def save_stock_holdings(holdings: list, user_id: str = "default"):
     """保存股票持仓列表"""
-    _STOCK_HOLDINGS_FILE.parent.mkdir(parents=True, exist_ok=True)
-    _STOCK_HOLDINGS_FILE.write_text(
-        json.dumps(holdings, ensure_ascii=False, indent=2),
-        encoding="utf-8"
-    )
+    f = _stock_file(user_id)
+    f.parent.mkdir(parents=True, exist_ok=True)
+    f.write_text(json.dumps(holdings, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
 def add_stock_holding(code: str, name: str = "", cost_price: float = 0,
-                      shares: int = 0, note: str = "") -> dict:
+                      shares: int = 0, note: str = "", user_id: str = "default") -> dict:
     """添加一只持仓股票"""
-    holdings = load_stock_holdings()
+    holdings = load_stock_holdings(user_id)
     # 去重
     if any(h["code"] == code for h in holdings):
         return {"error": f"{code} 已在持仓中"}
@@ -68,30 +73,30 @@ def add_stock_holding(code: str, name: str = "", cost_price: float = 0,
         "addedAt": datetime.now().isoformat(),
     }
     holdings.append(holding)
-    save_stock_holdings(holdings)
+    save_stock_holdings(holdings, user_id)
     return {"ok": True, "holding": holding}
 
 
-def remove_stock_holding(code: str) -> dict:
+def remove_stock_holding(code: str, user_id: str = "default") -> dict:
     """删除一只持仓股票"""
-    holdings = load_stock_holdings()
+    holdings = load_stock_holdings(user_id)
     before = len(holdings)
     holdings = [h for h in holdings if h["code"] != code]
     if len(holdings) == before:
         return {"error": f"{code} 不在持仓中"}
-    save_stock_holdings(holdings)
+    save_stock_holdings(holdings, user_id)
     return {"ok": True}
 
 
-def update_stock_holding(code: str, **kwargs) -> dict:
+def update_stock_holding(code: str, user_id: str = "default", **kwargs) -> dict:
     """更新持仓信息（成本价/股数/备注）"""
-    holdings = load_stock_holdings()
+    holdings = load_stock_holdings(user_id)
     for h in holdings:
         if h["code"] == code:
             for k, v in kwargs.items():
                 if k in ("costPrice", "shares", "note", "name"):
                     h[k] = v
-            save_stock_holdings(holdings)
+            save_stock_holdings(holdings, user_id)
             return {"ok": True, "holding": h}
     return {"error": f"{code} 不在持仓中"}
 
@@ -299,9 +304,9 @@ def detect_anomalies(code: str, realtime: dict = None, indicators: dict = None) 
 # 5. 全持仓扫描（供 cron 调用）
 # ============================================================
 
-def scan_all_holdings() -> dict:
+def scan_all_holdings(user_id: str = "default") -> dict:
     """扫描所有持仓股票，返回实时行情 + 异动信号"""
-    holdings = load_stock_holdings()
+    holdings = load_stock_holdings(user_id)
     if not holdings:
         return {"holdings": [], "signals": [], "scannedAt": datetime.now().isoformat()}
 

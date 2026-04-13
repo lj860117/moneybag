@@ -64,6 +64,58 @@ const TXN_KEY='moneybag_transactions';
 const ASSETS_KEY='moneybag_assets';
 const LEDGER_KEY='moneybag_ledger';
 const SOURCES_KEY='moneybag_income_sources';
+
+// ---- 多用户 Profile 系统 ----
+let _profileId = localStorage.getItem('moneybag_profile_id') || '';
+let _profileName = localStorage.getItem('moneybag_profile_name') || '';
+function getProfileId(){ return _profileId || 'default' }
+function getProfileParam(){ return `userId=${encodeURIComponent(getProfileId())}` }
+
+async function ensureProfile(){
+  if(_profileId) return; // 已有身份
+  return new Promise(resolve => {
+    const overlay=document.createElement('div');
+    overlay.style.cssText='position:fixed;inset:0;background:rgba(0,0,0,.6);z-index:9999;display:flex;align-items:center;justify-content:center';
+    overlay.innerHTML=`<div style="background:var(--bg2,#1e293b);border-radius:16px;padding:32px;max-width:320px;width:90%;text-align:center">
+      <div style="font-size:48px;margin-bottom:16px">👋</div>
+      <h2 style="color:var(--text,#f1f5f9);margin-bottom:8px">欢迎使用钱袋子</h2>
+      <p style="color:var(--text2,#94a3b8);font-size:14px;margin-bottom:20px">输入你的名字，数据会安全保存在你名下</p>
+      <input id="profileNameIn" type="text" placeholder="你的名字" maxlength="20"
+        style="width:100%;box-sizing:border-box;padding:12px;border-radius:10px;border:1px solid var(--bg3,#334155);background:var(--bg,#0f172a);color:var(--text,#f1f5f9);font-size:16px;text-align:center;margin-bottom:16px">
+      <button id="profileConfirmBtn" disabled onclick="confirmProfile()"
+        style="width:100%;padding:12px;border-radius:10px;border:none;background:var(--accent,#F59E0B);color:#000;font-size:16px;font-weight:700;cursor:pointer;opacity:.5">确认</button>
+    </div>`;
+    document.body.appendChild(overlay);
+    const inp=document.getElementById('profileNameIn');
+    const btn=document.getElementById('profileConfirmBtn');
+    inp.focus();
+    inp.oninput=()=>{const v=inp.value.trim();btn.disabled=!v;btn.style.opacity=v?'1':'.5'};
+    inp.onkeydown=(e)=>{if(e.key==='Enter'&&inp.value.trim())confirmProfile()};
+    window._profileOverlay=overlay;
+    window._profileResolve=resolve;
+  });
+}
+async function confirmProfile(){
+  const name=document.getElementById('profileNameIn').value.trim();
+  if(!name)return;
+  try{
+    const r=await fetch(`${API_BASE}/profiles`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name})});
+    const d=await r.json();
+    if(d.ok){
+      _profileId=d.profile.id;_profileName=d.profile.name;
+      localStorage.setItem('moneybag_profile_id',_profileId);
+      localStorage.setItem('moneybag_profile_name',_profileName);
+    }
+  }catch(e){
+    // 离线时用本地 hash
+    _profileId='u_'+name.split('').reduce((a,c)=>((a<<5)-a)+c.charCodeAt(0),0).toString(16).slice(-8);
+    _profileName=name;
+    localStorage.setItem('moneybag_profile_id',_profileId);
+    localStorage.setItem('moneybag_profile_name',_profileName);
+  }
+  if(window._profileOverlay)window._profileOverlay.remove();
+  if(window._profileResolve)window._profileResolve();
+}
 const EXPENSE_ICONS={'餐饮':'🍜','交通':'🚗','购物':'🛍️','娱乐':'🎮','医疗':'🏥','教育':'📚','房租':'🏠','日用':'🧴','通讯':'📱','其他':'📌'};
 const INCOME_ICONS={'工资':'💰','兼职':'🔧','民宿':'🏡','外包':'💻','理财收益':'📈','红包':'🧧','退款':'↩️','出租房':'🏘️','其他收入':'💵'};
 const SOURCE_TYPE_ICONS={'民宿':'🏡','出租房':'🏘️','外包':'💻','兼职':'🔧','工资':'💰','理财收益':'📈','电商':'🛒','自媒体':'📱','其他':'💵'};
@@ -1496,7 +1548,7 @@ loadOverviewHero();
 if(_holdingsSubTab==='fund')renderFundsContent();else renderStocksContent()}
 
 async function loadOverviewHero(){
-try{const ov=await fetch(API_BASE+'/portfolio/overview').then(r=>r.json());_overviewData=ov;
+try{const ov=await fetch(API_BASE+'/portfolio/overview?'+getProfileParam()).then(r=>r.json());_overviewData=ov;
 const el=document.getElementById('overviewHero');if(!el)return;
 const pnlC=ov.totalPnl>=0?'var(--green)':'var(--red)';
 const hC=ov.healthScore>=80?'var(--green)':ov.healthScore>=60?'#F59E0B':'var(--red)';
@@ -1541,7 +1593,7 @@ document.getElementById('subTabStock')?.classList.replace('secondary','primary')
 document.getElementById('subTabFund')?.classList.replace('primary','secondary');
 const el=document.getElementById('holdingsContent');
 el.innerHTML='<div style="text-align:center;padding:40px"><div class="loading-spinner"></div><div style="color:var(--text2);margin-top:12px">加载股票持仓...</div></div>';
-try{const[hRes,scanRes]=await Promise.all([fetch(API_BASE+'/stock-holdings').then(r=>r.json()),fetch(API_BASE+'/stock-holdings/scan').then(r=>r.json())]);
+try{const[hRes,scanRes]=await Promise.all([fetch(API_BASE+'/stock-holdings?'+getProfileParam()).then(r=>r.json()),fetch(API_BASE+'/stock-holdings/scan?'+getProfileParam()).then(r=>r.json())]);
 _stockScanData=scanRes;const holdings=scanRes.holdings||[];const signals=scanRes.signals||[];
 const el=document.getElementById('holdingsContent');if(!el)return;
 // 异动信号汇总
@@ -1564,7 +1616,7 @@ document.body.appendChild(overlay)}
 
 async function doAddStock(){const code=$('#addStockCode')?.value?.trim();if(!code){alert('请输入股票代码');return}
 const cost=parseFloat($('#addStockCost')?.value)||0;const shares=parseInt($('#addStockShares')?.value)||0;const note=$('#addStockNote')?.value||'';
-try{const r=await fetch(API_BASE+'/stock-holdings',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({code,costPrice:cost,shares,note})});
+try{const r=await fetch(API_BASE+'/stock-holdings',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({code,costPrice:cost,shares,note,userId:getProfileId()})});
 const d=await r.json();if(d.error){alert(d.error);return}document.querySelector('.modal-overlay')?.remove();renderStocksContent()}catch(e){alert('添加失败: '+e.message)}}
 
 function showStockDetail(code){const h=(_stockScanData?.holdings||[]).find(x=>x.code===code);if(!h)return;
@@ -1573,7 +1625,7 @@ const ind=h.indicators||{};const sigs=h.signals||[];
 overlay.innerHTML=`<div class="modal-sheet"><div class="modal-handle"></div><div class="modal-title">${h.name||h.code}</div><div class="modal-subtitle">${h.code} · ${h.changePct!=null?(h.changePct>=0?'+':'')+h.changePct.toFixed(2)+'%':'--'}</div><div class="modal-stat-grid"><div class="modal-stat"><div class="modal-stat-label">当前价</div><div class="modal-stat-value">${h.price?'¥'+h.price.toFixed(2):'--'}</div></div><div class="modal-stat"><div class="modal-stat-label">RSI14</div><div class="modal-stat-value" style="color:${ind.rsi14>70?'var(--red)':ind.rsi14<30?'var(--green)':'var(--text)'}">${ind.rsi14||'--'}</div></div><div class="modal-stat"><div class="modal-stat-label">MACD</div><div class="modal-stat-value">${ind.macd_trend||'--'}</div></div><div class="modal-stat"><div class="modal-stat-label">量比</div><div class="modal-stat-value" style="color:${ind.volume_ratio>2?'var(--red)':'var(--text)'}">${ind.volume_ratio||'--'}</div></div></div>${sigs.length?'<div style="margin-top:16px"><div style="font-size:13px;font-weight:700;margin-bottom:8px">📡 信号</div>'+sigs.map(s=>`<div style="padding:6px 0;font-size:13px;border-bottom:1px solid var(--bg3)">${s.msg}</div>`).join('')+'</div>':''}<div style="margin-top:16px;display:flex;gap:8px"><button class="action-btn secondary" style="flex:1" onclick="if(confirm('删除 ${h.name}？'))deleteStock('${h.code}')">🗑️ 删除</button></div></div>`;
 document.body.appendChild(overlay)}
 
-async function deleteStock(code){try{await fetch(API_BASE+'/stock-holdings/'+code,{method:'DELETE'});document.querySelector('.modal-overlay')?.remove();renderStocksContent()}catch(e){alert('删除失败')}}
+async function deleteStock(code){try{await fetch(API_BASE+'/stock-holdings/'+code+'?'+getProfileParam(),{method:'DELETE'});document.querySelector('.modal-overlay')?.remove();renderStocksContent()}catch(e){alert('删除失败')}}
 
 // ---- 💰 基金持仓板块 ----
 async function renderFundsContent(){
@@ -1582,7 +1634,7 @@ document.getElementById('subTabFund')?.classList.replace('secondary','primary');
 document.getElementById('subTabStock')?.classList.replace('primary','secondary');
 const el=document.getElementById('holdingsContent');
 el.innerHTML='<div style="text-align:center;padding:40px"><div class="loading-spinner"></div><div style="color:var(--text2);margin-top:12px">加载基金持仓...</div></div>';
-try{const[hRes,scanRes]=await Promise.all([fetch(API_BASE+'/fund-holdings').then(r=>r.json()),fetch(API_BASE+'/fund-holdings/scan').then(r=>r.json())]);
+try{const[hRes,scanRes]=await Promise.all([fetch(API_BASE+'/fund-holdings?'+getProfileParam()).then(r=>r.json()),fetch(API_BASE+'/fund-holdings/scan?'+getProfileParam()).then(r=>r.json())]);
 _fundScanData=scanRes;const holdings=scanRes.holdings||[];
 // 信号汇总
 let signalHtml='';const alerts=scanRes.alerts||[];
@@ -1617,7 +1669,7 @@ document.body.appendChild(overlay)}
 
 async function doAddFund(){const code=$('#addFundCode')?.value?.trim();if(!code){alert('请输入基金代码');return}
 const cost=parseFloat($('#addFundCost')?.value)||0;const shares=parseFloat($('#addFundShares')?.value)||0;const note=$('#addFundNote')?.value||'';
-try{const r=await fetch(API_BASE+'/fund-holdings',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({code,costNav:cost,shares,note})});
+try{const r=await fetch(API_BASE+'/fund-holdings',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({code,costNav:cost,shares,note,userId:getProfileId()})});
 const d=await r.json();if(d.error){alert(d.error);return}document.querySelector('.modal-overlay')?.remove();renderFundsContent()}catch(e){alert('添加失败: '+e.message)}}
 
 function showFundDetail(code){const h=(_fundScanData?.holdings||[]).find(x=>x.code===code);if(!h)return;
@@ -1626,9 +1678,13 @@ const overlay=document.createElement('div');overlay.className='modal-overlay';ov
 overlay.innerHTML=`<div class="modal-sheet"><div class="modal-handle"></div><div class="modal-title">${h.name||h.code}</div><div class="modal-subtitle">${h.code} · 估算 ${rt.estRate!=null?(rt.estRate>=0?'+':'')+rt.estRate.toFixed(2)+'%':'--'}</div><div class="modal-stat-grid"><div class="modal-stat"><div class="modal-stat-label">估算净值</div><div class="modal-stat-value">${rt.estNav||'--'}</div></div><div class="modal-stat"><div class="modal-stat-label">最新净值</div><div class="modal-stat-value">${rt.nav||'--'}</div></div><div class="modal-stat"><div class="modal-stat-label">估算偏差</div><div class="modal-stat-value">${rt.estDeviation!=null?rt.estDeviation.toFixed(2)+'%':'--'}</div></div><div class="modal-stat"><div class="modal-stat-label">最大回撤</div><div class="modal-stat-value" style="color:${risk.maxDrawdown>0.03?'var(--red)':'var(--text)'}">${risk.maxDrawdown!=null?(risk.maxDrawdown*100).toFixed(1)+'%':'--'}</div></div><div class="modal-stat"><div class="modal-stat-label">年化波动</div><div class="modal-stat-value">${risk.volatility!=null?(risk.volatility*100).toFixed(1)+'%':'--'}</div></div><div class="modal-stat"><div class="modal-stat-label">连跌天数</div><div class="modal-stat-value" style="color:${risk.downDays>=3?'var(--red)':'var(--text)'}">${risk.downDays||0}天</div></div></div>${alerts.length?'<div style="margin-top:16px"><div style="font-size:13px;font-weight:700;margin-bottom:8px">⚡ 信号</div>'+alerts.map(a=>`<div style="background:rgba(239,68,68,.06);border-radius:8px;padding:8px;margin-bottom:4px;font-size:12px">${a.msg}</div>`).join('')+'</div>':''}<button class="action-btn" onclick="deleteFund('${h.code}')" style="width:100%;margin-top:16px;color:var(--red);border-color:var(--red)">🗑️ 删除此基金</button></div>`;
 document.body.appendChild(overlay)}
 
-async function deleteFund(code){try{await fetch(API_BASE+'/fund-holdings/'+code,{method:'DELETE'});document.querySelector('.modal-overlay')?.remove();renderFundsContent()}catch(e){alert('删除失败')}}
+async function deleteFund(code){try{await fetch(API_BASE+'/fund-holdings/'+code+'?'+getProfileParam(),{method:'DELETE'});document.querySelector('.modal-overlay')?.remove();renderFundsContent()}catch(e){alert('删除失败')}}
 
 // ---- 启动 ----
 migrateV3toV4();
-checkAPI().then(()=>{fetchNav();syncFromCloud();loadModelList()});
-renderLanding();
+(async()=>{
+  await checkAPI();
+  await ensureProfile(); // 首次使用输入名字
+  fetchNav();syncFromCloud();loadModelList();
+  renderLanding();
+})();
