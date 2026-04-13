@@ -1648,6 +1648,16 @@ async def chat_analysis(req: ChatRequest):
     market_ctx = _build_market_context()
     portfolio_ctx = _build_portfolio_context(req.portfolio) if req.portfolio else "用户尚未建仓。"
 
+    # 多用户记忆注入
+    if req.userId:
+        try:
+            from services.agent_memory import get_memory_summary
+            mem = get_memory_summary(req.userId)
+            if mem:
+                portfolio_ctx += f"\n\n## 用户记忆\n{mem}"
+        except Exception:
+            pass
+
     # 尝试调用 LLM（支持 OpenAI 兼容 API）
     api_key = os.environ.get("OPENAI_API_KEY") or os.environ.get("LLM_API_KEY")
     api_base = os.environ.get("LLM_API_BASE", "https://api.deepseek.com/v1")
@@ -1709,6 +1719,16 @@ async def chat_analysis_stream(req: ChatRequest):
 
     market_ctx = _build_market_context()
     portfolio_ctx = _build_portfolio_context(req.portfolio) if req.portfolio else "用户尚未建仓。"
+
+    # 多用户记忆注入
+    if req.userId:
+        try:
+            from services.agent_memory import get_memory_summary
+            mem = get_memory_summary(req.userId)
+            if mem:
+                portfolio_ctx += f"\n\n## 用户记忆\n{mem}"
+        except Exception:
+            pass
 
     api_key = os.environ.get("OPENAI_API_KEY") or os.environ.get("LLM_API_KEY")
     api_base = os.environ.get("LLM_API_BASE", "https://api.deepseek.com/v1")

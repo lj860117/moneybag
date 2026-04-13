@@ -788,7 +788,7 @@ chatMessages.push({role:'user',text:msg});appendMsg('user',msg);appendTyping();
 const isR1=chatModel.includes('reasoner');
 let _thinkSec=0;_thinkTimer=setInterval(()=>{_thinkSec++;const el=document.getElementById('chatTyp');if(!el)return;const tips=isR1?['🧠 深度推理模型思考中...','💭 正在多角度分析...','📊 综合大师观点中...','⏳ R1 深度思考需要 15-30 秒，请耐心等待']:['🤖 AI 分析中...','📊 查询实时数据...','💭 综合分析中...'];const tip=tips[Math.min(Math.floor(_thinkSec/5),tips.length-1)];el.innerHTML=`<span></span><span></span><span></span><div style="font-size:11px;color:var(--text2);margin-top:4px">${tip}（${_thinkSec}s）</div>`},1000);
 if(API_AVAILABLE){try{const p=loadPortfolio();
-const r=await fetch(API_BASE+'/chat/stream',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({message:msg,model:chatModel,portfolio:p.holdings.length?p:null})});
+const r=await fetch(API_BASE+'/chat/stream',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({message:msg,model:chatModel,portfolio:p.holdings.length?p:null,userId:getUserId()})});
 rmTyping();
 if(r.ok&&r.body){
 // SSE 流式逐字渲染
