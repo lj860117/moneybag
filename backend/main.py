@@ -634,6 +634,15 @@ def get_stock_screen(top_n: int = 50):
     return screen_stocks(top_n)
 
 
+# ---- Phase 4: LightGBM ML 选股 ----
+from services.ml_stock_screen import ml_stock_screen
+
+@app.get("/api/stock-screen/ml")
+def get_ml_stock_screen(top_n: int = 30):
+    """LightGBM 多因子选股：ML增强版"""
+    return ml_stock_screen(top_n)
+
+
 # ---- API: 每日智能信号 ----
 
 @app.get("/api/daily-signal")
