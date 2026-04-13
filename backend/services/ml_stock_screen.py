@@ -28,70 +28,70 @@ def ml_stock_screen(top_n: int = 30) -> dict:
         return _ml_cache[cache_key]["data"]
 
     try:
-        import akshare as ak
         import lightgbm as lgb
         from sklearn.model_selection import TimeSeriesSplit
         from sklearn.metrics import ndcg_score
+        from services.stock_data_provider import get_stock_data
 
-        # 1. 获取数据
-        print("[ML_SCREEN] Loading A-share data...")
-        df = ak.stock_zh_a_spot_em()
-        if df is None or len(df) == 0:
-            return {"stocks": [], "total": 0, "error": "数据不可用", "model": "none"}
+        # 1. 通过数据层获取数据（自动降级多源）
+        print("[ML_SCREEN] Loading via data provider...")
+        raw = get_stock_data()
+        raw_stocks = raw.get("stocks", [])
+        source = raw.get("source", "unknown")
+        if not raw_stocks:
+            return {"stocks": [], "total": 0, "error": raw.get("error", "数据不可用"), "model": "none"}
 
-        cols = list(df.columns)
-        print(f"[ML_SCREEN] {len(df)} stocks loaded")
+        print("[ML_SCREEN] Got {} stocks from source={}".format(len(raw_stocks), source))
 
         # 2. 特征提取
         features = []
         labels = []
         stock_info = []
 
-        from services.utils import find_col as _fc, safe_float as _sf
-
-        for _, row in df.iterrows():
+        for s in raw_stocks:
             try:
-                code = str(row.get(_fc(cols, ["代码"]), ""))
-                name = str(row.get(_fc(cols, ["名称"]), ""))
-                price = _sf(row.get(_fc(cols, ["最新价"]), None))
-                pe = _sf(row.get(_fc(cols, ["市盈率"]), None))
-                pb = _sf(row.get(_fc(cols, ["市净率"]), None))
-                change_pct = _sf(row.get(_fc(cols, ["涨跌幅"]), None))
-                turnover = _sf(row.get(_fc(cols, ["换手率"]), None))
-                market_cap = _sf(row.get(_fc(cols, ["总市值"]), None))
-                change_5d = _sf(row.get(_fc(cols, ["5日涨跌幅", "5日涨跌"]), None))
-                change_20d = _sf(row.get(_fc(cols, ["20日涨跌幅", "20日涨跌"]), None))
-                change_60d = _sf(row.get(_fc(cols, ["60日涨跌幅", "60日涨跌"]), None))
-                amp = _sf(row.get(_fc(cols, ["振幅"]), None))
-                volume = _sf(row.get(_fc(cols, ["成交量"]), None))
+                code = s.get("code", "")
+                name = s.get("name", "")
+                price = s.get("price")
+                pe = s.get("pe")
+                pb = s.get("pb")
+                change_pct = s.get("change_pct")
+                turnover = s.get("turnover")
+                market_cap_yi = s.get("market_cap")  # 已是亿元
+                change_5d = s.get("change_5d")
+                change_20d = s.get("change_20d")
+                change_60d = s.get("change_60d")
+                amp = s.get("amplitude")
 
-                # 过滤条件（与规则版一致）
+                # 过滤条件
                 if not code or not name or price is None or price <= 0:
                     continue
-                if name.startswith("ST") or name.startswith("*ST"):
+                if "ST" in name:
                     continue
                 if pe is not None and (pe <= 0 or pe > 300):
                     continue
-                if market_cap is not None and market_cap < 5e9:
-                    continue
+                if market_cap_yi is not None and market_cap_yi < 50:
+                    continue  # 排除市值<50亿
                 if turnover is not None and turnover < 0.5:
+                    continue
+                # 无PE数据的跳过（新浪源未被补充的）
+                if pe is None:
                     continue
 
                 # 特征向量（8维）— 对标量化文档"特征库"
                 feat = [
-                    pe if pe else 20,                              # F1: PE（价值因子）
-                    pb if pb else 2,                               # F2: PB（价值因子）
-                    change_5d if change_5d else 0,                 # F3: 5日动量
-                    change_60d if change_60d else 0,               # F4: 60日动量
-                    turnover if turnover else 1,                   # F5: 换手率（流动性）
-                    (market_cap / 1e10) if market_cap else 5,      # F6: 市值（百亿）
-                    amp if amp else 3,                             # F7: 振幅（风险）
-                    change_20d if change_20d else 0,               # F8: 20日动量
+                    pe if pe else 20,                                  # F1: PE（价值因子）
+                    pb if pb else 2,                                   # F2: PB（价值因子）
+                    change_5d if change_5d else 0,                     # F3: 5日动量
+                    change_60d if change_60d else 0,                   # F4: 60日动量
+                    turnover if turnover else 1,                       # F5: 换手率（流动性）
+                    (market_cap_yi / 100) if market_cap_yi else 5,     # F6: 市值（百亿）
+                    amp if amp else 3,                                 # F7: 振幅（风险）
+                    change_20d if change_20d else 0,                   # F8: 20日动量
                 ]
 
                 # 标签：用规则打分作为"弱监督标签"
-                # （未来可替换为5-10日远期收益率作为真实标签）
-                rule_score = _calc_rule_score(pe, pb, change_5d, change_60d, change_20d, turnover, market_cap, amp)
+                rule_score = _calc_rule_score(pe, pb, change_5d, change_60d, change_20d, turnover, market_cap_yi, amp)
 
                 features.append(feat)
                 labels.append(rule_score)
@@ -99,7 +99,7 @@ def ml_stock_screen(top_n: int = 30) -> dict:
                     "code": code, "name": name, "price": price,
                     "pe": pe, "pb": pb, "change_pct": change_pct,
                     "turnover": turnover,
-                    "market_cap": round(market_cap / 1e8, 1) if market_cap else None,
+                    "market_cap": market_cap_yi,
                 })
 
             except Exception:
@@ -159,6 +159,7 @@ def ml_stock_screen(top_n: int = 30) -> dict:
         result = {
             "stocks": stocks,
             "total": len(scored),
+            "source": source,
             "method": "LightGBM 多因子选股（8维特征 + 弱监督标签）",
             "model_info": {
                 "n_estimators": params["n_estimators"],
@@ -183,7 +184,7 @@ def ml_stock_screen(top_n: int = 30) -> dict:
         return {"stocks": [], "total": 0, "error": str(e), "model": "none"}
 
 
-def _calc_rule_score(pe, pb, change_5d, change_60d, change_20d, turnover, market_cap, amp) -> float:
+def _calc_rule_score(pe, pb, change_5d, change_60d, change_20d, turnover, market_cap_yi, amp) -> float:
     """规则打分（作为 LightGBM 的弱监督标签）— 与 stock_screen.py 保持一致"""
     from config import STOCK_SCREEN_WEIGHTS as W
 
@@ -215,12 +216,12 @@ def _calc_rule_score(pe, pb, change_5d, change_60d, change_20d, turnover, market
         else: mom -= 15
     scores["momentum"] = max(0, min(mom, 100))
 
-    # 流动性
+    # 流动性（市值单位：亿元）
     liq = 50
     if turnover and 1 < turnover < 5: liq += 30
     elif turnover and 0.5 < turnover <= 1: liq += 15
-    if market_cap and market_cap > 100e9: liq += 20
-    elif market_cap and market_cap > 50e9: liq += 15
+    if market_cap_yi and market_cap_yi > 1000: liq += 20
+    elif market_cap_yi and market_cap_yi > 500: liq += 15
     scores["liquidity"] = max(0, min(liq, 100))
 
     # 风险
@@ -237,11 +238,11 @@ def _calc_rule_score(pe, pb, change_5d, change_60d, change_20d, turnover, market
     if change_20d and change_20d > 0: growth += 15
     scores["growth"] = max(0, min(growth, 100))
 
-    # 质量
+    # 质量（市值单位：亿元）
     quality = 50
     if pe and 5 < pe < 30: quality += 15
     if pb and 0.5 < pb < 5: quality += 15
-    if market_cap and market_cap > 50e9: quality += 20
+    if market_cap_yi and market_cap_yi > 500: quality += 20
     scores["quality"] = max(0, min(quality, 100))
 
     # 舆情

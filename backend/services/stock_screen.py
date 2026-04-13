@@ -2,12 +2,11 @@
 钱袋子 — AI 多因子选股
 7 维打分：价值/成长/质量/动量/风险/舆情/流动性
 参考：豆包方案（7维打分 → TOP50-150）
-数据源：AKShare 免费公开数据
+数据源：通过 stock_data_provider 多源自动降级
 """
 import time
 import traceback
 from config import STOCK_CACHE_TTL, STOCK_SCREEN_WEIGHTS
-from services.utils import find_col as _fc, safe_float as _sf
 
 _stock_cache = {}
 
@@ -23,46 +22,49 @@ def screen_stocks(top_n: int = 50) -> dict:
         return _stock_cache[cache_key]["data"]
 
     try:
-        import akshare as ak
+        from services.stock_data_provider import get_stock_data
 
-        # 获取 A 股实时行情（含PE/PB/换手率/涨跌幅等）
-        print("[STOCK_SCREEN] Loading A-share realtime data...")
-        df = ak.stock_zh_a_spot_em()
-        if df is None or len(df) == 0:
-            return {"stocks": [], "total": 0, "error": "A股行情数据暂不可用"}
+        # 通过数据层获取 A 股行情（自动降级多源）
+        print("[STOCK_SCREEN] Loading via data provider...")
+        data = get_stock_data()
+        raw_stocks = data.get("stocks", [])
+        source = data.get("source", "unknown")
+        if not raw_stocks:
+            return {"stocks": [], "total": 0, "error": data.get("error", "数据不可用")}
 
-        cols = list(df.columns)
-        print(f"[STOCK_SCREEN] Loaded {len(df)} stocks, columns: {cols[:15]}")
+        print("[STOCK_SCREEN] Got {} stocks from source={}".format(len(raw_stocks), source))
 
         candidates = []
-        for _, row in df.iterrows():
+        for s in raw_stocks:
             try:
-                code = str(row.get(_fc(cols, ["代码"]), ""))
-                name = str(row.get(_fc(cols, ["名称"]), ""))
-                price = _sf(row.get(_fc(cols, ["最新价"]), None))
-                pe = _sf(row.get(_fc(cols, ["市盈率"]), None))
-                pb = _sf(row.get(_fc(cols, ["市净率"]), None))
-                change_pct = _sf(row.get(_fc(cols, ["涨跌幅"]), None))
-                turnover = _sf(row.get(_fc(cols, ["换手率"]), None))
-                volume = _sf(row.get(_fc(cols, ["成交量"]), None))
-                market_cap = _sf(row.get(_fc(cols, ["总市值"]), None))
-                change_5d = _sf(row.get(_fc(cols, ["5日涨跌幅", "5日涨跌"]), None))
-                change_20d = _sf(row.get(_fc(cols, ["20日涨跌幅", "20日涨跌"]), None))
-                change_60d = _sf(row.get(_fc(cols, ["60日涨跌幅", "60日涨跌"]), None))
-                amp = _sf(row.get(_fc(cols, ["振幅"]), None))
-                high_52w = _sf(row.get(_fc(cols, ["52周最高", "年初至今涨跌幅"]), None))
+                code = s.get("code", "")
+                name = s.get("name", "")
+                price = s.get("price")
+                pe = s.get("pe")
+                pb = s.get("pb")
+                change_pct = s.get("change_pct")
+                turnover = s.get("turnover")
+                volume = s.get("volume")
+                market_cap_yi = s.get("market_cap")  # 已是亿元
+                change_5d = s.get("change_5d")
+                change_20d = s.get("change_20d")
+                change_60d = s.get("change_60d")
+                amp = s.get("amplitude")
 
                 # 过滤条件
                 if not code or not name or price is None or price <= 0:
                     continue
-                if name.startswith("ST") or name.startswith("*ST"):
+                if "ST" in name:
                     continue  # 排除ST
                 if pe is not None and (pe <= 0 or pe > 300):
                     continue  # 排除负PE和极端PE
-                if market_cap is not None and market_cap < 5e9:
+                if market_cap_yi is not None and market_cap_yi < 50:
                     continue  # 排除市值<50亿
                 if turnover is not None and turnover < 0.5:
                     continue  # 排除流动性极差的
+                # 新浪+雪球源：无 PE 数据的跳过（未被雪球补充的）
+                if pe is None and source == "sina+xq":
+                    continue
 
                 # --- 7 维打分（每维 0-100）---
                 scores = {}
@@ -120,12 +122,12 @@ def screen_stocks(top_n: int = 50) -> dict:
                         liq_score += 15
                     elif turnover >= 5:
                         liq_score += 10  # 换手太高可能有炒作
-                if market_cap is not None:
-                    if market_cap > 100e9:
-                        liq_score += 20  # 大盘股流动性好
-                    elif market_cap > 50e9:
+                if market_cap_yi is not None:
+                    if market_cap_yi > 1000:
+                        liq_score += 20  # 大盘股(>1000亿)流动性好
+                    elif market_cap_yi > 500:
                         liq_score += 15
-                    elif market_cap > 20e9:
+                    elif market_cap_yi > 200:
                         liq_score += 10
                 scores["liquidity"] = max(0, min(liq_score, 100))
 
@@ -156,8 +158,8 @@ def screen_stocks(top_n: int = 50) -> dict:
                     quality_score += 15  # PE在合理范围
                 if pb is not None and 0.5 < pb < 5:
                     quality_score += 15
-                if market_cap is not None and market_cap > 50e9:
-                    quality_score += 20  # 大市值通常质量更好
+                if market_cap_yi is not None and market_cap_yi > 500:
+                    quality_score += 20  # 大市值(>500亿)通常质量更好
                 scores["quality"] = max(0, min(quality_score, 100))
 
                 # 7. 舆情（暂无数据，给中性分）
@@ -174,7 +176,7 @@ def screen_stocks(top_n: int = 50) -> dict:
                     "pb": pb,
                     "change_pct": change_pct,
                     "turnover": turnover,
-                    "market_cap": round(market_cap / 1e8, 1) if market_cap else None,
+                    "market_cap": market_cap_yi,
                     "score": round(total_score, 1),
                     "scores": {k: round(v, 0) for k, v in scores.items()},
                 })
@@ -187,8 +189,9 @@ def screen_stocks(top_n: int = 50) -> dict:
         result = {
             "stocks": top,
             "total": len(candidates),
+            "source": source,
             "method": "7维多因子规则打分（价值20%+成长15%+质量15%+动量15%+风险15%+流动性10%+舆情10%）",
-            "note": "当前使用规则打分，成长/质量/舆情维度数据有限，后续可接LightGBM优化",
+            "note": "数据源: {}".format(source),
         }
         _stock_cache[cache_key] = {"data": result, "ts": time.time()}
         print(f"[STOCK_SCREEN] Screened {len(candidates)} → TOP {len(top)}")
