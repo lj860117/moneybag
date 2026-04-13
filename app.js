@@ -1148,6 +1148,7 @@ el.innerHTML=h;
 
 // 基金智能筛选页
 let fundPickType='all';let fundPickSort='score';
+function _fundTagsHTML(f){const r=f.returns;const tags=[];if(r['1y']!=null&&r['3m']!=null&&r['6m']!=null&&r['1y']>0&&r['3m']>0&&r['6m']>0)tags.push('📈稳定上涨');if(r['1y']!=null&&r['1y']>15)tags.push('\u{1F525}高收益');if(f.fee&&parseFloat(f.fee)<0.5)tags.push('💰低费率');if(r['3y']!=null&&r['3y']>30)tags.push('⭐长期优秀');let h='';if(tags.length)h+='<div style="display:flex;gap:4px;flex-wrap:wrap;margin-bottom:4px">'+tags.map(t=>'<span style="font-size:10px;padding:2px 6px;border-radius:4px;background:rgba(16,185,129,.1);color:#6EE7B7">'+t+'</span>').join('')+'</div>';if(f.aiComment)h+='<div style="font-size:12px;color:#E0E7FF;padding:6px 10px;background:rgba(99,102,241,.08);border-radius:8px;line-height:1.5">\u{1F916} '+f.aiComment+'</div>';return h?'<div style="padding:4px 12px 8px 32px">'+h+'</div>':''}
 function _fundPickBtnsHTML(){
 return `<div id="fundPickTypeBar" style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:10px">
 ${[['all','全部'],['stock','股票型'],['bond','债券型'],['index','指数型'],['qdii','QDII']].map(([k,l])=>`<button class="section-tab ${fundPickType===k?'active':''}" onclick="fundPickType='${k}';_updateFundPickBtns();renderFundPickResult()" style="font-size:12px;padding:5px 10px">${l}</button>`).join('')}
@@ -1162,7 +1163,7 @@ if(sb)sb.innerHTML=[['score','📊 综合评分'],['1y','📈 近1年'],['3y','�
 async function renderFundPick(el){
 el.innerHTML=`<div class="dashboard-card" style="overflow:hidden">
 <div class="dashboard-card-title">🔍 基金智能筛选</div>
-<div style="font-size:12px;color:var(--text2);margin-bottom:12px">多维度打分：近1年(35%)+近3年(25%)+近6月(20%)+近3月(10%)+费率</div>
+<div style="font-size:12px;color:var(--text2);margin-bottom:12px">多维度打分：近1年(30%)+近3年(20%)+近6月(15%)+近3月(10%)+稳定性(15%)+费率(10%)</div>
 ${_fundPickBtnsHTML()}
 <div id="fundPickList"><div style="text-align:center;padding:20px;color:var(--text2)"><div class="loading-spinner" style="width:24px;height:24px;margin:0 auto 8px;border-width:2px"></div>正在筛选基金...</div></div>
 </div>`;
@@ -1193,7 +1194,7 @@ return`<div style="display:flex;align-items:center;gap:10px;padding:10px 0;borde
 <div style="font-size:10px;color:var(--text2)">近1年</div></div>
 <div style="min-width:40px;text-align:right">
 <div style="font-size:12px;font-weight:700;color:${scoreColor}">${f.score}</div>
-<div style="font-size:10px;color:var(--text2)">评分</div></div></div>${f.aiComment?`<div style="font-size:11px;color:var(--accent);margin-top:4px;padding-top:4px;border-top:1px solid var(--bg3)">🤖 ${f.aiComment}</div>`:''}`}).join('')}
+<div style="font-size:10px;color:var(--text2)">评分</div></div></div>${_fundTagsHTML(f)}`}).join('')}
 <div style="text-align:center;margin-top:12px"><button class="action-btn secondary" style="display:inline-block;min-width:auto;padding:10px 24px" onclick="renderFundPickResult()">🔄 刷新</button></div>`;
 // 注册每只基金的白话弹窗
 funds.forEach(f=>{
@@ -1203,6 +1204,7 @@ setExplain('fund_'+f.code,f.name+' ('+f.code+')',
 })}catch(e){console.warn('Fund pick failed:',e);listEl.innerHTML='<div style="text-align:center;padding:20px;color:var(--text2)">📡 数据源加载中，请稍后重试<br><span style="font-size:11px;opacity:0.6">（首次加载可能需要 10-30 秒）</span><br><button onclick="renderFundPickResult()" style="margin-top:8px;padding:6px 16px;border-radius:6px;border:none;background:var(--accent);color:#fff;cursor:pointer;font-size:12px">🔄 重试</button></div>'}}
 
 // AI 多因子选股页
+function _stockTagsHTML(s){const sc=s.scores||{};const tags=[];if(sc.value>=70)tags.push('💰低估值');if(sc.momentum>=70)tags.push('📈强动量');if(sc.liquidity>=70)tags.push('🏦高流动');if(sc.risk>=80)tags.push('🛡️低风险');if(sc.quality>=70)tags.push('⭐高质量');let h='';if(tags.length)h+='<div style="display:flex;gap:4px;flex-wrap:wrap;margin-bottom:4px">'+tags.map(t=>'<span style="font-size:10px;padding:2px 6px;border-radius:4px;background:rgba(99,102,241,.1);color:#818CF8">'+t+'</span>').join('')+'</div>';if(s.aiComment)h+='<div style="font-size:12px;color:#E0E7FF;padding:6px 10px;background:rgba(99,102,241,.08);border-radius:8px;line-height:1.5">\u{1F916} '+s.aiComment+'</div>';return h?'<div style="padding:4px 0 8px 34px;border-bottom:1px solid rgba(148,163,184,.04)">'+h+'</div>':''}
 async function renderStockPick(el){
 el.innerHTML=`<div class="dashboard-card" style="overflow:hidden">
 <div class="dashboard-card-title">🧠 AI 多因子选股</div>
@@ -1226,9 +1228,9 @@ const scoreColor=s.score>65?'var(--green)':s.score>50?'var(--accent)':'var(--red
 return`<div style="display:grid;grid-template-columns:30px 1fr 70px 50px;gap:4px;padding:8px 0;border-bottom:1px solid rgba(148,163,184,.04);align-items:center;cursor:pointer" onclick="showExplain('stock_${s.code}')">
 <div style="font-size:11px;color:var(--text2);font-weight:700">${i+1}</div>
 <div><div style="font-size:13px;font-weight:600">${s.name}</div>
-<div style="font-size:10px;color:var(--text2)">${s.code} · PE${s.pe||'-'} · ${s.market_cap?s.market_cap+'亿':'-'}</div></div>
+<div style="font-size:10px;color:var(--text2)">${s.code} · PE ${s.pe!=null?s.pe:'暂无'} · ${s.market_cap?s.market_cap+'亿':'-'}</div></div>
 <div style="text-align:right;font-size:13px;font-weight:700;color:${chgColor}">${s.change_pct!=null?(s.change_pct>0?'+':'')+s.change_pct+'%':'—'}</div>
-<div style="text-align:right;font-size:13px;font-weight:800;color:${scoreColor}">${s.score}</div></div>${s.aiComment?`<div style="font-size:11px;color:var(--accent);padding:2px 0 6px 34px;border-bottom:1px solid rgba(148,163,184,.04)">🤖 ${s.aiComment}</div>`:''}`}).join('')}
+<div style="text-align:right;font-size:13px;font-weight:800;color:${scoreColor}">${s.score}</div></div>${_stockTagsHTML(s)}`}).join('')}
 <div style="text-align:center;margin-top:12px"><button class="action-btn secondary" style="display:inline-block;min-width:auto;padding:10px 24px" onclick="insightTab='stockpick';renderInsight()">🔄 刷新</button></div>
 <div style="font-size:11px;color:#475569;margin-top:8px;line-height:1.5">${data.method||''}<br>${data.note||''}</div>`;
 stocks.forEach(s=>{
