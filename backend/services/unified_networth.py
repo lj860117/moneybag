@@ -12,14 +12,12 @@
   - 后端 cash/liability 读 balance 字段但前端写 value 字段
   - 首页不包含股票盯盘系统的持仓
 """
-import json
 import time
-from pathlib import Path
 from datetime import datetime
-from typing import Optional
 
 from services.stock_monitor import load_stock_holdings
 from services.fund_monitor import load_fund_holdings
+from services.persistence import load_user as _persistence_load_user
 
 # ---- 缓存 ----
 _NW_CACHE = {}  # userId -> {data, ts}
@@ -27,15 +25,10 @@ _NW_CACHE_TTL = 120  # 2 分钟
 
 
 def _load_user_data(user_id: str) -> dict:
-    """从持久化文件加载用户数据（资产+记账）"""
-    data_dir = Path("/opt/moneybag/data") if Path("/opt/moneybag/data").exists() else Path("data")
-    user_file = data_dir / f"{user_id}.json"
-    if user_file.exists():
-        try:
-            return json.loads(user_file.read_text(encoding="utf-8"))
-        except Exception:
-            return {}
-    return {}
+    """从持久化文件加载用户数据（资产+记账）
+    使用统一的 persistence.load_user() 确保路径一致
+    """
+    return _persistence_load_user(user_id)
 
 
 def _get_asset_value(asset: dict) -> float:
@@ -102,7 +95,7 @@ def calc_unified_networth(user_id: str, force: bool = False) -> dict:
 
     # ---- 3. 手动资产（资产管理页添加的） ----
     user_data = _load_user_data(user_id)
-    portfolio = user_data.get("portfolio", {})
+    portfolio = user_data.get("portfolio") or {}
     assets = portfolio.get("assets", [])
 
     # 按类型分桶 — 支持所有 6 种类型
@@ -142,7 +135,7 @@ def calc_unified_networth(user_id: str, force: bool = False) -> dict:
                 txn_fund_total += h.get("totalCost", 0)
 
     # ---- 5. 记账收支（仅展示参考，不计入净资产防重复） ----
-    ledger = user_data.get("ledger", [])
+    ledger = user_data.get("ledger") or []
     ledger_income = sum(e.get("amount", 0) for e in ledger if e.get("direction") == "income")
     ledger_expense = sum(e.get("amount", 0) for e in ledger if e.get("direction", "expense") != "income")
     ledger_net = ledger_income - ledger_expense
