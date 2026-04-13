@@ -752,9 +752,9 @@ def get_allocation_advice(req: dict):
 
 
 @app.get("/api/recommend-alloc")
-def get_recommend_alloc(profile: str = "稳健型"):
-    """推荐基金配置列表（替代前端硬编码 ALLOCATIONS）"""
-    return get_recommend_allocations(profile)
+def get_recommend_alloc(profile: str = "稳健型", with_ai: bool = False):
+    """推荐基金配置列表 + 配置理由 + 可选 AI 点评"""
+    return get_recommend_allocations(profile, with_ai=with_ai)
 
 
 @app.get("/api/fund-screen")

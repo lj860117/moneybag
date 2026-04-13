@@ -167,6 +167,46 @@ def comment_fund_picks(funds: list) -> list:
     return funds
 
 
+def comment_recommend_funds(allocations: list, risk_profile: str,
+                            val_pct: float, fgi: float) -> dict:
+    """给推荐配置的每只基金生成 AI 一句话点评（基于当前市场环境）"""
+    fund_desc = "\n".join([
+        f"{i+1}. {a['fullName']}({a['code']}) 占比{a['pct']}% 类别:{a.get('category','')}"
+        for i, a in enumerate(allocations) if a.get('code') != '余额宝'
+    ])
+
+    prompt = f"""用户是「{risk_profile}」投资者。当前市场：
+- 沪深300估值百分位：{val_pct:.0f}%（{'高估' if val_pct > 70 else '低估' if val_pct < 30 else '适中'}）
+- 恐贪指数：{fgi:.0f}（{'贪婪' if fgi > 60 else '恐惧' if fgi < 40 else '中性'}）
+
+推荐配置的基金：
+{fund_desc}
+
+为每只基金写一句话点评（20字以内），说明当前市场环境下这只基金的优势或注意点。格式：
+1. 点评
+2. 点评
+...
+
+要求：结合估值和恐贪数据，说人话。"""
+
+    result = _call_deepseek(
+        prompt,
+        system="你是资产配置顾问，点评简短实用，结合市场环境。",
+        max_tokens=250,
+        cache_key=f"rec_fund_{risk_profile}_{int(val_pct)}_{int(fgi)}",
+    )
+
+    comments = {}
+    if result:
+        lines = [l.strip() for l in result.strip().split("\n") if l.strip()]
+        non_cash = [a for a in allocations if a.get('code') != '余额宝']
+        for i, a in enumerate(non_cash):
+            if i < len(lines):
+                comment = lines[i].lstrip("0123456789.、）) ").strip()
+                comments[a["code"]] = comment
+    return comments
+
+
 def comment_stock_picks(stocks: list) -> list:
     """给选股 TOP 列表加 DeepSeek 一句话点评"""
     if not stocks:

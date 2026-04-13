@@ -253,16 +253,66 @@ ALLOC_PCTS = {
 }
 
 
-def get_recommend_allocations(risk_profile: str = "稳健型") -> dict:
-    """返回推荐基金配置列表（前端不再硬编码）"""
+def get_recommend_allocations(risk_profile: str = "稳健型", with_ai: bool = False) -> dict:
+    """返回推荐基金配置列表 + 配置调整理由 + 可选 AI 点评"""
     pcts = ALLOC_PCTS.get(risk_profile, ALLOC_PCTS["稳健型"])
     allocations = []
     for i, fund in enumerate(RECOMMENDED_FUNDS):
         f = dict(fund)
         f["pct"] = pcts[i] if i < len(pcts) else 0
         allocations.append(f)
-    return {
+
+    # 获取实时市场数据，生成配置调整理由
+    adjustments = []
+    val_pct = 50
+    fgi = 50
+    try:
+        val_data = get_valuation_percentile()
+        val_pct = val_data.get("percentile", 50)
+    except Exception:
+        pass
+    try:
+        fgi_data = get_fear_greed_index()
+        fgi = fgi_data.get("score", 50)
+    except Exception:
+        pass
+
+    # 生成调整说明（告诉用户"为什么这样配"）
+    if val_pct > 70:
+        adjustments.append(f"📊 估值 {val_pct:.0f}%（偏高）→ 减配股票，增配债券和现金")
+    elif val_pct < 30:
+        adjustments.append(f"📊 估值 {val_pct:.0f}%（偏低）→ 增配股票，减配债券")
+    else:
+        adjustments.append(f"📊 估值 {val_pct:.0f}%（适中）→ 按基础模板配置")
+
+    if fgi > 75:
+        adjustments.append(f"😰 恐贪指数 {fgi:.0f}（偏贪婪）→ 别人贪婪我恐惧，多留现金")
+    elif fgi < 25:
+        adjustments.append(f"😨 恐贪指数 {fgi:.0f}（偏恐惧）→ 别人恐惧我贪婪，可多配股票")
+    else:
+        adjustments.append(f"😊 恐贪指数 {fgi:.0f}（正常）→ 情绪面中性")
+
+    adjustments.append("🛡️ 塔勒布规则：现金永远 ≥ 15%（反脆弱）")
+
+    result = {
         "profile": risk_profile,
         "allocations": allocations,
         "profiles": list(ALLOC_PCTS.keys()),
+        "adjustments": adjustments,
+        "marketData": {
+            "valuationPct": round(val_pct, 1),
+            "fearGreed": round(fgi, 1),
+        },
     }
+
+    # 可选：DeepSeek AI 点评每只基金
+    if with_ai:
+        try:
+            from services.ds_enhance import comment_recommend_funds
+            ai_comments = comment_recommend_funds(allocations, risk_profile, val_pct, fgi)
+            if ai_comments:
+                result["aiComments"] = ai_comments
+        except Exception:
+            pass
+
+    return result
