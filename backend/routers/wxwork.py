@@ -3,6 +3,7 @@
 职责：回调验证 + 消息接收 + 快捷指令 + AI 聊天 + 推送状态/测试
 """
 import os
+import time
 import threading
 
 from fastapi import APIRouter, Request
@@ -206,3 +207,31 @@ def wxwork_test(req: dict = {}):
     msg = req.get("message", "🧪 钱袋子推送测试\n如果你能看到这条消息，说明企业微信推送配置成功！")
     touser = req.get("touser", "@all")
     return send_markdown(msg, user_id=touser) if touser != "@all" else wxwork_send(msg)
+
+
+@router.post("/daily-report")
+def wxwork_daily_report():
+    """手动触发市场日报推送（给所有绑定企微的用户）"""
+    if not wxwork_configured():
+        return {"ok": False, "error": "企业微信未配置"}
+    try:
+        from main import _build_market_context
+        ctx = _build_market_context()
+        # 精简为日报格式
+        lines = ["**📊 钱袋子市场日报**\n"]
+        for line in ctx.split("\n"):
+            line = line.strip()
+            if not line or line.startswith("#"):
+                continue
+            if any(k in line for k in ["估值", "恐贪", "GDP", "社零", "沪深", "标普", "道琼", "纳斯达克", "黄金", "铜", "美元", "政策", "降准", "降息"]):
+                lines.append(line)
+            if len(lines) >= 15:
+                break
+        if len(lines) <= 1:
+            lines.append("暂无市场数据")
+        lines.append(f"\n⏰ {time.strftime('%Y-%m-%d %H:%M')}")
+        content = "\n".join(lines)
+        result = send_markdown(content, user_id="@all")
+        return {"ok": result.get("ok", False), "data": result}
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
