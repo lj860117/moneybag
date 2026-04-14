@@ -216,6 +216,20 @@ def run_analysis_cycle(
         result["analysis"] = f"分析失败: {e}"
         result["source"] = "error"
 
+    # B2修复：保存上下文接力（之前 save_context 从未被调用）
+    if result.get("source") == "ai" and result.get("analysis"):
+        try:
+            from services.agent_memory import save_context
+            save_context(user_id, {
+                "last_analysis": result["analysis"][:300],
+                "market_phase": result.get("direction", "neutral"),
+                "confidence": result.get("confidence", 0),
+                "skill_used": result.get("skill_used", ""),
+                "alerts_count": result.get("alerts_count", 0),
+            })
+        except Exception as e:
+            print(f"[AGENT] save_context failed: {e}")
+
     return result
 
 

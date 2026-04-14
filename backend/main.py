@@ -1762,15 +1762,15 @@ async def chat_analysis(req: ChatRequest):
     uid = req.userId or "default"
     portfolio_ctx = _build_portfolio_context(req.portfolio, user_id=uid) if req.portfolio else _build_portfolio_context(user_id=uid)
 
-    # 多用户记忆注入
+    # 多用户记忆注入（B1修复：get_memory_summary→build_memory_summary）
     if req.userId:
         try:
-            from services.agent_memory import get_memory_summary
-            mem = get_memory_summary(req.userId)
+            from services.agent_memory import build_memory_summary
+            mem = build_memory_summary(req.userId)
             if mem:
                 portfolio_ctx += f"\n\n## 用户记忆\n{mem}"
-        except Exception:
-            pass
+        except Exception as e:
+            print(f"[CHAT] memory inject failed: {e}")
 
     # 尝试调用 LLM（支持 OpenAI 兼容 API）
     api_key = os.environ.get("OPENAI_API_KEY") or os.environ.get("LLM_API_KEY")
@@ -1835,15 +1835,15 @@ async def chat_analysis_stream(req: ChatRequest):
     uid = req.userId or "default"
     portfolio_ctx = _build_portfolio_context(req.portfolio, user_id=uid) if req.portfolio else _build_portfolio_context(user_id=uid)
 
-    # 多用户记忆注入
+    # 多用户记忆注入（B1修复：get_memory_summary→build_memory_summary）
     if req.userId:
         try:
-            from services.agent_memory import get_memory_summary
-            mem = get_memory_summary(req.userId)
+            from services.agent_memory import build_memory_summary
+            mem = build_memory_summary(req.userId)
             if mem:
                 portfolio_ctx += f"\n\n## 用户记忆\n{mem}"
-        except Exception:
-            pass
+        except Exception as e:
+            print(f"[CHAT-STREAM] memory inject failed: {e}")
 
     api_key = os.environ.get("OPENAI_API_KEY") or os.environ.get("LLM_API_KEY")
     api_base = os.environ.get("LLM_API_BASE", "https://api.deepseek.com/v1")

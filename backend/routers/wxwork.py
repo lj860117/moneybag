@@ -120,14 +120,15 @@ async def callback_receive(
             market_ctx = _build_market_context()
             portfolio_ctx = _build_portfolio_context(user_id=user_id) if user_id else "用户尚未建仓。"
 
-            # 注入用户记忆
+            # 注入用户记忆（B1修复：get_memory_summary→build_memory_summary）
             if user_id:
                 try:
-                    from services.agent_memory import get_memory_summary
-                    mem = get_memory_summary(user_id)
+                    from services.agent_memory import build_memory_summary
+                    mem = build_memory_summary(user_id)
                     if mem:
                         portfolio_ctx += f"\n\n## 用户记忆\n{mem}"
-                except Exception:
+                except Exception as e:
+                    print(f"[WXWORK] memory inject failed: {e}")
                     pass
 
             system_prompt = _load_prompt_template()
