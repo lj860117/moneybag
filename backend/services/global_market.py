@@ -11,6 +11,19 @@
 数据源：AKShare（腾讯云实测可用的接口）
 缓存：1 小时（全球数据更新频率低于 A 股）
 """
+
+# ---- V4 底座：MODULE_META ----
+MODULE_META = {
+    "name": "global_market",
+    "scope": "public",
+    "input": [],
+    "output": "global_snapshot",
+    "cost": "cpu",
+    "tags": ['全球', '美股', '外汇', '美联储'],
+    "description": "全球市场：美股三大指数+外汇+美联储利率+全球PE+影响分析",
+    "layer": "data",
+    "priority": 2,
+}
 import os
 import time
 import json

@@ -21,6 +21,19 @@
 """
 import time
 import math
+
+# ---- V4 底座：MODULE_META ----
+MODULE_META = {
+    "name": "genetic_factor",
+    "scope": "public",
+    "input": ["stock_code"],
+    "output": "evolved_factors",
+    "cost": "cpu",
+    "tags": ["因子挖掘", "遗传算法", "Alpha"],
+    "description": "表达式树+遗传进化200×30代，自动发现Alpha因子",
+    "layer": "analysis",
+    "priority": 5,
+}
 import random
 import traceback
 import numpy as np

@@ -15,6 +15,19 @@
 import time
 from datetime import datetime
 
+# ---- V4 底座：MODULE_META ----
+MODULE_META = {
+    "name": "unified_networth",
+    "scope": "private",
+    "input": ["user_id"],
+    "output": "networth",
+    "cost": "cpu",
+    "tags": ["净资产", "统一汇总"],
+    "description": "统一净资产：股票+基金+手动资产+记账→单一数字+5类分桶",
+    "layer": "data",
+    "priority": 2,
+}
+
 from services.stock_monitor import load_stock_holdings
 from services.fund_monitor import load_fund_holdings
 from services.persistence import load_user as _persistence_load_user

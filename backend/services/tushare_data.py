@@ -5,6 +5,19 @@
 数据源：Tushare Pro API（需 2000 积分）
 接口：daily_basic（估值）+ fina_indicator（财务）+ daily（行情）
 """
+
+# ---- V4 底座：MODULE_META ----
+MODULE_META = {
+    "name": "tushare_data",
+    "scope": "public",
+    "input": [],
+    "output": "tushare_data",
+    "cost": "cpu",
+    "tags": ['Tushare', 'PE', 'PB', '财务'],
+    "description": "Tushare Pro数据层：PE/PB/财务指标(替代AKShare不稳定源)",
+    "layer": "data",
+    "priority": 1,
+}
 import os
 import time
 import json
@@ -179,5 +192,149 @@ def get_valuation_history(code: str, start_date: str = "", end_date: str = "") -
         "daily_basic",
         params,
         "ts_code,trade_date,pe_ttm,pb,total_mv,turnover_rate",
+    )
+    return rows
+
+
+# ============================================================
+# 5. 大股东增减持（signal_scout P0 数据源）
+# ============================================================
+
+def get_holder_trades(start_date: str = "", end_date: str = "") -> list:
+    """获取近期大股东增减持记录"""
+    from datetime import datetime, timedelta
+    if not end_date:
+        end_date = datetime.now().strftime("%Y%m%d")
+    if not start_date:
+        start_date = (datetime.now() - timedelta(days=30)).strftime("%Y%m%d")
+
+    rows = _call_tushare(
+        "stk_holdertrade",
+        {"start_date": start_date, "end_date": end_date},
+        "ts_code,ann_date,holder_name,holder_type,change_type,change_vol,change_amount,after_share,after_ratio",
+    )
+    return rows[:50]
+
+
+# ============================================================
+# 6. 股权质押统计（风控因子）
+# ============================================================
+
+def get_pledge_stat(code: str = "") -> list:
+    """获取股权质押统计
+    code: 空=全市场最新, 有值=单只个股
+    """
+    params = {}
+    if code:
+        params["ts_code"] = _code_to_ts(code)
+
+    rows = _call_tushare(
+        "pledge_stat",
+        params,
+        "ts_code,end_date,pledge_count,unrest_pledge,rest_pledge,total_share,pledge_ratio",
+    )
+    return rows[:100]
+
+
+# ============================================================
+# 7. 限售股解禁（signal_scout P0 数据源）
+# ============================================================
+
+def get_upcoming_unlocks(days: int = 30) -> list:
+    """获取未来N天的限售股解禁计划"""
+    from datetime import datetime, timedelta
+    start = datetime.now().strftime("%Y%m%d")
+    end = (datetime.now() + timedelta(days=days)).strftime("%Y%m%d")
+
+    rows = _call_tushare(
+        "share_float",
+        {"start_date": start, "end_date": end},
+        "ts_code,float_date,float_share,float_ratio,holder_name,share_type",
+    )
+    # 按解禁比例降序
+    return sorted(rows, key=lambda x: x.get("float_ratio", 0) or 0, reverse=True)[:30]
+
+
+# ============================================================
+# 8. 分红送转（价值因子增强）
+# ============================================================
+
+def get_dividend(code: str) -> list:
+    """获取个股分红送转记录"""
+    ts_code = _code_to_ts(code)
+    rows = _call_tushare(
+        "dividend",
+        {"ts_code": ts_code},
+        "ts_code,end_date,ann_date,div_proc,stk_div,stk_bo_rate,stk_co_rate,cash_div,cash_div_tax,record_date,ex_date,pay_date",
+    )
+    return rows[:10]
+
+
+# ============================================================
+# 9. ST/*ST 标记（风控排除 + 选股过滤）
+# ============================================================
+
+def get_st_stocks() -> list:
+    """获取当前所有 ST/*ST 股票列表"""
+    cache_key = "st_stocks"
+    now = time.time()
+    if cache_key in _ts_cache and now - _ts_cache[cache_key]["ts"] < 86400:  # 24h缓存
+        return _ts_cache[cache_key]["data"]
+
+    rows = _call_tushare(
+        "namechange",
+        {"limit": 200},
+        "ts_code,name,start_date,end_date,change_reason",
+    )
+    # 筛选当前仍为 ST 的
+    st_list = [r for r in rows if r.get("name", "").startswith(("ST", "*ST")) and not r.get("end_date")]
+    _ts_cache[cache_key] = {"data": st_list, "ts": now}
+    return st_list
+
+
+def is_st(code: str) -> bool:
+    """判断个股是否为 ST"""
+    ts_code = _code_to_ts(code)
+    return any(s.get("ts_code") == ts_code for s in get_st_stocks())
+
+
+# ============================================================
+# 10. 公告全文摘要（signal_scout 信号源）
+# ============================================================
+
+def get_announcements(code: str = "", start_date: str = "", end_date: str = "", limit: int = 20) -> list:
+    """获取公告列表"""
+    from datetime import datetime, timedelta
+    if not end_date:
+        end_date = datetime.now().strftime("%Y%m%d")
+    if not start_date:
+        start_date = (datetime.now() - timedelta(days=7)).strftime("%Y%m%d")
+
+    params = {"start_date": start_date, "end_date": end_date}
+    if code:
+        params["ts_code"] = _code_to_ts(code)
+
+    rows = _call_tushare(
+        "anns",
+        params,
+        "ts_code,ann_date,title,content,url",
+    )
+    return rows[:limit]
+
+
+# ============================================================
+# 11. 研报摘要（signal_scout 信号源）
+# ============================================================
+
+def get_research_reports(code: str = "", limit: int = 10) -> list:
+    """获取最新研报"""
+    params = {"limit": limit}
+    if code:
+        params["ts_code"] = _code_to_ts(code)
+
+    rows = _call_tushare(
+        "report_rc",
+        params,
+        "ts_code,report_date,report_title,author,org_name,rating,abstract",
     )
     return rows

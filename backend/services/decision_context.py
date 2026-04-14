@@ -26,6 +26,8 @@ class DecisionContext:
     # ━━ Layer0: 用户数据 ━━
     user_id: str = ""
     question: str = ""                          # 用户提问 / 触发源
+    question_stock_code: str = ""               # 从问题提取的股票代码（如 002624）
+    question_stock_name: str = ""               # 从问题提取的股票名（如 完美世界）
     trigger: str = "manual"                     # manual / cron / alert
     timestamp: str = field(default_factory=lambda: datetime.now().isoformat())
 
@@ -47,6 +49,8 @@ class DecisionContext:
     modules_called: list = field(default_factory=list)     # ["signal", "risk", "ai_predictor", ...]
     modules_results: dict = field(default_factory=dict)    # {module_name: {direction, score, detail}}
     modules_errors: dict = field(default_factory=dict)     # {module_name: error_msg}  失败不阻塞
+    modules_skipped: list = field(default_factory=list)    # 跳过的模块（缺依赖/scope不匹配等）
+    errors: list = field(default_factory=list)             # 全局错误收集
 
     # ━━ Layer3: 置信度门控 ━━
     confidence_score: float = 0.0       # 加权一致分 0-1
@@ -60,6 +64,7 @@ class DecisionContext:
     llm_input_tokens: int = 0           # 送给 DS 的 token 数
     llm_output_tokens: int = 0
     llm_result: dict = field(default_factory=dict)  # {conclusion, direction, confidence, reasoning}
+    llm_reasoning: str = ""                # LLM 仲裁推理过程
 
     # ━━ Layer4: 赔率 EV ━━
     payoff: dict = field(default_factory=dict)  # {upside, downside, stop_loss, position_kelly}
@@ -70,8 +75,13 @@ class DecisionContext:
     risk_alerts: list = field(default_factory=list)     # [{level, msg, rule}]
     risk_override: bool = False                          # 风控一票否决
     risk_position_limit: float = 1.0                     # 风控建议最大仓位比例
+    risk_level: str = ""                                 # normal/warning/danger/blocked
+    risk_actions: list = field(default_factory=list)     # 风控操作建议
 
     # ━━ Layer6: 最终输出 ━━
+    direction: str = "neutral"          # 简写：bullish/bearish/neutral/blocked
+    confidence: int = 0                 # 简写：0-100
+    conclusion: str = ""                # 简写：一句话结论
     final_direction: str = "neutral"    # bullish / bearish / neutral / blocked
     final_confidence: int = 0           # 0-100
     final_conclusion: str = ""          # 一句话结论
@@ -80,12 +90,21 @@ class DecisionContext:
 
     # ━━ Layer7: EMA 权重校准 ━━
     weight_adjustments: dict = field(default_factory=dict)  # {module_name: new_weight}
+    module_weights: dict = field(default_factory=dict)       # 当前各模块权重
 
     # ━━ 元数据 ━━
     pipeline_name: str = ""             # default / fast / cautious
     pipeline_steps: list = field(default_factory=list)  # 实际执行的 step 名称列表
     total_time_ms: int = 0              # 总耗时
     llm_calls_count: int = 0            # LLM 调用次数（门控验证用）
+    elapsed_seconds: float = 0.0        # steward 总耗时（秒）
+
+    # ━━ 运行时扩展字段（enrich/step 可以动态添加） ━━
+    regime_params: dict = field(default_factory=dict)
+    regime_description: str = ""
+    memory_summary: str = ""
+    ev_params: dict = field(default_factory=dict)
+    ev_blocked: bool = False
 
     # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
     # 三视图
@@ -162,20 +181,38 @@ class DecisionContext:
     def to_user_response(self) -> dict:
         """视图2: 给前端展示的结果（脱敏、结构化）"""
         return {
-            "direction": self.final_direction,
-            "confidence": self.final_confidence,
-            "conclusion": self.final_conclusion,
+            "direction": self.direction or self.final_direction,
+            "confidence": self.confidence or self.final_confidence,
+            "conclusion": self.conclusion or self.final_conclusion,
             "reasoning": self.final_reasoning,
             "actions": self.final_actions,
             "regime": self.regime,
+            "regime_description": self.regime_description,
             "pipeline": self.pipeline_name,
+            "pipeline_steps": self.pipeline_steps,
+            "modules_called": self.modules_called,
             "modules_count": len(self.modules_called),
+            "modules_results": {
+                name: {
+                    "available": r.get("available", False),
+                    "direction": r.get("direction", "neutral"),
+                    "confidence": r.get("confidence", r.get("score", 0)),
+                }
+                for name, r in self.modules_results.items()
+                if isinstance(r, dict)
+            },
             "gate_decision": self.gate_decision,
+            "gate_reason": self.gate_reason,
             "ev": round(self.ev, 4) if self.ev else None,
+            "ev_params": self.ev_params if self.ev_params else None,
+            "risk_level": self.risk_level or "normal",
             "risk_override": self.risk_override,
-            "risk_alerts_count": len(self.risk_alerts),
+            "risk_alerts": self.risk_alerts[:5] if self.risk_alerts else [],
             "llm_called": self.llm_called,
             "llm_model": self.llm_model if self.llm_called else None,
+            "llm_calls": self.llm_calls_count,
+            "llm_reasoning": self.llm_reasoning if self.llm_called else None,
+            "elapsed": self.elapsed_seconds,
             "total_time_ms": self.total_time_ms,
             "timestamp": self.timestamp,
         }
@@ -243,6 +280,10 @@ class DecisionContext:
         self.final_conclusion = conclusion
         self.final_reasoning = reasoning
         self.final_actions = actions or []
+        # 同步简写字段
+        self.direction = direction
+        self.confidence = confidence
+        self.conclusion = conclusion
 
     def validate_before_llm(self) -> list[str]:
         """门控送 LLM 前的完整性校验 — 返回缺失字段列表"""

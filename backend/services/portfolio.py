@@ -11,6 +11,20 @@
 """
 import time
 import json
+
+# ---- V4 底座：MODULE_META ----
+MODULE_META = {
+    "name": "portfolio",
+    "scope": "private",
+    "input": ["user_id", "risk_profile"],
+    "output": "allocation_advice",
+    "cost": "llm_light",
+    "tags": ["配置", "投顾", "动态调整", "AI选基"],
+    "description": "智能资产配置：估值+恐贪+美林时钟+塔勒布规则动态调整+AI选基",
+    "layer": "output",
+    "priority": 6,
+}
+
 from config import ALLOCATION_PROFILES, VALUATION_HIGH, VALUATION_LOW, RISK_REBALANCE_THRESHOLD
 from services.portfolio_calc import calc_holdings_from_transactions
 from services.data_layer import get_fund_nav, get_valuation_percentile, get_fear_greed_index

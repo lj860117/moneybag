@@ -3,6 +3,21 @@
 12维多因子综合信号 + 大师策略 + 智能定投 + 止盈策略
 """
 import math
+from datetime import datetime
+
+# ---- V4 底座：MODULE_META ----
+MODULE_META = {
+    "name": "signal",
+    "scope": "public",
+    "input": [],
+    "output": "daily_signal",
+    "cost": "cpu",
+    "tags": ["信号", "12维", "技术指标", "定投", "止盈"],
+    "description": "12维多因子综合信号+大师策略+智能定投+止盈策略",
+    "layer": "analysis",
+    "priority": 1,
+}
+
 from config import (
     FACTOR_WEIGHTS, VALUATION_EXTREME, VALUATION_HIGH, VALUATION_LOW,
     DCA_MULTIPLIERS,
@@ -11,6 +26,7 @@ from services.data_layer import (
     get_fear_greed_index, get_valuation_percentile, get_technical_indicators,
     get_northbound_flow, get_margin_trading, get_treasury_yield,
     get_shibor, get_dividend_yield, get_news_sentiment_score,
+    get_macro_calendar, get_market_news,
 )
 
 def calc_smart_dca(base_amount: float, valuation_pct: float) -> dict:
@@ -484,3 +500,62 @@ def _apply_master_strategies(val: dict, fgi_data: dict, tech: dict) -> list:
     })
 
     return strategies
+
+
+# ---- V4 底座：enrich() 适配层 ----
+import json as _json
+from pathlib import Path as _Path
+
+def enrich(ctx):
+    """Pipeline 适配：生成每日信号 → 写回 ctx（缓存优先，超时保护）"""
+    result = None
+    
+    # 1. 优先读预缓存（cache_warmer 生成的）
+    try:
+        cache_fp = _Path(__file__).parent.parent.parent / "data" / "_cache" / "daily_signal.json"
+        if cache_fp.exists():
+            import time
+            cache_data = _json.loads(cache_fp.read_text(encoding="utf-8"))
+            if cache_data.get("expires_at", 0) > time.time():
+                result = cache_data.get("data", {})
+    except Exception:
+        pass
+    
+    # 2. 缓存没有或过期 → 实时计算（加超时保护）
+    if not result:
+        try:
+            import concurrent.futures
+            with concurrent.futures.ThreadPoolExecutor() as executor:
+                future = executor.submit(generate_daily_signal)
+                result = future.result(timeout=30)  # 最多30秒
+        except Exception as e:
+            print(f"[signal.enrich] 超时或失败: {e}")
+            # 降级：给个中性结果
+            ctx.modules_results["signal"] = {
+                "available": True,
+                "direction": "neutral",
+                "confidence": 50,
+                "data": {"weighted_score": 50, "signal": "neutral", "note": f"数据源超时，降级为中性: {e}"},
+                "cost": "cpu",
+            }
+            ctx.modules_called.append("signal")
+            return ctx
+    
+    # 3. 解析结果
+    try:
+        score = result.get("weighted_score", 50)
+        signal = result.get("signal", "neutral")
+        direction = "bullish" if signal == "bullish" or score > 60 else ("bearish" if signal == "bearish" or score < 40 else "neutral")
+        ctx.modules_results["signal"] = {
+            "available": True,
+            "direction": direction,
+            "confidence": round(abs(score - 50) + 50, 1),
+            "data": {"weighted_score": score, "signal": signal, "factors": result.get("factors", {}), "masters": result.get("master_strategies", [])},
+            "cost": "cpu",
+        }
+        ctx.modules_called.append("signal")
+    except Exception as e:
+        print(f"[signal.enrich] 解析失败: {e}")
+        ctx.errors.append({"module": "signal", "error": str(e)})
+        ctx.modules_skipped.append({"name": "signal", "reason": str(e)})
+    return ctx

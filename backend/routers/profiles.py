@@ -32,7 +32,7 @@ def _save_profiles(profiles: list):
 
 
 # ---- 邀请码存储 ----
-_ADMIN_KEY = "moneybag_admin_2026"
+_ADMIN_KEY = os.getenv("ADMIN_KEY", "moneybag_admin_2026")  # 生产环境从 .env 读取
 _INVITE_FILE = Path(os.getenv("DATA_DIR", "data")) / "invite_codes.json"
 
 # 白名单（名字 = 企微 userid）
@@ -71,9 +71,12 @@ def create_profile(req: dict):
 
     # 已存在用户直接返回
     existing = next((p for p in profiles if p["id"] == pid), None)
+    # 也按企微ID或名字匹配（清缓存后用不同名字登录的场景）
+    if not existing:
+        existing = next((p for p in profiles if p.get("wxworkUserId") == name or p.get("name") == name), None)
     if existing:
-        if existing.get("verified"):
-            return {"ok": True, "profile": existing, "exists": True}
+        # 已注册用户直接登录
+        return {"ok": True, "profile": existing, "exists": True}
 
     # 新用户必须有邀请码
     if not invite_code:

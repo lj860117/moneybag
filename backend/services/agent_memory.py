@@ -14,6 +14,19 @@ from pathlib import Path
 from datetime import datetime
 from config import DATA_DIR
 
+# ---- V4 底座：MODULE_META ----
+MODULE_META = {
+    "name": "agent_memory",
+    "scope": "private",
+    "input": ["user_id"],
+    "output": "memory_summary",
+    "cost": "cpu",
+    "tags": ["记忆", "偏好", "决策日志", "规则"],
+    "description": "Agent记忆系统：偏好/决策日志/自定义规则/上下文接力",
+    "layer": "data",
+    "priority": 1,
+}
+
 MEMORY_DIR = DATA_DIR  # data/ 根目录
 
 

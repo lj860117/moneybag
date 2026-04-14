@@ -20,6 +20,19 @@ import random
 import traceback
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
+# ---- V4 底座：MODULE_META ----
+MODULE_META = {
+    "name": "monte_carlo",
+    "scope": "public",
+    "input": ["stock_code", "simulations", "horizon"],
+    "output": "probability_distribution",
+    "cost": "cpu",
+    "tags": ["风险", "蒙特卡洛", "VaR", "概率"],
+    "description": "GBM 5000次路径模拟，P10-P90+VaR/CVaR+盈利概率",
+    "layer": "analysis",
+    "priority": 4,
+}
+
 _mc_cache = {}
 _MC_CACHE_TTL = 3600  # 1 小时
 
@@ -497,3 +510,33 @@ def monte_carlo_compare(
 
     _mc_cache[cache_key] = {"data": result, "ts": time.time()}
     return result
+
+
+# ---- V4 底座：enrich() 适配层 ----
+def enrich(ctx):
+    """Pipeline 适配：从 ctx 读第一只股票 → 蒙特卡洛模拟 → 写回 ctx"""
+    try:
+        codes = [h.get("code", "") for h in (ctx.stock_holdings or []) if h.get("code")]
+        if not codes:
+            ctx.modules_skipped.append({"name": "monte_carlo", "reason": "no_stock_holdings"})
+            return ctx
+        result = monte_carlo_single(codes[0], simulations=2000, horizon_days=60)
+        if "error" in result:
+            raise Exception(result["error"])
+        probs = result.get("probabilities", {})
+        profit_prob = probs.get("profit", 50)
+        direction = "bullish" if profit_prob > 60 else ("bearish" if profit_prob < 40 else "neutral")
+        ctx.modules_results["monte_carlo"] = {
+            "available": True,
+            "direction": direction,
+            "confidence": round(abs(profit_prob - 50) + 50, 1),
+            "data": {"code": codes[0], "profit_prob": profit_prob, "percentiles": result.get("percentiles", {}), "risk_metrics": result.get("risk_metrics", {})},
+            "cost": "cpu",
+            "latency_ms": 0,
+        }
+        ctx.modules_called.append("monte_carlo")
+    except Exception as e:
+        print(f"[monte_carlo.enrich] Error: {e}")
+        ctx.errors.append({"module": "monte_carlo", "error": str(e), "fallback_used": True})
+        ctx.modules_skipped.append({"name": "monte_carlo", "reason": str(e)})
+    return ctx

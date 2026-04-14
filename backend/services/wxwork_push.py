@@ -15,6 +15,19 @@
   4. 设置信任 IP（腾讯云公网 IP）
   5. 微信插件 → 邀请成员关注 → 消息就会推到微信
 """
+
+# ---- V4 底座：MODULE_META ----
+MODULE_META = {
+    "name": "wxwork_push",
+    "scope": "public",
+    "input": [],
+    "output": "push_result",
+    "cost": "cpu",
+    "tags": ['推送', '企微', 'AES'],
+    "description": "企业微信推送：AES加解密+access_token管理+文本消息",
+    "layer": "output",
+    "priority": 8,
+}
 import os
 import time
 import httpx

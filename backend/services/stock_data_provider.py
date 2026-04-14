@@ -10,6 +10,19 @@
               ↓ 自动选源
   东方财富 | 新浪+雪球混合 | 缓存
 """
+
+# ---- V4 底座：MODULE_META ----
+MODULE_META = {
+    "name": "stock_data_provider",
+    "scope": "public",
+    "input": [],
+    "output": "stock_data",
+    "cost": "cpu",
+    "tags": ['A股', '多源', '降级'],
+    "description": "A股行情多源数据层：东财→新浪+雪球自动降级",
+    "layer": "data",
+    "priority": 1,
+}
 import time
 import traceback
 import concurrent.futures

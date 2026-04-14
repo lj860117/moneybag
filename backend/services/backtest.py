@@ -2,6 +2,19 @@
 钱袋子 — 回测引擎
 策略回测 + 高级指标（IR、Calmar、Sortino等）
 """
+
+# ---- V4 底座：MODULE_META ----
+MODULE_META = {
+    "name": "backtest",
+    "scope": "public",
+    "input": ['strategy', 'years'],
+    "output": "backtest_comparison",
+    "cost": "cpu",
+    "tags": ['策略回测', '定投对比', 'IR', 'Calmar'],
+    "description": "策略回测：智能定投vs固定定投+高级指标(IR/Calmar/Sortino)",
+    "layer": "analysis",
+    "priority": 5,
+}
 import math
 from services.data_layer import get_valuation_percentile
 

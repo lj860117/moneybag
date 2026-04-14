@@ -5,6 +5,20 @@ V4 交易流水制的核心：从流水算持仓、V3→V4迁移
 import uuid
 from datetime import datetime
 from typing import Optional
+
+# ---- V4 底座：MODULE_META ----
+MODULE_META = {
+    "name": "portfolio_calc",
+    "scope": "private",
+    "input": ["transactions"],
+    "output": "holdings",
+    "cost": "cpu",
+    "tags": ["交易流水", "持仓计算", "加权平均"],
+    "description": "V4交易流水制核心：从流水算持仓+加权平均成本+V3迁移",
+    "layer": "data",
+    "priority": 1,
+}
+
 from services.data_layer import get_fund_nav, _get_nav_on_date
 
 # ---- V4 核心计算引擎 ----

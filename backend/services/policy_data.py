@@ -6,6 +6,19 @@
   3. 分主题政策新闻抓取（房地产/公积金/科技/经济/房改）
   4. DeepSeek 政策→A股影响分析
 """
+
+# ---- V4 底座：MODULE_META ----
+MODULE_META = {
+    "name": "policy_data",
+    "scope": "public",
+    "input": [],
+    "output": "policy_topics",
+    "cost": "llm_light",
+    "tags": ['政策', '房地产', '5主题'],
+    "description": "国内政策：房地产数据+70城房价+5主题新闻+DS政策影响分析",
+    "layer": "data",
+    "priority": 3,
+}
 import os
 import time
 import json

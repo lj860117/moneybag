@@ -58,11 +58,31 @@ const AMOUNT_MAP = [0,80000,200000,400000,750000,1500000];
 let currentPage='landing', currentQuestion=0, answers=[], selectedAmount=0;
 let chartInstance=null, projChartInstance=null, liveNavData={}, currentProfile=null, currentAllocs=null;
 let chatMessages=[];
-const STORAGE_KEY='moneybag_portfolio';
-const TXN_KEY='moneybag_transactions';
-const ASSETS_KEY='moneybag_assets';
-const LEDGER_KEY='moneybag_ledger';
-const SOURCES_KEY='moneybag_income_sources';
+// W8: 双模式UI — 小白(老婆) vs 专业(你)
+// LeiJiang 首次自动专业模式，其他人默认简洁，手动切换后尊重选择
+function _getDefaultUIMode(){
+const pid=(localStorage.getItem('moneybag_profile_id')||'').toLowerCase();
+const name=(localStorage.getItem('moneybag_profile_name')||'').toLowerCase();
+const saved=localStorage.getItem('moneybag_ui_mode');
+// 管理员首次：如果之前没有主动切换过，自动设为 pro
+if((pid==='leijiang'||name==='leijiang')&&!localStorage.getItem('moneybag_ui_mode_set_by_user'))return 'pro';
+if(saved)return saved;
+return 'simple'}
+let _uiMode=_getDefaultUIMode();
+function toggleUIMode(){_uiMode=_uiMode==='simple'?'pro':'simple';localStorage.setItem('moneybag_ui_mode',_uiMode);localStorage.setItem('moneybag_ui_mode_set_by_user','1');location.reload()}
+function isProMode(){return _uiMode==='pro'}
+const _BASE_STORAGE_KEY='moneybag_portfolio';
+const _BASE_TXN_KEY='moneybag_transactions';
+const _BASE_ASSETS_KEY='moneybag_assets';
+const _BASE_LEDGER_KEY='moneybag_ledger';
+const _BASE_SOURCES_KEY='moneybag_income_sources';
+// 多用户隔离：key 加 userId 后缀（铁律 #19）
+function _uk(base){const uid=getProfileId();return uid?`${base}_${uid}`:base}
+Object.defineProperty(window,'STORAGE_KEY',{get(){return _uk(_BASE_STORAGE_KEY)}});
+Object.defineProperty(window,'TXN_KEY',{get(){return _uk(_BASE_TXN_KEY)}});
+Object.defineProperty(window,'ASSETS_KEY',{get(){return _uk(_BASE_ASSETS_KEY)}});
+Object.defineProperty(window,'LEDGER_KEY',{get(){return _uk(_BASE_LEDGER_KEY)}});
+Object.defineProperty(window,'SOURCES_KEY',{get(){return _uk(_BASE_SOURCES_KEY)}});
 
 // ---- 多用户 Profile 系统 ----
 let _profileId = localStorage.getItem('moneybag_profile_id') || '';
@@ -230,7 +250,7 @@ shares:buyAmt/nav,price:nav,amount:buyAmt,date:now,note:'测评配置',source:'q
 saveTxns(txns)}
 
 async function syncCloud(portfolio){if(!API_AVAILABLE)return;try{await fetch(API_BASE+'/user/save',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({userId:getUserId(),portfolio})})}catch{}}
-async function syncFromCloud(){if(!API_AVAILABLE)return;try{const r=await fetch(API_BASE+'/user/'+getUserId());if(r.ok){const d=await r.json();if(d.portfolio?.holdings?.length){const l=loadPortfolio();if(!l.holdings.length)localStorage.setItem(STORAGE_KEY,JSON.stringify(d.portfolio))}}}catch{}}
+async function syncFromCloud(){if(!API_AVAILABLE)return;try{const r=await fetch(API_BASE+'/user/'+getUserId());if(r.ok){const d=await r.json();if(d.portfolio?.transactions?.length){const l=loadPortfolio();if(!l.transactions?.length){const p=Object.assign(loadPortfolio(),{transactions:d.portfolio.transactions,assets:d.portfolio.assets||[]});savePortfolio(p)}}}}catch{}}
 
 // ---- 工具 ----
 function $(s){return document.querySelector(s)}
@@ -259,14 +279,14 @@ const tabs=[{id:'landing',icon:'🏠',label:'首页'},{id:'stocks',icon:'📈',l
 n.innerHTML=tabs.map(t=>`<div class="nav-item ${currentPage===t.id?'active':''}" onclick="navigateTo('${t.id}')"><div class="nav-icon">${t.icon}</div><div>${t.label}</div></div>`).join('');
 // 顶部用户名条
 let hdr=document.getElementById('profileHeader');if(!hdr){hdr=document.createElement('div');hdr.id='profileHeader';hdr.style.cssText='position:fixed;top:0;left:0;right:0;z-index:100;padding:6px 16px;font-size:12px;color:var(--text2,#94a3b8);background:var(--bg,#0f172a);display:flex;justify-content:space-between;align-items:center;border-bottom:1px solid var(--bg3,#334155)';document.body.appendChild(hdr);document.body.style.paddingTop='32px'}
-hdr.innerHTML=`<span onclick="showProfileSettings()" style="cursor:pointer">👋 ${_profileName||'未登录'} ⚙️</span><span style="font-size:10px;color:var(--text3,#64748b)">${getProfileId().slice(0,8)}</span>`}
+hdr.innerHTML=`<span onclick="showProfileSettings()" style="cursor:pointer">👋 ${_profileName||'未登录'} ⚙️</span><span style="display:flex;align-items:center;gap:8px"><button onclick="toggleUIMode()" style="font-size:10px;padding:2px 8px;border-radius:4px;border:1px solid var(--bg3);background:${isProMode()?'rgba(99,102,241,.2)':'rgba(16,185,129,.2)'};color:${isProMode()?'#818CF8':'#10B981'};cursor:pointer">${isProMode()?'🔬 专业':'🌱 简洁'}</button><span style="font-size:10px;color:var(--text3,#64748b)">${getProfileId().slice(0,8)}</span></span>`}
 
 function showProfileSettings(){
 const pid=getProfileId();const wxId=localStorage.getItem('moneybag_wxwork_uid')||'';
 const statusText=wxId?`<div style="background:rgba(16,185,129,.1);border:1px solid rgba(16,185,129,.3);border-radius:8px;padding:8px 12px;margin-bottom:12px;font-size:12px;color:#10B981">✅ 已绑定企微：<b>${wxId}</b>　盯盘信号会推送到你的微信</div>`:`<div style="background:rgba(245,158,11,.1);border:1px solid rgba(245,158,11,.3);border-radius:8px;padding:8px 12px;margin-bottom:12px;font-size:12px;color:#F59E0B">⚠️ 未绑定企微　绑定后才能收到盯盘推送</div>`;
 const o=document.createElement('div');o.className='modal-overlay';o.onclick=e=>{if(e.target===o)o.remove()};
 o.innerHTML=`<div class="modal-sheet" onclick="event.stopPropagation()"><div class="modal-handle"></div>
-<div class="modal-title">⚙️ 个人设置</div>
+<div class="modal-title" style="display:flex;justify-content:space-between;align-items:center">⚙️ 个人设置 <button onclick="clearLocalCache()" style="font-size:11px;padding:4px 10px;border-radius:6px;border:1px solid rgba(239,68,68,.3);background:transparent;color:var(--red);cursor:pointer">🗑️ 清缓存</button></div>
 <div class="modal-subtitle">Profile: ${_profileName} (${pid.slice(0,8)})</div>
 <div class="manual-form" style="background:transparent;padding:0;margin-top:16px">
 ${statusText}
@@ -275,6 +295,13 @@ ${statusText}
 <div style="font-size:11px;color:var(--text2);margin-top:4px">填写你的企微账号（在企微通讯录→个人信息→账号）</div></div>
 <button class="form-submit" id="wxSaveBtn" onclick="saveProfileSettings()">💾 保存</button>
 </div></div>`;document.body.appendChild(o)}
+
+function clearLocalCache(){
+if(!confirm('确定清除本地缓存？\\n（不会删除服务器数据，只清浏览器缓存）'))return;
+const keys=Object.keys(localStorage).filter(k=>k.startsWith('moneybag')||k===STORAGE_KEY||k===LEDGER_KEY);
+keys.forEach(k=>localStorage.removeItem(k));
+alert('已清除 '+keys.length+' 项本地数据，即将刷新');
+location.reload()}
 
 async function saveProfileSettings(){
 const wxId=document.getElementById('wxworkUidInput')?.value?.trim()||'';
@@ -294,8 +321,11 @@ function navigateTo(p){currentPage=p;renderNav();if(p==='landing')renderLanding(
 
 // ---- 落地页（智能决策中心）----
 function renderLanding(){currentPage='landing';const p=loadPortfolio();const txns=loadTxns();const assets=loadAssets();const ledger=loadLedger();
-const hasTxns=txns.length>0||p.holdings.length>0||assets.length>0||ledger.length>0;
-if(!hasTxns){
+// 已登录用户直接进首页，不走问卷（v3.0：资产通过持仓Tab和资产Tab录入，不需要问卷）
+const hasProfile=!!getProfileId()&&getProfileId()!=='default';
+const hasServerHoldings=localStorage.getItem(_uk('moneybag_has_holdings'))==='1';
+const hasLocalData=txns.length>0||p.transactions?.length>0||assets.length>0||ledger.length>0||hasServerHoldings;
+if(!hasProfile&&!hasLocalData){
 $('#app').innerHTML=`<div class="landing stagger"><div class="landing-icon">💰</div><h1>你的钱，该怎么放？</h1><p class="subtitle">回答5个问题，AI帮你出一份<br>专属资产配置方案</p><button class="cta-btn" onclick="startQuiz()">开始测评</button><div class="trust-badges"><span class="trust-badge">不收费</span><span class="trust-badge">不推销</span><span class="trust-badge">不注册</span></div></div>`;renderNav();return}
 // 有数据 → 智能决策中心
 const nw=calcNetWorth();
@@ -330,11 +360,16 @@ $('#app').innerHTML=`<div class="result-page fade-up">
 
 <div id="dailyFocusSection"></div>
 
-<div id="signalsSection"></div>
+<div id="stewardBriefingCard" class="dashboard-card" style="border-left:3px solid #6366F1;display:none">
+<div class="dashboard-card-title">🤖 管家一句话</div>
+<div id="stewardBriefingText" style="font-size:13px;line-height:1.8;color:var(--text1)">加载中...</div>
+</div>
+
+<div id="signalsSection" ${isProMode()?'':'style="display:none"'}></div>
 
 <div id="riskAlertSection"></div>
 
-<div id="allocationAdviceSection"></div>
+<div id="allocationAdviceSection" ${isProMode()?'':'style="display:none"'}></div>
 
 <div class="bottom-actions" style="margin-top:16px">
 <button class="action-btn primary" onclick="showAllocateAssets()">💰 配置资产<div style="font-size:10px;font-weight:400;opacity:0.7;margin-top:2px">新存款到账？一键按方案分配</div></button>
@@ -342,7 +377,36 @@ $('#app').innerHTML=`<div class="result-page fade-up">
 <button class="action-btn secondary" onclick="showAddTxn()">➕ 记交易</button>
 <button class="action-btn secondary" onclick="startQuiz()">🔄 重新测评</button>
 </div>
-</div>`;renderNav();loadSignals();loadDailyFocus();loadHomeRiskAlert();loadHomeAllocationAdvice();loadUnifiedHero()}
+</div>`;renderNav();loadSignals();loadDailyFocus();loadHomeRiskAlert();loadHomeAllocationAdvice();loadUnifiedHero();loadStewardBriefing()}
+
+// ---- 首页：管家简报 ----
+async function loadStewardBriefing(){
+const card=document.getElementById('stewardBriefingCard');const txt=document.getElementById('stewardBriefingText');
+if(!card||!txt||!API_AVAILABLE)return;
+try{const r=await fetch(API_BASE+'/steward/briefing?userId='+getProfileId(),{signal:AbortSignal.timeout(15000)});
+if(r.ok){const d=await r.json();card.style.display='block';
+txt.innerHTML=`<div style="font-size:14px;font-weight:700;margin-bottom:4px">${d.one_line||'暂无'}</div>
+<div style="font-size:12px;color:var(--text2)">${d.regime_description?'📊 '+d.regime_description:''} ${d.risk_level&&d.risk_level!=='normal'?'⚠️'+d.risk_level:''}</div>
+${d.top_signal?`<div style="margin-top:6px;padding:6px 10px;background:rgba(99,102,241,.08);border-radius:8px;font-size:12px">🎯 ${d.top_signal}</div>`:''}
+<button onclick="showLatestReview()" style="margin-top:8px;padding:6px 12px;border-radius:8px;border:1px solid rgba(99,102,241,.3);background:transparent;color:#818CF8;font-size:11px;cursor:pointer">📋 查看收盘复盘</button>`}}catch(e){console.warn('briefing:',e)}}
+
+// ---- 收盘复盘查看 ----
+async function showLatestReview(){
+const o=document.createElement('div');o.className='modal-overlay';o.onclick=e=>{if(e.target===o)o.remove()};
+o.innerHTML=`<div class="modal-sheet" onclick="event.stopPropagation()"><div class="modal-handle"></div><div class="modal-title">📋 收盘复盘</div><div id="reviewContent" style="padding:12px 0"><div style="text-align:center;color:var(--text2)">加载中...</div></div></div>`;
+document.body.appendChild(o);
+try{const r=await fetch(API_BASE+'/steward/review?userId='+getProfileId(),{signal:AbortSignal.timeout(15000)});
+if(r.ok){const d=await r.json();const el=document.getElementById('reviewContent');if(!el)return;
+const concl=d.conclusion||d.summary||'暂无复盘数据';
+let html=`<div style="font-size:14px;font-weight:700;margin-bottom:12px">${concl}</div>`;
+if(d.regime_description)html+=`<div style="font-size:12px;color:var(--text2);margin-bottom:8px">📊 Regime: ${d.regime_description||d.regime}</div>`;
+if(d.modules_called?.length)html+=`<div style="font-size:12px;color:var(--text2);margin-bottom:8px">📦 分析模块: ${d.modules_called.join(', ')} (${d.modules_called.length}个)</div>`;
+if(d.direction)html+=`<div style="font-size:13px;margin-bottom:8px;padding:8px;background:var(--bg2);border-radius:8px">方向: <b>${d.direction}</b> | 置信度: <b>${d.confidence||50}%</b> | 门控: ${d.gate_decision||'?'}</div>`;
+const diagFile=d.diagnosis||'';
+if(diagFile)html+=`<div style="margin-bottom:8px;padding:10px;background:rgba(99,102,241,.06);border-radius:10px;font-size:13px;line-height:1.8;border-left:3px solid #6366F1"><div style="font-weight:700;margin-bottom:4px">🤖 R1 深度诊断</div>${diagFile}</div>`;
+if(d.risk_level&&d.risk_level!=='normal')html+=`<div style="font-size:12px;color:var(--red)">⚠️ 风控: ${d.risk_level}</div>`;
+html+=`<div style="font-size:11px;color:var(--text3);margin-top:12px;text-align:center">${d.elapsed?d.elapsed+'s · ':''}LLM ${d.llm_calls||0}次 · ${d.timestamp||'N/A'}</div>`;
+el.innerHTML=html}}catch(e){const el=document.getElementById('reviewContent');if(el)el.innerHTML=`<div style="color:var(--text2)">加载失败: ${e.message}</div>`}}
 
 // ---- 首页：统一净资产 Hero 更新 ----
 async function loadUnifiedHero(){
@@ -597,7 +661,7 @@ async function renderResult(){const ts=answers.reduce((s,a)=>s+a,0);const pf=get
 const pref=_selectedPreference||'fund';
 // 尝试从后端获取动态配置 + 配置理由（替代硬编码）
 _recAdjustments=[];_recAiComments={};_recMarketData={};
-if(API_AVAILABLE){try{const r=await fetch(API_BASE+'/recommend-alloc?profile='+encodeURIComponent(pf.name)+'&with_ai=true&preference='+pref,{signal:AbortSignal.timeout(15000)});if(r.ok){const d=await r.json();if(d.allocations&&d.allocations.length)al=d.allocations;_recAdjustments=d.adjustments||[];_recAiComments=d.aiComments||{};_recMarketData=d.marketData||{}}}catch(e){console.warn('recommend-alloc fallback:',e)}}
+if(API_AVAILABLE){try{const r=await fetch(API_BASE+'/recommend-alloc?profile='+encodeURIComponent(pf.name)+'&with_ai=true&preference='+pref,{signal:AbortSignal.timeout(30000)});if(r.ok){const d=await r.json();if(d.allocations&&d.allocations.length)al=d.allocations;_recAdjustments=d.adjustments||[];_recAiComments=d.aiComments||{};_recMarketData=d.marketData||{}}}catch(e){console.warn('recommend-alloc fallback:',e)}}
 currentAllocs=al;
 // 保存偏好到 portfolio
 const pp=loadPortfolio();pp.preference=pref;savePortfolio(pp);
@@ -623,7 +687,7 @@ ${adjHtml}
 <div id="signalsSection"></div>
 <div class="section-title">⚠️ 三条铁律</div>
 <div class="rules-card"><div class="rule-item"><div class="rule-num">1</div><div class="rule-text"><strong>跌了别卖</strong>—越跌越该买</div></div><div class="rule-item"><div class="rule-num">2</div><div class="rule-text"><strong>别看新闻瞎操作</strong>—关掉手机</div></div><div class="rule-item"><div class="rule-num">3</div><div class="rule-text"><strong>至少拿3年</strong>—3年赚钱概率>85%</div></div></div>
-<div class="bottom-actions"><button class="action-btn green" onclick="confirmPurchase()">✅ 我已买入</button><button class="action-btn secondary" onclick="restart()">🔄 重新测评</button></div>
+<div class="bottom-actions"><button class="action-btn green" onclick="confirmPurchase()">✅ 我知道了，去录入持仓</button><button class="action-btn secondary" onclick="restart()">🔄 重新测评</button></div>
 <div class="footer-disclaimer">⚠️ 本工具仅供参考学习，不构成投资建议。投资有风险，入市需谨慎。</div></div>`;
 renderNav();setTimeout(()=>drawAllocChart(al),100);setTimeout(()=>drawProjChart(amt,mR/amt),200);loadSignals()}
 
@@ -1023,11 +1087,11 @@ botDiv.innerHTML=thinkBlock+fullText+`<div class="src-tag">${source==='ai'?'AI�
 // 处理剩余 buffer
 if(buf.startsWith('data: ')){try{const d=JSON.parse(buf.slice(6));if(d.delta){if(d.phase==='thinking')thinkText+=d.delta;else fullText+=d.delta}if(d.source)source=d.source}catch{}}
 botDiv.innerHTML=fullText+`<div class="src-tag">${source==='ai'?'AI分析':'规则引擎'}</div>`;scrollChat();
-chatMessages.push({role:'bot',text:fullText,src:source});_setChatLock(false);return}
+chatMessages.push({role:'bot',text:fullText,src:source});_saveChatHistory();_setChatLock(false);return}
 // 非流式降级（旧接口兼容）
-if(r.ok){const d=await r.json();chatMessages.push({role:'bot',text:d.reply,src:d.source});appendMsg('bot',d.reply,d.source);_setChatLock(false);return}
+if(r.ok){const d=await r.json();chatMessages.push({role:'bot',text:d.reply,src:d.source});_saveChatHistory();appendMsg('bot',d.reply,d.source);_setChatLock(false);return}
 }catch(e){console.warn('Chat stream error:',e)}}
-rmTyping();const fb='后端未连接，无法获取实时数据。请确保后端运行中。';chatMessages.push({role:'bot',text:fb,src:'offline'});appendMsg('bot',fb,'offline');_setChatLock(false)}
+rmTyping();const fb='后端未连接，无法获取实时数据。请确保后端运行中。';chatMessages.push({role:'bot',text:fb,src:'offline'});_saveChatHistory();appendMsg('bot',fb,'offline');_setChatLock(false)}
 
 function appendMsg(r,t,src){const el=document.getElementById('chatMsgs');if(!el)return;const d=document.createElement('div');d.className='chat-msg '+r;d.innerHTML=t+(src?`<div class="src-tag">${src==='ai'?'AI分析':src==='rules'?'规则引擎':'离线'}</div>`:'');el.appendChild(d);scrollChat()}
 let _thinkTimer=null;
@@ -1130,8 +1194,13 @@ return `<div style="margin-bottom:12px"><div style="font-size:12px;font-weight:7
 
 // ---- 资讯页 ----
 let insightTab='overview';
-async function renderInsight(){currentPage='insight';renderNav();
-$('#app').innerHTML=`<div class="insight-page fade-up"><div class="insight-header"><h2>📰 市场资讯</h2><p>${API_AVAILABLE?'实时数据更新中':'后端离线'} <button onclick="runDataAudit()" style="background:rgba(245,158,11,.15);border:1px solid rgba(245,158,11,.3);border-radius:6px;padding:2px 8px;font-size:11px;color:#F59E0B;cursor:pointer;margin-left:4px" id="auditBtn">🔍 数据体检</button></p></div><div class="section-tab-bar"><button class="section-tab ${insightTab==='overview'?'active':''}" onclick="insightTab='overview';renderInsight()">📊 总览</button><button class="section-tab ${insightTab==='fundpick'?'active':''}" onclick="insightTab='fundpick';renderInsight()">🔍 选基</button><button class="section-tab ${insightTab==='stockpick'?'active':''}" onclick="insightTab='stockpick';renderInsight()">🧠 选股</button><button class="section-tab ${insightTab==='news'?'active':''}" onclick="insightTab='news';renderInsight()">📰 新闻</button><button class="section-tab ${insightTab==='policy'?'active':''}" onclick="insightTab='policy';renderInsight()">🏛️ 政策</button><button class="section-tab ${insightTab==='tech'?'active':''}" onclick="insightTab='tech';renderInsight()">📈 技术</button><button class="section-tab ${insightTab==='macro'?'active':''}" onclick="insightTab='macro';renderInsight()">📊 宏观</button><button class="section-tab ${insightTab==='global'?'active':''}" onclick="insightTab='global';renderInsight()">🌐 全球</button><button class="section-tab ${insightTab==='factorictest'?'active':''}" onclick="insightTab='factorictest';renderInsight()">🔬 因子检验</button><button class="section-tab ${insightTab==='montecarlo'?'active':''}" onclick="insightTab='montecarlo';renderInsight()">🎲 蒙特卡洛</button><button class="section-tab ${insightTab==='aipredict'?'active':''}" onclick="insightTab='aipredict';renderInsight()">🤖 AI预测</button><button class="section-tab ${insightTab==='geneticfactor'?'active':''}" onclick="insightTab='geneticfactor';renderInsight()">🧬 遗传因子</button><button class="section-tab ${insightTab==='optimizer'?'active':''}" onclick="insightTab='optimizer';renderInsight()">⚡ 组合优化</button><button class="section-tab ${insightTab==='altdata'?'active':''}" onclick="insightTab='altdata';renderInsight()">📡 另类数据</button><button class="section-tab ${insightTab==='rlposition'?'active':''}" onclick="insightTab='rlposition';renderInsight()">🎮 RL仓位</button><button class="section-tab ${insightTab==='llmfactor'?'active':''}" onclick="insightTab='llmfactor';renderInsight()">🧠 LLM因子</button></div><div id="insightContent"><div style="text-align:center;padding:40px;color:var(--text2)"><div class="loading-spinner" style="width:32px;height:32px;margin:0 auto 12px;border-width:3px"></div><div id="loadingMsg" style="margin-top:8px">正在加载市场数据...</div><div style="font-size:12px;color:var(--text3,#94a3b8);margin-top:8px">☁️ 免费云服务器，首次加载可能需要 10~30 秒</div></div></div></div>`;
+function _insightTabs(){
+const all=[
+['overview','📊 总览'],['fundpick','🔍 选基'],['stockpick','🧠 选股'],['news','📰 新闻'],['policy','🏛️ 政策'],['tech','📈 技术'],['macro','📊 宏观'],['global','🌐 全球'],['signals','📡 信号'],['scorecard','📊 成绩单'],['doctor','🏥 体检'],['steward','🤖 管家'],['factorictest','🔬 因子检验'],['montecarlo','🎲 蒙特卡洛'],['aipredict','🤖 AI预测'],['geneticfactor','🧬 遗传因子'],['optimizer','⚡ 组合优化'],['altdata','📡 另类数据'],['rlposition','🎮 RL仓位'],['llmfactor','🧠 LLM因子'],['weekly','📋 周报']];
+const simple=['overview','news','policy','doctor','steward'];
+return isProMode()?all:all.filter(t=>simple.includes(t[0]))}
+async function renderInsight(){currentPage='insight';renderNav();const tabs=_insightTabs();
+$('#app').innerHTML=`<div class="insight-page fade-up"><div class="insight-header"><h2>📰 市场资讯</h2><p>${API_AVAILABLE?'实时数据更新中':'后端离线'} <button onclick="runDataAudit()" style="background:rgba(245,158,11,.15);border:1px solid rgba(245,158,11,.3);border-radius:6px;padding:2px 8px;font-size:11px;color:#F59E0B;cursor:pointer;margin-left:4px" id="auditBtn">🔍 数据体检</button></p></div><div class="section-tab-bar">${tabs.map(t=>`<button class="section-tab ${insightTab===t[0]?'active':''}" onclick="insightTab='${t[0]}';renderInsight()">${t[1]}</button>`).join('')}</div><div id="insightContent"><div style="text-align:center;padding:40px;color:var(--text2)"><div class="loading-spinner" style="width:32px;height:32px;margin:0 auto 12px;border-width:3px"></div><div id="loadingMsg" style="margin-top:8px">正在加载市场数据...</div><div style="font-size:12px;color:var(--text3,#94a3b8);margin-top:8px">☁️ 免费云服务器，首次加载可能需要 10~30 秒</div></div></div></div>`;
 if(!API_AVAILABLE){document.getElementById('insightContent').innerHTML='<div style="text-align:center;padding:40px;color:var(--text2)">后端离线，请启动后端服务获取实时数据</div>';return}
 // 独立 tab 不需要 dashboard 数据，秒开
 if(insightTab==='fundpick'){const el=document.getElementById('insightContent');if(el)renderFundPick(el);return}
@@ -1144,6 +1213,11 @@ if(insightTab==='optimizer'){const el=document.getElementById('insightContent');
 if(insightTab==='altdata'){const el=document.getElementById('insightContent');if(el)renderAltData(el);return}
 if(insightTab==='rlposition'){const el=document.getElementById('insightContent');if(el)renderRLPosition(el);return}
 if(insightTab==='llmfactor'){const el=document.getElementById('insightContent');if(el)renderLLMFactor(el);return}
+if(insightTab==='signals'){const el=document.getElementById('insightContent');if(el)renderSignalScout(el);return}
+if(insightTab==='scorecard'){const el=document.getElementById('insightContent');if(el)renderScorecard(el);return}
+if(insightTab==='doctor'){const el=document.getElementById('insightContent');if(el)renderDoctor(el);return}
+if(insightTab==='steward'){const el=document.getElementById('insightContent');if(el)renderSteward(el);return}
+if(insightTab==='weekly'){const el=document.getElementById('insightContent');if(el)renderWeeklyReport(el);return}
 if(insightTab==='policy'){const el=document.getElementById('insightContent');if(el)renderInsightPolicy(el);return}
 if(insightTab==='news'){const el=document.getElementById('insightContent');if(el){el.innerHTML='<div style="text-align:center;padding:20px;color:var(--text2)"><div class="loading-spinner" style="width:24px;height:24px;margin:0 auto 8px;border-width:2px"></div>加载新闻中...</div>';try{const r=await fetch(API_BASE+'/news',{signal:AbortSignal.timeout(15000)});if(r.ok){const d=await r.json();renderInsightNews(el,{news:d.news||[]});}else{el.innerHTML='<div style="text-align:center;padding:40px;color:var(--text2)">新闻加载失败<br><button onclick="renderInsight()" style="margin-top:8px;padding:6px 16px;border-radius:8px;border:none;background:var(--accent);color:#fff;cursor:pointer">🔄 重试</button></div>';}}catch(e){el.innerHTML='<div style="text-align:center;padding:40px;color:var(--text2)">新闻加载超时<br><button onclick="renderInsight()" style="margin-top:8px;padding:6px 16px;border-radius:8px;border:none;background:var(--accent);color:#fff;cursor:pointer">🔄 重试</button></div>';}}return}
 // 需要 dashboard 的 tab: overview / tech / macro
@@ -1658,7 +1732,22 @@ function selectAnswer(i,score){const bs=document.querySelectorAll('.option-btn')
 function onAmtChange(){const inp=document.getElementById('amtIn');const btn=document.getElementById('genBtn');if(!inp||!btn)return;const v=parseInt(inp.value);btn.disabled=!(v>0);selectedAmount=v||0}
 function setAmt(v){const inp=document.getElementById('amtIn');if(inp){inp.value=v;selectedAmount=v;onAmtChange();document.getElementById('genBtn').disabled=false}}
 function genResult(){if(!selectedAmount)return;$('#app').innerHTML='<div class="loading-screen"><div class="loading-spinner"></div><div style="color:var(--text2)">AI正在计算...</div></div>';fetchNav().finally(()=>{setTimeout(()=>{currentPage='result';renderResult()},1200)})}
-function confirmPurchase(){if(!currentAllocs||!selectedAmount||!currentProfile)return;recordPurchase(currentAllocs,selectedAmount,currentProfile.name,_selectedPreference||'fund');const b=document.querySelector('.action-btn.green');if(b){b.textContent='✅ 已记录！';b.style.opacity='.6';b.style.pointerEvents='none'}}
+function confirmPurchase(){
+// v3.0: 只保存风险偏好和建议配置，不写入假持仓数据
+if(!currentProfile)return;
+localStorage.setItem(_uk('moneybag_risk_profile'), currentProfile.name);
+localStorage.setItem(_uk('moneybag_suggested_alloc'), JSON.stringify({
+  profile: currentProfile.name,
+  amount: selectedAmount||0,
+  allocations: (currentAllocs||[]).map(a=>({code:a.code,name:a.fullName||a.name,pct:a.pct})),
+  preference: _selectedPreference||'fund',
+  date: new Date().toISOString()
+}));
+// 同步风险偏好到服务器
+if(API_AVAILABLE){fetch(API_BASE+'/agent/preferences',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({userId:getProfileId(),risk_profile:currentProfile.name})}).catch(()=>{})}
+// 跳转首页
+alert('✅ 已保存你的风险偏好: '+currentProfile.name+'\\n\\n去\"持仓\"页添加真实持仓\\n去\"资产\"页录入现金/房产等');
+currentPage='landing';renderLanding()}
 function restart(){currentPage='landing';currentQuestion=0;answers=[];selectedAmount=0;renderLanding()}
 function clearPortfolio(){if(confirm('确定清除持仓？')){localStorage.removeItem(STORAGE_KEY);restart()}}
 
@@ -2407,11 +2496,342 @@ el.innerHTML=html;
 }catch(e){el.innerHTML=`<div style="color:var(--text2);text-align:center;padding:12px">生成失败: ${e.message}<br><button onclick="runLLMFactor()" style="margin-top:6px;padding:4px 12px;border-radius:6px;border:none;background:var(--accent);color:#fff;cursor:pointer;font-size:11px">🔄 重试</button></div>`}}
 
 
+// ---- 📡 信号侦察兵 Tab ----
+async function renderSignalScout(el){
+el.innerHTML=`<div class="dashboard-card" style="overflow:hidden">
+<div class="dashboard-card-title">📡 信号侦察兵</div>
+<div style="font-size:12px;color:var(--text2);margin-bottom:8px">多源信号收集（新闻/公告/增减持/解禁/资金）→ 自动匹配你的持仓</div>
+<div style="display:flex;gap:8px;margin-bottom:12px">
+<button onclick="renderSignalScout(document.getElementById('insightContent'))" style="padding:8px 16px;border-radius:8px;border:none;background:var(--accent);color:#fff;font-weight:600;cursor:pointer;font-size:12px">🔄 刷新</button>
+<button onclick="manualScanSignals()" id="scanBtn" style="padding:8px 16px;border-radius:8px;border:1px solid var(--accent);background:transparent;color:var(--accent);font-weight:600;cursor:pointer;font-size:12px">🔍 全市场扫描</button>
+</div>
+<div id="signalScoutContent"><div style="text-align:center;padding:30px;color:var(--text2)"><div class="loading-spinner" style="width:24px;height:24px;margin:0 auto 8px;border-width:2px"></div>正在匹配信号与你的持仓...</div></div>
+</div>`;
+try{
+const uid=getProfileId();
+const r=await fetch(API_BASE+'/signal-scout/latest?userId='+encodeURIComponent(uid),{signal:AbortSignal.timeout(30000)});
+if(!r.ok)throw new Error('fetch failed');
+const d=await r.json();
+const el2=document.getElementById('signalScoutContent');if(!el2)return;
+const signals=d.signals||[];
+if(!signals.length){el2.innerHTML='<div style="text-align:center;padding:30px;color:var(--text2)">暂无匹配信号<br><span style="font-size:11px;opacity:0.6">你的持仓暂未检测到相关信号</span></div>';return}
+const levelColor={danger:'var(--red)',warning:'#F59E0B',info:'var(--text2)'};
+const levelIcon={danger:'🔴',warning:'⚠️',info:'📌'};
+let html=`<div style="display:flex;gap:8px;margin-bottom:12px;font-size:12px;color:var(--text2)">
+<span>匹配 <b style="color:var(--accent)">${d.total}</b> 条</span>
+<span>高相关 <b style="color:var(--green)">${d.high_relevance}</b></span>
+<span>${d.is_trading_day?'✅ 交易日':'🔒 非交易日'}</span></div>`;
+html+=signals.map(s=>{
+const icon=levelIcon[s.level]||'📌';
+const color=levelColor[s.level]||'var(--text2)';
+const relBadge=s.relevance>=50?`<span style="font-size:10px;padding:1px 6px;border-radius:4px;background:rgba(16,185,129,.15);color:var(--green)">持仓相关</span>`:'';
+const holdingBadge=s.related_holding?`<span style="font-size:10px;padding:1px 6px;border-radius:4px;background:rgba(99,102,241,.15);color:#818CF8">${s.related_holding}</span>`:'';
+const tags=(s.tags||[]).slice(0,3).map(t=>`<span style="font-size:10px;padding:1px 4px;border-radius:3px;background:var(--bg3);color:var(--text2)">${t}</span>`).join('');
+return`<div style="padding:10px 0;border-bottom:1px solid rgba(148,163,184,.06)">
+<div style="display:flex;align-items:center;gap:6px;margin-bottom:4px">
+<span style="color:${color}">${icon}</span>
+<span style="font-size:13px;font-weight:600;flex:1">${s.title}</span>
+${relBadge}${holdingBadge}
+</div>
+<div style="display:flex;gap:4px;flex-wrap:wrap;margin-top:4px">${tags}</div>
+<div style="font-size:11px;color:var(--text2);margin-top:4px">${s.source||''} · ${s.time||''}</div>
+</div>`}).join('');
+html+=`<div style="font-size:11px;color:#475569;margin-top:12px;text-align:center">扫描于 ${new Date(d.scanned_at).toLocaleString('zh-CN')}</div>`;
+el2.innerHTML=html;
+}catch(e){console.warn('Signal scout failed:',e);
+const el2=document.getElementById('signalScoutContent');
+if(el2)el2.innerHTML=`<div style="text-align:center;padding:20px;color:var(--text2)">信号加载失败<br><button onclick="renderSignalScout(document.getElementById('insightContent'))" style="margin-top:8px;padding:6px 16px;border-radius:6px;border:none;background:var(--accent);color:#fff;cursor:pointer;font-size:12px">🔄 重试</button></div>`}}
+
+async function manualScanSignals(){
+const btn=document.getElementById('scanBtn');if(btn){btn.textContent='扫描中...';btn.disabled=true}
+try{await fetch(API_BASE+'/signal-scout/scan',{method:'POST',signal:AbortSignal.timeout(30000)});
+renderSignalScout(document.getElementById('insightContent'))}
+catch(e){if(btn){btn.textContent='🔍 全市场扫描';btn.disabled=false}}}
+
+
+// ---- 📊 判断成绩单 Tab ----
+async function renderScorecard(el){
+el.innerHTML=`<div class="dashboard-card" style="overflow:hidden">
+<div class="dashboard-card-title">📊 判断成绩单</div>
+<div style="font-size:12px;color:var(--text2);margin-bottom:8px">追踪每次AI决策的准确率 → EMA自动校准模块权重 → 越用越准</div>
+<div style="display:flex;gap:8px;margin-bottom:12px">
+<button onclick="renderScorecard(document.getElementById('insightContent'))" style="padding:8px 16px;border-radius:8px;border:none;background:var(--accent);color:#fff;font-weight:600;cursor:pointer;font-size:12px">🔄 刷新</button>
+<button onclick="manualCalibrate()" id="calibBtn" style="padding:8px 16px;border-radius:8px;border:1px solid var(--accent);background:transparent;color:var(--accent);font-weight:600;cursor:pointer;font-size:12px">⚖️ 手动校准权重</button>
+</div>
+<div id="scorecardContent"><div style="text-align:center;padding:30px;color:var(--text2)"><div class="loading-spinner" style="width:24px;height:24px;margin:0 auto 8px;border-width:2px"></div>加载成绩单...</div></div>
+<div id="weightsContent" style="margin-top:16px"></div>
+</div>`;
+try{
+const uid=getProfileId()||getUserId();
+const[cardRes,weightRes]=await Promise.all([
+fetch(API_BASE+'/judgment/scorecard?userId='+encodeURIComponent(uid),{signal:AbortSignal.timeout(15000)}),
+fetch(API_BASE+'/judgment/weights?userId='+encodeURIComponent(uid),{signal:AbortSignal.timeout(10000)})
+]);
+const card=await cardRes.json();const wdata=await weightRes.json();
+const el2=document.getElementById('scorecardContent');if(!el2)return;
+
+// 核心指标卡
+const accColor=card.accuracy>=70?'var(--green)':card.accuracy>=50?'var(--accent)':'var(--red)';
+let html=`<div style="display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin-bottom:16px">
+<div style="background:var(--bg2);border-radius:12px;padding:12px;text-align:center">
+<div style="font-size:28px;font-weight:900;color:${accColor}">${card.accuracy}%</div>
+<div style="font-size:11px;color:var(--text2)">准确率</div></div>
+<div style="background:var(--bg2);border-radius:12px;padding:12px;text-align:center">
+<div style="font-size:28px;font-weight:900">${card.total}</div>
+<div style="font-size:11px;color:var(--text2)">总判断</div></div>
+<div style="background:var(--bg2);border-radius:12px;padding:12px;text-align:center">
+<div style="font-size:28px;font-weight:900;color:var(--green)">${card.correct}</div>
+<div style="font-size:11px;color:var(--text2)">✅正确 / ❌${card.wrong} / 🟡${card.partial}</div></div></div>`;
+
+// 模块准确率
+const modAcc=card.module_accuracy||{};
+if(Object.keys(modAcc).length){
+html+=`<div style="font-size:13px;font-weight:700;margin-bottom:8px">📊 各模块准确率</div>`;
+Object.entries(modAcc).sort((a,b)=>b[1].accuracy-a[1].accuracy).forEach(([mod,s])=>{
+const mc=s.accuracy>=70?'var(--green)':s.accuracy>=50?'var(--accent)':'var(--red)';
+html+=`<div style="display:flex;align-items:center;gap:8px;padding:6px 0;border-bottom:1px solid rgba(148,163,184,.06)">
+<span style="flex:1;font-size:12px">${mod}</span>
+<span style="font-size:11px;color:var(--text2)">${s.correct}/${s.total}</span>
+<div style="width:80px;height:6px;background:var(--bg3);border-radius:3px;overflow:hidden"><div style="height:100%;width:${s.accuracy}%;background:${mc};border-radius:3px"></div></div>
+<span style="font-size:12px;font-weight:700;color:${mc};min-width:40px;text-align:right">${s.accuracy}%</span></div>`})}
+
+// 最近判断
+if(card.recent&&card.recent.length){
+html+=`<div style="font-size:13px;font-weight:700;margin:16px 0 8px">📋 最近判断</div>`;
+card.recent.forEach(r=>{
+const dirIcon=r.direction==='bullish'?'📈':r.direction==='bearish'?'📉':'➖';
+const verdictIcon=r.verdict==='correct'?'✅':r.verdict==='wrong'?'❌':r.verdict==='partial'?'🟡':'⏳';
+const dt=r.recorded_at?.slice(0,16).replace('T',' ')||'';
+html+=`<div style="display:flex;align-items:center;gap:6px;padding:6px 0;border-bottom:1px solid rgba(148,163,184,.04);font-size:12px">
+<span>${dirIcon}</span><span style="flex:1">${r.regime||''} · 置信${r.confidence}%</span>
+<span>${verdictIcon}</span>
+${r.actual_return!=null?`<span style="color:${r.actual_return>=0?'var(--green)':'var(--red)'}">实际${r.actual_return>0?'+':''}${r.actual_return}%</span>`:'<span style="color:var(--text2)">待验证</span>'}
+<span style="color:var(--text2);font-size:10px">${dt.slice(5)}</span></div>`})}
+
+el2.innerHTML=html;
+
+// 权重面板
+const wel=document.getElementById('weightsContent');if(wel){
+const w=wdata.weights||{};
+let wh=`<div style="font-size:13px;font-weight:700;margin-bottom:8px">⚖️ 当前模块权重（EMA校准）</div>`;
+Object.entries(w).sort((a,b)=>b[1]-a[1]).forEach(([mod,val])=>{
+const pct=Math.round(val*100);
+wh+=`<div style="display:flex;align-items:center;gap:8px;padding:4px 0;font-size:12px">
+<span style="min-width:120px">${mod}</span>
+<div style="flex:1;height:6px;background:var(--bg3);border-radius:3px;overflow:hidden"><div style="height:100%;width:${pct}%;background:var(--accent);border-radius:3px"></div></div>
+<span style="min-width:35px;text-align:right;font-weight:600">${pct}%</span></div>`});
+wel.innerHTML=wh}
+}catch(e){console.warn('Scorecard failed:',e);
+const el2=document.getElementById('scorecardContent');
+if(el2)el2.innerHTML=`<div style="text-align:center;padding:20px;color:var(--text2)">暂无成绩数据<br><span style="font-size:11px;opacity:0.6">需要先有 Pipeline 决策记录</span></div>`}}
+
+async function manualCalibrate(){
+const btn=document.getElementById('calibBtn');if(btn){btn.textContent='校准中...';btn.disabled=true}
+try{const uid=getProfileId()||getUserId();
+const r=await fetch(API_BASE+'/judgment/calibrate',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({userId:uid}),signal:AbortSignal.timeout(15000)});
+const d=await r.json();
+if(d.status==='calibrated'){alert('✅ 权重校准完成！准确率:'+d.overall_accuracy+'%');renderScorecard(document.getElementById('insightContent'))}
+else{alert('⚠️ '+d.message)}
+}catch(e){alert('校准失败: '+e.message)}
+finally{if(btn){btn.textContent='⚖️ 手动校准权重';btn.disabled=false}}}
+
+
+// ---- 🏥 持仓体检 Tab ----
+async function renderDoctor(el){
+el.innerHTML=`<div class="dashboard-card" style="overflow:hidden">
+<div class="dashboard-card-title">🏥 持仓体检</div>
+<div style="font-size:12px;color:var(--text2);margin-bottom:8px">压力测试+集中度诊断+健康评分 — 找出你的持仓隐患</div>
+<button onclick="runDoctor()" style="width:100%;padding:12px;border-radius:10px;border:none;background:linear-gradient(135deg,#10B981,#059669);color:#fff;font-weight:700;cursor:pointer;font-size:14px;margin-bottom:16px">🏥 开始体检</button>
+<div id="doctorResult"></div></div>`;
+}
+
+async function runDoctor(){
+const el=document.getElementById('doctorResult');if(!el)return;
+el.innerHTML='<div style="text-align:center;padding:30px;color:var(--text2)"><div class="loading-spinner" style="width:24px;height:24px;margin:0 auto 8px;border-width:2px"></div>正在体检（收集持仓+压力测试+集中度分析）...</div>';
+try{
+const r=await fetch(API_BASE+'/portfolio-doctor/diagnose?userId='+getProfileId(),{signal:AbortSignal.timeout(60000)});
+if(!r.ok)throw new Error('体检失败');
+const d=await r.json();
+if(d.status==='no_data'){el.innerHTML='<div style="text-align:center;padding:20px;color:var(--text2)">暂无持仓，请先添加股票或基金</div>';return}
+const h=d.health||{};const c=d.concentration||{};const s=d.stress_test||{};
+let html='';
+// 健康评分卡
+html+=`<div style="text-align:center;padding:20px;margin-bottom:16px;background:var(--bg2);border-radius:16px">
+<div style="font-size:48px;font-weight:900;color:${h.score>=70?'var(--green)':h.score>=50?'var(--accent)':'var(--red)'}">${h.score||0}</div>
+<div style="font-size:16px;font-weight:700;margin-top:4px">${h.grade||'?'}</div>
+<div style="display:flex;justify-content:center;gap:16px;margin-top:12px;font-size:12px">
+${Object.entries(h.dimensions||{}).map(([k,v])=>{const max=(h.max_scores||{})[k]||25;const labels={concentration:'集中度',diversification:'多样性',risk:'风险',stability:'稳定性'};return`<div><div style="color:var(--text2)">${labels[k]||k}</div><div style="font-weight:700;color:${v>=max*0.7?'var(--green)':v>=max*0.4?'var(--accent)':'var(--red)'}\">${v}/${max}</div></div>`}).join('')}
+</div></div>`;
+// 集中度
+html+=`<div style="margin-bottom:16px;background:var(--bg2);border-radius:12px;padding:12px">
+<div style="font-size:13px;font-weight:700;margin-bottom:8px">📊 集中度 ${c.hhi_level||''}</div>
+<div style="font-size:12px;color:var(--text2);margin-bottom:8px">HHI=${c.hhi||0} | 权益占比 ${c.equity_pct||0}%</div>
+${(c.holdings_weight||[]).slice(0,8).map(w=>`<div style="display:flex;align-items:center;gap:8px;margin-bottom:4px;font-size:12px"><span style="width:80px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${w.name}</span><div style="flex:1;height:6px;background:var(--bg3);border-radius:3px;overflow:hidden"><div style="height:100%;width:${Math.min(w.weight,100)}%;background:${w.weight>30?'var(--red)':w.weight>15?'var(--accent)':'var(--green)'};border-radius:3px"></div></div><span style="min-width:40px;text-align:right">${w.weight}%</span></div>`).join('')}
+</div>`;
+// 压力测试
+if(s.scenarios&&s.scenarios.length){
+html+=`<div style="margin-bottom:16px;background:var(--bg2);border-radius:12px;padding:12px">
+<div style="font-size:13px;font-weight:700;margin-bottom:8px">🔬 压力测试（总市值 ¥${(s.total_value||0).toLocaleString()}）</div>
+${s.scenarios.map(sc=>`<div style="display:flex;justify-content:space-between;align-items:center;padding:8px 0;border-bottom:1px solid rgba(148,163,184,.06);font-size:12px">
+<div><div style="font-weight:600">${sc.name}</div><div style="color:var(--text2);font-size:11px">${sc.description}</div></div>
+<div style="text-align:right;min-width:70px"><div style="font-weight:800;color:var(--red)">${sc.loss_pct}%</div><div style="font-size:11px;color:var(--text2)">¥${Math.abs(sc.loss).toLocaleString()}</div></div>
+</div>`).join('')}
+</div>`}
+// 问题清单
+const issues=[...(h.issues||[]),...(c.issues||[])];
+if(issues.length){
+html+=`<div style="background:rgba(245,158,11,.06);border:1px solid rgba(245,158,11,.15);border-radius:12px;padding:12px;margin-bottom:16px">
+<div style="font-size:13px;font-weight:700;margin-bottom:8px">⚠️ 发现 ${issues.length} 个问题</div>
+${issues.map(i=>`<div style="font-size:12px;padding:4px 0;border-bottom:1px solid rgba(148,163,184,.06)">${i}</div>`).join('')}
+</div>`}
+html+=`<div style="text-align:center;margin-top:12px"><button class="action-btn secondary" style="display:inline-block;min-width:auto;padding:10px 24px" onclick="runDoctor()">🔄 重新体检</button></div>`;
+el.innerHTML=html;
+}catch(e){el.innerHTML=`<div style="text-align:center;padding:20px;color:var(--text2)">体检失败: ${e.message}<br><button onclick="runDoctor()" style="margin-top:6px;padding:4px 12px;border-radius:6px;border:none;background:var(--accent);color:#fff;cursor:pointer;font-size:11px">🔄 重试</button></div>`}}
+
+
+// ---- 🤖 AI管家 Tab ----
+async function renderSteward(el){
+el.innerHTML=`<div class="dashboard-card" style="overflow:hidden">
+<div class="dashboard-card-title">🤖 AI 投资管家</div>
+<div style="font-size:12px;color:var(--text2);margin-bottom:8px">管家按 Pipeline 全流程分析：Regime→模块并行→门控→EV→风控→结论</div>
+<div style="display:flex;gap:8px;margin-bottom:8px">
+<input id="stewardQ" placeholder="输入问题 如：茅台能买吗？" class="input-field" style="flex:1;min-width:0;padding:10px 12px;border-radius:10px;border:1px solid var(--bg3);background:var(--bg2);color:var(--text);font-size:14px">
+<select id="stewardPipe" style="padding:10px;border-radius:10px;border:1px solid var(--bg3);background:var(--bg2);color:var(--text);font-size:12px;flex-shrink:0">
+<option value="">自动选管线</option><option value="default">日常(default)</option><option value="fast">快速(fast)</option><option value="cautious">谨慎(cautious)</option></select>
+</div>
+<div style="display:flex;gap:8px;margin-bottom:16px">
+<button onclick="runStewardAsk()" style="flex:2;padding:12px;border-radius:10px;border:none;background:var(--accent);color:#fff;font-weight:700;cursor:pointer;font-size:14px">🤖 管家分析</button>
+<button onclick="runStewardBriefing()" style="flex:1;padding:12px;border-radius:10px;border:none;background:var(--card);border:1px solid var(--border);color:var(--text);font-weight:600;cursor:pointer;font-size:12px">📋 简报</button>
+</div>
+<div id="stewardResult"></div>
+<div style="margin-top:16px;padding-top:16px;border-top:1px solid rgba(148,163,184,.1)">
+<div style="font-size:13px;font-weight:700;margin-bottom:8px">📊 当前市场状态 (Regime)</div>
+<div id="regimeResult"><div style="text-align:center;padding:12px;color:var(--text2);font-size:12px">点击上方按钮获取...</div></div>
+</div></div>`;
+loadRegime()}
+
+async function loadRegime(){
+const el=document.getElementById('regimeResult');if(!el||!API_AVAILABLE)return;
+try{const r=await fetch(API_BASE+'/regime',{signal:AbortSignal.timeout(15000)});if(!r.ok)return;const d=await r.json();
+const iconMap={'trending_bull':'📈','oscillating':'📊','high_vol_bear':'📉','rotation':'🔄'};
+const colorMap={'trending_bull':'var(--green)','oscillating':'var(--accent)','high_vol_bear':'var(--red)','rotation':'#8B5CF6'};
+el.innerHTML=`<div style="display:flex;align-items:center;gap:12px;padding:12px;background:var(--bg2);border-radius:12px;border-left:3px solid ${colorMap[d.regime]||'var(--accent)'}">
+<div style="font-size:32px">${iconMap[d.regime]||'📊'}</div>
+<div><div style="font-size:16px;font-weight:800;color:${colorMap[d.regime]||'var(--text)'}">${d.description||d.regime}</div>
+<div style="font-size:12px;color:var(--text2);margin-top:4px">置信度 ${d.confidence}% · 管线→${d.regime==='high_vol_bear'?'cautious':d.regime==='rotation'?'fast':'default'}</div></div></div>`
+}catch(e){el.innerHTML=`<div style="font-size:12px;color:var(--text2)">Regime 加载失败</div>`}}
+
+async function runStewardAsk(){
+const question=document.getElementById('stewardQ')?.value?.trim()||'综合分析';
+const pipeline=document.getElementById('stewardPipe')?.value||null;
+const el=document.getElementById('stewardResult');if(!el)return;
+el.innerHTML='<div style="text-align:center;padding:30px;color:var(--text2)"><div class="loading-spinner" style="width:24px;height:24px;margin:0 auto 8px;border-width:2px"></div>管家正在跑 Pipeline 全流程分析...<br><span style="font-size:11px;opacity:0.6">Regime→模块并行→门控→EV→风控→结论</span></div>';
+try{const uid=getProfileId()||getUserId();
+const body={userId:uid,question};if(pipeline)body.pipeline=pipeline;
+const r=await fetch(API_BASE+'/steward/ask',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body),signal:AbortSignal.timeout(60000)});
+const d=await r.json();
+const dirColor=d.direction==='bullish'?'var(--green)':d.direction==='bearish'?'var(--red)':d.direction==='blocked'?'#EF4444':'var(--accent)';
+const dirIcon=d.direction==='bullish'?'📈':d.direction==='bearish'?'📉':d.direction==='blocked'?'🚫':'📊';
+let html=`<div style="display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin-bottom:16px">
+<div style="background:var(--bg2);border-radius:12px;padding:12px;text-align:center"><div style="font-size:11px;color:var(--text2)">方向</div><div style="font-size:22px;font-weight:900;color:${dirColor}">${dirIcon} ${d.direction||'neutral'}</div></div>
+<div style="background:var(--bg2);border-radius:12px;padding:12px;text-align:center"><div style="font-size:11px;color:var(--text2)">置信度</div><div style="font-size:22px;font-weight:900">${d.confidence||0}%</div></div>
+<div style="background:var(--bg2);border-radius:12px;padding:12px;text-align:center"><div style="font-size:11px;color:var(--text2)">管线</div><div style="font-size:14px;font-weight:700">${d.pipeline||'?'}</div></div></div>`;
+if(d.conclusion)html+=`<div style="padding:12px;background:rgba(99,102,241,.06);border-radius:10px;border-left:3px solid ${dirColor};margin-bottom:12px;font-size:13px;line-height:1.8">${d.conclusion}</div>`;
+if(d.regime_description)html+=`<div style="font-size:12px;color:var(--text2);margin-bottom:8px">📊 Regime: ${d.regime_description}</div>`;
+if(d.gate_decision)html+=`<div style="font-size:12px;color:var(--text2);margin-bottom:8px">🚦 门控: ${d.gate_decision} (${d.gate_reason||''})</div>`;
+if(d.ev_params)html+=`<div style="font-size:12px;color:var(--text2);margin-bottom:8px">📐 EV: ${d.ev_params.ev_pct}% (胜率${d.ev_params.winrate}% 盈${d.ev_params.expected_gain}% 亏${d.ev_params.expected_loss}%)</div>`;
+if(d.risk_level&&d.risk_level!=='normal')html+=`<div style="font-size:12px;padding:8px;background:rgba(239,68,68,.08);border-radius:8px;margin-bottom:8px;color:var(--red)">🛡️ 风控: ${d.risk_level} ${(d.risk_alerts||[]).map(a=>a.msg).join(' · ')}</div>`;
+if(d.modules_called?.length)html+=`<div style="font-size:11px;color:var(--text2);margin-bottom:8px">📦 模块: ${d.modules_called.join(', ')} (${d.modules_called.length}个)</div>`;
+html+=`<div style="font-size:11px;color:var(--text3);text-align:center;margin-top:8px">Pipeline ${d.pipeline_steps?.length||0}步 · ${d.elapsed||0}s · LLM调用 ${d.llm_calls||0}次 · ${d.timestamp||''}</div>`;
+el.innerHTML=html;loadRegime();
+}catch(e){el.innerHTML=`<div style="color:var(--text2);text-align:center;padding:16px">分析失败: ${e.message}<br><button onclick="runStewardAsk()" style="margin-top:6px;padding:4px 12px;border-radius:6px;border:none;background:var(--accent);color:#fff;cursor:pointer;font-size:11px">🔄 重试</button></div>`}}
+
+async function runStewardBriefing(){
+const el=document.getElementById('stewardResult');if(!el)return;
+el.innerHTML='<div style="text-align:center;padding:20px;color:var(--text2)"><div class="loading-spinner" style="width:24px;height:24px;margin:0 auto 8px;border-width:2px"></div>获取每日简报（快速版，0次LLM）...</div>';
+try{const uid=getProfileId()||getUserId();
+const r=await fetch(API_BASE+'/steward/briefing?userId='+encodeURIComponent(uid),{signal:AbortSignal.timeout(30000)});
+const d=await r.json();
+const iconMap={'trending_bull':'📈','oscillating':'📊','high_vol_bear':'📉','rotation':'🔄'};
+let html=`<div style="padding:16px;background:var(--bg2);border-radius:12px;margin-bottom:12px">
+<div style="font-size:18px;font-weight:800;margin-bottom:8px">${d.one_line||'每日简报'}</div>
+<div style="display:flex;gap:12px;font-size:12px;color:var(--text2)">
+<span>${iconMap[d.regime]||'📊'} ${d.regime_description||d.regime}</span>
+<span>🛡️ ${d.risk_level}</span>
+<span>📡 ${d.signals_count||0}条信号</span>
+</div>
+${d.top_signal?`<div style="margin-top:8px;font-size:13px;padding:8px;background:rgba(245,158,11,.06);border-radius:8px">💡 ${d.top_signal}</div>`:''}
+<div style="font-size:11px;color:var(--text3);margin-top:8px">${d.elapsed||0}s · 0次LLM</div></div>`;
+el.innerHTML=html;loadRegime();
+}catch(e){el.innerHTML=`<div style="color:var(--text2);text-align:center;padding:12px">简报获取失败: ${e.message}</div>`}}
+
+// ---- 📋 周报 Tab ----
+async function renderWeeklyReport(el){
+el.innerHTML=`<div class="dashboard-card"><div class="dashboard-card-title">📋 投资周报</div>
+<div style="font-size:12px;color:var(--text2);margin-bottom:12px">汇总一周的判断记录+持仓变化+市场回顾</div>
+<button onclick="loadWeeklyReport(0)" style="padding:10px 20px;border-radius:10px;border:none;background:var(--accent);color:#fff;font-weight:700;cursor:pointer;font-size:13px;margin-bottom:16px">📋 生成本周报告</button>
+<div id="weeklyResult"></div>
+<div style="margin-top:16px;padding-top:16px;border-top:1px solid rgba(148,163,184,.1)">
+<div style="font-size:13px;font-weight:700;margin-bottom:8px">📚 历史周报</div>
+<div id="weeklyHistory"><div style="text-align:center;padding:12px;color:var(--text2);font-size:12px">点击上方按钮生成...</div></div>
+</div></div>`;
+loadWeeklyHistory()}
+
+async function loadWeeklyReport(weeksAgo){
+const el=document.getElementById('weeklyResult');if(!el)return;
+el.innerHTML='<div style="text-align:center;padding:20px;color:var(--text2)"><div class="loading-spinner" style="width:24px;height:24px;margin:0 auto 8px;border-width:2px"></div>生成周报中...</div>';
+try{const r=await fetch(API_BASE+`/weekly-report?userId=${getProfileId()}&weeks_ago=${weeksAgo}`,{signal:AbortSignal.timeout(15000)});
+const d=await r.json();if(d.error){el.innerHTML=`<div style="color:var(--red);padding:12px">${d.error}</div>`;return}
+const j=d.judgments||{};const p=d.portfolio_changes||{};const m=d.market_review||{};const recs=d.recommendations||[];
+let html=`<div style="font-size:14px;font-weight:700;margin-bottom:12px">📊 ${d.period}</div>
+<div style="font-size:13px;color:var(--text1);margin-bottom:12px;padding:8px 12px;background:rgba(99,102,241,.06);border-radius:10px">${d.summary}</div>
+<div style="display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin-bottom:16px">
+<div style="background:var(--bg2);border-radius:10px;padding:10px;text-align:center"><div style="font-size:11px;color:var(--text2)">分析次数</div><div style="font-size:20px;font-weight:800">${j.total_judgments||0}</div></div>
+<div style="background:var(--bg2);border-radius:10px;padding:10px;text-align:center"><div style="font-size:11px;color:var(--text2)">准确率</div><div style="font-size:20px;font-weight:800;color:${(j.accuracy||0)>=60?'var(--green)':'var(--red)'}">${j.accuracy||0}%</div></div>
+<div style="background:var(--bg2);border-radius:10px;padding:10px;text-align:center"><div style="font-size:11px;color:var(--text2)">交易笔数</div><div style="font-size:20px;font-weight:800">${p.total_transactions||0}</div></div></div>`;
+if(m.regime)html+=`<div style="font-size:12px;color:var(--text2);margin-bottom:12px">📊 市场状态: <b>${m.regime_description||m.regime}</b> (${m.confidence||0}%)</div>`;
+if(recs.length)html+=`<div style="padding:10px;background:rgba(59,130,246,.06);border-radius:10px;margin-bottom:12px">${recs.map(r2=>`<div style="font-size:12px;line-height:1.8">${r2}</div>`).join('')}</div>`;
+el.innerHTML=html;
+}catch(e){el.innerHTML=`<div style="color:var(--text2);padding:12px">生成失败: ${e.message}</div>`}}
+
+async function loadWeeklyHistory(){
+const el=document.getElementById('weeklyHistory');if(!el||!API_AVAILABLE)return;
+try{const r=await fetch(API_BASE+`/weekly-report/history?userId=${getProfileId()}&limit=4`,{signal:AbortSignal.timeout(10000)});
+const d=await r.json();const reports=d.reports||[];
+if(!reports.length){el.innerHTML='<div style="text-align:center;padding:12px;font-size:12px;color:var(--text2)">暂无历史周报</div>';return}
+el.innerHTML=reports.map(r2=>`<div style="display:flex;justify-content:space-between;align-items:center;padding:8px 0;border-bottom:1px solid var(--bg3);font-size:12px"><span>${r2.period}</span><span style="color:var(--text2)">${r2.summary||''}</span></div>`).join('');
+}catch(e){el.innerHTML='<div style="font-size:12px;color:var(--text2)">加载失败</div>'}}
+
+// ---- B3修复: 聊天记录持久化 ----
+function _saveChatHistory(){try{localStorage.setItem(_uk('moneybag_chat_history'),JSON.stringify(chatMessages.slice(-50)))}catch{}}
+function _loadChatHistory(){try{const s=localStorage.getItem(_uk('moneybag_chat_history'));if(s)chatMessages=JSON.parse(s)}catch{}}
+
+
 // ---- 启动 ----
 migrateV3toV4();
 (async()=>{
   await checkAPI();
   await ensureProfile(); // 首次使用输入名字
+  _loadChatHistory(); // B3: 恢复聊天记录
   fetchNav();syncFromCloud();loadModelList();
+  // 老用户跳过问卷：有 profile 且后端有数据 → 直接进首页
+  const pid=getProfileId();
+  if(pid && pid!=='default'){
+    // 检查本地是否有数据
+    const p=loadPortfolio();const txns=loadTxns();const assets=loadAssets();
+    const hasLocal=p.holdings.length>0||txns.length>0||assets.length>0||localStorage.getItem(_uk('moneybag_has_holdings'))==='1';
+    if(!hasLocal && API_AVAILABLE){
+      // 本地没有 → 检查服务器端持仓
+      try{
+        const [sh,fh]=await Promise.all([
+          fetch(API_BASE+'/stock-holdings?userId='+pid,{signal:AbortSignal.timeout(5000)}).then(r=>r.json()).catch(()=>({holdings:[]})),
+          fetch(API_BASE+'/fund-holdings?userId='+pid,{signal:AbortSignal.timeout(5000)}).then(r=>r.json()).catch(()=>({holdings:[]})),
+        ]);
+        if((sh.holdings||[]).length>0||(fh.holdings||[]).length>0){
+          localStorage.setItem(_uk('moneybag_has_holdings'),'1'); // 标记老用户
+        }
+      }catch(e){console.warn('holdings check:',e)}
+    }
+  }
   renderLanding();
 })();

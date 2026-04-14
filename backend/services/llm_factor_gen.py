@@ -14,6 +14,19 @@
   - "Can Large Language Models Mine Gold?" (2024, Chen et al.)
   - "FinAgent: A Multimodal Foundation Agent for Financial Trading" (2024)
 """
+
+# ---- V4 底座：MODULE_META ----
+MODULE_META = {
+    "name": "llm_factor_gen",
+    "scope": "public",
+    "input": ['stock_code'],
+    "output": "generated_factors",
+    "cost": "llm_heavy",
+    "tags": ['LLM因子', 'Alpha-GPT', '代码生成'],
+    "description": "LLM因子生成器：DS生成假设→Python代码→IC验证→迭代优化",
+    "layer": "analysis",
+    "priority": 6,
+}
 import time
 import json
 import traceback

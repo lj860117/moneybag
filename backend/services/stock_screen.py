@@ -18,6 +18,19 @@ import traceback
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from config import STOCK_CACHE_TTL
 
+# ---- V4 底座：MODULE_META ----
+MODULE_META = {
+    "name": "stock_screen",
+    "scope": "public",
+    "input": ["top_n"],
+    "output": "screened_stocks",
+    "cost": "llm_light",
+    "tags": ["选股", "30因子", "动态权重"],
+    "description": "30因子7维打分V3，DeepSeek动态权重+LLM因子加分",
+    "layer": "analysis",
+    "priority": 2,
+}
+
 _stock_cache = {}
 
 # ---- 30 因子权重配置（默认值，可被 AI 覆盖）----
@@ -716,3 +729,43 @@ def screen_stocks(top_n: int = 50) -> dict:
         print(f"[STOCK_SCREEN_V3] Failed: {e}")
         traceback.print_exc()
         return {"stocks": [], "total": 0, "error": str(e)}
+
+
+# ---- V4 底座：enrich() 适配层 ----
+_enrich_cache = {}  # {"data": result, "ts": time}
+_ENRICH_CACHE_TTL = 1800  # 30分钟缓存（选股结果不需要实时）
+
+def enrich(ctx):
+    """Pipeline 适配：跑选股 → 写回 ctx（市场整体强弱+推荐名单）"""
+    import time as _time
+    try:
+        # 30分钟缓存，避免每次 steward.ask 都跑 40 秒选股
+        now = _time.time()
+        if _enrich_cache and now - _enrich_cache.get("ts", 0) < _ENRICH_CACHE_TTL:
+            result = _enrich_cache["data"]
+            print("[STOCK_SCREEN] enrich using cache")
+        else:
+            result = screen_stocks(20)
+            _enrich_cache["data"] = result
+            _enrich_cache["ts"] = now
+        stocks = result.get("stocks", [])
+        regime = result.get("regime", "")
+        if stocks:
+            avg_score = sum(s.get("score", 0) for s in stocks) / len(stocks)
+            direction = "bullish" if avg_score > 60 else ("bearish" if avg_score < 40 else "neutral")
+        else:
+            avg_score, direction = 50, "neutral"
+        ctx.modules_results["stock_screen"] = {
+            "available": True,
+            "direction": direction,
+            "confidence": round(min(avg_score, 90), 1),
+            "data": {"top5": [{"name": s["name"], "code": s["code"], "score": s["score"]} for s in stocks[:5]], "avg_score": round(avg_score, 1), "regime": regime, "total_screened": result.get("total", 0)},
+            "cost": "llm_light",
+            "latency_ms": 0,
+        }
+        ctx.modules_called.append("stock_screen")
+    except Exception as e:
+        print(f"[stock_screen.enrich] Error: {e}")
+        ctx.errors.append({"module": "stock_screen", "error": str(e), "fallback_used": True})
+        ctx.modules_skipped.append({"name": "stock_screen", "reason": str(e)})
+    return ctx

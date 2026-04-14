@@ -42,6 +42,15 @@ _SERVICES_DIR = Path(__file__).parent
 class ModuleRegistry:
     """模块注册表 — AI 的模块目录"""
 
+    _instance = None  # 全局单例
+
+    @classmethod
+    def instance(cls) -> "ModuleRegistry":
+        """获取全局单例（懒初始化）"""
+        if cls._instance is None:
+            cls._instance = cls()
+        return cls._instance
+
     def __init__(self):
         self._modules: dict[str, dict] = {}  # name → {meta, enrich_fn, module_ref}
         self._discovered = False

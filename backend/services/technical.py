@@ -2,6 +2,19 @@
 钱袋子 — 技术指标计算
 RSI、MACD、布林带
 """
+
+# ---- V4 底座：MODULE_META ----
+MODULE_META = {
+    "name": "technical",
+    "scope": "public",
+    "input": ['prices'],
+    "output": "technical_indicators",
+    "cost": "cpu",
+    "tags": ['RSI', 'MACD', '布林带'],
+    "description": "技术指标计算：RSI(14)+MACD+布林带",
+    "layer": "data",
+    "priority": 2,
+}
 import time
 from services.market_data import _nav_cache
 from config import NAV_CACHE_TTL

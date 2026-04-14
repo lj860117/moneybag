@@ -8,6 +8,19 @@ import traceback
 from datetime import datetime
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
+# ---- V4 底座：MODULE_META ----
+MODULE_META = {
+    "name": "holding_intelligence",
+    "scope": "private",
+    "input": ["user_id", "stock_code"],
+    "output": "holding_intel",
+    "cost": "cpu",
+    "tags": ["个股情报", "新闻", "资金流", "解禁"],
+    "description": "持仓关联智能：个股新闻+资金流+行业动态+解禁预警",
+    "layer": "data",
+    "priority": 2,
+}
+
 _intel_cache = {}
 _CACHE_TTL = 600  # 10 分钟
 

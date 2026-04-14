@@ -2,6 +2,19 @@
 钱袋子 — V4.5 新因子数据
 北向资金、融资融券、国债收益率、SHIBOR、股息率、LLM情绪
 """
+
+# ---- V4 底座：MODULE_META ----
+MODULE_META = {
+    "name": "factor_data",
+    "scope": "public",
+    "input": [],
+    "output": "factors",
+    "cost": "cpu",
+    "tags": ['因子', '北向', '融资', '国债', '股息'],
+    "description": "V4.5新因子数据：北向资金+融资融券+国债收益率+SHIBOR+股息率+LLM情绪",
+    "layer": "data",
+    "priority": 2,
+}
 import os
 import time
 from datetime import datetime, timedelta

@@ -21,6 +21,19 @@
 import time
 import math
 import random
+
+# ---- V4 底座：MODULE_META ----
+MODULE_META = {
+    "name": "rl_position",
+    "scope": "public",
+    "input": ["stock_code"],
+    "output": "position_advice",
+    "cost": "cpu",
+    "tags": ["仓位", "RL", "Q-Learning"],
+    "description": "Q-Learning离散空间仓位管理，加/减/持建议",
+    "layer": "analysis",
+    "priority": 4,
+}
 import traceback
 import json
 import numpy as np
@@ -402,3 +415,50 @@ def get_rl_portfolio_advice(user_id: str) -> dict:
     except Exception as e:
         traceback.print_exc()
         return {"error": f"组合RL建议失败: {str(e)}"}
+
+
+# ---- V4 底座：enrich() 适配层 ----
+def enrich(ctx):
+    """Pipeline 适配：取用户第一只股票 → RL建议 → 写回 ctx"""
+    try:
+        # 优先用 ctx 里的持仓，没有则自己加载
+        codes = [h.get("code", "") for h in (ctx.stock_holdings or []) if h.get("code")]
+        if not codes:
+            try:
+                from services.stock_monitor import load_stock_holdings
+                holdings = load_stock_holdings(ctx.user_id)
+                codes = [h.get("code", "") for h in holdings if h.get("code")]
+            except Exception:
+                pass
+        # 如果问题里有股票代码，优先用
+        if hasattr(ctx, "question_stock_code") and ctx.question_stock_code:
+            codes = [ctx.question_stock_code] + [c for c in codes if c != ctx.question_stock_code]
+        if not codes:
+            ctx.modules_skipped.append({"name": "rl_position", "reason": "no_stock_code"})
+            return ctx
+        result = get_rl_recommendation(codes[0])
+        if "error" in result:
+            raise Exception(result["error"])
+        # 映射方向
+        recs = result.get("recommendations", [])
+        direction = "neutral"
+        if recs:
+            actions = [r.get("action", "") for r in recs]
+            if any("加仓" in a for a in actions):
+                direction = "bullish"
+            elif any("减仓" in a or "清仓" in a for a in actions):
+                direction = "bearish"
+        ctx.modules_results["rl_position"] = {
+            "available": True,
+            "direction": direction,
+            "confidence": 55,
+            "data": {"code": codes[0], "recommendations": recs[:3], "market_state": result.get("market_state", {})},
+            "cost": "cpu",
+            "latency_ms": 0,
+        }
+        ctx.modules_called.append("rl_position")
+    except Exception as e:
+        print(f"[rl_position.enrich] Error: {e}")
+        ctx.errors.append({"module": "rl_position", "error": str(e), "fallback_used": True})
+        ctx.modules_skipped.append({"name": "rl_position", "reason": str(e)})
+    return ctx

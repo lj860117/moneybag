@@ -2,6 +2,19 @@
 钱袋子 — 市场核心数据
 基金净值、恐惧贪婪指数、估值百分位
 """
+
+# ---- V4 底座：MODULE_META ----
+MODULE_META = {
+    "name": "market_data",
+    "scope": "public",
+    "input": [],
+    "output": "market_core",
+    "cost": "cpu",
+    "tags": ['恐贪指数', '估值', '基金净值'],
+    "description": "市场核心数据：基金净值+恐惧贪婪指数+估值百分位",
+    "layer": "data",
+    "priority": 1,
+}
 import time
 from datetime import datetime
 from typing import Optional

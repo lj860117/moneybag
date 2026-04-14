@@ -8,6 +8,19 @@ from pathlib import Path
 from datetime import datetime
 from config import USERS_DIR
 
+# ---- V4 底座：MODULE_META ----
+MODULE_META = {
+    "name": "persistence",
+    "scope": "private",
+    "input": ["user_id"],
+    "output": "user_data",
+    "cost": "cpu",
+    "tags": ["持久化", "用户IO", "SHA256"],
+    "description": "用户数据文件读写（SHA256路径隔离）",
+    "layer": "data",
+    "priority": 1,
+}
+
 # ---- 持久化工具 ----
 def _user_file(user_id: str) -> Path:
     safe_id = hashlib.sha256(user_id.encode()).hexdigest()[:16]

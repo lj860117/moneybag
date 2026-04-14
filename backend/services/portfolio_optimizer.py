@@ -21,6 +21,19 @@
   - 幻方量化 CVaR 风险预算框架
 """
 import time
+
+# ---- V4 底座：MODULE_META ----
+MODULE_META = {
+    "name": "portfolio_optimizer",
+    "scope": "private",
+    "input": ["user_id"],
+    "output": "optimal_weights",
+    "cost": "cpu",
+    "tags": ["组合优化", "MVO", "HRP", "CVaR"],
+    "description": "5种方法计算数学最优持仓比例(MVO/MinVol/CVaR/HRP/Equal)",
+    "layer": "analysis",
+    "priority": 5,
+}
 import math
 import traceback
 import numpy as np
@@ -256,8 +269,8 @@ def optimize_portfolio(user_id: str, method: str = "all", max_weight: float = 0.
         return _opt_cache[cache_key]["data"]
 
     try:
-        from services.stock_monitor import get_stock_holdings
-        holdings = get_stock_holdings(user_id)
+        from services.stock_monitor import load_stock_holdings
+        holdings = load_stock_holdings(user_id)
 
         if not holdings or len(holdings) < 2:
             return {"error": "至少需要2只持仓才能优化"}
@@ -363,3 +376,35 @@ def optimize_portfolio(user_id: str, method: str = "all", max_weight: float = 0.
     except Exception as e:
         traceback.print_exc()
         return {"error": f"组合优化失败: {str(e)}"}
+
+
+# ---- V4 底座：enrich() 适配层 ----
+def enrich(ctx):
+    """Pipeline 适配：从 ctx 读 user_id → 组合优化 → 写回 ctx"""
+    try:
+        result = optimize_portfolio(ctx.user_id)
+        if "error" in result:
+            raise Exception(result["error"])
+        adj = result.get("adjustments", [])
+        direction = "neutral"
+        if adj:
+            buys = sum(1 for a in adj if "加仓" in a.get("action", ""))
+            sells = sum(1 for a in adj if "减仓" in a.get("action", ""))
+            if buys > sells:
+                direction = "bullish"
+            elif sells > buys:
+                direction = "bearish"
+        ctx.modules_results["portfolio_optimizer"] = {
+            "available": True,
+            "direction": direction,
+            "confidence": 60,
+            "data": {"recommendation": result.get("recommendation", ""), "adjustments": adj[:5], "methods": list(result.get("methods", {}).keys())},
+            "cost": "cpu",
+            "latency_ms": 0,
+        }
+        ctx.modules_called.append("portfolio_optimizer")
+    except Exception as e:
+        print(f"[portfolio_optimizer.enrich] Error: {e}")
+        ctx.errors.append({"module": "portfolio_optimizer", "error": str(e), "fallback_used": True})
+        ctx.modules_skipped.append({"name": "portfolio_optimizer", "reason": str(e)})
+    return ctx

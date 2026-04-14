@@ -7,6 +7,19 @@ GDP / 工业增加值 / 社零 / 固投 / 龙虎榜 / 管理层增减持
   一.5 龙虎榜
   二.4 股东增减持
 """
+
+# ---- V4 底座：MODULE_META ----
+MODULE_META = {
+    "name": "macro_v8",
+    "scope": "public",
+    "input": [],
+    "output": "v8_macro",
+    "cost": "cpu",
+    "tags": ['宏观', 'GDP', '龙虎榜', '增减持'],
+    "description": "V8扩展宏观：GDP/工业增加值/社零/固投/龙虎榜/管理层增减持",
+    "layer": "data",
+    "priority": 3,
+}
 import time
 import math
 import traceback

@@ -2,6 +2,19 @@
 钱袋子 — 新闻资讯数据
 基金新闻、市场新闻、政策新闻、影响分析
 """
+
+# ---- V4 底座：MODULE_META ----
+MODULE_META = {
+    "name": "news_data",
+    "scope": "public",
+    "input": [],
+    "output": "news",
+    "cost": "cpu",
+    "tags": ['新闻', '情绪', '影响分析'],
+    "description": "新闻资讯：基金新闻+市场新闻+政策新闻+影响分析",
+    "layer": "data",
+    "priority": 2,
+}
 import time
 from datetime import datetime, timedelta
 from config import NEWS_CACHE_TTL
@@ -300,3 +313,94 @@ def analyze_news_impact(news_list: list) -> list:
                 seen_tags.add(rule["tag"])
                 break
     return impacts
+
+
+# ============================================================
+# 个股/基金新闻统一接口（v3.0 新增，供各模块复用）
+# ============================================================
+
+_stock_news_cache = {}  # {code: {"news": [...], "ts": float}}
+_STOCK_NEWS_TTL = 900  # 15 分钟缓存
+
+def get_stock_news_by_code(code: str, limit: int = 8) -> list:
+    """拉取个股新闻（AKShare stock_news_em），15 分钟缓存"""
+    import time
+    now = time.time()
+    if code in _stock_news_cache and now - _stock_news_cache[code]["ts"] < _STOCK_NEWS_TTL:
+        return _stock_news_cache[code]["news"][:limit]
+
+    try:
+        import akshare as ak
+        df = ak.stock_news_em(symbol=code)
+        if df is not None and len(df) > 0:
+            title_col = [c for c in df.columns if "标题" in c or "title" in c.lower() or "新闻" in c]
+            time_col = [c for c in df.columns if "时间" in c or "date" in c.lower()]
+            source_col = [c for c in df.columns if "来源" in c or "source" in c.lower()]
+            if title_col:
+                news = []
+                for _, row in df.head(limit).iterrows():
+                    item = {"title": str(row[title_col[0]])}
+                    if time_col:
+                        item["time"] = str(row[time_col[0]])
+                    if source_col:
+                        item["source"] = str(row[source_col[0]])
+                    news.append(item)
+                _stock_news_cache[code] = {"news": news, "ts": now}
+                return news
+    except Exception as e:
+        print(f"[NEWS] stock_news {code}: {e}")
+    return []
+
+
+def get_holdings_news(stock_holdings: list, fund_holdings: list, limit_per: int = 3) -> dict:
+    """批量拉取持仓新闻（盯盘/复盘/诊断共用）
+    返回: {"stocks": {code: [news]}, "funds": {code: [news]}, "summary": "一句话"}
+    """
+    result = {"stocks": {}, "funds": {}, "summary": ""}
+    all_titles = []
+
+    # 股票持仓新闻
+    for h in (stock_holdings or [])[:10]:
+        code = h.get("code", "")
+        if not code:
+            continue
+        news = get_stock_news_by_code(code, limit_per)
+        if news:
+            result["stocks"][code] = news
+            all_titles.extend([n["title"] for n in news])
+
+    # 基金持仓新闻
+    for h in (fund_holdings or [])[:10]:
+        code = h.get("code", "")
+        if not code or code == "余额宝":
+            continue
+        try:
+            news = get_fund_news(code, limit_per)
+            valid = [n for n in news if n.get("title") and "加载中" not in n.get("title", "")]
+            if valid:
+                result["funds"][code] = valid
+                all_titles.extend([n["title"] for n in valid])
+        except Exception:
+            pass
+
+    # 一句话摘要
+    total = len(result["stocks"]) + len(result["funds"])
+    if total:
+        result["summary"] = f"拉取了 {total} 只持仓的最新新闻，共 {len(all_titles)} 条"
+    return result
+
+
+def format_holdings_news_for_prompt(holdings_news: dict) -> str:
+    """把持仓新闻格式化为 prompt 注入文本"""
+    lines = []
+    for code, news in holdings_news.get("stocks", {}).items():
+        lines.append(f"\n### {code} 个股新闻")
+        for n in news:
+            lines.append(f"- {n['title']}")
+
+    for code, news in holdings_news.get("funds", {}).items():
+        lines.append(f"\n### {code} 基金新闻")
+        for n in news:
+            lines.append(f"- {n['title']}")
+
+    return "\n".join(lines) if lines else ""

@@ -18,6 +18,19 @@ import time
 import httpx
 from pathlib import Path
 
+# ---- V4 底座：MODULE_META ----
+MODULE_META = {
+    "name": "ds_enhance",
+    "scope": "public",
+    "input": [],
+    "output": "ai_comments",
+    "cost": "llm_light",
+    "tags": ["DS增强", "AI点评", "今日关注", "新闻风控"],
+    "description": "DeepSeek智能增强层：点评/建议/关注/风控/信号解读/影响分析",
+    "layer": "output",
+    "priority": 8,
+}
+
 # ---- DeepSeek 调用基础设施 ----
 
 _DS_CACHE = {}  # 短期缓存（避免重复调用）
@@ -455,8 +468,23 @@ def diagnose_user_assets(user_id: str) -> dict:
     if health_issues:
         summary_parts.append(f"健康问题: {'; '.join(health_issues)}")
 
+    # 拉持仓新闻
+    holdings_news_text = ""
+    try:
+        from services.stock_monitor import load_stock_holdings
+        from services.fund_monitor import load_fund_holdings
+        from services.news_data import get_holdings_news, format_holdings_news_for_prompt
+        stock_h = load_stock_holdings(user_id) or []
+        fund_h = load_fund_holdings(user_id) or []
+        if stock_h or fund_h:
+            h_news = get_holdings_news(stock_h, fund_h, limit_per=2)
+            holdings_news_text = format_holdings_news_for_prompt(h_news)
+    except Exception:
+        pass
+
     prompt = f"""用户资产概况：
 {chr(10).join(summary_parts)}
+{f'{chr(10)}持仓相关新闻：{chr(10)}{holdings_news_text}' if holdings_news_text else ''}
 
 请基于以上数据，给出简洁的资产诊断（3-5条要点，每条一行，带emoji）：
 1. 资产结构是否合理？（房产占比过高？投资过于集中？）

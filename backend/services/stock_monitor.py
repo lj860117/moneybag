@@ -14,6 +14,19 @@ from pathlib import Path
 from datetime import datetime
 from typing import Optional
 
+# ---- V4 底座：MODULE_META ----
+MODULE_META = {
+    "name": "stock_monitor",
+    "scope": "private",
+    "input": ["user_id"],
+    "output": "stock_scan",
+    "cost": "cpu",
+    "tags": ["盯盘", "异动", "纪律", "股票"],
+    "description": "股票持仓CRUD+实时行情+技术指标+异动检测+纪律检查",
+    "layer": "data",
+    "priority": 1,
+}
+
 from config import (
     STOCK_SINGLE_MAX, STOCK_MIN_COUNT, STOCK_INDUSTRY_MAX,
     STOCK_STOP_LOSS, STOCK_TAKE_PROFIT, STOCK_CONCENTRATION_WARN,

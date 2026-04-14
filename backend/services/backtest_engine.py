@@ -10,6 +10,19 @@
 
 数据源：AKShare stock_zh_a_hist / fund_open_fund_info_em
 """
+
+# ---- V4 底座：MODULE_META ----
+MODULE_META = {
+    "name": "backtest_engine",
+    "scope": "public",
+    "input": ['stock_code', 'strategy'],
+    "output": "backtest_result",
+    "cost": "cpu",
+    "tags": ['回测', '夏普', '年化'],
+    "description": "回测引擎：单只/组合历史收益+最大回撤+夏普比率",
+    "layer": "analysis",
+    "priority": 5,
+}
 import time
 import math
 import traceback

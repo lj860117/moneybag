@@ -3,6 +3,19 @@
 Phase 4: 对标量化文档第三阶段
 参考: Qlib Alpha158 + GuruAgents + 广发金融工程多因子体系
 """
+
+# ---- V4 底座：MODULE_META ----
+MODULE_META = {
+    "name": "ml_stock_screen",
+    "scope": "public",
+    "input": ['top_n'],
+    "output": "ml_screened",
+    "cost": "cpu",
+    "tags": ['LightGBM', 'ML选股'],
+    "description": "LightGBM多因子选股：规则打分+ML增强非线性关系",
+    "layer": "analysis",
+    "priority": 4,
+}
 import time
 import traceback
 import numpy as np

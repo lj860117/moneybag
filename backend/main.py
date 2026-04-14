@@ -916,6 +916,33 @@ app.include_router(profiles_router)
 from services.portfolio_overview import get_portfolio_overview
 from services.unified_networth import calc_unified_networth
 
+# ---- V4 W5: 持仓体检 API ----
+from services.portfolio_doctor import diagnose, stress_test, health_score, concentration_check
+
+@app.get("/api/portfolio-doctor/diagnose")
+def portfolio_doctor_api(userId: str = ""):
+    """完整持仓体检 — 压力测试+集中度+健康评分"""
+    if not userId:
+        raise HTTPException(400, "userId required")
+    return diagnose(userId)
+
+@app.get("/api/portfolio-doctor/stress-test")
+def portfolio_stress_test_api(userId: str = ""):
+    """压力测试 — 模拟极端场景对持仓冲击"""
+    if not userId:
+        raise HTTPException(400, "userId required")
+    # 获取合并持仓
+    report = diagnose(userId)
+    return report.get("stress_test", {"scenarios": [], "summary": "无数据"})
+
+@app.get("/api/portfolio-doctor/health")
+def portfolio_health_api(userId: str = ""):
+    """健康评分 — 综合 0-100 分"""
+    if not userId:
+        raise HTTPException(400, "userId required")
+    report = diagnose(userId)
+    return report.get("health", {"score": 0, "grade": "❓"})
+
 @app.get("/api/portfolio/overview")
 def portfolio_overview_api(userId: str = "default"):
     """汇总全资产概览（股票+基金+配置占比+健康评分）"""
@@ -1835,7 +1862,7 @@ async def chat_analysis_stream(req: ChatRequest):
     uid = req.userId or "default"
     portfolio_ctx = _build_portfolio_context(req.portfolio, user_id=uid) if req.portfolio else _build_portfolio_context(user_id=uid)
 
-    # 多用户记忆注入（B1修复：get_memory_summary→build_memory_summary）
+    # 多用户记忆注入
     if req.userId:
         try:
             from services.agent_memory import build_memory_summary
@@ -1844,6 +1871,46 @@ async def chat_analysis_stream(req: ChatRequest):
                 portfolio_ctx += f"\n\n## 用户记忆\n{mem}"
         except Exception as e:
             print(f"[CHAT-STREAM] memory inject failed: {e}")
+
+    # 个股/基金新闻注入（检测到用户提到具体公司/基金时，拉最新新闻给 DS）
+    try:
+        from services.steward import _extract_stock_name, _extract_fund_name
+        stock_name, stock_code = _extract_stock_name(user_msg)
+        fund_name, fund_code = _extract_fund_name(user_msg)
+
+        if stock_code:
+            # 个股新闻
+            import akshare as ak
+            df = ak.stock_news_em(symbol=stock_code)
+            if df is not None and len(df) > 0:
+                title_col = [c for c in df.columns if "标题" in c or "title" in c.lower() or "新闻" in c]
+                if title_col:
+                    titles = df[title_col[0]].head(8).tolist()
+                    news_text = "\n".join([f"- {t}" for t in titles])
+                    market_ctx += f"\n\n## {stock_name}({stock_code})最新新闻\n{news_text}"
+                    print(f"[CHAT] 注入 {stock_name} 个股新闻 {len(titles)} 条")
+        elif fund_code and fund_code != "余额宝":
+            # 基金新闻
+            from services.data_layer import get_fund_news
+            fund_news = get_fund_news(fund_code, 8)
+            valid_news = [n for n in fund_news if n.get("title") and "加载中" not in n.get("title", "")]
+            if valid_news:
+                news_text = "\n".join([f"- {n['title']}" for n in valid_news[:8]])
+                market_ctx += f"\n\n## {fund_name}({fund_code})最新新闻\n{news_text}"
+                print(f"[CHAT] 注入 {fund_name} 基金新闻 {len(valid_news)} 条")
+    except Exception as e:
+        print(f"[CHAT] news inject: {e}")
+
+    # W8: 注入 steward 最近决策上下文（让 DS 知道管家最近分析了什么）
+    try:
+        from services.agent_memory import get_context
+        last_ctx = get_context(uid)
+        if last_ctx.get("last_analysis"):
+            portfolio_ctx += f"\n\n## 管家最近分析结论\n{last_ctx['last_analysis'][:300]}"
+            if last_ctx.get("market_phase"):
+                portfolio_ctx += f"\n市场阶段: {last_ctx['market_phase']}"
+    except Exception as e:
+        print(f"[CHAT-STREAM] steward ctx inject failed: {e}")
 
     api_key = os.environ.get("OPENAI_API_KEY") or os.environ.get("LLM_API_KEY")
     api_base = os.environ.get("LLM_API_BASE", "https://api.deepseek.com/v1")
@@ -2819,6 +2886,84 @@ def serve_index():
 
 app.mount("/static", StaticFiles(directory=str(FRONTEND_DIR)), name="frontend")
 
+# ---- V4 管家 Steward + Regime API ----
+from services.steward import get_steward
+from services.regime_engine import classify as classify_regime
+
+@app.post("/api/steward/ask")
+def steward_ask(req: dict):
+    """管家决策 — 完整 Pipeline 流程"""
+    user_id = req.get("userId", "")
+    if not user_id:
+        raise HTTPException(400, "userId required")
+    question = req.get("question", "综合分析")
+    pipeline = req.get("pipeline", None)
+    steward = get_steward()
+    return steward.ask(user_id, question, pipeline_override=pipeline)
+
+@app.get("/api/steward/briefing")
+def steward_briefing(userId: str = ""):
+    """管家每日简报（快速版，0 次 LLM）"""
+    if not userId:
+        raise HTTPException(400, "userId required")
+    steward = get_steward()
+    return steward.briefing(userId)
+
+@app.get("/api/steward/review")
+def steward_review(userId: str = ""):
+    """管家收盘复盘（完整版，含体检）"""
+    if not userId:
+        raise HTTPException(400, "userId required")
+    steward = get_steward()
+    return steward.review(userId)
+
+@app.get("/api/regime")
+def get_regime():
+    """获取当前市场状态（4 类分类）"""
+    return classify_regime()
+
+
+# ---- LLM Gateway 用量 API ----
+from services.llm_gateway import llm_usage
+
+@app.get("/api/llm-usage")
+def get_llm_usage(userId: str = ""):
+    """LLM 调用用量统计（按用户×模块）"""
+    return llm_usage(userId)
+
+
+# ---- W9: 周报 API ----
+from services.weekly_report import generate as generate_weekly, get_history as get_weekly_history
+
+@app.get("/api/weekly-report")
+def weekly_report_api(userId: str = "", weeks_ago: int = 0):
+    """生成/获取周报"""
+    if not userId:
+        return {"error": "userId required"}
+    return generate_weekly(userId, weeks_ago)
+
+@app.get("/api/weekly-report/history")
+def weekly_report_history(userId: str = "", limit: int = 4):
+    """获取历史周报列表"""
+    if not userId:
+        return {"reports": []}
+    return {"reports": get_weekly_history(userId, limit)}
+
+
+# ---- W10: 一键备份 API ----
+@app.post("/api/admin/backup")
+def create_backup():
+    """一键备份全部用户数据"""
+    import shutil
+    backup_name = f"backup_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+    backup_dir = DATA_DIR.parent / "backups" / backup_name
+    try:
+        shutil.copytree(DATA_DIR, backup_dir)
+        return {"status": "ok", "path": str(backup_dir), "name": backup_name}
+    except Exception as e:
+        return {"status": "error", "msg": str(e)}
+
+
 # ---- Agent 决策引擎 API ----
 from services.agent_memory import (
     get_preferences, save_preferences, get_decisions, add_decision,
@@ -2923,6 +3068,58 @@ def get_agent_signals(user_id: str):
     if fp.exists():
         return json.loads(fp.read_text(encoding="utf-8"))
     return {"analysis": "暂无信号数据", "source": "none"}
+
+
+# ---- V4 信号侦察兵 API ----
+from services.signal_scout import get_latest as scout_get_latest, get_history as scout_get_history, collect as scout_collect
+
+@app.get("/api/signal-scout/latest")
+def api_signal_scout_latest(userId: str = ""):
+    """获取用户最新匹配信号"""
+    if not userId:
+        return {"signals": [], "total": 0}
+    return scout_get_latest(userId)
+
+@app.get("/api/signal-scout/history")
+def api_signal_scout_history(userId: str = "", days: int = 7):
+    """获取历史信号"""
+    if not userId:
+        return []
+    return scout_get_history(userId, days)
+
+@app.post("/api/signal-scout/scan")
+def api_signal_scout_scan():
+    """手动触发全市场信号扫描（刷新缓存）"""
+    from services.signal_scout import _signal_cache
+    _signal_cache.clear()
+    signals = scout_collect()
+    return {"total": len(signals), "scanned_at": datetime.now().isoformat()}
+
+
+# ---- V4 判断追踪器 API ----
+from services.judgment_tracker import (
+    scorecard as jt_scorecard, get_weights as jt_get_weights,
+    calibrate as jt_calibrate, verify_pending as jt_verify_pending,
+)
+
+@app.get("/api/judgment/scorecard")
+def api_judgment_scorecard(userId: str = "", months: int = 3):
+    """判断成绩单 — 准确率/盈亏/模块贡献"""
+    uid = userId or "default"
+    return jt_scorecard(uid, months)
+
+@app.get("/api/judgment/weights")
+def api_judgment_weights(userId: str = ""):
+    """当前模块权重（EMA 校准后）"""
+    uid = userId or "default"
+    weights = jt_get_weights(uid)
+    return {"weights": weights, "user_id": uid}
+
+@app.post("/api/judgment/calibrate")
+def api_judgment_calibrate(req: dict = {}):
+    """手动触发 EMA 权重校准"""
+    uid = req.get("userId", "default")
+    return jt_calibrate(uid)
 
 
 # ============================================================

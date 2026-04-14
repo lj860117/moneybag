@@ -15,6 +15,19 @@
 
 参考：Barra 多因子模型 + 幻方量化因子研究框架
 """
+
+# ---- V4 底座：MODULE_META ----
+MODULE_META = {
+    "name": "factor_ic",
+    "scope": "public",
+    "input": ['pool_size', 'forward_days'],
+    "output": "ic_ranking",
+    "cost": "cpu",
+    "tags": ['IC检验', 'Barra', '因子有效性'],
+    "description": "30因子Spearman IC检验+IC衰减分析，验证因子预测能力",
+    "layer": "analysis",
+    "priority": 5,
+}
 import time
 import math
 import traceback

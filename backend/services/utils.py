@@ -4,6 +4,19 @@ DataFrame 列名匹配、安全类型转换等
 """
 
 
+
+# ---- V4 底座：MODULE_META ----
+MODULE_META = {
+    "name": "utils",
+    "scope": "public",
+    "input": [],
+    "output": "utility",
+    "cost": "cpu",
+    "tags": ['工具', '列名匹配', '类型转换'],
+    "description": "公共工具函数：DataFrame列名匹配+安全类型转换+NaN清洗",
+    "layer": "data",
+    "priority": 9,
+}
 def find_col(cols, keywords):
     """模糊匹配列名"""
     for kw in keywords:

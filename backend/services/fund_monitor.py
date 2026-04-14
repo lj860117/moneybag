@@ -17,6 +17,19 @@ from datetime import datetime
 from typing import Optional
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
+# ---- V4 底座：MODULE_META ----
+MODULE_META = {
+    "name": "fund_monitor",
+    "scope": "private",
+    "input": ["user_id"],
+    "output": "fund_scan",
+    "cost": "cpu",
+    "tags": ["基金盯盘", "估值", "风控", "异动"],
+    "description": "基金持仓CRUD+实时估值+风控指标+异动检测+全持仓扫描",
+    "layer": "data",
+    "priority": 1,
+}
+
 # ---- 持仓数据路径 ----
 _DATA_DIR = Path(os.environ.get("DATA_DIR", Path(__file__).parent.parent / "data"))
 _MONITOR_DIR = _DATA_DIR / "monitor"

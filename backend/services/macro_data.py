@@ -2,6 +2,19 @@
 钱袋子 — 宏观经济数据
 经济日历
 """
+
+# ---- V4 底座：MODULE_META ----
+MODULE_META = {
+    "name": "macro_data",
+    "scope": "public",
+    "input": [],
+    "output": "macro_calendar",
+    "cost": "cpu",
+    "tags": ['宏观', 'CPI', 'PMI', 'M2', 'PPI'],
+    "description": "宏观经济日历：CPI/PMI/M2/PPI数据+趋势分析",
+    "layer": "data",
+    "priority": 2,
+}
 import time
 from datetime import datetime, timedelta
 from config import MACRO_CACHE_TTL, FACTOR_CACHE_TTL

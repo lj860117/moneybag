@@ -3,6 +3,19 @@
 M1/社融/LPR/涨跌家数/美林时钟
 Phase 2 新增数据源，对标量化文档"核心数据维度"
 """
+
+# ---- V4 底座：MODULE_META ----
+MODULE_META = {
+    "name": "macro_extended",
+    "scope": "public",
+    "input": [],
+    "output": "macro_extended",
+    "cost": "cpu",
+    "tags": ['宏观', '美林时钟', 'LPR', 'M1', '社融'],
+    "description": "扩展宏观：M1/社融/LPR/涨跌家数/美林时钟经济周期",
+    "layer": "data",
+    "priority": 3,
+}
 import time
 import traceback
 from config import MACRO_CACHE_TTL, FACTOR_CACHE_TTL

@@ -2,6 +2,19 @@
 钱袋子 — 数据层门面（Facade）
 统一导出所有数据获取函数，保持向后兼容
 """
+
+# ---- V4 底座：MODULE_META ----
+MODULE_META = {
+    "name": "data_layer",
+    "scope": "public",
+    "input": [],
+    "output": "facade",
+    "cost": "cpu",
+    "tags": ['Facade', '导出'],
+    "description": "数据层门面：统一导出所有数据获取函数，保持向后兼容",
+    "layer": "data",
+    "priority": 9,
+}
 from services.market_data import (
     get_fund_nav, get_fear_greed_index, get_valuation_percentile,
     _get_nav_on_date, _nav_cache,

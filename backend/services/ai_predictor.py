@@ -26,6 +26,19 @@ import numpy as np
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from config import STOCK_CACHE_TTL
 
+# ---- V4 底座：MODULE_META ----
+MODULE_META = {
+    "name": "ai_predictor",
+    "scope": "public",
+    "input": ["stock_codes"],
+    "output": "prediction",
+    "cost": "cpu",
+    "tags": ["预测", "ML", "MLP", "GBM"],
+    "description": "MLP+GBM双模型集成，40+特征，N日涨跌概率预测",
+    "layer": "analysis",
+    "priority": 3,
+}
+
 _pred_cache = {}
 _PRED_CACHE_TTL = 3600  # 1 小时
 
@@ -539,3 +552,46 @@ def batch_predict(codes: list, forward_days: int = 5) -> dict:
         "forward_days": forward_days,
         "generated_at": time.strftime("%Y-%m-%d %H:%M:%S"),
     }
+
+
+# ---- V4 底座：enrich() 适配层 ----
+def enrich(ctx):
+    """Pipeline 适配：从 ctx 读持仓股票 → batch_predict → 写回 ctx"""
+    try:
+        codes = [h.get("code", "") for h in (ctx.stock_holdings or []) if h.get("code")]
+        if not codes:
+            try:
+                from services.stock_monitor import load_stock_holdings
+                holdings = load_stock_holdings(ctx.user_id)
+                codes = [h.get("code", "") for h in holdings if h.get("code")]
+            except Exception:
+                pass
+        # 如果问题里有股票代码，优先用
+        if hasattr(ctx, "question_stock_code") and ctx.question_stock_code:
+            codes = [ctx.question_stock_code] + [c for c in codes if c != ctx.question_stock_code]
+        if not codes:
+            ctx.modules_skipped.append({"name": "ai_predictor", "reason": "no_stock_code"})
+            return ctx
+        result = batch_predict(codes[:10], forward_days=5)
+        preds = result.get("predictions", [])
+        # 计算平均方向和置信度
+        if preds:
+            avg_pred = sum(p.get("prediction", 0) for p in preds) / len(preds)
+            avg_conf = sum(p.get("confidence", 50) for p in preds) / len(preds)
+            direction = "bullish" if avg_pred > 0.5 else ("bearish" if avg_pred < -0.5 else "neutral")
+        else:
+            avg_pred, avg_conf, direction = 0, 50, "neutral"
+        ctx.modules_results["ai_predictor"] = {
+            "available": True,
+            "direction": direction,
+            "confidence": round(avg_conf, 1),
+            "data": {"avg_prediction": round(avg_pred, 2), "count": len(preds), "predictions": preds[:5]},
+            "cost": "cpu",
+            "latency_ms": 0,
+        }
+        ctx.modules_called.append("ai_predictor")
+    except Exception as e:
+        print(f"[ai_predictor.enrich] Error: {e}")
+        ctx.errors.append({"module": "ai_predictor", "error": str(e), "fallback_used": True})
+        ctx.modules_skipped.append({"name": "ai_predictor", "reason": str(e)})
+    return ctx

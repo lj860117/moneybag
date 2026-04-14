@@ -2,6 +2,19 @@
 钱袋子 — 基金排行数据
 基金排行、动态收益率
 """
+
+# ---- V4 底座：MODULE_META ----
+MODULE_META = {
+    "name": "fund_rank",
+    "scope": "public",
+    "input": [],
+    "output": "fund_ranking",
+    "cost": "cpu",
+    "tags": ['基金排行', '收益率'],
+    "description": "基金排行数据：全量基金多周期收益率排行",
+    "layer": "data",
+    "priority": 2,
+}
 import time
 from datetime import datetime
 from config import FUND_RANK_CACHE_TTL

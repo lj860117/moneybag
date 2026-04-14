@@ -10,6 +10,19 @@ import json
 from pathlib import Path
 from datetime import datetime
 
+# ---- V4 底座：MODULE_META ----
+MODULE_META = {
+    "name": "portfolio_overview",
+    "scope": "private",
+    "input": ["user_id"],
+    "output": "overview",
+    "cost": "cpu",
+    "tags": ["组合总览", "配置占比", "偏离度"],
+    "description": "资产总览：股票+基金汇总净资产+配置占比+偏离度检测",
+    "layer": "data",
+    "priority": 2,
+}
+
 # ---- 导入各持仓模块 ----
 from services.stock_monitor import load_stock_holdings, scan_all_holdings
 from services.fund_monitor import load_fund_holdings, scan_all_fund_holdings

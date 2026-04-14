@@ -3,6 +3,19 @@
 从全量基金排行中多维打分筛选 TOP 推荐
 参考：豆包方案（指增基金评分、回撤/规模/费率/超额排序）
 """
+
+# ---- V4 底座：MODULE_META ----
+MODULE_META = {
+    "name": "fund_screen",
+    "scope": "public",
+    "input": ['fund_type', 'sort_by'],
+    "output": "screened_funds",
+    "cost": "cpu",
+    "tags": ['基金筛选', '多维打分'],
+    "description": "基金智能筛选：多维打分(收益+稳定+费率)排序TOP推荐",
+    "layer": "analysis",
+    "priority": 3,
+}
 import time
 from config import FUND_RANK_CACHE_TTL
 from services.fund_rank import _load_fund_rank_data, _fund_rank_cache

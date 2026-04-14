@@ -20,6 +20,19 @@ from concurrent.futures import ThreadPoolExecutor
 
 from config import DATA_DIR
 
+# ---- V4 底座：MODULE_META ----
+MODULE_META = {
+    "name": "agent_engine",
+    "scope": "private",
+    "input": ["user_id"],
+    "output": "analysis_result",
+    "cost": "llm_heavy",
+    "tags": ["决策引擎", "Plan-and-Execute", "仲裁"],
+    "description": "Agent决策引擎：数据收集→规则预筛→场景Skill→DS分析→决策日志",
+    "layer": "analysis",
+    "priority": 2,
+}
+
 # ---- Skill 文件路径 ----
 SKILLS_DIR = Path(__file__).parent.parent / "prompts" / "skills"
 SYSTEM_PROMPT_PATH = Path(__file__).parent.parent / "prompts" / "system_prompt.md"

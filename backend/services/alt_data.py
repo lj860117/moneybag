@@ -16,6 +16,19 @@
   - 幻方量化另类数据体系（卫星/GPS/IoT 的免费平替）
   - AQR "Alternative Data" Research
 """
+
+# ---- V4 底座：MODULE_META ----
+MODULE_META = {
+    "name": "alt_data",
+    "scope": "public",
+    "input": [],
+    "output": "alt_dashboard",
+    "cost": "cpu",
+    "tags": ['另类数据', '北向', '融资', '龙虎榜', '大宗'],
+    "description": "另类数据仪表盘：北向资金+融资融券+龙虎榜+大宗交易+行业资金流",
+    "layer": "data",
+    "priority": 2,
+}
 import time
 import traceback
 from datetime import datetime, timedelta

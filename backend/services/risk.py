@@ -2,6 +2,20 @@
 钱袋子 — 风控系统
 HHI 集中度、回撤监控、相关性分析 + 硬阈值执行建议（借鉴幻方量化）
 """
+
+# ---- V4 底座：MODULE_META ----
+MODULE_META = {
+    "name": "risk",
+    "scope": "private",
+    "input": ["user_id"],
+    "output": "risk_checks",
+    "cost": "cpu",
+    "tags": ["风控", "HHI", "回撤", "集中度"],
+    "description": "组合风控：HHI集中度+回撤监控+硬阈值执行建议",
+    "layer": "risk",
+    "priority": 1,
+}
+
 from config import (
     RISK_DRAWDOWN_WARNING, RISK_DRAWDOWN_DANGER, RISK_DAILY_DROP_LIMIT,
     RISK_SINGLE_STOCK_MAX, RISK_SINGLE_FUND_MAX, RISK_INDUSTRY_MAX,
@@ -224,3 +238,45 @@ def generate_risk_actions(transactions: list, valuation_pct: float = 50) -> dict
         "risk_level": risk_level,
         "metrics": risk_metrics,
     }
+
+
+# ---- V4 底座：enrich() 适配层 ----
+def enrich(ctx):
+    """Pipeline 适配：从 ctx 读用户持仓 → 风控检查 → 写回 ctx"""
+    try:
+        from services.persistence import load_user
+        user = load_user(ctx.user_id)
+        if not user:
+            ctx.modules_skipped.append({"name": "risk", "reason": "no_user_data"})
+            return ctx
+        portfolio = user.get("portfolio") or {}
+        txs = portfolio.get("transactions") or []
+        if not txs:
+            ctx.modules_skipped.append({"name": "risk", "reason": "no_transactions"})
+            return ctx
+        risk_result = calc_risk_metrics(txs)
+        if not risk_result:
+            ctx.modules_skipped.append({"name": "risk", "reason": "calc_returned_none"})
+            return ctx
+        alerts = risk_result.get("alerts") or []
+        concentration = risk_result.get("concentration") or {}
+        drawdown = risk_result.get("drawdown") or {}
+        has_danger = any(a.get("level") == "danger" for a in alerts)
+        checks = [{"rule": a.get("type", "general"), "passed": a.get("level", "info") == "info", "detail": a.get("message", "")} for a in alerts]
+        ctx.risk_checks = checks
+        ctx.risk_blocked = has_danger
+        ctx.modules_results["risk"] = {
+            "available": True,
+            "direction": "bearish" if has_danger else "neutral",
+            "confidence": 90 if has_danger else 50,
+            "data": {"concentration": concentration, "drawdown": drawdown, "alerts_count": len(alerts)},
+            "cost": "cpu",
+            "latency_ms": 0,
+        }
+        ctx.modules_called.append("risk")
+    except Exception as e:
+        print(f"[risk.enrich] Error: {e}")
+        import traceback; traceback.print_exc()
+        ctx.errors.append({"module": "risk", "error": str(e), "fallback_used": True})
+        ctx.modules_skipped.append({"name": "risk", "reason": str(e)})
+    return ctx

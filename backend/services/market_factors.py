@@ -7,6 +7,19 @@
 2. 限售股解禁 → 抛压/个股风险
 3. ETF 资金流 → 机构资金流向/行业偏好
 """
+
+# ---- V4 底座：MODULE_META ----
+MODULE_META = {
+    "name": "market_factors",
+    "scope": "public",
+    "input": [],
+    "output": "market_micro",
+    "cost": "cpu",
+    "tags": ['大宗商品', '解禁', 'ETF资金'],
+    "description": "市场微观因子：大宗商品期货+限售股解禁+ETF资金流",
+    "layer": "data",
+    "priority": 3,
+}
 import time
 import traceback
 from datetime import datetime
