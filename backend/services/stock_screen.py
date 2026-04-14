@@ -1,25 +1,28 @@
 """
-钱袋子 — AI 多因子选股 V2
+钱袋子 — AI 多因子选股 V3
 30 因子体系：价值(6)/成长(5)/质量(6)/动量(4)/风险(4)/流动性(3)/舆情(2)
+V3 新增：
+  - DeepSeek 动态权重（牛市/熊市/震荡自动调权）
+  - 舆情因子真正接入（get_news_sentiment_score）
+  - LLM 因子生成器加分（有效因子注入评分）
 参考：Zen Ratings 115因子 + AI Hedge Fund 17 Agent + 幻方量化多因子框架
 
 架构：
   Step 1: 批量行情筛选 TOP 200（stock_data_provider，秒级）
   Step 2: 并发拉 TOP 200 财务数据（AKShare 0.5s/只，20并发≈5s）
   Step 3: 30 因子综合打分排序 → TOP N
-
-数据源：通过 stock_data_provider 多源自动降级 + factor_data 财务数据
 """
 import time
+import json
 import traceback
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from config import STOCK_CACHE_TTL
 
 _stock_cache = {}
 
-# ---- 30 因子权重配置 ----
+# ---- 30 因子权重配置（默认值，可被 AI 覆盖）----
 # 7 大维度权重
-DIM_WEIGHTS = {
+DEFAULT_DIM_WEIGHTS = {
     "value": 0.20,      # 价值
     "growth": 0.15,      # 成长
     "quality": 0.18,     # 质量（提权：区分好坏公司的核心）
@@ -28,6 +31,212 @@ DIM_WEIGHTS = {
     "liquidity": 0.10,   # 流动性
     "sentiment": 0.10,   # 舆情
 }
+
+# ---- DeepSeek 动态权重调整 ----
+_weight_cache = {}
+_WEIGHT_CACHE_TTL = 3600  # 1 小时
+
+
+def _get_dynamic_weights() -> dict:
+    """让 DeepSeek 根据市场环境动态调整 7 维权重
+    牛市→加动量减风险 / 熊市→加风险减动量 / 震荡→加质量加价值
+    失败则返回默认权重
+    """
+    cache_key = "dynamic_weights"
+    now = time.time()
+    if cache_key in _weight_cache and now - _weight_cache[cache_key]["ts"] < _WEIGHT_CACHE_TTL:
+        return _weight_cache[cache_key]["data"]
+
+    try:
+        from config import LLM_API_URL, LLM_API_KEY, LLM_MODEL
+        if not LLM_API_KEY:
+            return DEFAULT_DIM_WEIGHTS
+
+        # 收集市场环境数据
+        market_ctx = ""
+        try:
+            from services.data_layer import get_valuation_percentile, get_fear_greed_index
+            val = get_valuation_percentile()
+            fgi = get_fear_greed_index()
+            val_pct = val.get("percentile", 50)
+            fgi_score = fgi.get("score", 50)
+            market_ctx += f"估值百分位: {val_pct:.0f}% | 恐贪指数: {fgi_score:.0f}\n"
+        except Exception:
+            pass
+
+        try:
+            from services.factor_data import get_news_sentiment_score
+            sentiment = get_news_sentiment_score()
+            if sentiment.get("available"):
+                market_ctx += f"新闻情绪: {sentiment.get('score', 0):+d}分 ({sentiment.get('level', '中性')})\n"
+        except Exception:
+            pass
+
+        try:
+            from services.macro_extended import get_market_breadth
+            breadth = get_market_breadth()
+            if breadth.get("available"):
+                market_ctx += f"涨跌家数: 涨{breadth.get('up', 0)} 跌{breadth.get('down', 0)} 活跃度{breadth.get('activity', 0)}%\n"
+        except Exception:
+            pass
+
+        if not market_ctx:
+            market_ctx = "市场数据暂不可用"
+
+        prompt = f"""你是量化投资权重优化师。请根据当前市场环境，动态调整选股因子的 7 个维度权重。
+
+当前市场环境：
+{market_ctx}
+
+7 个维度及默认权重：
+- value（价值）: 20% — PE/PB/股息率等
+- growth（成长）: 15% — 营收增速/ROE趋势
+- quality（质量）: 18% — ROE/毛利率/现金流
+- momentum（动量）: 15% — 5日/20日/60日涨跌
+- risk（风险）: 12% — 振幅/负债率/极端值
+- liquidity（流动性）: 10% — 换手率/市值/成交额
+- sentiment（舆情）: 10% — 新闻情绪/社交热度
+
+调整原则：
+- 牛市（估值高+贪婪）→ 提权动量+舆情，降权价值
+- 熊市（估值低+恐惧）→ 提权价值+质量+风险，降权动量
+- 震荡（估值适中）→ 提权质量+价值，保持均衡
+- 7 个权重加起来必须 = 1.00
+
+返回 JSON，格式：
+{{"value":0.20,"growth":0.15,"quality":0.18,"momentum":0.15,"risk":0.12,"liquidity":0.10,"sentiment":0.10,"regime":"牛市/熊市/震荡","reason":"一句话说明"}}
+只返回 JSON。"""
+
+        import httpx
+        with httpx.Client(timeout=15) as client:
+            resp = client.post(
+                LLM_API_URL,
+                headers={"Authorization": f"Bearer {LLM_API_KEY}", "Content-Type": "application/json"},
+                json={
+                    "model": LLM_MODEL,
+                    "messages": [{"role": "user", "content": prompt}],
+                    "max_tokens": 300,
+                    "temperature": 0.2,
+                },
+            )
+            if resp.status_code != 200:
+                print(f"[DYN_WEIGHT] LLM failed: {resp.status_code}")
+                return DEFAULT_DIM_WEIGHTS
+
+            text = resp.json()["choices"][0]["message"]["content"]
+            import re
+            json_match = re.search(r'\{[^}]+\}', text, re.DOTALL)
+            if not json_match:
+                return DEFAULT_DIM_WEIGHTS
+
+            parsed = json.loads(json_match.group())
+
+        # 验证权重合法性
+        weights = {}
+        total = 0
+        for key in DEFAULT_DIM_WEIGHTS:
+            w = float(parsed.get(key, DEFAULT_DIM_WEIGHTS[key]))
+            w = max(0.03, min(0.40, w))  # 单维度 3%-40%
+            weights[key] = w
+            total += w
+
+        # 归一化
+        for key in weights:
+            weights[key] = round(weights[key] / total, 3)
+
+        regime = parsed.get("regime", "未知")
+        reason = parsed.get("reason", "")
+        weights["_regime"] = regime
+        weights["_reason"] = reason
+        print(f"[DYN_WEIGHT] regime={regime}, weights={weights}, reason={reason}")
+
+        _weight_cache[cache_key] = {"data": weights, "ts": now}
+        return weights
+
+    except Exception as e:
+        print(f"[DYN_WEIGHT] Failed: {e}")
+        return DEFAULT_DIM_WEIGHTS
+
+
+# ---- 舆情因子真正接入 ----
+_sentiment_cache = {"score": None, "ts": 0}
+_SENTIMENT_CACHE_TTL = 1800  # 30 分钟
+
+
+def _get_sentiment_score() -> float:
+    """获取全市场舆情得分，映射到 [0, 100]"""
+    now = time.time()
+    if _sentiment_cache["score"] is not None and now - _sentiment_cache["ts"] < _SENTIMENT_CACHE_TTL:
+        return _sentiment_cache["score"]
+
+    try:
+        from services.factor_data import get_news_sentiment_score
+        result = get_news_sentiment_score()
+        if result.get("available"):
+            raw = result.get("score", 0)  # -100 ~ +100
+            # 映射到 0~100：-100→0, 0→50, +100→100
+            mapped = max(0, min(100, 50 + raw * 0.5))
+            _sentiment_cache["score"] = mapped
+            _sentiment_cache["ts"] = now
+            print(f"[SENTIMENT_FACTOR] raw={raw}, mapped={mapped:.0f}")
+            return mapped
+    except Exception as e:
+        print(f"[SENTIMENT_FACTOR] Failed: {e}")
+
+    return 50  # 中性默认
+
+
+# ---- LLM 因子生成器加分 ----
+_llm_bonus_cache = {}
+_LLM_BONUS_CACHE_TTL = 7200  # 2 小时
+
+
+def _get_llm_factor_bonus(code: str) -> float:
+    """从 LLM 因子生成器的缓存中获取有效因子加分
+    已有缓存（generate_alpha_factors 运行过）→ 用有效因子 IC 值算加分
+    无缓存 → 返回 0（不阻塞选股流程）
+
+    加分规则：
+    - 有效因子数 × 2 分（上限 10 分）
+    - 最佳 IC > 0.05 额外 +5 分
+    - 最佳 IC > 0.03 额外 +3 分
+    """
+    cache_key = f"llm_bonus_{code}"
+    now = time.time()
+    if cache_key in _llm_bonus_cache and now - _llm_bonus_cache[cache_key]["ts"] < _LLM_BONUS_CACHE_TTL:
+        return _llm_bonus_cache[cache_key]["data"]
+
+    try:
+        from services.llm_factor_gen import _llm_factor_cache
+
+        # 查找任何包含此股票代码的缓存
+        clean_code = code.replace("sh", "").replace("sz", "").replace("SH", "").replace("SZ", "")
+        bonus = 0.0
+
+        for key, cached in _llm_factor_cache.items():
+            if clean_code in key and now - cached.get("ts", 0) < 86400:  # 24小时内
+                data = cached.get("data", {})
+                effective = data.get("effective_factors", [])
+                summary = data.get("summary", {})
+
+                if effective:
+                    # 有效因子数加分
+                    bonus += min(len(effective) * 2, 10)
+                    # 最佳 IC 加分
+                    best_ic = summary.get("best_ic", 0)
+                    if best_ic > 0.05:
+                        bonus += 5
+                    elif best_ic > 0.03:
+                        bonus += 3
+
+                    print(f"[LLM_BONUS] {code}: {len(effective)} effective factors, best_ic={best_ic:.4f}, bonus={bonus}")
+                break
+
+        _llm_bonus_cache[cache_key] = {"data": bonus, "ts": now}
+        return bonus
+
+    except Exception:
+        return 0.0
 
 
 def _score_value(s: dict, fin: dict) -> float:
@@ -284,10 +493,11 @@ def _score_liquidity(s: dict) -> float:
 
 
 def _score_sentiment() -> float:
-    """舆情维度：暂给中性分，后续接入雪球热度/新闻情绪（2 因子占位）"""
-    # F29: 新闻情绪（待接入）
-    # F30: 社交热度（待接入雪球讨论量）
-    return 50
+    """舆情维度：接入 LLM 新闻情绪评分（2 因子）
+    F29: 新闻情绪（LLM/关键词评分）
+    F30: 市场整体情绪映射
+    """
+    return _get_sentiment_score()
 
 
 def _fetch_financials_batch(codes: list) -> dict:
@@ -321,12 +531,12 @@ def _fetch_financials_batch(codes: list) -> dict:
 
 def screen_stocks(top_n: int = 50) -> dict:
     """
-    30 因子多维选股 V2
+    30 因子多维选股 V3（动态权重 + 舆情 + LLM 因子）
     Step 1: 批量行情 → 基础过滤 → TOP 200 候选
     Step 2: 并发拉 TOP 200 财务数据
-    Step 3: 30 因子打分 → 排序 → TOP N
+    Step 3: 动态权重 + 30 因子打分 → 排序 → TOP N
     """
-    cache_key = f"stock_screen_v2_{top_n}"
+    cache_key = f"stock_screen_v3_{top_n}"
     now = time.time()
     if cache_key in _stock_cache and now - _stock_cache[cache_key]["ts"] < STOCK_CACHE_TTL:
         return _stock_cache[cache_key]["data"]
@@ -334,15 +544,26 @@ def screen_stocks(top_n: int = 50) -> dict:
     try:
         from services.stock_data_provider import get_stock_data
 
+        # Step 0: 获取动态权重
+        weights_data = _get_dynamic_weights()
+        regime = weights_data.pop("_regime", "未知") if "_regime" in weights_data else "未知"
+        weight_reason = weights_data.pop("_reason", "") if "_reason" in weights_data else ""
+        # 清理非权重 key
+        DIM_WEIGHTS = {k: v for k, v in weights_data.items() if not k.startswith("_")}
+        # 确保有所有必需的 key
+        for k in DEFAULT_DIM_WEIGHTS:
+            if k not in DIM_WEIGHTS:
+                DIM_WEIGHTS[k] = DEFAULT_DIM_WEIGHTS[k]
+
         # Step 1: 批量行情
-        print("[STOCK_SCREEN_V2] Loading via data provider...")
+        print("[STOCK_SCREEN_V3] Loading via data provider...")
         data = get_stock_data()
         raw_stocks = data.get("stocks", [])
         source = data.get("source", "unknown")
         if not raw_stocks:
             return {"stocks": [], "total": 0, "error": data.get("error", "数据不可用")}
 
-        print(f"[STOCK_SCREEN_V2] Got {len(raw_stocks)} stocks from source={source}")
+        print(f"[STOCK_SCREEN_V3] Got {len(raw_stocks)} stocks from source={source}")
 
         # 基础过滤
         filtered = []
@@ -366,7 +587,7 @@ def screen_stocks(top_n: int = 50) -> dict:
                 continue
             filtered.append(s)
 
-        print(f"[STOCK_SCREEN_V2] After filter: {len(filtered)}")
+        print(f"[STOCK_SCREEN_V3] After filter: {len(filtered)}")
 
         # 按成交额排序取 TOP 200 候选（保证流动性）
         for s in filtered:
@@ -401,12 +622,12 @@ def screen_stocks(top_n: int = 50) -> dict:
 
         # Step 3: 并发拉 TOP 50 的财务数据（速度快很多）
         codes_50 = [s["code"] for s in top50_candidates]
-        print(f"[STOCK_SCREEN_V2] Fetching financials for TOP {len(codes_50)}...")
+        print(f"[STOCK_SCREEN_V3] Fetching financials for TOP {len(codes_50)}...")
         t0 = time.time()
         financials = _fetch_financials_batch(codes_50)
         t1 = time.time()
         fin_count = sum(1 for v in financials.values() if v.get("available"))
-        print(f"[STOCK_SCREEN_V2] Financials done: {fin_count}/{len(codes_50)} available, {t1-t0:.1f}s")
+        print(f"[STOCK_SCREEN_V3] Financials done: {fin_count}/{len(codes_50)} available, {t1-t0:.1f}s")
 
         # Step 4: 30 因子完整打分
         scored = []
@@ -427,6 +648,10 @@ def screen_stocks(top_n: int = 50) -> dict:
 
                 total = sum(scores[k] * DIM_WEIGHTS[k] for k in DIM_WEIGHTS)
 
+                # LLM 因子生成器加分（如果该股票有缓存的有效因子）
+                llm_bonus = _get_llm_factor_bonus(code)
+                total += llm_bonus
+
                 scored.append({
                     "code": code,
                     "name": s.get("name", ""),
@@ -438,6 +663,7 @@ def screen_stocks(top_n: int = 50) -> dict:
                     "market_cap": s.get("market_cap"),
                     "score": round(total, 1),
                     "scores": {k: round(v, 0) for k, v in scores.items()},
+                    "llm_bonus": round(llm_bonus, 1),
                     # 展示用的财务指标（顶层 + financials 子对象兼容前端）
                     "roe": fin.get("roe"),
                     "eps": fin.get("eps"),
@@ -462,32 +688,31 @@ def screen_stocks(top_n: int = 50) -> dict:
         scored.sort(key=lambda x: x["score"], reverse=True)
         top = scored[:top_n]
 
-        # 因子说明
+        # 因子说明（含动态权重）
+        w_desc = " / ".join([f"{k}({int(DIM_WEIGHTS[k]*100)}%)" for k in DIM_WEIGHTS])
         factor_desc = (
-            "30因子7维打分 V2\n"
-            "价值(20%): PE+PB+股息率+ROE/PB+EPS+低PE高ROE复合\n"
-            "成长(15%): 营收增速+ROE+EPS+60日动量+PEG\n"
-            "质量(18%): ROE+毛利率+净利率+负债率+现金流+市值\n"
-            "动量(15%): 5日+20日+60日涨跌+今日动能\n"
-            "风险(12%): 振幅+负债率+现金流+PE极端\n"
-            "流动性(10%): 换手率+市值+成交额\n"
-            "舆情(10%): 待接入雪球热度/新闻情绪"
+            f"30因子7维打分 V3 — 动态权重\n"
+            f"市场状态: {regime} | {weight_reason}\n"
+            f"权重: {w_desc}\n"
+            f"舆情因子已接入 LLM 新闻情绪评分"
         )
 
         result = {
             "stocks": top,
             "total": len(scored),
             "source": source,
-            "version": "V2_30factors",
+            "version": "V3_dynamic_weights",
             "method": factor_desc,
             "financials_available": fin_count,
-            "note": f"数据源: {source} | 财务数据: {fin_count}/{len(codes_50)}",
+            "regime": regime,
+            "weights": {k: round(v * 100, 1) for k, v in DIM_WEIGHTS.items()},
+            "note": f"数据源: {source} | 财务数据: {fin_count}/{len(codes_50)} | 市场: {regime}",
         }
         _stock_cache[cache_key] = {"data": result, "ts": time.time()}
-        print(f"[STOCK_SCREEN_V2] Final: {len(scored)} scored → TOP {len(top)}")
+        print(f"[STOCK_SCREEN_V3] Final: {len(scored)} scored → TOP {len(top)} | regime={regime}")
         return result
 
     except Exception as e:
-        print(f"[STOCK_SCREEN_V2] Failed: {e}")
+        print(f"[STOCK_SCREEN_V3] Failed: {e}")
         traceback.print_exc()
         return {"stocks": [], "total": 0, "error": str(e)}

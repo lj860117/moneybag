@@ -48,6 +48,9 @@ def scan_user(user_id: str) -> dict:
         stock_result = scan_all_holdings(user_id)
         stock_signals = stock_result.get("signals", [])
         all_alerts.extend([s for s in stock_signals if s["level"] in ("danger", "warning")])
+        # 纪律类告警也推送（止损/止盈/集中度）
+        discipline = stock_result.get("discipline", [])
+        all_alerts.extend([d for d in discipline if d["level"] in ("danger", "warning")])
     
     # 基金扫描
     fund_holdings = load_fund_holdings(user_id)

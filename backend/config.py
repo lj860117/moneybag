@@ -59,6 +59,14 @@ RISK_TAKE_PROFIT = 0.40          # 止盈阈值 → 收益≥40%减半
 RISK_MAX_DRAWDOWN_LIMIT = -0.20  # 最大允许回撤 -20%（绝不突破）
 RISK_REBALANCE_THRESHOLD = 0.08  # 再平衡触发偏离度 ±8%
 
+# ---- 股票持仓纪律阈值 ----
+STOCK_SINGLE_MAX = 0.20          # 单只股票最大仓位占比 20%
+STOCK_MIN_COUNT = 5              # 最低持仓只数（低于此数警告分散不足）
+STOCK_INDUSTRY_MAX = 0.30        # 单一行业最大占比 30%
+STOCK_STOP_LOSS = -0.08          # 止损线 -8%（触发强制提醒）
+STOCK_TAKE_PROFIT = 0.20         # 止盈线 +20%（触发分批卖出提醒）
+STOCK_CONCENTRATION_WARN = 0.30  # 集中度预警：单只占总市值 > 30%
+
 # ---- 资产配置目标比例（根据估值动态调整）----
 ALLOCATION_PROFILES = {
     "low": {"stock": 0.75, "bond": 0.15, "cash": 0.10},      # 低估(<20%)

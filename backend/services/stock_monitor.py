@@ -14,6 +14,11 @@ from pathlib import Path
 from datetime import datetime
 from typing import Optional
 
+from config import (
+    STOCK_SINGLE_MAX, STOCK_MIN_COUNT, STOCK_INDUSTRY_MAX,
+    STOCK_STOP_LOSS, STOCK_TAKE_PROFIT, STOCK_CONCENTRATION_WARN,
+)
+
 # ---- 持仓数据路径 ----
 _DATA_DIR = Path(os.environ.get("DATA_DIR", Path(__file__).parent.parent / "data"))
 
@@ -54,7 +59,7 @@ def save_stock_holdings(holdings: list, user_id: str = "default"):
 
 def add_stock_holding(code: str, name: str = "", cost_price: float = 0,
                       shares: int = 0, note: str = "", user_id: str = "default") -> dict:
-    """添加一只持仓股票"""
+    """添加一只持仓股票（含买入前纪律检查）"""
     holdings = load_stock_holdings(user_id)
     # 去重
     if any(h["code"] == code for h in holdings):
@@ -64,17 +69,58 @@ def add_stock_holding(code: str, name: str = "", cost_price: float = 0,
     if not name:
         name = _get_stock_name(code)
 
+    # 自动获取行业
+    industry = _fetch_industry_safe(code)
+
+    # ---- 买入前纪律检查 ----
+    warnings = []
+    if cost_price > 0 and shares > 0:
+        new_value = cost_price * shares
+        # 计算现有总市值（用成本估算，没有实时价就用成本价）
+        total_mv = sum(
+            (h.get("costPrice", 0) or 0) * (h.get("shares", 0) or 0)
+            for h in holdings
+        ) + new_value
+        if total_mv > 0:
+            new_weight = new_value / total_mv
+            # 仓位上限检查
+            if new_weight > STOCK_SINGLE_MAX:
+                warnings.append({
+                    "level": "warning", "type": "position_limit",
+                    "msg": f"⚠️ {name} 占比 {new_weight*100:.1f}%，超过单只上限 {STOCK_SINGLE_MAX*100:.0f}%",
+                })
+            # 行业集中度检查
+            if industry and industry != "未知":
+                same_industry_value = sum(
+                    (h.get("costPrice", 0) or 0) * (h.get("shares", 0) or 0)
+                    for h in holdings if h.get("industry") == industry
+                ) + new_value
+                industry_weight = same_industry_value / total_mv
+                if industry_weight > STOCK_INDUSTRY_MAX:
+                    warnings.append({
+                        "level": "warning", "type": "industry_concentration",
+                        "msg": f"⚠️ {industry}行业占比将达 {industry_weight*100:.1f}%，超过 {STOCK_INDUSTRY_MAX*100:.0f}% 上限",
+                    })
+
+    # 分散度不足提醒（加上新的这只后仍不够 5 只）
+    if len(holdings) + 1 < STOCK_MIN_COUNT:
+        warnings.append({
+            "level": "info", "type": "diversification",
+            "msg": f"💡 当前仅 {len(holdings)+1} 只股票，建议至少持有 {STOCK_MIN_COUNT} 只以分散风险",
+        })
+
     holding = {
         "code": code,
         "name": name,
         "costPrice": cost_price,
         "shares": shares,
         "note": note,
+        "industry": industry,
         "addedAt": datetime.now().isoformat(),
     }
     holdings.append(holding)
     save_stock_holdings(holdings, user_id)
-    return {"ok": True, "holding": holding}
+    return {"ok": True, "holding": holding, "warnings": warnings}
 
 
 def remove_stock_holding(code: str, user_id: str = "default") -> dict:
@@ -305,13 +351,15 @@ def detect_anomalies(code: str, realtime: dict = None, indicators: dict = None) 
 # ============================================================
 
 def scan_all_holdings(user_id: str = "default") -> dict:
-    """扫描所有持仓股票，返回实时行情 + 异动信号"""
+    """扫描所有持仓股票，返回实时行情 + 异动信号 + 纪律检查"""
     holdings = load_stock_holdings(user_id)
     if not holdings:
-        return {"holdings": [], "signals": [], "scannedAt": datetime.now().isoformat()}
+        return {"holdings": [], "signals": [], "discipline": [],
+                "scannedAt": datetime.now().isoformat()}
 
     results = []
     all_signals = []
+    discipline_alerts = []  # 纪律类信号单独收集
 
     for h in holdings:
         code = h["code"]
@@ -328,16 +376,19 @@ def scan_all_holdings(user_id: str = "default") -> dict:
         if cost and cost > 0 and price and shares > 0:
             pnl = round((price - cost) * shares, 2)
             pnl_pct = round((price - cost) / cost * 100, 2)
-            # 盈亏异动
-            if pnl_pct >= 20:
+            # 止盈纪律：+20% 强提醒
+            if pnl_pct >= STOCK_TAKE_PROFIT * 100:
                 anomalies.append({
-                    "level": "opportunity", "type": "profit_target",
-                    "msg": f"🎯 {rt.get('name', code)} 盈利 {pnl_pct:.1f}%，考虑分批止盈",
+                    "level": "danger", "type": "take_profit",
+                    "msg": f"🎯 {rt.get('name', code)} 盈利 {pnl_pct:.1f}%，"
+                           f"触发止盈线({STOCK_TAKE_PROFIT*100:.0f}%)！建议立即分批卖出 50%，锁定利润",
                 })
-            elif pnl_pct <= -10:
+            # 止损纪律：-8% 强提醒
+            elif pnl_pct <= STOCK_STOP_LOSS * 100:
                 anomalies.append({
                     "level": "danger", "type": "stop_loss",
-                    "msg": f"🚨 {rt.get('name', code)} 亏损 {pnl_pct:.1f}%，触及止损线",
+                    "msg": f"🚨 {rt.get('name', code)} 亏损 {pnl_pct:.1f}%，"
+                           f"触发止损线({STOCK_STOP_LOSS*100:.0f}%)！建议立即止损卖出，不要补仓",
                 })
 
         results.append({
@@ -347,6 +398,7 @@ def scan_all_holdings(user_id: str = "default") -> dict:
             "changePct": rt.get("changePct"),
             "costPrice": cost,
             "shares": shares,
+            "industry": h.get("industry", ""),
             "marketValue": round(price * shares, 2) if price and shares else 0,
             "pnl": pnl,
             "pnlPct": pnl_pct,
@@ -355,11 +407,48 @@ def scan_all_holdings(user_id: str = "default") -> dict:
         })
         all_signals.extend(anomalies)
 
+    # ---- 组合级纪律检查 ----
+    total_mv = sum(r["marketValue"] for r in results)
+    if total_mv > 0:
+        # 单只集中度检查
+        for r in results:
+            weight = r["marketValue"] / total_mv if total_mv > 0 else 0
+            r["weight"] = round(weight * 100, 1)  # 注入权重供前端显示
+            if weight > STOCK_CONCENTRATION_WARN:
+                discipline_alerts.append({
+                    "level": "warning", "type": "concentration",
+                    "msg": f"⚠️ {r['name']}({r['code']}) 占比 {weight*100:.1f}%，"
+                           f"超过集中度警戒线 {STOCK_CONCENTRATION_WARN*100:.0f}%",
+                })
+
+        # 行业集中度检查
+        industry_mv = {}
+        for r in results:
+            ind_name = r.get("industry", "") or "未知"
+            industry_mv[ind_name] = industry_mv.get(ind_name, 0) + r["marketValue"]
+        for ind_name, mv in industry_mv.items():
+            if ind_name != "未知" and mv / total_mv > STOCK_INDUSTRY_MAX:
+                discipline_alerts.append({
+                    "level": "warning", "type": "industry_concentration",
+                    "msg": f"⚠️ {ind_name}行业占比 {mv/total_mv*100:.1f}%，"
+                           f"超过行业上限 {STOCK_INDUSTRY_MAX*100:.0f}%",
+                })
+
+    # 分散度检查
+    if len(holdings) < STOCK_MIN_COUNT:
+        discipline_alerts.append({
+            "level": "info", "type": "diversification",
+            "msg": f"💡 当前仅 {len(holdings)} 只股票，建议至少持有 {STOCK_MIN_COUNT} 只以分散风险",
+        })
+
     return {
         "holdings": results,
         "signals": all_signals,
+        "discipline": discipline_alerts,
         "holdingCount": len(holdings),
         "signalCount": len(all_signals),
+        "disciplineCount": len(discipline_alerts),
+        "totalMarketValue": round(total_mv, 2),
         "scannedAt": datetime.now().isoformat(),
     }
 
@@ -391,3 +480,12 @@ def _get_stock_name(code: str) -> str:
     except Exception:
         pass
     return code
+
+
+def _fetch_industry_safe(code: str) -> str:
+    """安全获取个股行业（调用 holding_intelligence，失败返回空字符串）"""
+    try:
+        from services.holding_intelligence import get_stock_industry
+        return get_stock_industry(code)
+    except Exception:
+        return ""

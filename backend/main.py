@@ -759,9 +759,9 @@ def get_allocation_advice(req: dict):
 
 
 @app.get("/api/recommend-alloc")
-def get_recommend_alloc(profile: str = "稳健型", with_ai: bool = False):
-    """推荐基金配置列表 + 配置理由 + 可选 AI 点评"""
-    return get_recommend_allocations(profile, with_ai=with_ai)
+def get_recommend_alloc(profile: str = "稳健型", with_ai: bool = False, preference: str = "fund"):
+    """推荐配置列表（基金/股票/混合）+ 配置理由 + 可选 AI 点评"""
+    return get_recommend_allocations(profile, with_ai=with_ai, preference=preference)
 
 
 @app.get("/api/fund-screen")
@@ -805,6 +805,57 @@ from services.ml_stock_screen import ml_stock_screen
 def get_ml_stock_screen(top_n: int = 30):
     """LightGBM 多因子选股：ML增强版"""
     return ml_stock_screen(top_n)
+
+
+# ---- Phase 5: 因子 IC 检验 ----
+from services.factor_ic import compute_factor_ic, compute_ic_decay
+
+@app.get("/api/factor-ic")
+def api_factor_ic(forward_days: int = 20, pool_size: int = 200):
+    """因子 IC 检验：验证30因子中哪些真正预测未来收益"""
+    return compute_factor_ic(forward_days=forward_days, pool_size=pool_size)
+
+@app.get("/api/factor-ic/decay")
+def api_factor_ic_decay(pool_size: int = 150):
+    """IC 衰减曲线：因子在不同预测周期下的效果"""
+    return compute_ic_decay(pool_size=pool_size)
+
+
+# ---- Phase 6: 蒙特卡洛模拟 ----
+from services.monte_carlo import monte_carlo_single, monte_carlo_portfolio, monte_carlo_compare
+
+@app.get("/api/monte-carlo/{code}")
+def api_monte_carlo_single(
+    code: str,
+    simulations: int = 5000,
+    horizon_days: int = 250,
+    initial: float = 10000,
+    discipline: bool = True,
+):
+    """单只股票蒙特卡洛模拟：概率分布预测"""
+    return monte_carlo_single(
+        code=code, simulations=simulations, horizon_days=horizon_days,
+        initial_investment=initial, apply_discipline=discipline,
+    )
+
+@app.post("/api/monte-carlo/portfolio")
+def api_monte_carlo_portfolio(req: dict):
+    """组合蒙特卡洛模拟"""
+    holdings = req.get("holdings", [])
+    simulations = req.get("simulations", 3000)
+    horizon_days = req.get("horizon_days", 250)
+    initial = req.get("initial", 100000)
+    discipline = req.get("discipline", True)
+    return monte_carlo_portfolio(
+        holdings=holdings, simulations=simulations,
+        horizon_days=horizon_days, initial_investment=initial,
+        apply_discipline=discipline,
+    )
+
+@app.get("/api/monte-carlo/compare/{code}")
+def api_monte_carlo_compare(code: str, simulations: int = 3000, horizon_days: int = 250):
+    """纪律 vs 无纪律蒙特卡洛对比"""
+    return monte_carlo_compare(code=code, simulations=simulations, horizon_days=horizon_days)
 
 
 # ---- 全球市场 API ----
@@ -1427,6 +1478,12 @@ def add_or_update_asset(req: AssetRequest):
         p.setdefault("assets", []).append(asset)
 
     save_user(user)
+    # 资产变更 → 清除净资产缓存，下次查询返回最新值
+    try:
+        from services.unified_networth import invalidate_networth_cache
+        invalidate_networth_cache(req.userId)
+    except Exception:
+        pass
     return {"status": "ok", "asset": asset}
 
 
@@ -1445,6 +1502,12 @@ def delete_asset(asset_id: str, userId: str = ""):
         raise HTTPException(404, f"Asset {asset_id} not found")
 
     save_user(user)
+    # 资产变更 → 清除净资产缓存
+    try:
+        from services.unified_networth import invalidate_networth_cache
+        invalidate_networth_cache(userId)
+    except Exception:
+        pass
     return {"status": "ok"}
 
 
@@ -2860,6 +2923,105 @@ def get_agent_signals(user_id: str):
     if fp.exists():
         return json.loads(fp.read_text(encoding="utf-8"))
     return {"analysis": "暂无信号数据", "source": "none"}
+
+
+# ============================================================
+# 六大量化引擎 API（对标幻方量化）
+# ============================================================
+
+# ---- P1: AI 预测引擎 ----
+@app.get("/api/ai-predict/{code}")
+def api_ai_predict(code: str, days: int = 5):
+    """AI 预测单只股票未来 N 天涨跌"""
+    from services.ai_predictor import predict_stock
+    return predict_stock(code, forward_days=days)
+
+@app.get("/api/ai-predict/portfolio/{user_id}")
+def api_ai_predict_portfolio(user_id: str, days: int = 5):
+    """AI 预测用户持仓组合"""
+    from services.ai_predictor import predict_portfolio
+    return predict_portfolio(user_id, forward_days=days)
+
+@app.post("/api/ai-predict/batch")
+def api_ai_predict_batch(request: Request):
+    """批量预测多只股票"""
+    import asyncio
+    body = asyncio.get_event_loop().run_until_complete(request.json())
+    codes = body.get("codes", [])
+    days = body.get("days", 5)
+    from services.ai_predictor import batch_predict
+    return batch_predict(codes, forward_days=days)
+
+# ---- P2: 遗传编程因子挖掘 ----
+@app.get("/api/genetic-factor/{code}")
+def api_genetic_factor(code: str, generations: int = 30, top_k: int = 10):
+    """对单只股票运行遗传因子挖掘"""
+    from services.genetic_factor import evolve_factors
+    return evolve_factors(code=code, generations=generations, top_k=top_k)
+
+# ---- P3: 组合优化器 ----
+@app.get("/api/portfolio-optimize/{user_id}")
+def api_portfolio_optimize(user_id: str, method: str = "all", max_weight: float = 0.20):
+    """组合优化：5种方法对比"""
+    from services.portfolio_optimizer import optimize_portfolio
+    return optimize_portfolio(user_id, method=method, max_weight=max_weight)
+
+# ---- P4: 另类数据仪表盘 ----
+@app.get("/api/alt-data/dashboard")
+def api_alt_data_dashboard():
+    """另类数据综合仪表盘"""
+    from services.alt_data import get_alt_data_dashboard
+    return get_alt_data_dashboard()
+
+@app.get("/api/alt-data/northbound")
+def api_alt_northbound():
+    """北向资金详情"""
+    from services.alt_data import get_northbound_flow_detail
+    return get_northbound_flow_detail()
+
+@app.get("/api/alt-data/margin")
+def api_alt_margin():
+    """融资融券详情"""
+    from services.alt_data import get_margin_detail
+    return get_margin_detail()
+
+@app.get("/api/alt-data/dragon-tiger")
+def api_alt_dragon_tiger():
+    """龙虎榜"""
+    from services.alt_data import get_dragon_tiger
+    return get_dragon_tiger()
+
+@app.get("/api/alt-data/block-trade")
+def api_alt_block_trade():
+    """大宗交易"""
+    from services.alt_data import get_block_trade
+    return get_block_trade()
+
+@app.get("/api/alt-data/sector-flow")
+def api_alt_sector_flow():
+    """行业资金流"""
+    from services.alt_data import get_sector_flow
+    return get_sector_flow()
+
+# ---- P5: 强化学习仓位建议 ----
+@app.get("/api/rl-position/{code}")
+def api_rl_position(code: str):
+    """RL 仓位建议（单只股票）"""
+    from services.rl_position import get_rl_recommendation
+    return get_rl_recommendation(code)
+
+@app.get("/api/rl-position/portfolio/{user_id}")
+def api_rl_portfolio(user_id: str):
+    """RL 仓位建议（全部持仓）"""
+    from services.rl_position import get_rl_portfolio_advice
+    return get_rl_portfolio_advice(user_id)
+
+# ---- P6: LLM 因子生成 ----
+@app.get("/api/llm-factor/{code}")
+def api_llm_factor(code: str, count: int = 5, iterations: int = 2):
+    """LLM 驱动的 Alpha 因子生成"""
+    from services.llm_factor_gen import generate_alpha_factors
+    return generate_alpha_factors(code=code, count=count, iterations=iterations)
 
 
 # 兜底：让 /app.js 等直接路径也能访问

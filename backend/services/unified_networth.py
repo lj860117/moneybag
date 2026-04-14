@@ -24,6 +24,14 @@ _NW_CACHE = {}  # userId -> {data, ts}
 _NW_CACHE_TTL = 120  # 2 分钟
 
 
+def invalidate_networth_cache(user_id: str = ""):
+    """清除指定用户的净资产缓存（资产变更后调用）"""
+    if user_id and user_id in _NW_CACHE:
+        del _NW_CACHE[user_id]
+    elif not user_id:
+        _NW_CACHE.clear()
+
+
 def _load_user_data(user_id: str) -> dict:
     """从持久化文件加载用户数据（资产+记账）
     使用统一的 persistence.load_user() 确保路径一致

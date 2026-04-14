@@ -220,7 +220,7 @@ function loadPortfolio(){try{return JSON.parse(localStorage.getItem(STORAGE_KEY)
 function savePortfolio(d){localStorage.setItem(STORAGE_KEY,JSON.stringify(d));syncCloud(d)}
 function loadLedger(){try{return JSON.parse(localStorage.getItem(LEDGER_KEY))||[]}catch{return[]}}
 function saveLedger(d){localStorage.setItem(LEDGER_KEY,JSON.stringify(d))}
-function recordPurchase(allocs,amount,profileName){const p=loadPortfolio();const now=new Date().toISOString();p.profile=profileName;p.amount=amount;p.holdings=allocs.map(a=>({code:a.code,name:a.fullName,category:a.name,targetPct:a.pct,amount:Math.round(amount*a.pct/100),buyDate:now}));p.history.push({date:now,action:'buy',amount,profile:profileName});savePortfolio(p);
+function recordPurchase(allocs,amount,profileName,preference){const p=loadPortfolio();const now=new Date().toISOString();p.profile=profileName;p.amount=amount;p.holdings=allocs.map(a=>({code:a.code,name:a.fullName,category:a.name,targetPct:a.pct,amount:Math.round(amount*a.pct/100),buyDate:now}));p.history.push({date:now,action:'quiz_buy',amount,profile:profileName,preference:preference||'fund',allocations:allocs.map(a=>({code:a.code,name:a.name||a.fullName,pct:a.pct,amount:Math.round(amount*a.pct/100)}))});savePortfolio(p);
 // V4: 同时生成交易流水
 const txns=loadTxns();
 allocs.forEach(a=>{const buyAmt=Math.round(amount*a.pct/100);const nav=liveNavData[a.code]?.nav||1;
@@ -307,6 +307,7 @@ const monthExp=monthLedger.filter(e=>e.direction!=='income').reduce((s,e)=>s+(e.
 $('#app').innerHTML=`<div class="result-page fade-up">
 <div class="pnl-hero" style="margin-bottom:16px">
 <div class="pnl-label">💰 我的净资产 <span onclick="showExplain('networth')" style="font-size:14px;cursor:pointer;opacity:0.6">ℹ️</span></div>
+<div style="font-size:10px;color:var(--text2);margin-top:2px">含投资+现金+房产+车辆+保险 - 负债</div>
 <div class="pnl-total-value" id="heroNetWorth">${fmtFull(Math.round(nw.netWorth))}</div>
 <div id="heroBreakdown" style="display:flex;gap:12px;justify-content:center;margin-top:12px;font-size:12px;flex-wrap:wrap">
 <div style="text-align:center"><div style="color:var(--text2)">📈 投资</div><div style="font-weight:700;color:var(--accent)">¥${fmtMoney(Math.round(nw.fundValue))}</div></div>
@@ -337,6 +338,7 @@ $('#app').innerHTML=`<div class="result-page fade-up">
 
 <div class="bottom-actions" style="margin-top:16px">
 <button class="action-btn primary" onclick="showAllocateAssets()">💰 配置资产<div style="font-size:10px;font-weight:400;opacity:0.7;margin-top:2px">新存款到账？一键按方案分配</div></button>
+<button class="action-btn secondary" onclick="showAllocHistory()">📋 配比历史</button>
 <button class="action-btn secondary" onclick="showAddTxn()">➕ 记交易</button>
 <button class="action-btn secondary" onclick="startQuiz()">🔄 重新测评</button>
 </div>
@@ -355,6 +357,21 @@ bd.innerHTML=`
 <div style="text-align:center"><div style="color:var(--text2)">💳 负债</div><div style="font-weight:700;color:var(--red)">-¥${fmtMoney(Math.round((b.liability||{}).total||0))}</div></div>`}
 const hel=document.getElementById('heroHealth');
 if(hel&&d.healthGrade)hel.innerHTML=`${d.healthGrade} · ${d.healthScore}分${d.healthIssues?.length?` · <span style="color:var(--red)">${d.healthIssues[0]}</span>`:''}`}
+
+// ---- 资产变更后异步刷新净资产（供添加/编辑/删除资产后调用）----
+async function _refreshNetWorthAfterAssetChange(){
+// 等待 500ms 让后端处理完保存（API 是 fire-and-forget）
+await new Promise(r=>setTimeout(r,500));
+// 刷新后端净资产（后端缓存已在 API 层失效）
+const d=await fetchUnifiedNetworth();
+// 更新首页 hero（如果 DOM 存在）
+if(d&&d.netWorth){
+const el=document.getElementById('heroNetWorth');if(el)el.textContent=fmtFull(Math.round(d.netWorth));
+}
+// 更新资产页的净资产显示
+const assetNW=document.getElementById('assetPageNW');
+if(assetNW&&d&&d.netWorth)assetNW.textContent=fmtFull(Math.round(d.netWorth));
+}
 
 // ---- 首页：今日关注（DeepSeek 个性化）----
 async function loadDailyFocus(){
@@ -445,6 +462,10 @@ if(!amt||amt<=0)return;
 const p=loadPortfolio();const profile=p.profile||'稳健型';
 const al=ALLOCATIONS[profile]||ALLOCATIONS['稳健型'];
 const txns=loadTxns();const now=new Date().toISOString();
+// 保存配比历史快照
+p.history=p.history||[];
+p.history.push({date:now,action:'allocate',amount:amt,profile,preference:p.preference||'fund',allocations:al.map(a=>({code:a.code,name:a.name||a.fullName,pct:a.pct,amount:Math.round(amt*a.pct/100)}))});
+savePortfolio(p);
 al.forEach(a=>{
 const fundAmt=Math.round(amt*a.pct/100);
 if(fundAmt<=0)return;
@@ -456,26 +477,140 @@ if(API_AVAILABLE){txns.slice(-al.length).forEach(t=>{fetch(API_BASE+'/portfolio/
 document.querySelector('.modal-overlay')?.remove();
 navigateTo('portfolio')}
 
+// ---- 配比历史弹窗 ----
+let _compareSelection=[];
+function showAllocHistory(){
+const p=loadPortfolio();const hist=(p.history||[]).filter(h=>h.allocations&&h.allocations.length>0);
+if(!hist.length){
+const o=document.createElement('div');o.className='modal-overlay';o.onclick=e=>{if(e.target===o)o.remove()};
+o.innerHTML=`<div class="modal-sheet" onclick="event.stopPropagation()"><div class="modal-handle"></div>
+<div class="modal-title">📋 配比历史</div>
+<div style="text-align:center;padding:40px;color:var(--text2)"><div style="font-size:48px;margin-bottom:12px">📋</div>
+<div style="font-size:14px">还没有配比记录</div>
+<div style="font-size:12px;margin-top:8px">完成测评或使用「配置资产」后，这里会显示你的历次配比方案</div></div></div>`;
+document.body.appendChild(o);return}
+_compareSelection=[];
+const sorted=hist.slice().reverse();
+const o=document.createElement('div');o.className='modal-overlay';o.onclick=e=>{if(e.target===o)o.remove()};
+const actionLabel={'allocate':'💰 配置资产','quiz_buy':'📝 测评配置','buy':'📝 测评配置'};
+const prefLabel={'fund':'🏦 基金','stock':'📊 股票','mixed':'🔄 混合'};
+let listHtml=sorted.map((h,idx)=>{
+const d=new Date(h.date);
+const dateStr=`${d.getMonth()+1}/${d.getDate()} ${d.getHours().toString().padStart(2,'0')}:${d.getMinutes().toString().padStart(2,'0')}`;
+const totalIdx=hist.length-idx;
+return`<div class="alloc-history-item" id="allocHistItem${idx}" style="background:var(--card);border-radius:12px;padding:14px;margin-bottom:10px;border:2px solid transparent;cursor:pointer;transition:border-color .2s" onclick="toggleAllocCompare(${idx})">
+<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
+<div><span style="font-size:14px;font-weight:700">#${totalIdx}</span> <span style="font-size:12px;color:var(--text2)">${dateStr}</span></div>
+<div style="display:flex;gap:6px;align-items:center">
+${h.preference?`<span style="font-size:10px;padding:2px 8px;background:rgba(139,92,246,.1);border-radius:4px;color:#A78BFA">${prefLabel[h.preference]||h.preference}</span>`:''}
+<span style="font-size:10px;padding:2px 8px;background:rgba(245,158,11,.1);border-radius:4px;color:#F59E0B">${h.profile||'稳健型'}</span>
+<span style="font-size:10px;padding:2px 8px;background:var(--bg3);border-radius:4px;color:var(--text2)">${actionLabel[h.action]||h.action}</span>
+</div></div>
+<div style="font-size:18px;font-weight:800;color:var(--accent);margin-bottom:8px">¥${fmtMoney(h.amount)}</div>
+<div style="display:flex;flex-wrap:wrap;gap:4px">${h.allocations.map(a=>`<span style="font-size:11px;padding:3px 8px;background:var(--bg3);border-radius:6px;color:var(--text1)">${a.name} ${a.pct}% ¥${fmtMoney(a.amount)}</span>`).join('')}</div>
+</div>`}).join('');
+o.innerHTML=`<div class="modal-sheet" onclick="event.stopPropagation()" style="max-height:85vh;overflow-y:auto"><div class="modal-handle"></div>
+<div class="modal-title">📋 配比历史 <span style="font-size:12px;color:var(--text2);font-weight:400">${hist.length}次</span></div>
+<div style="font-size:12px;color:var(--text2);margin-bottom:12px">点击选中两条记录可并排对比差异</div>
+<div id="allocCompareBar" style="display:none;position:sticky;top:0;background:var(--accent);color:#000;padding:10px 14px;border-radius:10px;margin-bottom:12px;font-size:13px;font-weight:700;text-align:center;cursor:pointer;z-index:10" onclick="showAllocCompare()">🔍 对比选中的 2 条记录</div>
+${listHtml}</div>`;
+document.body.appendChild(o)}
+
+function toggleAllocCompare(idx){
+const item=document.getElementById('allocHistItem'+idx);
+const pos=_compareSelection.indexOf(idx);
+if(pos>=0){_compareSelection.splice(pos,1);if(item)item.style.borderColor='transparent'}
+else{if(_compareSelection.length>=2){const old=_compareSelection.shift();const oldEl=document.getElementById('allocHistItem'+old);if(oldEl)oldEl.style.borderColor='transparent'}
+_compareSelection.push(idx);if(item)item.style.borderColor='var(--accent)'}
+const bar=document.getElementById('allocCompareBar');
+if(bar)bar.style.display=_compareSelection.length===2?'block':'none'}
+
+function showAllocCompare(){
+const p=loadPortfolio();const hist=(p.history||[]).filter(h=>h.allocations&&h.allocations.length>0).slice().reverse();
+if(_compareSelection.length!==2)return;
+const [a,b]=[hist[_compareSelection[0]],hist[_compareSelection[1]]];
+if(!a||!b)return;
+const fmtDate=d=>{const dt=new Date(d);return`${dt.getMonth()+1}/${dt.getDate()} ${dt.getHours().toString().padStart(2,'0')}:${dt.getMinutes().toString().padStart(2,'0')}`};
+const prefLabel={'fund':'🏦 基金','stock':'📊 股票','mixed':'🔄 混合'};
+// 合并所有基金/股票 code
+const allCodes=[...new Set([...a.allocations.map(x=>x.code),...b.allocations.map(x=>x.code)])];
+let diffHtml=allCodes.map(code=>{
+const aItem=a.allocations.find(x=>x.code===code);
+const bItem=b.allocations.find(x=>x.code===code);
+const name=(aItem||bItem).name;
+const aPct=aItem?aItem.pct:0;const bPct=bItem?bItem.pct:0;
+const aAmt=aItem?aItem.amount:0;const bAmt=bItem?bItem.amount:0;
+const pctDiff=bPct-aPct;const amtDiff=bAmt-aAmt;
+const diffColor=pctDiff>0?'var(--green)':pctDiff<0?'var(--red)':'var(--text2)';
+return`<div style="display:flex;align-items:center;padding:8px 0;border-bottom:1px solid var(--bg3);gap:8px">
+<div style="flex:1;font-size:13px;font-weight:600">${name}</div>
+<div style="width:70px;text-align:center;font-size:12px">${aPct}%<br><span style="font-size:11px;color:var(--text2)">¥${fmtMoney(aAmt)}</span></div>
+<div style="width:50px;text-align:center;font-size:12px;font-weight:700;color:${diffColor}">${pctDiff>0?'+':''}${pctDiff}%</div>
+<div style="width:70px;text-align:center;font-size:12px">${bPct}%<br><span style="font-size:11px;color:var(--text2)">¥${fmtMoney(bAmt)}</span></div>
+</div>`}).join('');
+const amtDiffTotal=b.amount-a.amount;const amtDiffColor=amtDiffTotal>0?'var(--green)':amtDiffTotal<0?'var(--red)':'var(--text2)';
+document.querySelector('.modal-overlay')?.remove();
+const o=document.createElement('div');o.className='modal-overlay';o.onclick=e=>{if(e.target===o)o.remove()};
+o.innerHTML=`<div class="modal-sheet" onclick="event.stopPropagation()" style="max-height:85vh;overflow-y:auto"><div class="modal-handle"></div>
+<div class="modal-title">🔍 配比对比</div>
+<div style="display:flex;gap:12px;margin-bottom:16px">
+<div style="flex:1;background:rgba(59,130,246,.08);border:1px solid rgba(59,130,246,.2);border-radius:10px;padding:10px;text-align:center">
+<div style="font-size:11px;color:var(--text2)">旧配比 · ${fmtDate(a.date)}</div>
+<div style="font-size:16px;font-weight:800;color:var(--accent)">¥${fmtMoney(a.amount)}</div>
+<div style="font-size:10px;color:var(--text2)">${a.profile} ${prefLabel[a.preference]||''}</div></div>
+<div style="flex:1;background:rgba(16,185,129,.08);border:1px solid rgba(16,185,129,.2);border-radius:10px;padding:10px;text-align:center">
+<div style="font-size:11px;color:var(--text2)">新配比 · ${fmtDate(b.date)}</div>
+<div style="font-size:16px;font-weight:800;color:var(--green)">¥${fmtMoney(b.amount)}</div>
+<div style="font-size:10px;color:var(--text2)">${b.profile} ${prefLabel[b.preference]||''}</div></div>
+</div>
+<div style="text-align:center;margin-bottom:12px;font-size:13px">金额变化: <span style="color:${amtDiffColor};font-weight:700">${amtDiffTotal>0?'+':''}¥${fmtMoney(amtDiffTotal)}</span></div>
+<div style="display:flex;padding:6px 0;border-bottom:2px solid var(--bg3);margin-bottom:4px;font-size:11px;color:var(--text2);font-weight:600">
+<div style="flex:1">基金/股票</div><div style="width:70px;text-align:center">旧</div><div style="width:50px;text-align:center">差异</div><div style="width:70px;text-align:center">新</div></div>
+${diffHtml}
+<button class="form-submit" style="margin-top:16px" onclick="document.querySelector('.modal-overlay')?.remove();showAllocHistory()">← 返回历史</button>
+</div>`;
+document.body.appendChild(o)}
+
 // ---- 问卷 ----
 function renderQuiz(){const q=QUESTIONS[currentQuestion];$('#app').innerHTML=`<div class="quiz-header fade-up"><div class="progress-bar-bg"><div class="progress-bar-fill" style="width:${currentQuestion/QUESTIONS.length*100}%"></div></div><div class="quiz-step">第${currentQuestion+1}/${QUESTIONS.length}题</div></div><div class="question-card"><div class="question-emoji">${q.emoji}</div><div class="question-text">${q.question}</div><div class="options stagger">${q.options.map((o,i)=>`<button class="option-btn" onclick="selectAnswer(${i},${o.score})">${o.text}</button>`).join('')}</div></div>`}
-function renderAmountInput(){const presets=[100000,200000,300000,500000,1000000];$('#app').innerHTML=`<div class="quiz-header"><div class="progress-bar-bg"><div class="progress-bar-fill" style="width:100%"></div></div><div class="quiz-step">最后一步 ✨</div></div><div class="amount-section"><div class="question-emoji">🎯</div><div class="question-text">你具体想投多少钱？</div><div style="font-size:14px;color:var(--text2);margin-bottom:12px">输入金额，算出每个篮子该放多少</div><div class="amount-input-wrap"><span class="amount-prefix">¥</span><input class="amount-input" type="number" id="amtIn" placeholder="500000" value="${AMOUNT_MAP[answers[0]]||''}" oninput="onAmtChange()" inputmode="numeric"><span class="amount-suffix">元</span></div><div class="amount-quick">${presets.map(a=>`<button class="quick-btn" onclick="setAmt(${a})">${fmtMoney(a)}</button>`).join('')}</div><button class="generate-btn" id="genBtn" onclick="genResult()" ${AMOUNT_MAP[answers[0]]?'':'disabled'}>生成我的配置方案 →</button></div>`;onAmtChange()}
+let _selectedPreference='fund';
+function renderAmountInput(){const presets=[100000,200000,300000,500000,1000000];$('#app').innerHTML=`<div class="quiz-header"><div class="progress-bar-bg"><div class="progress-bar-fill" style="width:100%"></div></div><div class="quiz-step">最后一步 ✨</div></div><div class="amount-section"><div class="question-emoji">🎯</div><div class="question-text">你具体想投多少钱？</div><div style="font-size:14px;color:var(--text2);margin-bottom:12px">输入金额，算出每个篮子该放多少</div><div class="amount-input-wrap"><span class="amount-prefix">¥</span><input class="amount-input" type="number" id="amtIn" placeholder="500000" value="${AMOUNT_MAP[answers[0]]||''}" oninput="onAmtChange()" inputmode="numeric"><span class="amount-suffix">元</span></div><div class="amount-quick">${presets.map(a=>`<button class="quick-btn" onclick="setAmt(${a})">${fmtMoney(a)}</button>`).join('')}</div>
+<div style="margin:20px 0 16px"><div style="font-size:15px;font-weight:700;margin-bottom:10px">🎨 投资偏好</div>
+<div style="display:flex;gap:8px" id="prefBtns">
+<button class="pref-btn active" data-pref="fund" onclick="selectPreference('fund')" style="flex:1;padding:14px 8px;border-radius:12px;border:2px solid var(--accent);background:rgba(245,158,11,.1);color:var(--text);font-size:13px;cursor:pointer;text-align:center"><div style="font-size:24px;margin-bottom:4px">🏦</div><div style="font-weight:700">纯基金</div><div style="font-size:10px;color:var(--text2);margin-top:2px">6只经典基金<br>稳健长持</div></button>
+<button class="pref-btn" data-pref="stock" onclick="selectPreference('stock')" style="flex:1;padding:14px 8px;border-radius:12px;border:2px solid transparent;background:var(--card);color:var(--text);font-size:13px;cursor:pointer;text-align:center"><div style="font-size:24px;margin-bottom:4px">📊</div><div style="font-weight:700">纯股票</div><div style="font-size:10px;color:var(--text2);margin-top:2px">AI选股TOP6<br>高收益高波动</div></button>
+<button class="pref-btn" data-pref="mixed" onclick="selectPreference('mixed')" style="flex:1;padding:14px 8px;border-radius:12px;border:2px solid transparent;background:var(--card);color:var(--text);font-size:13px;cursor:pointer;text-align:center"><div style="font-size:24px;margin-bottom:4px">🔄</div><div style="font-weight:700">混合</div><div style="font-size:10px;color:var(--text2);margin-top:2px">基金+股票<br>攻守兼备</div></button>
+</div></div>
+<button class="generate-btn" id="genBtn" onclick="genResult()" ${AMOUNT_MAP[answers[0]]?'':'disabled'}>生成我的配置方案 →</button></div>`;onAmtChange()}
+
+function selectPreference(pref){
+_selectedPreference=pref;
+document.querySelectorAll('#prefBtns button').forEach(b=>{
+  const isPref=b.dataset.pref===pref;
+  b.style.borderColor=isPref?'var(--accent)':'transparent';
+  b.style.background=isPref?'rgba(245,158,11,.1)':'var(--card)';
+})}
 
 // ---- 结果页 ----
 let _recAdjustments=[];let _recAiComments={};let _recMarketData={};
 async function renderResult(){const ts=answers.reduce((s,a)=>s+a,0);const pf=getProfile(ts);let al=ALLOCATIONS[pf.name];const amt=selectedAmount;currentProfile=pf;
+const pref=_selectedPreference||'fund';
 // 尝试从后端获取动态配置 + 配置理由（替代硬编码）
 _recAdjustments=[];_recAiComments={};_recMarketData={};
-if(API_AVAILABLE){try{const r=await fetch(API_BASE+'/recommend-alloc?profile='+encodeURIComponent(pf.name)+'&with_ai=true',{signal:AbortSignal.timeout(15000)});if(r.ok){const d=await r.json();if(d.allocations&&d.allocations.length)al=d.allocations;_recAdjustments=d.adjustments||[];_recAiComments=d.aiComments||{};_recMarketData=d.marketData||{}}}catch(e){console.warn('recommend-alloc fallback:',e)}}
+if(API_AVAILABLE){try{const r=await fetch(API_BASE+'/recommend-alloc?profile='+encodeURIComponent(pf.name)+'&with_ai=true&preference='+pref,{signal:AbortSignal.timeout(15000)});if(r.ok){const d=await r.json();if(d.allocations&&d.allocations.length)al=d.allocations;_recAdjustments=d.adjustments||[];_recAiComments=d.aiComments||{};_recMarketData=d.marketData||{}}}catch(e){console.warn('recommend-alloc fallback:',e)}}
 currentAllocs=al;
+// 保存偏好到 portfolio
+const pp=loadPortfolio();pp.preference=pref;savePortfolio(pp);
+const prefLabels={'fund':'🏦 纯基金','stock':'📊 纯股票','mixed':'🔄 混合'};
 const gR=calcReturns(al,amt,'good'),mR=calcReturns(al,amt,'mid'),bR=calcReturns(al,amt,'bad');
 const adjHtml=_recAdjustments.length?`<div style="background:rgba(139,92,246,.08);border:1px solid rgba(139,92,246,.2);border-radius:12px;padding:12px;margin:8px 0"><div style="font-size:13px;font-weight:700;color:#8B5CF6;margin-bottom:8px">🤖 AI 配置逻辑</div><div style="font-size:12px;line-height:1.8;color:var(--text1)">${_recAdjustments.map(a=>`<div>${a}</div>`).join('')}</div>${_recMarketData.valuationPct?`<div style="font-size:11px;color:var(--text2);margin-top:6px">数据来源：沪深300估值 ${_recMarketData.valuationPct}% · 恐贪指数 ${_recMarketData.fearGreed}</div>`:''}</div>`:'';
 $('#app').innerHTML=`<div class="result-page">
-<div class="profile-card"><div class="profile-emoji">${pf.emoji}</div><div class="profile-name" style="color:${pf.color}">你是「${pf.name}」投资者</div><div class="profile-desc">${pf.desc}</div><div class="profile-period">建议投资周期：${pf.period}</div></div>
+<div class="profile-card"><div class="profile-emoji">${pf.emoji}</div><div class="profile-name" style="color:${pf.color}">你是「${pf.name}」投资者</div><div class="profile-desc">${pf.desc}</div><div class="profile-period">建议投资周期：${pf.period} · 偏好：${prefLabels[pref]||pref}</div></div>
 ${adjHtml}
 <div class="section-title">📊 你的${fmtMoney(amt)}这样分</div>
 <div class="chart-card"><div class="chart-wrap"><canvas id="allocChart"></canvas></div><div class="alloc-list">${al.map(a=>`<div class="alloc-item" onclick="showFundDetail('${a.code}')"><div class="alloc-dot" style="background:${a.color}"></div><div class="alloc-name">${a.name}</div><div class="alloc-pct">${a.pct}%</div><div class="alloc-money">${fmtFull(Math.round(amt*a.pct/100))}</div></div>`).join('')}</div></div>
 <div class="section-title">📋 照着买</div>
-<div class="shopping-list">${al.map((a,i)=>{const fd=FUND_DETAILS[a.code];const etfHint=fd&&fd.etfCode?` · 场内ETF:${fd.etfCode}`:'';const aiC=_recAiComments[a.code];return`<div class="shop-item" onclick="showFundDetail('${a.code}')"><div class="shop-num">${i+1}</div><div class="shop-detail"><div class="shop-fund-name">${a.fullName}</div><span class="shop-code">${a.code}${etfHint}</span><span class="shop-platform">${a.code==='余额宝'?'留在余额宝/零钱通':'支付宝·天天基金·券商均可买'}</span>${aiC?`<div style="margin-top:6px;padding:6px 10px;background:rgba(139,92,246,.08);border-radius:8px;font-size:12px;color:#A78BFA;line-height:1.5">🤖 ${aiC}</div>`:''}${liveNavData[a.code]?`<div class="shop-live-nav">📡 净值:${liveNavData[a.code].nav}(${liveNavData[a.code].date})</div>`:''}</div><div class="shop-amount">${fmtFull(Math.round(amt*a.pct/100))}</div></div>`}).join('')}</div>
+<div class="shopping-list">${al.map((a,i)=>{const fd=FUND_DETAILS[a.code];const etfHint=fd&&fd.etfCode?` · 场内ETF:${fd.etfCode}`:'';const aiC=_recAiComments[a.code];const aiR=a.aiReason;const isStock=a.assetType==='stock'||(a.code&&/^(sh|sz)\d{6}$/.test(a.code));const typeTag=isStock?'<span style="display:inline-block;padding:1px 6px;border-radius:4px;font-size:10px;font-weight:600;background:rgba(239,68,68,.15);color:#EF4444;margin-left:6px">📊 个股</span>':a.code==='余额宝'?'<span style="display:inline-block;padding:1px 6px;border-radius:4px;font-size:10px;font-weight:600;background:rgba(16,185,129,.15);color:#10B981;margin-left:6px">💵 货基</span>':'<span style="display:inline-block;padding:1px 6px;border-radius:4px;font-size:10px;font-weight:600;background:rgba(59,130,246,.15);color:#3B82F6;margin-left:6px">🏦 基金</span>';const platformText=a.code==='余额宝'?'留在余额宝/零钱通':isStock?'⚠️ 仅券商APP可买（如东方财富/同花顺/雪球）':'支付宝·天天基金·券商均可买';return`<div class="shop-item" onclick="showFundDetail('${a.code}')"><div class="shop-num">${i+1}</div><div class="shop-detail"><div class="shop-fund-name">${a.fullName||a.name}${typeTag}</div><span class="shop-code">${a.code}${etfHint}</span><span class="shop-platform"${isStock?' style="color:#EF4444"':''}>${platformText}</span>${aiR&&!aiC?`<div style="margin-top:6px;padding:6px 10px;background:rgba(59,130,246,.08);border-radius:8px;font-size:12px;color:#60A5FA;line-height:1.5">🤖 ${aiR}</div>`:''}${aiC?`<div style="margin-top:6px;padding:6px 10px;background:rgba(139,92,246,.08);border-radius:8px;font-size:12px;color:#A78BFA;line-height:1.5">🤖 ${aiC}</div>`:''}${liveNavData[a.code]?`<div class="shop-live-nav">📡 净值:${liveNavData[a.code].nav}(${liveNavData[a.code].date})</div>`:''}</div><div class="shop-amount">${fmtFull(Math.round(amt*a.pct/100))}</div></div>`}).join('')}</div>
 <div style="background:rgba(245,158,11,.08);border:1px solid rgba(245,158,11,.2);border-radius:12px;padding:12px;margin:8px 0;font-size:12px;color:var(--text2)"><div style="font-weight:600;color:#F59E0B;margin-bottom:6px">💰 各渠道费率对比</div><div style="line-height:1.8">🏆 <b>券商场内买ETF</b>：最便宜，仅收佣金（万2左右），适合大额<br>🥈 <b>支付宝/天天基金/理财通</b>：申购费1折（约0.1-0.15%），适合定投<br>🥉 <b>基金公司官网直销</b>：4-6折，仅限自家产品<br>❌ <b>银行柜台</b>：原价~8折，不推荐<br><span style="color:#F59E0B">👉 点击基金名查看各基金的详细购买渠道建议</span></div></div>
 <div class="section-title">📊 数据来源</div>
 <div class="data-source-card"><div class="data-source-title">配置依据</div><div class="data-source-item">Markowitz均值-方差模型(1952诺贝尔经济学奖)</div><div class="data-source-item">参考Vanguard Target-Date基金系列配比</div><div class="data-source-item">各类资产过去10-20年历史年化回报</div><div style="margin-top:12px"><div class="data-source-title">实时数据 <span class="api-status ${API_AVAILABLE?'on':'off'}">${API_AVAILABLE?'🟢已连接':'🔴离线'}</span></div></div></div>
@@ -996,11 +1131,19 @@ return `<div style="margin-bottom:12px"><div style="font-size:12px;font-weight:7
 // ---- 资讯页 ----
 let insightTab='overview';
 async function renderInsight(){currentPage='insight';renderNav();
-$('#app').innerHTML=`<div class="insight-page fade-up"><div class="insight-header"><h2>📰 市场资讯</h2><p>${API_AVAILABLE?'实时数据更新中':'后端离线'} <button onclick="runDataAudit()" style="background:rgba(245,158,11,.15);border:1px solid rgba(245,158,11,.3);border-radius:6px;padding:2px 8px;font-size:11px;color:#F59E0B;cursor:pointer;margin-left:4px" id="auditBtn">🔍 数据体检</button></p></div><div class="section-tab-bar"><button class="section-tab ${insightTab==='overview'?'active':''}" onclick="insightTab='overview';renderInsight()">📊 总览</button><button class="section-tab ${insightTab==='fundpick'?'active':''}" onclick="insightTab='fundpick';renderInsight()">🔍 选基</button><button class="section-tab ${insightTab==='stockpick'?'active':''}" onclick="insightTab='stockpick';renderInsight()">🧠 选股</button><button class="section-tab ${insightTab==='news'?'active':''}" onclick="insightTab='news';renderInsight()">📰 新闻</button><button class="section-tab ${insightTab==='policy'?'active':''}" onclick="insightTab='policy';renderInsight()">🏛️ 政策</button><button class="section-tab ${insightTab==='tech'?'active':''}" onclick="insightTab='tech';renderInsight()">📈 技术</button><button class="section-tab ${insightTab==='macro'?'active':''}" onclick="insightTab='macro';renderInsight()">📊 宏观</button><button class="section-tab ${insightTab==='global'?'active':''}" onclick="insightTab='global';renderInsight()">🌐 全球</button></div><div id="insightContent"><div style="text-align:center;padding:40px;color:var(--text2)"><div class="loading-spinner" style="width:32px;height:32px;margin:0 auto 12px;border-width:3px"></div><div id="loadingMsg" style="margin-top:8px">正在加载市场数据...</div><div style="font-size:12px;color:var(--text3,#94a3b8);margin-top:8px">☁️ 免费云服务器，首次加载可能需要 10~30 秒</div></div></div></div>`;
+$('#app').innerHTML=`<div class="insight-page fade-up"><div class="insight-header"><h2>📰 市场资讯</h2><p>${API_AVAILABLE?'实时数据更新中':'后端离线'} <button onclick="runDataAudit()" style="background:rgba(245,158,11,.15);border:1px solid rgba(245,158,11,.3);border-radius:6px;padding:2px 8px;font-size:11px;color:#F59E0B;cursor:pointer;margin-left:4px" id="auditBtn">🔍 数据体检</button></p></div><div class="section-tab-bar"><button class="section-tab ${insightTab==='overview'?'active':''}" onclick="insightTab='overview';renderInsight()">📊 总览</button><button class="section-tab ${insightTab==='fundpick'?'active':''}" onclick="insightTab='fundpick';renderInsight()">🔍 选基</button><button class="section-tab ${insightTab==='stockpick'?'active':''}" onclick="insightTab='stockpick';renderInsight()">🧠 选股</button><button class="section-tab ${insightTab==='news'?'active':''}" onclick="insightTab='news';renderInsight()">📰 新闻</button><button class="section-tab ${insightTab==='policy'?'active':''}" onclick="insightTab='policy';renderInsight()">🏛️ 政策</button><button class="section-tab ${insightTab==='tech'?'active':''}" onclick="insightTab='tech';renderInsight()">📈 技术</button><button class="section-tab ${insightTab==='macro'?'active':''}" onclick="insightTab='macro';renderInsight()">📊 宏观</button><button class="section-tab ${insightTab==='global'?'active':''}" onclick="insightTab='global';renderInsight()">🌐 全球</button><button class="section-tab ${insightTab==='factorictest'?'active':''}" onclick="insightTab='factorictest';renderInsight()">🔬 因子检验</button><button class="section-tab ${insightTab==='montecarlo'?'active':''}" onclick="insightTab='montecarlo';renderInsight()">🎲 蒙特卡洛</button><button class="section-tab ${insightTab==='aipredict'?'active':''}" onclick="insightTab='aipredict';renderInsight()">🤖 AI预测</button><button class="section-tab ${insightTab==='geneticfactor'?'active':''}" onclick="insightTab='geneticfactor';renderInsight()">🧬 遗传因子</button><button class="section-tab ${insightTab==='optimizer'?'active':''}" onclick="insightTab='optimizer';renderInsight()">⚡ 组合优化</button><button class="section-tab ${insightTab==='altdata'?'active':''}" onclick="insightTab='altdata';renderInsight()">📡 另类数据</button><button class="section-tab ${insightTab==='rlposition'?'active':''}" onclick="insightTab='rlposition';renderInsight()">🎮 RL仓位</button><button class="section-tab ${insightTab==='llmfactor'?'active':''}" onclick="insightTab='llmfactor';renderInsight()">🧠 LLM因子</button></div><div id="insightContent"><div style="text-align:center;padding:40px;color:var(--text2)"><div class="loading-spinner" style="width:32px;height:32px;margin:0 auto 12px;border-width:3px"></div><div id="loadingMsg" style="margin-top:8px">正在加载市场数据...</div><div style="font-size:12px;color:var(--text3,#94a3b8);margin-top:8px">☁️ 免费云服务器，首次加载可能需要 10~30 秒</div></div></div></div>`;
 if(!API_AVAILABLE){document.getElementById('insightContent').innerHTML='<div style="text-align:center;padding:40px;color:var(--text2)">后端离线，请启动后端服务获取实时数据</div>';return}
 // 独立 tab 不需要 dashboard 数据，秒开
 if(insightTab==='fundpick'){const el=document.getElementById('insightContent');if(el)renderFundPick(el);return}
 if(insightTab==='stockpick'){const el=document.getElementById('insightContent');if(el)renderStockPick(el);return}
+if(insightTab==='factorictest'){const el=document.getElementById('insightContent');if(el)renderFactorIC(el);return}
+if(insightTab==='montecarlo'){const el=document.getElementById('insightContent');if(el)renderMonteCarlo(el);return}
+if(insightTab==='aipredict'){const el=document.getElementById('insightContent');if(el)renderAIPredict(el);return}
+if(insightTab==='geneticfactor'){const el=document.getElementById('insightContent');if(el)renderGeneticFactor(el);return}
+if(insightTab==='optimizer'){const el=document.getElementById('insightContent');if(el)renderOptimizer(el);return}
+if(insightTab==='altdata'){const el=document.getElementById('insightContent');if(el)renderAltData(el);return}
+if(insightTab==='rlposition'){const el=document.getElementById('insightContent');if(el)renderRLPosition(el);return}
+if(insightTab==='llmfactor'){const el=document.getElementById('insightContent');if(el)renderLLMFactor(el);return}
 if(insightTab==='policy'){const el=document.getElementById('insightContent');if(el)renderInsightPolicy(el);return}
 if(insightTab==='news'){const el=document.getElementById('insightContent');if(el){el.innerHTML='<div style="text-align:center;padding:20px;color:var(--text2)"><div class="loading-spinner" style="width:24px;height:24px;margin:0 auto 8px;border-width:2px"></div>加载新闻中...</div>';try{const r=await fetch(API_BASE+'/news',{signal:AbortSignal.timeout(15000)});if(r.ok){const d=await r.json();renderInsightNews(el,{news:d.news||[]});}else{el.innerHTML='<div style="text-align:center;padding:40px;color:var(--text2)">新闻加载失败<br><button onclick="renderInsight()" style="margin-top:8px;padding:6px 16px;border-radius:8px;border:none;background:var(--accent);color:#fff;cursor:pointer">🔄 重试</button></div>';}}catch(e){el.innerHTML='<div style="text-align:center;padding:40px;color:var(--text2)">新闻加载超时<br><button onclick="renderInsight()" style="margin-top:8px;padding:6px 16px;border-radius:8px;border:none;background:var(--accent);color:#fff;cursor:pointer">🔄 重试</button></div>';}}return}
 // 需要 dashboard 的 tab: overview / tech / macro
@@ -1251,9 +1394,10 @@ function _stockTagsHTML(s){const sc=s.scores||{};const tags=[];if(sc.value>=70)t
 async function renderStockPick(el){
 el.innerHTML=`<div class="dashboard-card" style="overflow:hidden">
 <div class="dashboard-card-title">🧠 AI 多因子选股</div>
-<div style="font-size:12px;color:var(--text2);margin-bottom:8px">30因子7维打分 V2：价值(6因子)·成长(5)·质量(6)·动量(4)·风险(4)·流动性(3)·舆情(2)</div>
-<div style="font-size:11px;color:var(--accent);margin-bottom:12px;padding:6px 8px;background:rgba(245,158,11,.06);border-radius:6px">⚠️ 含真实财务数据（ROE/毛利率/净利率/现金流/负债率），首次加载需拉取 200 只财务指标。仅供参考，不构成投资建议。</div>
-<div id="stockPickList"><div style="text-align:center;padding:20px;color:var(--text2)"><div class="loading-spinner" style="width:24px;height:24px;margin:0 auto 8px;border-width:2px"></div>正在从 5000+ A股中筛选...</div></div>
+<div style="font-size:12px;color:var(--text2);margin-bottom:8px">30因子7维打分 V3：AI 动态权重 + LLM 舆情 + 因子生成器加分</div>
+<div style="font-size:11px;color:var(--accent);margin-bottom:12px;padding:6px 8px;background:rgba(245,158,11,.06);border-radius:6px">⚠️ 含真实财务数据（ROE/毛利率/净利率/现金流/负债率），DeepSeek 根据市场环境动态调权重。仅供参考，不构成投资建议。</div>
+<div id="stockScreenMeta" style="display:none;font-size:11px;color:var(--accent);margin-bottom:8px;padding:6px 8px;background:rgba(59,130,246,.06);border-radius:6px"></div>
+<div id="stockPickList"><div style="text-align:center;padding:20px;color:var(--text2)"><div class="loading-spinner" style="width:24px;height:24px;margin:0 auto 8px;border-width:2px"></div>正在从 5000+ A股中筛选（AI 动态调权中）...</div></div>
 </div>`;
 try{
 const r=await fetch(API_BASE+'/stock-screen?top_n=50',{signal:AbortSignal.timeout(60000)});
@@ -1261,6 +1405,15 @@ if(!r.ok)throw new Error('fetch failed');
 const data=await r.json();
 const stocks=data.stocks||[];
 const listEl=document.getElementById('stockPickList');if(!listEl)return;
+// 展示 V3 动态权重元信息
+const metaEl=document.getElementById('stockScreenMeta');
+if(metaEl&&(data.regime||data.weights)){
+const regime=data.regime||'';
+const weights=data.weights||{};
+const wText=Object.entries(weights).map(([k,v])=>`${k}:${v}%`).join(' · ');
+metaEl.innerHTML=`🧠 市场判断: <b>${regime}</b> | 动态权重: ${wText}`;
+metaEl.style.display='block';
+}
 if(!stocks.length){listEl.innerHTML='<div style="text-align:center;padding:20px;color:var(--text2)">'+(data.error||'暂无数据')+'</div>';return}
 listEl.innerHTML=`<div style="font-size:11px;color:var(--text2);margin-bottom:8px">从 ${data.total} 只股票中筛选 TOP ${stocks.length}</div>
 <div style="display:grid;grid-template-columns:30px 1fr 70px 50px;gap:4px;font-size:11px;color:var(--text2);font-weight:600;padding:6px 0;border-bottom:1px solid rgba(148,163,184,.1)">
@@ -1505,7 +1658,7 @@ function selectAnswer(i,score){const bs=document.querySelectorAll('.option-btn')
 function onAmtChange(){const inp=document.getElementById('amtIn');const btn=document.getElementById('genBtn');if(!inp||!btn)return;const v=parseInt(inp.value);btn.disabled=!(v>0);selectedAmount=v||0}
 function setAmt(v){const inp=document.getElementById('amtIn');if(inp){inp.value=v;selectedAmount=v;onAmtChange();document.getElementById('genBtn').disabled=false}}
 function genResult(){if(!selectedAmount)return;$('#app').innerHTML='<div class="loading-screen"><div class="loading-spinner"></div><div style="color:var(--text2)">AI正在计算...</div></div>';fetchNav().finally(()=>{setTimeout(()=>{currentPage='result';renderResult()},1200)})}
-function confirmPurchase(){if(!currentAllocs||!selectedAmount||!currentProfile)return;recordPurchase(currentAllocs,selectedAmount,currentProfile.name);const b=document.querySelector('.action-btn.green');if(b){b.textContent='✅ 已记录！';b.style.opacity='.6';b.style.pointerEvents='none'}}
+function confirmPurchase(){if(!currentAllocs||!selectedAmount||!currentProfile)return;recordPurchase(currentAllocs,selectedAmount,currentProfile.name,_selectedPreference||'fund');const b=document.querySelector('.action-btn.green');if(b){b.textContent='✅ 已记录！';b.style.opacity='.6';b.style.pointerEvents='none'}}
 function restart(){currentPage='landing';currentQuestion=0;answers=[];selectedAmount=0;renderLanding()}
 function clearPortfolio(){if(confirm('确定清除持仓？')){localStorage.removeItem(STORAGE_KEY);restart()}}
 
@@ -1669,7 +1822,9 @@ const assets=loadAssets();
 assets.push({id:'ast_'+Date.now().toString(36)+'_'+Math.random().toString(36).slice(2,6),type,name,value,note,createdAt:new Date().toISOString(),updatedAt:new Date().toISOString()});
 saveAssets(assets);
 if(API_AVAILABLE)fetch(API_BASE+'/assets',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({userId:getUserId(),asset:{type,name,value,note}})}).catch(()=>{});
-document.querySelector('.modal-overlay')?.remove();renderAssets()}
+document.querySelector('.modal-overlay')?.remove();renderAssets();
+// 资产变更后异步刷新首页净资产（后端缓存已在API层失效）
+_refreshNetWorthAfterAssetChange()}
 
 function showEditAsset(id){
 const assets=loadAssets();const a=assets.find(x=>x.id===id);if(!a)return;
@@ -1695,11 +1850,13 @@ a.note=document.getElementById('editAssetNote')?.value?.trim()||'';
 a.updatedAt=new Date().toISOString();
 saveAssets(assets);
 if(API_AVAILABLE)fetch(API_BASE+'/assets',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({userId:getUserId(),asset:{id:a.id,type:a.type,name:a.name,value:a.value,note:a.note}})}).catch(()=>{});
-document.querySelector('.modal-overlay')?.remove();renderAssets()}
+document.querySelector('.modal-overlay')?.remove();renderAssets();
+_refreshNetWorthAfterAssetChange()}
 
 function deleteAsset(id){const assets=loadAssets().filter(a=>a.id!==id);saveAssets(assets);
 if(API_AVAILABLE)fetch(API_BASE+'/assets/'+id+'?userId='+getUserId(),{method:'DELETE'}).catch(()=>{});
-renderAssets()}
+renderAssets();
+_refreshNetWorthAfterAssetChange()}
 
 // ---- 📈 持仓盯盘页（股票+基金统一） ----
 let _stockScanData=null;let _fundScanData=null;let _holdingsSubTab='stock';let _overviewData=null;
@@ -1737,7 +1894,7 @@ return`<span style="font-size:11px;color:${dc}">${label}${d>0?'+':''}${d}%</span
 el.innerHTML=`<div class="pnl-hero" style="position:relative">
 <div style="display:flex;align-items:center;gap:16px;justify-content:center">
 <div>${ringSvg}</div>
-<div><div class="pnl-label">总持仓资产</div>
+<div><div class="pnl-label">总持仓资产 <span style="font-size:10px;color:var(--text2);font-weight:400">仅股票+基金</span></div>
 <div class="pnl-total-value">¥${ov.totalMarketValue>0?ov.totalMarketValue.toLocaleString():'0'}</div>
 ${ov.totalCost>0?`<div class="pnl-change ${ov.totalPnl>=0?'pos':'neg'}" style="color:${pnlC}">盈亏 ${ov.totalPnl>=0?'+':''}¥${ov.totalPnl.toFixed(0)} (${ov.totalPnlPct>=0?'+':''}${ov.totalPnlPct.toFixed(1)}%)</div>`:''}</div></div>
 ${legendHtml}
@@ -1757,20 +1914,23 @@ document.getElementById('subTabFund')?.classList.replace('primary','secondary');
 const el=document.getElementById('holdingsContent');
 el.innerHTML='<div style="text-align:center;padding:40px"><div class="loading-spinner"></div><div style="color:var(--text2);margin-top:12px">加载股票持仓...</div></div>';
 try{const[hRes,scanRes]=await Promise.all([fetch(API_BASE+'/stock-holdings?'+getProfileParam()).then(r=>r.json()),fetch(API_BASE+'/stock-holdings/scan?'+getProfileParam()).then(r=>r.json())]);
-_stockScanData=scanRes;const holdings=scanRes.holdings||[];const signals=scanRes.signals||[];
+_stockScanData=scanRes;const holdings=scanRes.holdings||[];const signals=scanRes.signals||[];const discipline=scanRes.discipline||[];
 const el=document.getElementById('holdingsContent');if(!el)return;
 // 异动信号汇总
 let signalHtml='';if(signals.length>0){const dangerS=signals.filter(s=>s.level==='danger'||s.level==='warning');const opS=signals.filter(s=>s.level==='opportunity');
 signalHtml=`<div class="dashboard-card" style="border-left:3px solid ${dangerS.length?'var(--red)':'var(--green)'}"><div class="dashboard-card-title">⚡ 盯盘信号 (${signals.length})</div>${signals.map(s=>{const c=s.level==='danger'?'var(--red)':s.level==='warning'?'#F59E0B':s.level==='opportunity'?'var(--green)':'var(--text2)';return`<div style="padding:6px 0;font-size:13px;border-bottom:1px solid var(--bg3);color:${c}">${s.msg}</div>`}).join('')}</div>`}
+// 纪律检查面板
+let disciplineHtml='';if(discipline.length>0){
+disciplineHtml=`<div class="dashboard-card" style="border-left:3px solid #F59E0B;margin-top:8px"><div class="dashboard-card-title">📏 纪律检查 (${discipline.length})</div>${discipline.map(d=>{const c=d.level==='warning'?'#F59E0B':d.level==='danger'?'var(--red)':'var(--text2)';return`<div style="padding:6px 0;font-size:13px;border-bottom:1px solid var(--bg3);color:${c}">${d.msg}</div>`}).join('')}</div>`}
 // 持仓列表
 let listHtml='';if(holdings.length===0){listHtml=`<div style="text-align:center;padding:40px;color:var(--text2)"><div style="font-size:48px;margin-bottom:16px">📈</div><div style="font-size:16px;margin-bottom:8px">还没有持仓股票</div><div style="font-size:13px">点击下方按钮添加你的第一只股票</div></div>`}else{
-listHtml=holdings.map(h=>{const pctC=h.changePct>=0?'var(--green)':'var(--red)';const pnlC=(h.pnlPct||0)>=0?'var(--green)':'var(--red)';
-return`<div class="holding-card" onclick="showStockDetail('${h.code}')"><div class="holding-top"><div class="holding-info"><div class="holding-name">${h.name||h.code}</div><div class="holding-meta">${h.code} · PE ${h.indicators?.rsi14?'RSI '+h.indicators.rsi14:'--'}</div></div><div class="holding-amount"><div class="holding-money" style="color:${pctC}">${h.price?'¥'+h.price.toFixed(2):'--'}</div><div class="holding-pct" style="color:${pctC}">${h.changePct!=null?(h.changePct>=0?'+':'')+h.changePct.toFixed(2)+'%':'--'}</div></div></div>${h.costPrice&&h.shares?`<div class="holding-pnl-row"><div class="holding-pnl-item"><div class="holding-pnl-label">持仓市值</div><div class="holding-pnl-val">¥${(h.marketValue||0).toLocaleString()}</div></div><div class="holding-pnl-item"><div class="holding-pnl-label">盈亏</div><div class="holding-pnl-val ${(h.pnlPct||0)>=0?'pos':'neg'}" style="color:${pnlC}">${h.pnl!=null?((h.pnl>=0?'+':'')+h.pnl.toFixed(0)):''} ${h.pnlPct!=null?'('+((h.pnlPct>=0?'+':'')+h.pnlPct.toFixed(1))+'%)':''}</div></div><div class="holding-pnl-item"><div class="holding-pnl-label">成本价</div><div class="holding-pnl-val">¥${h.costPrice}</div></div></div>`:''}</div>`}).join('')}
+listHtml=holdings.map(h=>{const pctC=h.changePct>=0?'var(--green)':'var(--red)';const pnlC=(h.pnlPct||0)>=0?'var(--green)':'var(--red)';const weightTag=h.weight?` · 仓位${h.weight}%`:'';const industryTag=h.industry&&h.industry!=='未知'?` · ${h.industry}`:'';
+return`<div class="holding-card" onclick="showStockDetail('${h.code}')"><div class="holding-top"><div class="holding-info"><div class="holding-name">${h.name||h.code}</div><div class="holding-meta">${h.code}${industryTag}${weightTag}</div></div><div class="holding-amount"><div class="holding-money" style="color:${pctC}">${h.price?'¥'+h.price.toFixed(2):'--'}</div><div class="holding-pct" style="color:${pctC}">${h.changePct!=null?(h.changePct>=0?'+':'')+h.changePct.toFixed(2)+'%':'--'}</div></div></div>${h.costPrice&&h.shares?`<div class="holding-pnl-row"><div class="holding-pnl-item"><div class="holding-pnl-label">持仓市值</div><div class="holding-pnl-val">¥${(h.marketValue||0).toLocaleString()}</div></div><div class="holding-pnl-item"><div class="holding-pnl-label">盈亏</div><div class="holding-pnl-val ${(h.pnlPct||0)>=0?'pos':'neg'}" style="color:${pnlC}">${h.pnl!=null?((h.pnl>=0?'+':'')+h.pnl.toFixed(0)):''} ${h.pnlPct!=null?'('+((h.pnlPct>=0?'+':'')+h.pnlPct.toFixed(1))+'%)':''}</div></div><div class="holding-pnl-item"><div class="holding-pnl-label">成本价</div><div class="holding-pnl-val">¥${h.costPrice}</div></div></div>`:''}</div>`}).join('')}
 // 汇总
 let totalMV=holdings.reduce((s,h)=>s+(h.marketValue||0),0);let totalPnl=holdings.reduce((s,h)=>s+(h.pnl||0),0);
 let heroHtml='';if(holdings.length>0&&totalMV>0){const pnlC=totalPnl>=0?'var(--green)':'var(--red)';
 heroHtml=`<div class="pnl-hero"><div class="pnl-label">股票持仓总市值</div><div class="pnl-total-value">¥${totalMV.toLocaleString()}</div><div class="pnl-change ${totalPnl>=0?'pos':'neg'}" style="color:${pnlC}">${totalPnl>=0?'+':''}${totalPnl.toFixed(0)}</div><div class="pnl-sub">${holdings.length} 只股票 · ${scanRes.scannedAt?'更新于 '+scanRes.scannedAt.slice(11,16):''}</div></div>`}
-el.innerHTML=heroHtml+signalHtml+listHtml+`<div style="margin-top:16px"><button class="action-btn primary" onclick="showAddStockModal()" style="width:100%">➕ 添加股票</button></div><div style="margin-top:8px"><button class="action-btn secondary" onclick="renderStocksContent()" style="width:100%">🔄 刷新行情</button></div>`;
+el.innerHTML=heroHtml+signalHtml+disciplineHtml+listHtml+`<div style="margin-top:16px"><button class="action-btn primary" onclick="showAddStockModal()" style="width:100%">➕ 添加股票</button></div><div style="margin-top:8px"><button class="action-btn secondary" onclick="renderStocksContent()" style="width:100%">🔄 刷新行情</button></div>`;
 }catch(e){console.error('Stock load error:',e);document.getElementById('holdingsContent').innerHTML='<div style="text-align:center;padding:40px;color:var(--red)">加载失败: '+e.message+'</div>'}}
 
 function showAddStockModal(){const overlay=document.createElement('div');overlay.className='modal-overlay';overlay.onclick=e=>{if(e.target===overlay)overlay.remove()};
@@ -1780,7 +1940,10 @@ document.body.appendChild(overlay)}
 async function doAddStock(){const code=$('#addStockCode')?.value?.trim();if(!code){alert('请输入股票代码');return}
 const cost=parseFloat($('#addStockCost')?.value)||0;const shares=parseInt($('#addStockShares')?.value)||0;const note=$('#addStockNote')?.value||'';
 try{const r=await fetch(API_BASE+'/stock-holdings',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({code,costPrice:cost,shares,note,userId:getProfileId()})});
-const d=await r.json();if(d.error){alert(d.error);return}document.querySelector('.modal-overlay')?.remove();renderStocksContent()}catch(e){alert('添加失败: '+e.message)}}
+const d=await r.json();if(d.error){alert(d.error);return}
+// 显示纪律检查警告
+if(d.warnings&&d.warnings.length>0){const warnMsg=d.warnings.map(w=>w.msg).join('\n');setTimeout(()=>alert('⚠️ 纪律提醒\n\n'+warnMsg),200)}
+document.querySelector('.modal-overlay')?.remove();renderStocksContent()}catch(e){alert('添加失败: '+e.message)}}
 
 function showStockDetail(code){const h=(_stockScanData?.holdings||[]).find(x=>x.code===code);if(!h)return;
 const overlay=document.createElement('div');overlay.className='modal-overlay';overlay.onclick=e=>{if(e.target===overlay)overlay.remove()};
@@ -1852,6 +2015,397 @@ overlay.innerHTML=`<div class="modal-sheet"><div class="modal-handle"></div><div
 document.body.appendChild(overlay)}
 
 async function deleteFund(code){try{await fetch(API_BASE+'/fund-holdings/'+code+'?'+getProfileParam(),{method:'DELETE'});document.querySelector('.modal-overlay')?.remove();renderFundsContent()}catch(e){alert('删除失败')}}
+
+// ---- Phase 5: 因子 IC 检验 ----
+async function renderFactorIC(el){
+el.innerHTML=`<div class="dashboard-card" style="overflow:hidden">
+<div class="dashboard-card-title">🔬 因子 IC 检验</div>
+<div style="font-size:12px;color:var(--text2);margin-bottom:8px">验证30因子中哪些真正具有收益预测能力（Spearman IC）</div>
+<div style="font-size:11px;color:var(--accent);margin-bottom:12px;padding:6px 8px;background:rgba(245,158,11,.06);border-radius:6px">📊 |IC| > 0.05 = 优秀因子 · |IC| > 0.03 = 有效因子 · 参考 Barra 多因子模型标准</div>
+<div id="factorICContent"><div style="text-align:center;padding:30px;color:var(--text2)"><div class="loading-spinner" style="width:24px;height:24px;margin:0 auto 8px;border-width:2px"></div>正在计算因子IC，需获取200只股票数据...<br><span style="font-size:11px;opacity:0.6">首次约30-60秒</span></div></div></div>`;
+try{
+const r=await fetch(API_BASE+'/factor-ic?forward_days=20&pool_size=200',{signal:AbortSignal.timeout(120000)});
+if(!r.ok)throw new Error('fetch failed');
+const d=await r.json();
+if(d.error){document.getElementById('factorICContent').innerHTML=`<div style="text-align:center;padding:20px;color:var(--red)">${d.error}</div>`;return}
+const ranking=d.ranking||[];
+const summary=d.summary||{};
+const recs=d.recommendations||[];
+const ineffective=d.ineffective_factors||[];
+let html=`<div style="display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin-bottom:16px">
+<div style="background:rgba(16,185,129,.08);border-radius:12px;padding:12px;text-align:center">
+<div style="font-size:24px;font-weight:900;color:var(--green)">${summary.effective_factors||0}</div>
+<div style="font-size:11px;color:var(--text2)">有效因子</div></div>
+<div style="background:rgba(239,68,68,.08);border-radius:12px;padding:12px;text-align:center">
+<div style="font-size:24px;font-weight:900;color:var(--red)">${(summary.total_factors||0)-(summary.effective_factors||0)}</div>
+<div style="font-size:11px;color:var(--text2)">无效因子</div></div>
+<div style="background:rgba(99,102,241,.08);border-radius:12px;padding:12px;text-align:center">
+<div style="font-size:24px;font-weight:900;color:#818CF8">${summary.effectiveness_rate||0}%</div>
+<div style="font-size:11px;color:var(--text2)">有效率</div></div></div>`;
+// 建议
+if(recs.length){html+=`<div style="background:rgba(59,130,246,.06);border-radius:10px;padding:10px 12px;margin-bottom:16px;font-size:12px;line-height:1.8;color:var(--text)">
+<div style="font-weight:700;margin-bottom:4px">💡 分析建议</div>
+${recs.map(r=>'• '+r).join('<br>')}</div>`}
+// 因子排名表
+html+=`<div style="font-size:13px;font-weight:700;margin-bottom:8px">📊 因子排名（按 |IC| 降序）</div>
+<div style="display:grid;grid-template-columns:30px 1fr 60px 60px 60px;gap:4px;font-size:11px;color:var(--text2);font-weight:600;padding:6px 0;border-bottom:1px solid rgba(148,163,184,.1)">
+<div>#</div><div>因子</div><div style="text-align:right">IC</div><div style="text-align:right">样本</div><div style="text-align:right">评级</div></div>`;
+ranking.forEach((f,i)=>{
+const levelColor=f.level==='优秀'?'var(--green)':f.level==='有效'?'#3B82F6':f.level==='微弱'?'var(--accent)':'var(--red)';
+const icColor=f.ic>0?'var(--green)':'var(--red)';
+html+=`<div style="display:grid;grid-template-columns:30px 1fr 60px 60px 60px;gap:4px;padding:8px 0;border-bottom:1px solid rgba(148,163,184,.04);align-items:center">
+<div style="font-size:11px;color:var(--text2);font-weight:700">${i+1}</div>
+<div><div style="font-size:12px;font-weight:600">${f.name_cn||f.factor}</div>
+<div style="font-size:10px;color:var(--text2)">${f.direction||''} · ${f.factor}</div></div>
+<div style="text-align:right;font-size:13px;font-weight:700;color:${icColor}">${f.ic>0?'+':''}${f.ic}</div>
+<div style="text-align:right;font-size:11px;color:var(--text2)">${f.samples}</div>
+<div style="text-align:right"><span style="font-size:10px;padding:2px 6px;border-radius:4px;background:${levelColor}20;color:${levelColor}">${f.level}</span></div></div>`});
+html+=`<div style="text-align:center;margin-top:16px"><button class="action-btn secondary" style="display:inline-block;min-width:auto;padding:10px 24px" onclick="insightTab='factorictest';renderInsight()">🔄 重新检验</button></div>
+<div style="font-size:11px;color:#475569;margin-top:8px;text-align:center">样本池 ${summary.pool_size||0} 只 · 预测周期 ${summary.forward_days||20} 日 · 耗时 ${summary.elapsed_seconds||0}s</div>`;
+document.getElementById('factorICContent').innerHTML=html;
+}catch(e){console.warn('Factor IC failed:',e);document.getElementById('factorICContent').innerHTML=`<div style="text-align:center;padding:20px;color:var(--text2)">加载失败<br><button onclick="insightTab='factorictest';renderInsight()" style="margin-top:8px;padding:6px 16px;border-radius:6px;border:none;background:var(--accent);color:#fff;cursor:pointer;font-size:12px">🔄 重试</button></div>`}}
+
+
+// ---- Phase 6: 蒙特卡洛模拟 ----
+async function renderMonteCarlo(el){
+el.innerHTML=`<div class="dashboard-card" style="overflow:hidden">
+<div class="dashboard-card-title">🎲 蒙特卡洛模拟</div>
+<div style="font-size:12px;color:var(--text2);margin-bottom:8px">基于历史收益分布，5000次模拟生成概率预测（替代单点预测）</div>
+<div style="font-size:11px;color:var(--accent);margin-bottom:12px;padding:6px 8px;background:rgba(245,158,11,.06);border-radius:6px">🎯 输入股票代码 → 获取盈利概率/最差情景/收益分布 · 参考 AQR 蒙特卡洛方法论</div>
+<div style="display:flex;gap:8px;margin-bottom:8px">
+<input id="mcCode" placeholder="股票代码 如 600519" class="input-field" style="flex:1;min-width:0;padding:10px 12px;border-radius:10px;border:1px solid var(--bg3);background:var(--bg2);color:var(--text);font-size:14px">
+<select id="mcHorizon" style="padding:10px;border-radius:10px;border:1px solid var(--bg3);background:var(--bg2);color:var(--text);font-size:12px;flex-shrink:0">
+<option value="125">半年</option><option value="250" selected>一年</option><option value="500">两年</option></select>
+</div>
+<button onclick="runMonteCarlo()" style="width:100%;padding:10px 16px;border-radius:10px;border:none;background:var(--accent);color:#fff;font-weight:700;cursor:pointer;font-size:14px;margin-bottom:16px">🎲 开始模拟</button>
+<div id="mcResult"></div>
+<div style="margin-top:16px;padding-top:16px;border-top:1px solid rgba(148,163,184,.1)">
+<div style="font-size:13px;font-weight:700;margin-bottom:8px">📊 持仓组合模拟</div>
+<div style="font-size:11px;color:var(--text2);margin-bottom:8px">自动读取你的持仓，模拟组合概率分布</div>
+<button onclick="runPortfolioMC()" style="padding:10px 20px;border-radius:10px;border:1px solid var(--accent);background:transparent;color:var(--accent);font-weight:600;cursor:pointer;font-size:12px">🚀 模拟我的组合</button>
+<div id="mcPortfolioResult" style="margin-top:12px"></div>
+</div></div>`;
+}
+
+async function runMonteCarlo(){
+const code=document.getElementById('mcCode')?.value?.trim();
+if(!code){alert('请输入股票代码');return}
+const horizon=parseInt(document.getElementById('mcHorizon')?.value||'250');
+const el=document.getElementById('mcResult');
+if(!el)return;
+el.innerHTML=`<div style="text-align:center;padding:20px;color:var(--text2)"><div class="loading-spinner" style="width:24px;height:24px;margin:0 auto 8px;border-width:2px"></div>5000次模拟进行中...</div>`;
+try{
+// 同时跑有纪律 vs 无纪律对比
+const r=await fetch(API_BASE+'/monte-carlo/compare/'+code+'?simulations=5000&horizon_days='+horizon,{signal:AbortSignal.timeout(120000)});
+if(!r.ok)throw new Error('API failed');
+const d=await r.json();
+if(d.error){el.innerHTML=`<div style="padding:16px;color:var(--red);text-align:center">${d.error}</div>`;return}
+const w=d.with_discipline||{};
+const wo=d.without_discipline||{};
+const imp=d.improvement||{};
+const wp=w.percentiles||{};const wop=wo.percentiles||{};
+const wprob=w.probabilities||{};const woprob=wo.probabilities||{};
+const wrisk=w.risk_metrics||{};
+const wdisc=w.discipline_stats||{};
+let html=`<div style="font-size:13px;font-weight:700;margin-bottom:12px">📊 ${code} · ${w.horizon_years||1}年模拟（${w.simulations||5000}次）</div>`;
+// 核心概率卡片
+html+=`<div style="display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin-bottom:16px">
+<div style="background:rgba(16,185,129,.08);border-radius:12px;padding:12px;text-align:center">
+<div style="font-size:28px;font-weight:900;color:var(--green)">${wprob.profit||0}%</div>
+<div style="font-size:11px;color:var(--text2)">盈利概率</div>
+<div style="font-size:10px;color:var(--text3)">无纪律 ${woprob.profit||0}%</div></div>
+<div style="background:rgba(239,68,68,.08);border-radius:12px;padding:12px;text-align:center">
+<div style="font-size:28px;font-weight:900;color:var(--red)">${wprob.loss_over_10pct||0}%</div>
+<div style="font-size:11px;color:var(--text2)">大亏概率(>10%)</div>
+<div style="font-size:10px;color:var(--text3)">无纪律 ${woprob.loss_over_10pct||0}%</div></div>
+<div style="background:rgba(99,102,241,.08);border-radius:12px;padding:12px;text-align:center">
+<div style="font-size:28px;font-weight:900;color:#818CF8">${wprob.gain_over_20pct||0}%</div>
+<div style="font-size:11px;color:var(--text2)">大赚概率(>20%)</div>
+<div style="font-size:10px;color:var(--text3)">无纪律 ${woprob.gain_over_20pct||0}%</div></div></div>`;
+// 收益分布对比
+html+=`<div style="background:var(--bg2);border-radius:12px;padding:12px;margin-bottom:12px">
+<div style="font-size:12px;font-weight:700;margin-bottom:8px">收益分布（有纪律 vs 无纪律）</div>
+<div style="display:grid;grid-template-columns:60px 1fr 1fr;gap:4px;font-size:11px">
+<div style="color:var(--text2);font-weight:600">分位</div>
+<div style="color:var(--green);font-weight:600;text-align:right">✅ 有纪律</div>
+<div style="color:var(--text2);font-weight:600;text-align:right">❌ 无纪律</div>
+${['P10','P25','P50','P75','P90'].map(p=>{
+const wv=wp[p]||0;const wov=wop[p]||0;
+const label=p==='P10'?'最差10%':p==='P25'?'较差25%':p==='P50'?'中位数':p==='P75'?'较好75%':'最好90%';
+return`<div style="color:var(--text2);padding:4px 0">${label}</div>
+<div style="text-align:right;padding:4px 0;font-weight:700;color:${wv>=0?'var(--green)':'var(--red)'}">${wv>=0?'+':''}${wv}%</div>
+<div style="text-align:right;padding:4px 0;color:${wov>=0?'var(--green)':'var(--red)'}">${wov>=0?'+':''}${wov}%</div>`}).join('')}</div></div>`;
+// 风险指标
+html+=`<div style="display:grid;grid-template-columns:repeat(2,1fr);gap:8px;margin-bottom:12px">
+<div style="background:var(--bg2);border-radius:10px;padding:10px">
+<div style="font-size:11px;color:var(--text2)">VaR(95%)</div>
+<div style="font-size:16px;font-weight:800;color:var(--red)">${wrisk.var_95||0}%</div>
+<div style="font-size:10px;color:var(--text3)">最差5%情景的收益</div></div>
+<div style="background:var(--bg2);border-radius:10px;padding:10px">
+<div style="font-size:11px;color:var(--text2)">CVaR(95%)</div>
+<div style="font-size:16px;font-weight:800;color:var(--red)">${wrisk.cvar_95||0}%</div>
+<div style="font-size:10px;color:var(--text3)">尾部风险平均损失</div></div></div>`;
+// 纪律触发统计
+html+=`<div style="background:rgba(245,158,11,.06);border-radius:10px;padding:10px;margin-bottom:12px;font-size:12px">
+<div style="font-weight:700;margin-bottom:4px">⚡ 纪律触发率</div>
+止损(-8%)触发：${wdisc.stop_loss_triggered||0}% 的路径 · 止盈(+20%)触发：${wdisc.take_profit_triggered||0}% 的路径</div>`;
+// 结论
+if(d.conclusion){html+=`<div style="background:rgba(59,130,246,.06);border-radius:10px;padding:10px 12px;font-size:12px;line-height:1.8">
+<div style="font-weight:700;margin-bottom:4px">📝 结论</div>${d.conclusion}</div>`}
+// 历史参数
+const hp=w.historical_params||{};
+html+=`<div style="font-size:11px;color:#475569;margin-top:12px;text-align:center">基于历史：年化 ${hp.annual_return||0}% · 波动率 ${hp.annual_volatility||0}% · 偏度 ${hp.skewness||0} · 历史最大回撤 ${hp.historical_max_dd||0}%</div>`;
+el.innerHTML=html;
+}catch(e){console.warn('MC failed:',e);el.innerHTML=`<div style="text-align:center;padding:16px;color:var(--text2)">模拟失败<br><span style="font-size:11px;opacity:0.6">${e.message}</span><br><button onclick="runMonteCarlo()" style="margin-top:8px;padding:6px 16px;border-radius:6px;border:none;background:var(--accent);color:#fff;cursor:pointer;font-size:12px">🔄 重试</button></div>`}}
+
+async function runPortfolioMC(){
+const el=document.getElementById('mcPortfolioResult');if(!el)return;
+el.innerHTML=`<div style="text-align:center;padding:16px;color:var(--text2)"><div class="loading-spinner" style="width:20px;height:20px;margin:0 auto 6px;border-width:2px"></div>读取持仓并模拟中...</div>`;
+try{
+// 先获取用户持仓
+const sr=await fetch(API_BASE+'/stock-holdings/scan?'+getProfileParam(),{signal:AbortSignal.timeout(30000)});
+if(!sr.ok)throw new Error('获取持仓失败');
+const sd=await sr.json();
+const holdings=(sd.holdings||[]).filter(h=>h.code&&h.currentPrice>0);
+if(!holdings.length){el.innerHTML='<div style="padding:12px;color:var(--text2);text-align:center">暂无股票持仓，请先添加</div>';return}
+// 构建组合
+const totalValue=holdings.reduce((s,h)=>s+(h.currentPrice*(h.quantity||0)),0)||holdings.length;
+const payload={
+holdings:holdings.map(h=>({code:h.code.replace(/^(sh|sz)/i,''),weight:totalValue>0?(h.currentPrice*(h.quantity||0))/totalValue:1/holdings.length})),
+simulations:3000,horizon_days:250,initial:100000,discipline:true};
+const r=await fetch(API_BASE+'/monte-carlo/portfolio',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload),signal:AbortSignal.timeout(120000)});
+if(!r.ok)throw new Error('模拟失败');
+const d=await r.json();
+if(d.error){el.innerHTML=`<div style="padding:12px;color:var(--red)">${d.error}</div>`;return}
+const p=d.percentiles||{};const prob=d.probabilities||{};
+let html=`<div style="font-size:13px;font-weight:700;margin-bottom:8px">我的组合（${d.holdings?.length||0}只）· 1年模拟</div>
+<div style="display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin-bottom:12px">
+<div style="background:rgba(16,185,129,.08);border-radius:10px;padding:10px;text-align:center">
+<div style="font-size:22px;font-weight:900;color:var(--green)">${prob.profit||0}%</div>
+<div style="font-size:10px;color:var(--text2)">盈利概率</div></div>
+<div style="background:rgba(239,68,68,.08);border-radius:10px;padding:10px;text-align:center">
+<div style="font-size:22px;font-weight:900;color:var(--red)">${prob.loss_over_10pct||0}%</div>
+<div style="font-size:10px;color:var(--text2)">大亏(>10%)</div></div>
+<div style="background:rgba(99,102,241,.08);border-radius:10px;padding:10px;text-align:center">
+<div style="font-size:22px;font-weight:900;color:#818CF8">${prob.gain_over_20pct||0}%</div>
+<div style="font-size:10px;color:var(--text2)">大赚(>20%)</div></div></div>
+<div style="font-size:12px;line-height:1.8;color:var(--text)">
+收益分布：最差10%=${p.P10||0}% · 中位数=${p.P50||0}% · 最好90%=${p.P90||0}%<br>
+预期收益=${d.expected_return||0}% · VaR(95%)=${d.risk_metrics?.var_95||0}%</div>`;
+// 持仓明细
+if(d.holdings){html+=`<div style="margin-top:8px;font-size:11px;color:var(--text2)">
+${d.holdings.map(h=>`${h.code}(${h.weight}%) 年化${h.annual_return||'--'}%`).join(' · ')}</div>`}
+el.innerHTML=html;
+}catch(e){console.warn('Portfolio MC failed:',e);el.innerHTML=`<div style="text-align:center;padding:12px;color:var(--text2)">组合模拟失败: ${e.message}<br><button onclick="runPortfolioMC()" style="margin-top:6px;padding:4px 12px;border-radius:6px;border:none;background:var(--accent);color:#fff;cursor:pointer;font-size:11px">🔄 重试</button></div>`}}
+
+
+// ============================================================
+// 六大量化引擎 UI（对标幻方量化）
+// ============================================================
+
+// ---- P1: AI 预测引擎 ----
+async function renderAIPredict(el){
+el.innerHTML=`<div class="dashboard-card"><div class="dashboard-card-title">🤖 AI 预测引擎</div>
+<div style="font-size:12px;color:var(--text2);margin-bottom:8px">MLP神经网络 + GradientBoosting 双模型集成，~40特征预测未来涨跌</div>
+<div style="font-size:11px;color:var(--accent);margin-bottom:12px;padding:6px 8px;background:rgba(245,158,11,.06);border-radius:6px">📊 输入股票代码 → 获取预测收益率 + 方向 + 置信度 + 特征重要性</div>
+<div style="display:flex;gap:8px;margin-bottom:8px">
+<input id="aiCode" placeholder="股票代码 如 000001" class="input-field" style="flex:1;min-width:0;padding:10px 12px;border-radius:10px;border:1px solid var(--bg3);background:var(--bg2);color:var(--text);font-size:14px">
+<select id="aiDays" style="padding:10px;border-radius:10px;border:1px solid var(--bg3);background:var(--bg2);color:var(--text);font-size:12px;flex-shrink:0">
+<option value="3">3天</option><option value="5" selected>5天</option><option value="10">10天</option><option value="20">20天</option></select>
+</div>
+<button onclick="runAIPredict()" style="width:100%;padding:10px 16px;border-radius:10px;border:none;background:var(--accent);color:#fff;font-weight:700;cursor:pointer;font-size:14px;margin-bottom:16px">🤖 开始预测</button>
+<div id="aiPredResult"></div>
+<div style="margin-top:16px;padding-top:16px;border-top:1px solid rgba(148,163,184,.1)">
+<div style="font-size:13px;font-weight:700;margin-bottom:8px">📊 持仓组合预测</div>
+<button onclick="runAIPredPortfolio()" style="padding:8px 16px;border-radius:8px;border:none;background:linear-gradient(135deg,#3B82F6,#8B5CF6);color:#fff;font-weight:600;cursor:pointer;font-size:12px">🚀 一键预测全部持仓</button>
+<div id="aiPortResult" style="margin-top:12px"></div></div></div>`;
+}
+
+async function runAIPredict(){
+const code=document.getElementById('aiCode')?.value?.trim();if(!code){alert('请输入股票代码');return}
+const days=parseInt(document.getElementById('aiDays')?.value||'5');
+const el=document.getElementById('aiPredResult');if(!el)return;
+el.innerHTML='<div style="text-align:center;padding:20px;color:var(--text2)"><div class="loading-spinner" style="width:24px;height:24px;margin:0 auto 8px;border-width:2px"></div>训练模型中（首次约15-30秒）...</div>';
+try{const r=await fetch(API_BASE+`/ai-predict/${code}?days=${days}`,{signal:AbortSignal.timeout(60000)});const d=await r.json();
+if(d.error){el.innerHTML=`<div style="color:var(--red);padding:12px">${d.error}</div>`;return}
+const dirColor=d.direction==='看涨'?'#10B981':(d.direction==='看跌'?'#EF4444':'#94A3B8');
+let html=`<div style="display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin-bottom:16px">
+<div style="background:var(--bg2);border-radius:12px;padding:12px;text-align:center"><div style="font-size:11px;color:var(--text2)">预测收益</div><div style="font-size:22px;font-weight:800;color:${dirColor}">${d.prediction>0?'+':''}${d.prediction}%</div></div>
+<div style="background:var(--bg2);border-radius:12px;padding:12px;text-align:center"><div style="font-size:11px;color:var(--text2)">方向</div><div style="font-size:18px;font-weight:700;color:${dirColor}">${d.direction}</div></div>
+<div style="background:var(--bg2);border-radius:12px;padding:12px;text-align:center"><div style="font-size:11px;color:var(--text2)">置信度</div><div style="font-size:18px;font-weight:700">${d.confidence}%</div></div></div>`;
+html+=`<div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:12px">
+<div style="background:var(--bg2);border-radius:10px;padding:10px"><div style="font-size:11px;color:var(--text2);margin-bottom:6px">MLP 神经网络</div><div style="font-size:14px;font-weight:700">${d.models?.mlp?.prediction>0?'+':''}${d.models?.mlp?.prediction||0}% <span style="font-size:11px;color:var(--text2)">(权重${d.models?.mlp?.weight||0}%)</span></div></div>
+<div style="background:var(--bg2);border-radius:10px;padding:10px"><div style="font-size:11px;color:var(--text2);margin-bottom:6px">GBM 梯度提升</div><div style="font-size:14px;font-weight:700">${d.models?.gbm?.prediction>0?'+':''}${d.models?.gbm?.prediction||0}% <span style="font-size:11px;color:var(--text2)">(权重${d.models?.gbm?.weight||0}%)</span></div></div></div>`;
+const bt=d.backtest||{};
+html+=`<div style="font-size:12px;color:var(--text2);padding:8px;background:var(--bg2);border-radius:8px;margin-bottom:12px">回测 | 方向准确率: <b>${bt.direction_accuracy||0}%</b> · 相关系数: <b>${bt.correlation||0}</b> · 训练样本: ${bt.train_samples||0} · 测试样本: ${bt.test_samples||0}</div>`;
+if(d.feature_importance?.length>0){html+=`<div style="font-size:12px;font-weight:600;margin-bottom:6px">📊 特征重要性 Top 10</div>`;
+d.feature_importance.slice(0,10).forEach((f,i)=>{const pct=Math.round(f[1]*1000)/10;
+html+=`<div style="display:flex;align-items:center;gap:8px;margin-bottom:3px;font-size:11px"><span style="width:100px;color:var(--text2)">${f[0]}</span><div style="flex:1;height:6px;background:var(--bg3);border-radius:3px;overflow:hidden"><div style="height:100%;width:${Math.min(pct*5,100)}%;background:linear-gradient(90deg,#3B82F6,#8B5CF6);border-radius:3px"></div></div><span>${pct}%</span></div>`})}
+el.innerHTML=html;
+}catch(e){el.innerHTML=`<div style="color:var(--text2);text-align:center;padding:12px">预测失败: ${e.message}<br><button onclick="runAIPredict()" style="margin-top:6px;padding:4px 12px;border-radius:6px;border:none;background:var(--accent);color:#fff;cursor:pointer;font-size:11px">🔄 重试</button></div>`}}
+
+async function runAIPredPortfolio(){const el=document.getElementById('aiPortResult');if(!el)return;
+el.innerHTML='<div style="text-align:center;padding:15px;color:var(--text2)"><div class="loading-spinner" style="width:20px;height:20px;margin:0 auto 6px;border-width:2px"></div>正在预测全部持仓...</div>';
+try{const uid=getProfileId();const r=await fetch(API_BASE+`/ai-predict/portfolio/${uid}`,{signal:AbortSignal.timeout(120000)});const d=await r.json();
+if(d.error){el.innerHTML=`<div style="color:var(--red);padding:8px">${d.error}</div>`;return}
+const dirColor=d.portfolio_direction==='看涨'?'#10B981':(d.portfolio_direction==='看跌'?'#EF4444':'#94A3B8');
+let html=`<div style="background:var(--bg2);border-radius:10px;padding:12px;margin-bottom:12px;text-align:center"><div style="font-size:11px;color:var(--text2)">组合预测</div><div style="font-size:24px;font-weight:800;color:${dirColor}">${d.portfolio_prediction>0?'+':''}${d.portfolio_prediction}%</div><div style="font-size:13px;color:${dirColor}">${d.portfolio_direction}</div></div>`;
+(d.stocks||[]).forEach(s=>{const c=s.direction==='看涨'?'#10B981':(s.direction==='看跌'?'#EF4444':'#94A3B8');
+html+=`<div style="display:flex;justify-content:space-between;align-items:center;padding:8px;border-bottom:1px solid rgba(148,163,184,.1);font-size:12px"><span>${s.name||s.code}</span><span style="color:var(--text2)">${s.weight}%仓位</span><span style="color:${c};font-weight:700">${s.prediction>0?'+':''}${s.prediction}%</span><span style="font-size:11px">${s.confidence}%信心</span></div>`});
+el.innerHTML=html;
+}catch(e){el.innerHTML=`<div style="color:var(--text2);padding:8px">失败: ${e.message}</div>`}}
+
+// ---- P2: 遗传因子挖掘 ----
+async function renderGeneticFactor(el){
+el.innerHTML=`<div class="dashboard-card"><div class="dashboard-card-title">🧬 遗传编程因子挖掘</div>
+<div style="font-size:12px;color:var(--text2);margin-bottom:8px">用遗传算法自动发现人类想不到的 Alpha 因子（对标幻方量化因子挖掘）</div>
+<div style="font-size:11px;color:var(--accent);margin-bottom:12px;padding:6px 8px;background:rgba(245,158,11,.06);border-radius:6px">🧬 200个体 × 30代进化 → 保留 IC 最高的因子表达式</div>
+<div style="display:flex;gap:8px;margin-bottom:16px">
+<input id="gfCode" placeholder="股票代码 如 000001" class="input-field" value="000001" style="flex:1;padding:10px 12px;border-radius:10px;border:1px solid var(--bg3);background:var(--bg2);color:var(--text);font-size:14px">
+<button onclick="runGeneticFactor()" style="padding:10px 16px;border-radius:10px;border:none;background:linear-gradient(135deg,#10B981,#059669);color:#fff;font-weight:700;cursor:pointer;white-space:nowrap">🧬 开始进化</button></div>
+<div id="gfResult"></div></div>`;
+}
+
+async function runGeneticFactor(){const code=document.getElementById('gfCode')?.value?.trim()||'000001';
+const el=document.getElementById('gfResult');if(!el)return;
+el.innerHTML='<div style="text-align:center;padding:30px;color:var(--text2)"><div class="loading-spinner" style="width:24px;height:24px;margin:0 auto 8px;border-width:2px"></div>遗传进化中... 200个体 × 30代<br><span style="font-size:11px;opacity:0.6">约30-90秒</span></div>';
+try{const r=await fetch(API_BASE+`/genetic-factor/${code}?generations=30&top_k=10`,{signal:AbortSignal.timeout(120000)});const d=await r.json();
+if(d.error){el.innerHTML=`<div style="color:var(--red);padding:12px">${d.error}</div>`;return}
+const s=d.summary||{};
+let html=`<div style="display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin-bottom:16px">
+<div style="background:var(--bg2);border-radius:12px;padding:12px;text-align:center"><div style="font-size:11px;color:var(--text2)">🏆 优秀因子</div><div style="font-size:20px;font-weight:800;color:#10B981">${s.excellent||0}</div></div>
+<div style="background:var(--bg2);border-radius:12px;padding:12px;text-align:center"><div style="font-size:11px;color:var(--text2)">✅ 有效因子</div><div style="font-size:20px;font-weight:800;color:#3B82F6">${s.effective||0}</div></div>
+<div style="background:var(--bg2);border-radius:12px;padding:12px;text-align:center"><div style="font-size:11px;color:var(--text2)">⚠️ 弱因子</div><div style="font-size:20px;font-weight:800;color:#94A3B8">${s.weak||0}</div></div></div>`;
+(d.top_factors||[]).forEach(f=>{const icColor=f.ic>0.05?'#10B981':(f.ic>0.03?'#3B82F6':'#94A3B8');
+html+=`<div style="padding:10px;margin-bottom:6px;background:var(--bg2);border-radius:10px;border-left:3px solid ${icColor}">
+<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:4px"><span style="font-weight:700;font-size:12px">#${f.rank} ${f.rating}</span><span style="font-size:12px;color:${icColor};font-weight:700">IC=${f.ic}</span></div>
+<div style="font-size:10px;color:var(--text2);font-family:monospace;word-break:break-all;background:var(--bg3);padding:4px 6px;border-radius:4px">${f.expression}</div></div>`});
+el.innerHTML=html;
+}catch(e){el.innerHTML=`<div style="color:var(--text2);text-align:center;padding:12px">进化失败: ${e.message}<br><button onclick="runGeneticFactor()" style="margin-top:6px;padding:4px 12px;border-radius:6px;border:none;background:var(--accent);color:#fff;cursor:pointer;font-size:11px">🔄 重试</button></div>`}}
+
+// ---- P3: 组合优化器 ----
+async function renderOptimizer(el){
+el.innerHTML=`<div class="dashboard-card"><div class="dashboard-card-title">⚡ 组合优化器</div>
+<div style="font-size:12px;color:var(--text2);margin-bottom:8px">5种方法计算数学最优持仓比例（从"拍脑袋"到Markowitz/CVaR/HRP）</div>
+<div style="font-size:11px;color:var(--accent);margin-bottom:12px;padding:6px 8px;background:rgba(245,158,11,.06);border-radius:6px">📈 最大夏普 · 🛡️ 最小方差 · ⚡ CVaR(幻方方法) · 🌳 HRP · ⚖️ 等权基准</div>
+<button onclick="runOptimizer()" style="padding:10px 20px;border-radius:10px;border:none;background:linear-gradient(135deg,#F59E0B,#EF4444);color:#fff;font-weight:700;cursor:pointer;font-size:13px">⚡ 优化我的持仓</button>
+<div id="optResult" style="margin-top:16px"></div></div>`;
+}
+
+async function runOptimizer(){const el=document.getElementById('optResult');if(!el)return;
+el.innerHTML='<div style="text-align:center;padding:20px;color:var(--text2)"><div class="loading-spinner" style="width:24px;height:24px;margin:0 auto 8px;border-width:2px"></div>获取历史数据 + 计算协方差矩阵...</div>';
+try{const uid=getProfileId();const r=await fetch(API_BASE+`/portfolio-optimize/${uid}`,{signal:AbortSignal.timeout(90000)});const d=await r.json();
+if(d.error){el.innerHTML=`<div style="color:var(--red);padding:12px">${d.error}</div>`;return}
+let html='';
+if(d.recommendation)html+=`<div style="padding:10px;background:rgba(59,130,246,.1);border-radius:10px;border:1px solid rgba(59,130,246,.2);margin-bottom:16px;font-size:13px;font-weight:600">💡 ${d.recommendation}</div>`;
+const methods=d.methods||{};
+Object.entries(methods).forEach(([key,m])=>{const met=m.metrics||{};
+html+=`<div style="padding:12px;margin-bottom:10px;background:var(--bg2);border-radius:12px"><div style="font-size:13px;font-weight:700;margin-bottom:8px">${m.name}</div>
+<div style="display:grid;grid-template-columns:repeat(3,1fr);gap:6px;font-size:11px;margin-bottom:8px">
+<div>年化收益 <b style="color:#10B981">${met.annual_return}%</b></div>
+<div>夏普比率 <b>${met.sharpe_ratio}</b></div>
+<div>最大回撤 <b style="color:#EF4444">${met.max_drawdown}%</b></div></div>
+<div style="display:flex;flex-wrap:wrap;gap:4px">`
+;(m.allocations||[]).forEach(a=>{html+=`<span style="font-size:10px;padding:2px 8px;background:var(--bg3);border-radius:4px">${a.name} ${a.weight}%</span>`});
+html+=`</div></div>`});
+if(d.adjustments?.length>0){html+=`<div style="padding:12px;background:rgba(245,158,11,.08);border-radius:12px;border:1px solid rgba(245,158,11,.15)"><div style="font-size:13px;font-weight:700;margin-bottom:8px">📋 建议调仓</div>`;
+d.adjustments.forEach(a=>{const c=a.action.includes('加仓')?'#10B981':'#EF4444';
+html+=`<div style="display:flex;justify-content:space-between;padding:4px 0;font-size:12px;border-bottom:1px solid rgba(148,163,184,.08)"><span>${a.name}</span><span>${a.current}% → ${a.optimal}%</span><span style="color:${c};font-weight:700">${a.action}</span></div>`});
+html+=`</div>`}
+el.innerHTML=html;
+}catch(e){el.innerHTML=`<div style="color:var(--text2);text-align:center;padding:12px">优化失败: ${e.message}<br><button onclick="runOptimizer()" style="margin-top:6px;padding:4px 12px;border-radius:6px;border:none;background:var(--accent);color:#fff;cursor:pointer;font-size:11px">🔄 重试</button></div>`}}
+
+// ---- P4: 另类数据 ----
+async function renderAltData(el){
+el.innerHTML=`<div class="dashboard-card"><div class="dashboard-card-title">📡 另类数据仪表盘</div>
+<div style="font-size:12px;color:var(--text2);margin-bottom:12px">散户版"卫星替代品" — 北向资金/融资融券/龙虎榜/大宗交易/行业资金流</div>
+<div id="altDataResult"><div style="text-align:center;padding:30px;color:var(--text2)"><div class="loading-spinner" style="width:24px;height:24px;margin:0 auto 8px;border-width:2px"></div>加载6大另类数据源...</div></div></div>`;
+try{const r=await fetch(API_BASE+'/alt-data/dashboard',{signal:AbortSignal.timeout(60000)});const d=await r.json();
+const el2=document.getElementById('altDataResult');if(!el2)return;
+let html='';
+if(d.overall_signal)html+=`<div style="padding:10px;background:rgba(59,130,246,.1);border-radius:10px;border:1px solid rgba(59,130,246,.2);margin-bottom:16px;font-size:14px;font-weight:700;text-align:center">${d.overall_signal}</div>`;
+// 北向资金
+const nb=d.northbound||{};
+html+=`<div style="padding:10px;margin-bottom:8px;background:var(--bg2);border-radius:10px"><div style="font-size:13px;font-weight:700;margin-bottom:6px">🏦 北向资金</div>`;
+if(nb.signal)html+=`<div style="font-size:12px;margin-bottom:6px">${nb.signal}</div>`;
+if(nb.top_stocks?.length>0){html+=`<div style="font-size:11px;color:var(--text2)">Top 持股: `;nb.top_stocks.slice(0,5).forEach(s=>{html+=`<span style="margin-right:6px">${s.name}</span>`});html+=`</div>`}
+html+=`</div>`;
+// 融资融券
+const mg=d.margin||{};
+html+=`<div style="padding:10px;margin-bottom:8px;background:var(--bg2);border-radius:10px"><div style="font-size:13px;font-weight:700;margin-bottom:6px">💰 融资融券</div>`;
+if(mg.signal)html+=`<div style="font-size:12px">${mg.signal}</div>`;
+html+=`</div>`;
+// 行业资金流
+const sf=d.sector_flow||{};
+if(sf.inflow?.length>0){html+=`<div style="padding:10px;margin-bottom:8px;background:var(--bg2);border-radius:10px"><div style="font-size:13px;font-weight:700;margin-bottom:6px">🏭 行业资金流</div>`;
+html+=`<div style="font-size:11px;color:#10B981;margin-bottom:4px">流入: `;sf.inflow.slice(0,5).forEach(s=>{html+=`${s.name}(${s.net_flow.toFixed(1)}亿) `});
+html+=`</div><div style="font-size:11px;color:#EF4444">流出: `;(sf.outflow||[]).slice(0,5).forEach(s=>{html+=`${s.name}(${s.net_flow.toFixed(1)}亿) `});
+html+=`</div></div>`}
+// 龙虎榜
+const dt=d.dragon_tiger||{};
+if(dt.records?.length>0){html+=`<div style="padding:10px;margin-bottom:8px;background:var(--bg2);border-radius:10px"><div style="font-size:13px;font-weight:700;margin-bottom:6px">🐲 龙虎榜</div>`;
+dt.records.slice(0,5).forEach(r2=>{html+=`<div style="font-size:11px;padding:3px 0;border-bottom:1px solid rgba(148,163,184,.06)">${r2.name} | ${r2.reason} | 净额 ${r2.net>0?'+':''}${r2.net.toFixed(0)}万</div>`});
+html+=`</div>`}
+el2.innerHTML=html;
+}catch(e){document.getElementById('altDataResult').innerHTML=`<div style="color:var(--text2);text-align:center;padding:12px">加载失败: ${e.message}<br><button onclick="insightTab='altdata';renderInsight()" style="margin-top:6px;padding:4px 12px;border-radius:6px;border:none;background:var(--accent);color:#fff;cursor:pointer;font-size:11px">🔄 重试</button></div>`}}
+
+// ---- P5: RL 仓位管理 ----
+async function renderRLPosition(el){
+el.innerHTML=`<div class="dashboard-card"><div class="dashboard-card-title">🎮 强化学习仓位建议</div>
+<div style="font-size:12px;color:var(--text2);margin-bottom:8px">Q-Learning Agent 在历史数据上训练，给出动态仓位建议</div>
+<div style="display:flex;gap:8px;margin-bottom:16px">
+<input id="rlCode" placeholder="股票代码 如 600519" class="input-field" style="flex:1;padding:10px 12px;border-radius:10px;border:1px solid var(--bg3);background:var(--bg2);color:var(--text);font-size:14px">
+<button onclick="runRL()" style="padding:10px 16px;border-radius:10px;border:none;background:linear-gradient(135deg,#8B5CF6,#6366F1);color:#fff;font-weight:700;cursor:pointer;white-space:nowrap">🎮 获取建议</button></div>
+<div id="rlResult"></div></div>`;
+}
+
+async function runRL(){const code=document.getElementById('rlCode')?.value?.trim();if(!code){alert('请输入股票代码');return}
+const el=document.getElementById('rlResult');if(!el)return;
+el.innerHTML='<div style="text-align:center;padding:20px;color:var(--text2)"><div class="loading-spinner" style="width:24px;height:24px;margin:0 auto 8px;border-width:2px"></div>Q-Learning 训练中（5轮迭代）...</div>';
+try{const r=await fetch(API_BASE+`/rl-position/${code}`,{signal:AbortSignal.timeout(90000)});const d=await r.json();
+if(d.error){el.innerHTML=`<div style="color:var(--red);padding:12px">${d.error}</div>`;return}
+const ms=d.market_state||{};const ts=d.training_summary||{};
+let html=`<div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:12px">
+<div style="background:var(--bg2);border-radius:10px;padding:10px"><div style="font-size:11px;color:var(--text2)">市场状态</div><div style="font-size:13px;font-weight:700">${ms.trend} | RSI ${ms.rsi}</div><div style="font-size:11px;color:var(--text2)">20日收益 ${ms.return_20d}% · 波动 ${ms.volatility}%</div></div>
+<div style="background:var(--bg2);border-radius:10px;padding:10px"><div style="font-size:11px;color:var(--text2)">训练效果</div><div style="font-size:13px;font-weight:700;color:${ts.outperformance>0?'#10B981':'#EF4444'}">超额收益 ${ts.outperformance>0?'+':''}${ts.outperformance}%</div><div style="font-size:11px;color:var(--text2)">RL ${ts.final_rl_return}% vs 买入持有 ${ts.buy_hold_return}%</div></div></div>`;
+html+=`<div style="font-size:12px;font-weight:600;margin-bottom:8px">📋 不同仓位下的建议</div>`;
+(d.recommendations||[]).forEach(r2=>{
+html+=`<div style="display:flex;justify-content:space-between;align-items:center;padding:8px 10px;margin-bottom:4px;background:var(--bg2);border-radius:8px;font-size:12px"><span style="width:70px">当前 ${r2.current_position}</span><span style="flex:1;font-weight:700">${r2.action}</span><span>→ ${r2.target_position}</span></div>`});
+el.innerHTML=html;
+}catch(e){el.innerHTML=`<div style="color:var(--text2);text-align:center;padding:12px">失败: ${e.message}</div>`}}
+
+// ---- P6: LLM 因子生成 ----
+async function renderLLMFactor(el){
+el.innerHTML=`<div class="dashboard-card"><div class="dashboard-card-title">🧠 LLM 因子生成器 (Alpha-GPT)</div>
+<div style="font-size:12px;color:var(--text2);margin-bottom:8px">让 DeepSeek AI 自动构思交易因子 → 生成代码 → IC 验证 → 迭代优化</div>
+<div style="font-size:11px;color:var(--accent);margin-bottom:12px;padding:6px 8px;background:rgba(245,158,11,.06);border-radius:6px">🧠 AI 生成因子假设 → Python代码 → 自动回测IC → 反馈迭代（2轮进化）</div>
+<div style="display:flex;gap:8px;margin-bottom:16px">
+<input id="llmfCode" placeholder="股票代码 如 000001" class="input-field" value="000001" style="flex:1;padding:10px 12px;border-radius:10px;border:1px solid var(--bg3);background:var(--bg2);color:var(--text);font-size:14px">
+<button onclick="runLLMFactor()" style="padding:10px 16px;border-radius:10px;border:none;background:linear-gradient(135deg,#EC4899,#8B5CF6);color:#fff;font-weight:700;cursor:pointer;white-space:nowrap">🧠 AI 生成</button></div>
+<div id="llmfResult"></div></div>`;
+}
+
+async function runLLMFactor(){const code=document.getElementById('llmfCode')?.value?.trim()||'000001';
+const el=document.getElementById('llmfResult');if(!el)return;
+el.innerHTML='<div style="text-align:center;padding:30px;color:var(--text2)"><div class="loading-spinner" style="width:24px;height:24px;margin:0 auto 8px;border-width:2px"></div>DeepSeek AI 构思因子中（2轮迭代）...<br><span style="font-size:11px;opacity:0.6">约30-90秒</span></div>';
+try{const r=await fetch(API_BASE+`/llm-factor/${code}?count=5&iterations=2`,{signal:AbortSignal.timeout(180000)});const d=await r.json();
+if(d.error){el.innerHTML=`<div style="color:var(--red);padding:12px">${d.error}</div>`;return}
+const s=d.summary||{};
+let html=`<div style="display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin-bottom:16px">
+<div style="background:var(--bg2);border-radius:12px;padding:12px;text-align:center"><div style="font-size:11px;color:var(--text2)">生成因子</div><div style="font-size:20px;font-weight:800">${s.total_generated||0}</div></div>
+<div style="background:var(--bg2);border-radius:12px;padding:12px;text-align:center"><div style="font-size:11px;color:var(--text2)">有效因子</div><div style="font-size:20px;font-weight:800;color:#10B981">${s.effective||0}</div></div>
+<div style="background:var(--bg2);border-radius:12px;padding:12px;text-align:center"><div style="font-size:11px;color:var(--text2)">最高IC</div><div style="font-size:20px;font-weight:800;color:#3B82F6">${s.best_ic||0}</div></div></div>`;
+(d.effective_factors||[]).forEach(f=>{const icColor=f.abs_ic>0.05?'#10B981':'#3B82F6';
+html+=`<div style="padding:10px;margin-bottom:6px;background:var(--bg2);border-radius:10px;border-left:3px solid ${icColor}">
+<div style="display:flex;justify-content:space-between;margin-bottom:4px"><span style="font-weight:700;font-size:12px">${f.name} ${f.status}</span><span style="color:${icColor};font-weight:700;font-size:12px">IC=${f.ic}</span></div>
+<div style="font-size:11px;color:var(--text2);margin-bottom:4px">${f.logic||''}</div>
+${f.code?`<details><summary style="font-size:10px;color:var(--accent);cursor:pointer">查看代码</summary><pre style="font-size:9px;background:var(--bg3);padding:6px;border-radius:4px;overflow-x:auto;margin-top:4px">${f.code}</pre></details>`:''}</div>`});
+if(d.failed_factors?.length>0){html+=`<details style="margin-top:12px"><summary style="font-size:12px;color:var(--text2);cursor:pointer">❌ 失败/无效因子 (${d.failed_factors.length}个)</summary>`;
+d.failed_factors.forEach(f=>{html+=`<div style="font-size:11px;color:var(--text2);padding:4px 8px">${f.name}: IC=${f.ic} ${f.status}</div>`});
+html+=`</details>`}
+el.innerHTML=html;
+}catch(e){el.innerHTML=`<div style="color:var(--text2);text-align:center;padding:12px">生成失败: ${e.message}<br><button onclick="runLLMFactor()" style="margin-top:6px;padding:4px 12px;border-radius:6px;border:none;background:var(--accent);color:#fff;cursor:pointer;font-size:11px">🔄 重试</button></div>`}}
+
 
 // ---- 启动 ----
 migrateV3toV4();
