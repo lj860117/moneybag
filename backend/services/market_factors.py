@@ -189,7 +189,11 @@ def check_holding_unlock(stock_codes: list) -> list:
 
 
 def get_etf_fund_flow() -> dict:
-    """获取 ETF 资金流向（机构偏好风向标）"""
+    """获取 ETF 资金流向（机构偏好风向标）
+
+    优先用真实资金流接口（如果存在），
+    降级方案：用 fund_etf_fund_daily_em 的增长率排名反映 ETF 市场热度。
+    """
     cache_key = "etf_flow"
     now = time.time()
     if cache_key in _factor_cache and now - _factor_cache[cache_key]["ts"] < 3600:
@@ -198,64 +202,80 @@ def get_etf_fund_flow() -> dict:
     result = {"top_inflow": [], "top_outflow": [], "total_etf": 0, "available": False}
     try:
         import akshare as ak
-        df = None
 
-        # 尝试多个可能的接口名（AKShare 频繁改名）
-        for func_name in [
-            "fund_etf_fund_daily_em",
-            "fund_etf_spot_em",
-            "fund_etf_fund_info_em",
-        ]:
-            if hasattr(ak, func_name):
-                try:
-                    df = getattr(ak, func_name)()
-                    if df is not None and len(df) > 0:
-                        print(f"[ETF_FLOW] Using interface: {func_name}")
+        # ---------- 方案 A: 真实资金流接口 ----------
+        flow_done = False
+        for func_name in ["fund_etf_fund_flow_em", "fund_etf_spot_em"]:
+            if not hasattr(ak, func_name):
+                continue
+            try:
+                df = getattr(ak, func_name)()
+                if df is None or len(df) == 0:
+                    continue
+                cols = list(df.columns)
+                flow_col = [c for c in cols if "净流" in c or "流入" in c or "flow" in c.lower()]
+                name_col = [c for c in cols if "名称" in c or "简称" in c]
+                code_col = [c for c in cols if "代码" in c or "code" in c.lower()]
+                if flow_col and name_col:
+                    fc, nc = flow_col[0], name_col[0]
+                    cc = code_col[0] if code_col else None
+                    clean = df[[nc, fc] + ([cc] if cc else [])].copy()
+                    clean[fc] = clean[fc].apply(lambda x: _safe_float(x))
+                    clean = clean.dropna(subset=[fc])
+                    if len(clean) > 0:
+                        result["total_etf"] = len(df)
+                        for _, row in clean.nlargest(5, fc).iterrows():
+                            item = {"name": str(row[nc]), "flow": round(float(row[fc]), 2)}
+                            if cc: item["code"] = str(row[cc])
+                            result["top_inflow"].append(item)
+                        for _, row in clean.nsmallest(5, fc).iterrows():
+                            item = {"name": str(row[nc]), "flow": round(float(row[fc]), 2)}
+                            if cc: item["code"] = str(row[cc])
+                            result["top_outflow"].append(item)
+                        result["available"] = True
+                        flow_done = True
+                        print(f"[ETF_FLOW] 方案A成功: {func_name}, {len(df)} ETFs")
                         break
-                except Exception as e:
-                    print(f"[ETF_FLOW] {func_name} failed: {e}")
-                    df = None
+            except Exception as e:
+                print(f"[ETF_FLOW] {func_name} failed: {e}")
 
-        if df is not None and len(df) > 0:
-            cols = list(df.columns)
-            result["total_etf"] = len(df)
+        # ---------- 方案 B: 用增长率排名当替代 ----------
+        if not flow_done:
+            try:
+                df = ak.fund_etf_fund_daily_em()
+                if df is not None and len(df) > 0:
+                    cols = list(df.columns)
+                    name_col = [c for c in cols if "简称" in c or "名称" in c]
+                    code_col = [c for c in cols if "代码" in c]
+                    rate_col = [c for c in cols if "增长率" in c or "涨跌幅" in c]
+                    nc = name_col[0] if name_col else None
+                    cc = code_col[0] if code_col else None
+                    rc = rate_col[0] if rate_col else None
 
-            # 找资金流相关列
-            flow_col = [c for c in cols if "净流" in c or "流入" in c or "flow" in c.lower()]
-            name_col = [c for c in cols if "名称" in c or "简称" in c]
-            code_col = [c for c in cols if "代码" in c or "code" in c.lower()]
+                    if nc and rc:
+                        clean = df[[nc, rc] + ([cc] if cc else [])].copy()
+                        clean[rc] = clean[rc].apply(lambda x: _safe_float(x))
+                        clean = clean.dropna(subset=[rc])
+                        result["total_etf"] = len(df)
 
-            if flow_col and name_col:
-                fc = flow_col[0]
-                nc = name_col[0]
-                cc = code_col[0] if code_col else None
-
-                # 清理数据
-                clean = df[[nc, fc] + ([cc] if cc else [])].copy()
-                clean[fc] = clean[fc].apply(lambda x: _safe_float(x))
-                clean = clean.dropna(subset=[fc])
-
-                if len(clean) > 0:
-                    # TOP 5 净流入
-                    top_in = clean.nlargest(5, fc)
-                    for _, row in top_in.iterrows():
-                        item = {"name": str(row[nc]), "flow": round(float(row[fc]), 2)}
-                        if cc:
-                            item["code"] = str(row[cc])
-                        result["top_inflow"].append(item)
-
-                    # TOP 5 净流出
-                    top_out = clean.nsmallest(5, fc)
-                    for _, row in top_out.iterrows():
-                        item = {"name": str(row[nc]), "flow": round(float(row[fc]), 2)}
-                        if cc:
-                            item["code"] = str(row[cc])
-                        result["top_outflow"].append(item)
-
-                    result["available"] = True
-                    print(f"[ETF_FLOW] Got {len(df)} ETFs, top inflow: {result['top_inflow'][0]['name'] if result['top_inflow'] else 'N/A'}")
-            else:
-                print(f"[ETF_FLOW] 列名匹配失败，可用列: {cols}")
+                        if len(clean) > 0:
+                            # 涨幅 TOP5 = 资金涌入方向
+                            for _, row in clean.nlargest(5, rc).iterrows():
+                                item = {"name": str(row[nc]), "flow": round(float(row[rc]), 2)}
+                                if cc: item["code"] = str(row[cc])
+                                result["top_inflow"].append(item)
+                            # 跌幅 TOP5 = 资金流出方向
+                            for _, row in clean.nsmallest(5, rc).iterrows():
+                                item = {"name": str(row[nc]), "flow": round(float(row[rc]), 2)}
+                                if cc: item["code"] = str(row[cc])
+                                result["top_outflow"].append(item)
+                            result["available"] = True
+                            result["notice"] = "ETF资金流接口暂不可用，使用增长率排名替代"
+                            print(f"[ETF_FLOW] 方案B(增长率替代): {len(df)} ETFs, top={result['top_inflow'][0]['name'] if result['top_inflow'] else 'N/A'}")
+                    else:
+                        print(f"[ETF_FLOW] 方案B列名匹配失败: {cols}")
+            except Exception as e:
+                print(f"[ETF_FLOW] 方案B failed: {e}")
 
     except Exception as e:
         print(f"[ETF_FLOW] Failed: {e}")
