@@ -477,6 +477,239 @@ def run_health_check():
 
 ---
 
+## 🤖 AI 24 小时自主工作排班
+
+> 凌晨 2:00-8:00 是黄金 6 小时：服务器空闲、数据源不拥挤、不影响用户
+
+### 凌晨黄金时段（02:00-08:00）— AI 最忙的 6 小时
+
+```
+01:00  🔍 数据源健康巡检（10 个检查点）
+       → 有异常推企微给厉害了哥（不推老婆）
+       → 自动激活降级方案
+
+01:30  📦 数据预热
+       ├── 拉取 AKShare 基金净值/行情/北向（趁凌晨反爬松）
+       ├── 拉取 Tushare 日线/财报/盈利预测
+       └── 写入内存缓存 + 持久化到磁盘
+       → 白天所有查询秒回，不用现拉
+
+02:00  🧠 R1 深度分析 Phase 1：全局市场
+       ├── ① 宏观环境研判（GDP/CPI/利率趋势 → 未来 3 个月方向）
+       ├── ② 地缘政治影响（国际局势 → 对 A 股哪些板块利好/利空）
+       └── ③ 行业轮动分析（资金从哪流到哪，哪个行业见顶/见底）
+
+02:30  🧠 R1 深度分析 Phase 2：个股/基金
+       ├── ④ 持仓诊断（厉害了哥）— 每只持仓的健康度
+       ├── ⑤ 持仓诊断（部落格里）— 同上
+       ├── ⑥ 盈利预测解读 — 券商最新研报 vs 历史预测准确率
+       └── ⑦ 估值合理性 — DCF + PE/PB 多维估值
+
+03:00  🧠 R1 深度分析 Phase 3：决策级（V7+）
+       ├── ⑧ 买入候选筛选（综合评分 Top 10）
+       ├── ⑨ 卖出/减仓建议（触发条件检查）
+       └── ⑩ 三情景分析（乐观/中性/悲观 3 个月展望）
+
+03:30  📊 V9 模拟盘结算（如已开启）
+       ├── 昨日模拟交易盈亏计算
+       ├── 策略表现统计
+       └── 自动归因 + 策略微调
+
+04:00  📝 生成分析产物
+       ├── 综合投资简报（汇总 ①-⑩ 的精华）
+       ├── 决策建议清单（买什么/卖什么/持有什么）
+       └── 风险预警清单（需要注意的事项）
+
+04:30  🔄 V8 复盘任务（周日/月初额外执行）
+       ├── 过去一周决策准确率验证
+       ├── R1 归因分析（错在哪）
+       └── 策略权重自动调整（A 级直接执行）
+
+05:00  📦 研报存档 + 验证
+       ├── 保存今日券商研报快照（V8.6）
+       ├── 检查是否有过期研报需要验证
+       └── 更新券商准确率排名
+
+05:30  🔗 跨市场数据收集（V10+）
+       ├── 美股收盘数据（道琼斯/纳斯达克/标普 500）
+       ├── 原油/黄金/铜 收盘价
+       ├── 美债收益率
+       └── 隔夜重大新闻
+
+06:00  🧹 维护任务
+       ├── 聊天记忆清理（>50 轮删除）
+       ├── 审计日志归档（>30 天压缩）
+       ├── 缓存持久化到磁盘
+       └── 磁盘空间检查
+
+06:30  📸 每日快照
+       ├── 资产净值快照（两个用户）
+       ├── 持仓明细快照
+       └── 市场数据快照（用于历史对比）
+
+07:00  🌍 外盘 + 事件检查
+       ├── 隔夜美股/港股涨跌幅 → 对 A 股影响评估
+       ├── 检查今日重大事件日历（财报/议息/CPI）
+       └── 如有重大事件 → 提前准备应对建议
+
+07:30  📋 生成早安简报
+       ├── 引用 R1 凌晨分析结果（不重新调 R1）
+       ├── 加入外盘影响 + 事件预警
+       ├── 厉害了哥版（Pro）：完整分析 + 操作建议
+       └── 部落格里版（Simple）：3 行结论
+
+08:00  ⏳ 等待推送时间
+
+08:30  📤 推送早安简报
+       ├── 厉害了哥 → 企微推送
+       └── 部落格里 → 企微推送（如开启）
+```
+
+### 盘中（09:25-15:05）
+
+```
+09:25  📈 盯盘启动
+09:30  🔍 开盘异动检测（竞价大单/集合竞价涨跌）
+10:30  📊 盘中 V3 快速扫描（持仓异动）
+11:30  📰 午间：检查上午新闻 + 影响评估
+13:00  📈 盯盘恢复
+14:30  ⚡ 尾盘预判（是否需要推操作提醒）
+15:05  📈 盯盘停止
+```
+
+### 盘后（15:30-17:00）
+
+```
+15:30  📋 收盘复盘（有异动才推送，不是每天都推）
+16:00  📸 资产快照存档
+16:30  📦 研报快照（今日新增的券商研报）
+17:00  💾 缓存持久化
+```
+
+### 凌晨任务成本估算
+
+```
+R1 调用：10 次/天 × ¥0.06 = ¥0.60
+V3 调用：5 次/天（简报/扫描）× ¥0.005 = ¥0.025
+数据拉取：免费（AKShare）+ Tushare 积分（充足）
+─────────────────────────────
+凌晨自主工作成本：¥0.625/天 ≈ ¥19/月
+```
+
+### 实现方式
+
+```python
+# 方案：systemd timer（比 cron 更可靠，失败自动重试）
+
+# /etc/systemd/system/moneybag-night.timer
+[Unit]
+Description=MoneyBag AI Night Tasks
+
+[Timer]
+# 凌晨任务链：01:00 启动，内部按时间顺序执行
+OnCalendar=*-*-* 01:00:00
+Persistent=true  # 如果错过了（比如服务器重启），补执行
+
+[Install]
+WantedBy=timers.target
+
+# /etc/systemd/system/moneybag-night.service
+[Unit]
+Description=MoneyBag AI Night Worker
+
+[Service]
+Type=oneshot
+User=ubuntu
+WorkingDirectory=/opt/moneybag/backend
+EnvironmentFile=/opt/moneybag/.env
+ExecStart=/opt/moneybag/venv/bin/python scripts/night_worker.py
+TimeoutStartSec=21600  # 6 小时超时（01:00-07:00）
+```
+
+```python
+# scripts/night_worker.py
+"""AI 凌晨自主工作主脚本"""
+
+import asyncio
+import time
+from datetime import datetime
+
+async def main():
+    log("🌙 AI 凌晨工作启动")
+    
+    # 01:00 数据源巡检
+    await run_task("01:00", health_check)
+    
+    # 01:30 数据预热
+    await run_task("01:30", warm_cache)
+    
+    # 02:00-02:50 R1 深度分析（Phase 1-2）
+    await run_task("02:00", r1_macro_analysis)
+    await run_task("02:10", r1_geopolitical)
+    await run_task("02:15", r1_sector_rotation)
+    await run_task("02:30", r1_holding_diagnose, user_id='LeiJiang')
+    await run_task("02:35", r1_holding_diagnose, user_id='BuLuoGeLi')
+    await run_task("02:40", r1_earnings_review)
+    await run_task("02:50", r1_valuation)
+    
+    # 03:00-03:30 R1 决策级（V7+）
+    await run_task("03:00", r1_buy_candidates)
+    await run_task("03:15", r1_sell_check)
+    await run_task("03:30", r1_scenarios)
+    
+    # 03:30 V9 模拟盘（如开启）
+    await run_task("03:30", paper_trading_settle)
+    
+    # 04:00 生成分析产物
+    await run_task("04:00", generate_reports)
+    
+    # 04:30 V8 复盘（周日/月初）
+    if is_sunday() or is_first_of_month():
+        await run_task("04:30", run_review)
+    
+    # 05:00 研报存档
+    await run_task("05:00", archive_reports)
+    
+    # 05:30 跨市场数据
+    await run_task("05:30", collect_cross_market)
+    
+    # 06:00 维护
+    await run_task("06:00", maintenance)
+    
+    # 06:30 快照
+    await run_task("06:30", daily_snapshot)
+    
+    # 07:00 外盘+事件
+    await run_task("07:00", check_overnight)
+    
+    # 07:30 生成简报
+    await run_task("07:30", generate_morning_brief)
+    
+    log("✅ AI 凌晨工作完成，等待 08:30 推送")
+
+async def run_task(scheduled_time, func, **kwargs):
+    """等到指定时间再执行"""
+    now = datetime.now()
+    target = datetime.strptime(f"{now.strftime('%Y-%m-%d')} {scheduled_time}", "%Y-%m-%d %H:%M")
+    
+    wait = (target - now).total_seconds()
+    if wait > 0:
+        await asyncio.sleep(wait)
+    
+    try:
+        log(f"▶️ {scheduled_time} {func.__name__}")
+        await func(**kwargs)
+        log(f"✅ {func.__name__} 完成")
+    except Exception as e:
+        log(f"❌ {func.__name__} 失败: {e}")
+        # 记录但不中断后续任务
+
+if __name__ == '__main__':
+    asyncio.run(main())
+```
+
+---
+
 # Part 1：V6 Phase 0 — 前端整合设计（v2.3 终版）
 
 > 📄 原始文件：`V6-Phase0-前端整合设计.md`  
