@@ -33,7 +33,13 @@ def get_northbound_flow() -> dict:
     try:
         import akshare as ak
         # 沪股通+深股通历史数据
-        df = ak.stock_hsgt_north_net_flow_in_em(symbol="北上")
+        # AKShare 接口名变更：stock_hsgt_north_net_flow_in_em → stock_hsgt_hist_em
+        if hasattr(ak, "stock_hsgt_hist_em"):
+            df = ak.stock_hsgt_hist_em(symbol="沪股通")
+        elif hasattr(ak, "stock_hsgt_north_net_flow_in_em"):
+            df = ak.stock_hsgt_north_net_flow_in_em(symbol="北上")
+        else:
+            df = None
         if df is not None and len(df) >= 20:
             # 列名可能是 "净流入" / "当日净流入" / "value"
             val_col = next((c for c in df.columns if "净流入" in str(c) or "value" in str(c).lower()), None)

@@ -486,24 +486,54 @@ ${advArr.length?advArr.map(a=>{const bg=a.direction==='reduce'?'rgba(239,68,68,.
 </div>`;
 }catch(e){console.warn('Allocation advice:',e)}}
 
-// ---- 配置资产弹窗 ----
+// ---- 配置资产弹窗（v3.0 动态推荐） ----
+let _allocDynamicFunds = null; // 缓存动态推荐结果
+let _allocPreference = 'fund'; // fund|stock|mix
+
 function showAllocateAssets(){
 const p=loadPortfolio();const profile=p.profile||'稳健型';
-const al=ALLOCATIONS[profile]||ALLOCATIONS['稳健型'];
+_allocPreference=p.preference||'fund';
 const o=document.createElement('div');o.className='modal-overlay';o.onclick=e=>{if(e.target===o)o.remove()};
 o.innerHTML=`<div class="modal-sheet" onclick="event.stopPropagation()"><div class="modal-handle"></div>
 <div class="modal-title">💰 配置新资产</div>
-<div class="modal-subtitle">新存款/工资到账？按方案自动分配</div>
+<div class="modal-subtitle">新存款/工资到账？AI 动态推荐最优配置</div>
 <div class="manual-form" style="background:transparent;padding:0;margin-top:16px">
 <div class="form-row"><div class="form-label">投入金额</div>
 <div class="amount-input-wrap"><span class="amount-prefix">¥</span><input type="number" id="allocAmt" class="amount-input" placeholder="10000" style="padding-left:36px;padding-right:16px;font-size:20px"></div>
 <div style="display:flex;gap:6px;margin-top:8px;flex-wrap:wrap">${[1000,3000,5000,10000,20000].map(v=>`<button onclick="document.getElementById('allocAmt').value=${v};updateAllocPreview()" style="background:var(--bg3);border:none;color:var(--text2);padding:6px 12px;border-radius:6px;font-size:12px;cursor:pointer">¥${fmtMoney(v)}</button>`).join('')}</div></div>
-<div id="allocPreview" style="margin-top:16px"></div>
-<button class="form-submit" onclick="executeAllocate()" id="allocBtn" disabled>生成买入清单</button>
-<div style="font-size:11px;color:var(--text2);text-align:center;margin-top:8px">按「${profile}」方案分配</div>
+<div class="form-row"><div class="form-label">配置偏好</div>
+<div style="display:flex;gap:6px">
+<button id="prefFund" onclick="_allocPreference='fund';_allocDynamicFunds=null;_updatePrefBtns();loadDynamicAlloc()" style="flex:1;padding:8px;border-radius:8px;border:1px solid var(--bg3);font-size:12px;cursor:pointer">💰 纯基金</button>
+<button id="prefStock" onclick="_allocPreference='stock';_allocDynamicFunds=null;_updatePrefBtns();loadDynamicAlloc()" style="flex:1;padding:8px;border-radius:8px;border:1px solid var(--bg3);font-size:12px;cursor:pointer">📈 纯股票</button>
+<button id="prefMix" onclick="_allocPreference='mix';_allocDynamicFunds=null;_updatePrefBtns();loadDynamicAlloc()" style="flex:1;padding:8px;border-radius:8px;border:1px solid var(--bg3);font-size:12px;cursor:pointer">🔀 混合</button>
+</div></div>
+<div id="allocPreview" style="margin-top:16px"><div style="text-align:center;padding:20px;color:var(--text2)"><div class="loading-spinner" style="width:20px;height:20px;margin:0 auto 8px;border-width:2px"></div>AI 正在推荐最优配置...</div></div>
+<button class="form-submit" onclick="executeAllocate()" id="allocBtn" disabled>✅ 我知道了，去录入持仓</button>
+<div id="allocAdjustments" style="margin-top:8px;font-size:11px;color:var(--text2)"></div>
+<div style="font-size:11px;color:var(--text2);text-align:center;margin-top:8px">按「${profile}」方案 · AI 动态推荐</div>
 </div></div>`;
 document.body.appendChild(o);
-document.getElementById('allocAmt').addEventListener('input',updateAllocPreview)}
+_updatePrefBtns();
+document.getElementById('allocAmt').addEventListener('input',updateAllocPreview);
+loadDynamicAlloc()}
+
+function _updatePrefBtns(){
+['fund','stock','mix'].forEach(k=>{
+const btn=document.getElementById('pref'+k.charAt(0).toUpperCase()+k.slice(1));
+if(btn){btn.style.background=_allocPreference===k?'var(--accent)':'transparent';btn.style.color=_allocPreference===k?'#fff':'var(--text2)'}});}
+
+async function loadDynamicAlloc(){
+const el=document.getElementById('allocPreview');
+if(el)el.innerHTML='<div style="text-align:center;padding:20px;color:var(--text2)"><div class="loading-spinner" style="width:20px;height:20px;margin:0 auto 8px;border-width:2px"></div>AI 正在推荐最优配置...</div>';
+if(!API_AVAILABLE){if(el)el.innerHTML='<div style="text-align:center;padding:12px;color:var(--text2)">后端离线，使用默认配置</div>';_allocDynamicFunds=null;updateAllocPreview();return}
+const p=loadPortfolio();const profile=p.profile||'稳健型';
+try{const r=await fetch(API_BASE+'/recommend-alloc?profile='+encodeURIComponent(profile)+'&with_ai=true&preference='+_allocPreference,{signal:AbortSignal.timeout(30000)});
+if(r.ok){const d=await r.json();
+if(d.allocations&&d.allocations.length){_allocDynamicFunds=d.allocations;
+const adjEl=document.getElementById('allocAdjustments');
+if(adjEl&&d.adjustments)adjEl.innerHTML=d.adjustments.map(a=>`<div style="padding:2px 0">${a}</div>`).join('');
+updateAllocPreview();return}}}catch(e){console.warn('dynamic alloc:',e)}
+_allocDynamicFunds=null;updateAllocPreview()}
 
 function updateAllocPreview(){
 const amt=parseFloat(document.getElementById('allocAmt')?.value)||0;
@@ -511,35 +541,31 @@ const el=document.getElementById('allocPreview');const btn=document.getElementBy
 if(!el)return;
 if(!amt||amt<=0){el.innerHTML='';if(btn)btn.disabled=true;return}
 if(btn)btn.disabled=false;
-const p=loadPortfolio();const profile=p.profile||'稳健型';
-const al=ALLOCATIONS[profile]||ALLOCATIONS['稳健型'];
-el.innerHTML=al.map(a=>{
+const al=_allocDynamicFunds||(ALLOCATIONS[loadPortfolio().profile||'稳健型']||ALLOCATIONS['稳健型']);
+const isDynamic=!!_allocDynamicFunds;
+el.innerHTML=(isDynamic?`<div style="font-size:11px;color:var(--green);margin-bottom:8px;padding:4px 8px;background:rgba(16,185,129,.08);border-radius:6px">🤖 AI 动态推荐（${_allocPreference==='fund'?'纯基金':_allocPreference==='stock'?'纯股票':'混合'}）</div>`:'')+
+al.map(a=>{
 const fundAmt=Math.round(amt*a.pct/100);
+const reason=a.aiReason?`<div style="font-size:10px;color:var(--accent);margin-top:2px">💡 ${a.aiReason}</div>`:'';
 return`<div style="display:flex;align-items:center;gap:10px;padding:10px 0;border-bottom:1px solid var(--bg3)">
 <div style="width:10px;height:10px;border-radius:50%;background:${a.color};flex-shrink:0"></div>
-<div style="flex:1"><div style="font-size:13px;font-weight:600">${a.fullName||a.name}</div><div style="font-size:11px;color:var(--text2)">${a.code} · ${a.pct}%</div></div>
+<div style="flex:1"><div style="font-size:13px;font-weight:600">${a.fullName||a.name}</div><div style="font-size:11px;color:var(--text2)">${a.code} · ${a.pct}%${a.category?' · '+a.category:''}</div>${reason}</div>
 <div style="font-size:15px;font-weight:700;color:var(--accent)">¥${fmtMoney(fundAmt)}</div></div>`}).join('')}
 
 function executeAllocate(){
 const amt=parseFloat(document.getElementById('allocAmt')?.value)||0;
 if(!amt||amt<=0)return;
-const p=loadPortfolio();const profile=p.profile||'稳健型';
-const al=ALLOCATIONS[profile]||ALLOCATIONS['稳健型'];
-const txns=loadTxns();const now=new Date().toISOString();
-// 保存配比历史快照
-p.history=p.history||[];
-p.history.push({date:now,action:'allocate',amount:amt,profile,preference:p.preference||'fund',allocations:al.map(a=>({code:a.code,name:a.name||a.fullName,pct:a.pct,amount:Math.round(amt*a.pct/100)}))});
+// v3.0: 不写入假数据，只保存偏好+跳转
+const p=loadPortfolio();
+p.preference=_allocPreference;
 savePortfolio(p);
-al.forEach(a=>{
-const fundAmt=Math.round(amt*a.pct/100);
-if(fundAmt<=0)return;
-txns.push({code:a.code,name:a.fullName||a.name,category:a.name,type:'BUY',amount:fundAmt,price:1,shares:fundAmt,date:now,note:'配置资产自动分配'})});
-saveTxns(txns);
-// 同步后端
-if(API_AVAILABLE){txns.slice(-al.length).forEach(t=>{fetch(API_BASE+'/portfolio/transaction',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({user_id:getUserId(),transaction:t})}).catch(()=>{})})}
-// 关闭弹窗
+// 保存风险偏好到 agent_memory
+if(API_AVAILABLE){
+fetch(API_BASE+'/agent/preferences',{method:'POST',headers:{'Content-Type':'application/json'},
+body:JSON.stringify({userId:getProfileId(),risk_profile:p.profile||'稳健型',preference:_allocPreference,last_alloc_amount:amt})}).catch(()=>{})}
 document.querySelector('.modal-overlay')?.remove();
-navigateTo('portfolio')}
+alert('✅ 配置方案已保存！\n\n请到「持仓」页添加你实际买入的基金/股票。\n配置建议仅供参考，实际买入以你的操作为准。');
+navigateTo('stocks')}
 
 // ---- 配比历史弹窗 ----
 let _compareSelection=[];
@@ -1101,20 +1127,42 @@ function scrollChat(){const el=document.getElementById('chatMsgs');if(el)setTime
 
 // ---- 白话解释弹窗（数据驱动，避免 onclick 引号冲突）----
 const _EXPLAINS={};
-function setExplain(key,title,text){_EXPLAINS[key]={title,text}}
+function setExplain(key,title,text,extraData){_EXPLAINS[key]={title,text,extraData:extraData||null}}
 function showExplain(key){
 const entry=_EXPLAINS[key];if(!entry)return;
-const {title,text}=entry;
+const {title,text,extraData}=entry;
 const overlay=document.createElement('div');
 overlay.style.cssText='position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,0.6);z-index:9999;display:flex;align-items:center;justify-content:center;padding:20px;animation:fadeIn 0.2s';
 overlay.onclick=e=>{if(e.target===overlay)overlay.remove()};
 const lines=text.split('\n').map(l=>l.trim()?`<p style="margin:4px 0;${l.startsWith('📊')||l.startsWith('🔍')||l.startsWith('🎯')||l.startsWith('💡')||l.startsWith('⚠️')?'font-weight:600;margin-top:12px;':''}">${l}</p>`:'').join('');
+// AI 点评按钮（只在有 extraData 时显示）
+const aiBtn=extraData?`<div id="aiCommentArea_${key}" style="margin-top:12px;border-top:1px solid var(--bg3);padding-top:12px">
+<button onclick="loadAiComment('${key}')" style="width:100%;padding:10px;border-radius:10px;border:1px solid rgba(99,102,241,.3);background:transparent;color:#818CF8;font-size:13px;cursor:pointer;font-weight:600">🤖 AI 智能点评</button></div>`:'';
 overlay.innerHTML=`<div style="background:var(--card);border-radius:16px;padding:24px;max-width:380px;width:100%;max-height:80vh;overflow-y:auto;box-shadow:0 20px 60px rgba(0,0,0,0.3)">
 <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px"><h3 style="margin:0;font-size:16px;color:var(--text1)">${title}</h3><button onclick="this.closest('[style*=fixed]').remove()" style="background:none;border:none;font-size:20px;color:var(--text2);cursor:pointer;padding:4px">✕</button></div>
 <div style="font-size:13px;line-height:1.8;color:var(--text2)">${lines}</div>
-<button onclick="this.closest('[style*=fixed]').remove()" style="width:100%;margin-top:16px;padding:12px;border:none;border-radius:10px;background:var(--accent);color:#fff;font-size:14px;cursor:pointer">我懂了 👍</button>
+${aiBtn}
+<button onclick="this.closest('[style*=fixed]').remove()" style="width:100%;margin-top:12px;padding:12px;border:none;border-radius:10px;background:var(--accent);color:#fff;font-size:14px;cursor:pointer">我懂了 👍</button>
 </div>`;
 document.body.appendChild(overlay)}
+
+async function loadAiComment(key){
+const entry=_EXPLAINS[key];if(!entry||!entry.extraData)return;
+const {extraData}=entry;
+const area=document.getElementById('aiCommentArea_'+key);if(!area)return;
+area.innerHTML='<div style="text-align:center;padding:8px;color:var(--text2);font-size:12px"><div class="loading-spinner" style="width:18px;height:18px;margin:0 auto 6px;border-width:2px"></div>AI 分析中...</div>';
+try{
+let url='';
+if(extraData.type==='stock'){
+url=API_BASE+'/ai-comment/stock?code='+encodeURIComponent(extraData.code)+'&name='+encodeURIComponent(extraData.name||'')+'&score='+(extraData.score||0)+'&pe='+(extraData.pe||0)+'&roe='+(extraData.roe||0)+'&gross_margin='+(extraData.gross_margin||0);
+}else{
+const r=extraData.returns||{};
+url=API_BASE+'/ai-comment/fund?code='+encodeURIComponent(extraData.code)+'&name='+encodeURIComponent(extraData.name||'')+'&score='+(extraData.score||0)+'&fee='+encodeURIComponent(extraData.fee||'')+(r['3m']!=null?'&r3m='+r['3m']:'')+(r['6m']!=null?'&r6m='+r['6m']:'')+(r['1y']!=null?'&r1y='+r['1y']:'')+(r['3y']!=null?'&r3y='+r['3y']:'');
+}
+const resp=await fetch(url,{signal:AbortSignal.timeout(20000)});
+const d=await resp.json();
+area.innerHTML=`<div style="padding:10px;background:rgba(99,102,241,.06);border-radius:10px;border-left:3px solid #6366F1"><div style="font-size:11px;font-weight:700;color:#818CF8;margin-bottom:4px">🤖 AI 点评</div><div style="font-size:13px;line-height:1.8;color:var(--text1)">${d.comment||'暂无点评'}</div></div>`;
+}catch(e){area.innerHTML=`<div style="color:var(--text2);font-size:12px;padding:8px">AI点评加载失败: ${e.message}</div>`}}
 
 // 预注册静态解释
 setExplain('cpi','CPI 居民消费价格指数','CPI 就是"物价涨了多少"。\n\n📊 怎么理解：\n• CPI = 0% → 物价没变\n• CPI > 0% → 东西涨价了（通胀）\n• CPI < 0% → 东西降价了（通缩）\n\n🔍 对你的影响：\n• CPI 涨太快(>3%) → 央行可能加息 → 存款收益↑，股市债市承压\n• CPI 下降/为负 → 央行可能降息 → 贷款便宜，利好股市和房产\n\n💡 一句话：CPI 涨，你手里的钱在贬值；CPI 跌，你的钱更值钱了。');
@@ -1200,7 +1248,9 @@ const all=[
 const simple=['overview','news','policy','doctor','steward'];
 return isProMode()?all:all.filter(t=>simple.includes(t[0]))}
 async function renderInsight(){currentPage='insight';renderNav();const tabs=_insightTabs();
-$('#app').innerHTML=`<div class="insight-page fade-up"><div class="insight-header"><h2>📰 市场资讯</h2><p>${API_AVAILABLE?'实时数据更新中':'后端离线'} <button onclick="runDataAudit()" style="background:rgba(245,158,11,.15);border:1px solid rgba(245,158,11,.3);border-radius:6px;padding:2px 8px;font-size:11px;color:#F59E0B;cursor:pointer;margin-left:4px" id="auditBtn">🔍 数据体检</button></p></div><div class="section-tab-bar">${tabs.map(t=>`<button class="section-tab ${insightTab===t[0]?'active':''}" onclick="insightTab='${t[0]}';renderInsight()">${t[1]}</button>`).join('')}</div><div id="insightContent"><div style="text-align:center;padding:40px;color:var(--text2)"><div class="loading-spinner" style="width:32px;height:32px;margin:0 auto 12px;border-width:3px"></div><div id="loadingMsg" style="margin-top:8px">正在加载市场数据...</div><div style="font-size:12px;color:var(--text3,#94a3b8);margin-top:8px">☁️ 免费云服务器，首次加载可能需要 10~30 秒</div></div></div></div>`;
+$('#app').innerHTML=`<div class="insight-page fade-up"><div class="insight-header"><h2>📰 市场资讯</h2><p>${API_AVAILABLE?'实时数据更新中':'后端离线'} <button onclick="runDataAudit()" style="background:rgba(245,158,11,.15);border:1px solid rgba(245,158,11,.3);border-radius:6px;padding:2px 8px;font-size:11px;color:#F59E0B;cursor:pointer;margin-left:4px" id="auditBtn">🔍 数据体检</button></p></div><div class="section-tab-bar" id="insightTabBar">${tabs.map(t=>`<button class="section-tab ${insightTab===t[0]?'active':''}" data-tab="${t[0]}" onclick="insightTab='${t[0]}';renderInsight()">${t[1]}</button>`).join('')}</div><div id="insightContent"><div style="text-align:center;padding:40px;color:var(--text2)"><div class="loading-spinner" style="width:32px;height:32px;margin:0 auto 12px;border-width:3px"></div><div id="loadingMsg" style="margin-top:8px">正在加载市场数据...</div><div style="font-size:12px;color:var(--text3,#94a3b8);margin-top:8px">☁️ 免费云服务器，首次加载可能需要 10~30 秒</div></div></div></div>`;
+// Tab栏自动滚动到选中位置
+setTimeout(()=>{const bar=document.getElementById('insightTabBar');const active=bar&&bar.querySelector('.section-tab.active');if(active&&bar){active.scrollIntoView({behavior:'smooth',inline:'center',block:'nearest'})}},50);
 if(!API_AVAILABLE){document.getElementById('insightContent').innerHTML='<div style="text-align:center;padding:40px;color:var(--text2)">后端离线，请启动后端服务获取实时数据</div>';return}
 // 独立 tab 不需要 dashboard 数据，秒开
 if(insightTab==='fundpick'){const el=document.getElementById('insightContent');if(el)renderFundPick(el);return}
@@ -1460,7 +1510,8 @@ return`<div style="display:flex;align-items:center;gap:10px;padding:10px 0;borde
 funds.forEach(f=>{
 const r=f.returns;
 setExplain('fund_'+f.code,f.name+' ('+f.code+')',
-'📊 综合评分：'+f.score+'\n\n📈 收益表现：\n• 近3月：'+(r['3m']!=null?r['3m']+'%':'—')+'\n• 近6月：'+(r['6m']!=null?r['6m']+'%':'—')+'\n• 近1年：'+(r['1y']!=null?r['1y']+'%':'—')+'\n• 近3年：'+(r['3y']!=null?r['3y']+'%':'—')+'\n• 今年来：'+(r.ytd!=null?r.ytd+'%':'—')+'\n\n💰 费率：'+(f.fee||'—')+'\n\n💡 评分方法：近1年35%+近3年25%+近6月20%+近3月10%+费率加减分。仅供参考，不构成投资建议。')
+'📊 综合评分：'+f.score+'\n\n📈 收益表现：\n• 近3月：'+(r['3m']!=null?r['3m']+'%':'—')+'\n• 近6月：'+(r['6m']!=null?r['6m']+'%':'—')+'\n• 近1年：'+(r['1y']!=null?r['1y']+'%':'—')+'\n• 近3年：'+(r['3y']!=null?r['3y']+'%':'—')+'\n• 今年来：'+(r.ytd!=null?r.ytd+'%':'—')+'\n\n💰 费率：'+(f.fee||'—')+'\n\n💡 评分方法：近1年35%+近3年25%+近6月20%+近3月10%+费率加减分。仅供参考，不构成投资建议。',
+{type:'fund',code:f.code,name:f.name,score:f.score,fee:f.fee||'',returns:r})
 })}catch(e){console.warn('Fund pick failed:',e);listEl.innerHTML='<div style="text-align:center;padding:20px;color:var(--text2)">📡 数据源加载中，请稍后重试<br><span style="font-size:11px;opacity:0.6">（首次加载可能需要 10-30 秒）</span><br><button onclick="renderFundPickResult()" style="margin-top:8px;padding:6px 16px;border-radius:6px;border:none;background:var(--accent);color:#fff;cursor:pointer;font-size:12px">🔄 重试</button></div>'}}
 
 // AI 多因子选股页
@@ -1506,7 +1557,8 @@ return`<div style="display:grid;grid-template-columns:30px 1fr 70px 50px;gap:4px
 stocks.forEach(s=>{
 const sc=s.scores||{};
 setExplain('stock_'+s.code,s.name+' ('+s.code+')',
-'💰 价格：¥'+s.price+' · 涨跌：'+(s.change_pct!=null?s.change_pct+'%':'—')+'\n📊 PE：'+(s.pe||'—')+' · PB：'+(s.pb||'—')+' · 换手率：'+(s.turnover||'—')+'%\n📈 市值：'+(s.market_cap?s.market_cap+'亿':'—')+'\n\n📋 财务指标：\n• ROE：'+(s.roe||'—')+'%\n• 毛利率：'+(s.gross_margin||'—')+'%\n• 净利率：'+(s.net_margin||'—')+'%\n• 负债率：'+(s.debt_ratio||'—')+'%\n• 营收增速：'+(s.revenue_growth||'—')+'%\n• EPS：'+(s.eps||'—')+'\n\n🎯 综合评分：'+s.score+'/100\n\n7维30因子详情：\n• 价值(20%)：'+sc.value+' (PE/PB/股息率/ROE-PB/EPS/低PE高ROE)\n• 成长(15%)：'+sc.growth+' (营收增速/ROE/EPS/60日动量/PEG)\n• 质量(18%)：'+sc.quality+' (ROE/毛利率/净利率/负债率/现金流/市值)\n• 动量(15%)：'+sc.momentum+' (5日/20日/60日/今日)\n• 风险(12%)：'+sc.risk+' (振幅/负债率/现金流/PE极端)\n• 流动性(10%)：'+sc.liquidity+' (换手率/市值/成交额)\n• 舆情(10%)：'+sc.sentiment+' (待接入)\n\n⚠️ 仅供参考，不构成投资建议。')
+'💰 价格：¥'+s.price+' · 涨跌：'+(s.change_pct!=null?s.change_pct+'%':'—')+'\n📊 PE：'+(s.pe||'—')+' · PB：'+(s.pb||'—')+' · 换手率：'+(s.turnover||'—')+'%\n📈 市值：'+(s.market_cap?s.market_cap+'亿':'—')+'\n\n📋 财务指标：\n• ROE：'+(s.roe||'—')+'%\n• 毛利率：'+(s.gross_margin||'—')+'%\n• 净利率：'+(s.net_margin||'—')+'%\n• 负债率：'+(s.debt_ratio||'—')+'%\n• 营收增速：'+(s.revenue_growth||'—')+'%\n• EPS：'+(s.eps||'—')+'\n\n🎯 综合评分：'+s.score+'/100\n\n7维30因子详情：\n• 价值(20%)：'+sc.value+' (PE/PB/股息率/ROE-PB/EPS/低PE高ROE)\n• 成长(15%)：'+sc.growth+' (营收增速/ROE/EPS/60日动量/PEG)\n• 质量(18%)：'+sc.quality+' (ROE/毛利率/净利率/负债率/现金流/市值)\n• 动量(15%)：'+sc.momentum+' (5日/20日/60日/今日)\n• 风险(12%)：'+sc.risk+' (振幅/负债率/现金流/PE极端)\n• 流动性(10%)：'+sc.liquidity+' (换手率/市值/成交额)\n• 舆情(10%)：'+sc.sentiment+' (待接入)\n\n⚠️ 仅供参考，不构成投资建议。',
+{type:'stock',code:s.code,name:s.name,score:s.score,pe:s.pe||0,roe:s.roe||0,gross_margin:s.gross_margin||0})
 })}catch(e){console.warn('Stock pick failed:',e);
 const listEl=document.getElementById('stockPickList');
 if(listEl)listEl.innerHTML='<div style="text-align:center;padding:20px;color:var(--text2)">📡 选股数据加载中<br><span style="font-size:11px;opacity:0.6">需分析5000+只A股，首次约30秒</span><br><span style="font-size:11px;opacity:0.5">非交易时段数据源可能不稳定</span><br><button onclick="insightTab=\'stockpick\';renderInsight()" style="margin-top:8px;padding:6px 16px;border-radius:6px;border:none;background:var(--accent);color:#fff;cursor:pointer;font-size:12px">🔄 重试</button></div>'}}
@@ -2072,7 +2124,7 @@ const estRate=rt.estRate;const rateColor=estRate==null?'var(--text2)':estRate>=0
 const pnlColor=h.pnlPct==null?'var(--text2)':h.pnlPct>=0?'var(--green)':'var(--red)';
 const ddStr=risk.maxDrawdown!=null?(risk.maxDrawdown*100).toFixed(1)+'%':'--';
 const ddColor=risk.maxDrawdown!=null&&risk.maxDrawdown>0.03?'var(--red)':'var(--text2)';
-return`<div class="stock-card" onclick="showFundDetail('${h.code}')" style="cursor:pointer">
+return`<div class="stock-card" onclick="showFundHoldingDetail('${h.code}')" style="cursor:pointer">
 <div style="display:flex;justify-content:space-between;align-items:center">
 <div><div style="font-size:14px;font-weight:700">${h.name||h.code}</div><div style="font-size:11px;color:var(--text2)">${h.code}</div></div>
 <div style="text-align:right"><div style="font-size:14px;font-weight:600">${rt.estNav||'--'}</div>
@@ -2097,7 +2149,7 @@ const cost=parseFloat($('#addFundCost')?.value)||0;const shares=parseFloat($('#a
 try{const r=await fetch(API_BASE+'/fund-holdings',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({code,costNav:cost,shares,note,userId:getProfileId()})});
 const d=await r.json();if(d.error){alert(d.error);return}document.querySelector('.modal-overlay')?.remove();renderFundsContent()}catch(e){alert('添加失败: '+e.message)}}
 
-function showFundDetail(code){const h=(_fundScanData?.holdings||[]).find(x=>x.code===code);if(!h)return;
+function showFundHoldingDetail(code){const h=(_fundScanData?.holdings||[]).find(x=>x.code===code);if(!h)return;
 const rt=h.realtime||{};const risk=h.risk||{};const alerts=h.alerts||[];
 const overlay=document.createElement('div');overlay.className='modal-overlay';overlay.onclick=e=>{if(e.target===overlay)overlay.remove()};
 overlay.innerHTML=`<div class="modal-sheet"><div class="modal-handle"></div><div class="modal-title">${h.name||h.code}</div><div class="modal-subtitle">${h.code} · 估算 ${rt.estRate!=null?(rt.estRate>=0?'+':'')+rt.estRate.toFixed(2)+'%':'--'}</div><div class="modal-stat-grid"><div class="modal-stat"><div class="modal-stat-label">估算净值</div><div class="modal-stat-value">${rt.estNav||'--'}</div></div><div class="modal-stat"><div class="modal-stat-label">最新净值</div><div class="modal-stat-value">${rt.nav||'--'}</div></div><div class="modal-stat"><div class="modal-stat-label">估算偏差</div><div class="modal-stat-value">${rt.estDeviation!=null?rt.estDeviation.toFixed(2)+'%':'--'}</div></div><div class="modal-stat"><div class="modal-stat-label">最大回撤</div><div class="modal-stat-value" style="color:${risk.maxDrawdown>0.03?'var(--red)':'var(--text)'}">${risk.maxDrawdown!=null?(risk.maxDrawdown*100).toFixed(1)+'%':'--'}</div></div><div class="modal-stat"><div class="modal-stat-label">年化波动</div><div class="modal-stat-value">${risk.volatility!=null?(risk.volatility*100).toFixed(1)+'%':'--'}</div></div><div class="modal-stat"><div class="modal-stat-label">连跌天数</div><div class="modal-stat-value" style="color:${risk.downDays>=3?'var(--red)':'var(--text)'}">${risk.downDays||0}天</div></div></div>${alerts.length?'<div style="margin-top:16px"><div style="font-size:13px;font-weight:700;margin-bottom:8px">⚡ 信号</div>'+alerts.map(a=>`<div style="background:rgba(239,68,68,.06);border-radius:8px;padding:8px;margin-bottom:4px;font-size:12px">${a.msg}</div>`).join('')+'</div>':''}<button class="action-btn" onclick="deleteFund('${h.code}')" style="width:100%;margin-top:16px;color:var(--red);border-color:var(--red)">🗑️ 删除此基金</button></div>`;

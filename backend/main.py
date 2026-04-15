@@ -959,10 +959,36 @@ def unified_networth_api(userId: str = ""):
 # ---- DeepSeek 智能增强 API ----
 from services.ds_enhance import (
     analyze_idle_cash, comment_fund_picks, comment_stock_picks,
+    comment_single_stock, comment_single_fund,
     generate_daily_focus, assess_news_risk, interpret_daily_signal,
     deep_analyze_news_impact, enhance_allocation_advice,
     diagnose_user_assets,
 )
+
+@app.get("/api/ai-comment/stock")
+def ai_comment_stock(code: str, name: str = "", score: float = 0,
+                     pe: float = 0, roe: float = 0, gross_margin: float = 0):
+    """单只股票 AI 点评（按需，用户点击时调用）"""
+    comment = comment_single_stock(code, name, {
+        "score": score, "pe": pe, "roe": roe, "gross_margin": gross_margin,
+    })
+    return {"code": code, "name": name, "comment": comment}
+
+
+@app.get("/api/ai-comment/fund")
+def ai_comment_fund(code: str, name: str = "", score: float = 0,
+                    fee: str = "", r3m: float = None, r6m: float = None,
+                    r1y: float = None, r3y: float = None):
+    """单只基金 AI 点评（按需，用户点击时调用）"""
+    returns = {}
+    if r3m is not None: returns["3m"] = r3m
+    if r6m is not None: returns["6m"] = r6m
+    if r1y is not None: returns["1y"] = r1y
+    if r3y is not None: returns["3y"] = r3y
+    comment = comment_single_fund(code, name, {
+        "score": score, "fee": fee, "returns": returns,
+    })
+    return {"code": code, "name": name, "comment": comment}
 
 @app.post("/api/assets/advice")
 def get_asset_advice(req: dict):

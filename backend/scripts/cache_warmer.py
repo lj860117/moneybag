@@ -104,16 +104,18 @@ def warm_after_close():
         dashboard = {}
         try:
             dashboard["fearGreed"] = get_fear_greed_index()
-        except Exception:
-            pass
+        except Exception as e:
+            print(f"    [fear] {e}")
         try:
-            dashboard["valuation"] = get_valuation_percentile()
-        except Exception:
-            pass
+            v = get_valuation_percentile()
+            dashboard["valuation"] = v
+            print(f"    [val] PE={v.get('current_pe')}, pct={v.get('percentile')}%")
+        except Exception as e:
+            print(f"    [val] FAILED: {e}")
         try:
             dashboard["technical"] = get_technical_indicators()
-        except Exception:
-            pass
+        except Exception as e:
+            print(f"    [tech] {e}")
         
         if dashboard:
             _save_cache("dashboard_core", dashboard, ttl)

@@ -701,6 +701,73 @@ def screen_stocks(top_n: int = 50) -> dict:
         scored.sort(key=lambda x: x["score"], reverse=True)
         top = scored[:top_n]
 
+        # Tushare 补 PE/PB（如果数据源没提供）
+        pe_missing = sum(1 for s in top if s.get("pe") is None)
+        if pe_missing > len(top) * 0.5:
+            try:
+                import os
+                from pathlib import Path
+                env_file = Path(__file__).parent.parent / ".env"
+                if env_file.exists():
+                    for line in env_file.read_text().splitlines():
+                        line = line.strip()
+                        if line and not line.startswith("#") and "=" in line:
+                            k, v = line.split("=", 1)
+                            os.environ[k.strip()] = v.strip()
+
+                token = os.getenv("TUSHARE_TOKEN", "")
+                if token:
+                    import tushare as ts
+                    ts.set_token(token)
+                    pro = ts.pro_api()
+                    from datetime import datetime, timedelta
+                    for i in range(5):
+                        td = (datetime.now() - timedelta(days=i)).strftime("%Y%m%d")
+                        try:
+                            df_pe = pro.daily_basic(trade_date=td, fields="ts_code,pe_ttm,pb,total_mv,turnover_rate_f")
+                        except Exception as api_err:
+                            print(f"[STOCK_SCREEN_V3] daily_basic({td}) API error: {api_err}")
+                            continue
+                        if df_pe is not None and len(df_pe) > 100:
+                            print(f"[STOCK_SCREEN_V3] daily_basic({td}): {len(df_pe)} rows, {df_pe.pe_ttm.notna().sum()} 有PE")
+                            pe_map = {}
+                            for _, row in df_pe.iterrows():
+                                code = str(row.get("ts_code", "")).split(".")[0]
+                                pe_map[code] = row
+                            filled = 0
+                            for s in top:
+                                raw_code = s.get("code", "")
+                                # 去掉新浪 sh/sz/bj 前缀
+                                clean_code = raw_code
+                                for prefix in ("sh", "sz", "bj", "SH", "SZ", "BJ"):
+                                    if clean_code.startswith(prefix):
+                                        clean_code = clean_code[len(prefix):]
+                                        break
+                                ts_row = pe_map.get(clean_code)
+                                if ts_row is not None:
+                                    if s.get("pe") is None:
+                                        pe_v = ts_row.get("pe_ttm")
+                                        if pe_v is not None and 0 < float(pe_v) < 10000:
+                                            s["pe"] = round(float(pe_v), 2)
+                                    if s.get("pb") is None:
+                                        pb_v = ts_row.get("pb")
+                                        if pb_v is not None and 0 < float(pb_v) < 1000:
+                                            s["pb"] = round(float(pb_v), 2)
+                                    if s.get("market_cap") is None:
+                                        mv = ts_row.get("total_mv")
+                                        if mv is not None:
+                                            s["market_cap"] = round(float(mv) / 10000, 1)
+                                    if s.get("turnover") is None:
+                                        tr = ts_row.get("turnover_rate_f")
+                                        if tr is not None:
+                                            s["turnover"] = round(float(tr), 2)
+                                    if s.get("pe") is not None:
+                                        filled += 1
+                            print(f"[STOCK_SCREEN_V3] Tushare直补PE: {filled}/{len(top)}")
+                            break
+            except Exception as e:
+                print(f"[STOCK_SCREEN_V3] Tushare PE failed: {e}")
+
         # 因子说明（含动态权重）
         w_desc = " / ".join([f"{k}({int(DIM_WEIGHTS[k]*100)}%)" for k in DIM_WEIGHTS])
         factor_desc = (

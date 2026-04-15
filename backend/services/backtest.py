@@ -17,6 +17,7 @@ MODULE_META = {
 }
 import math
 from services.data_layer import get_valuation_percentile
+from services.signal import calc_smart_dca
 
 def run_backtest(strategy: str = "smart_dca", years: int = 3, monthly_amount: float = 1000) -> dict:
     """简易策略回测 — 用沪深300历史数据"""

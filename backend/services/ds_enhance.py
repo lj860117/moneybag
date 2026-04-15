@@ -142,18 +142,17 @@ def analyze_idle_cash(cash_amount: float, monthly_expense: float = 0, risk_profi
 # ============================================================
 
 def comment_fund_picks(funds: list) -> list:
-    """给选基 TOP 列表加 DeepSeek 一句话点评"""
+    """给选基 TOP 列表加 DeepSeek 一句话点评（前 10 只）"""
     if not funds:
         return funds
 
-    # 只给前 5 只点评（控制 token）
-    top5 = funds[:5]
+    top10 = funds[:10]
     fund_desc = "\n".join([
         f"{i+1}. {f['name']}({f['code']}) 近1年{f['returns'].get('1y','N/A')}% 评分{f['score']}"
-        for i, f in enumerate(top5)
+        for i, f in enumerate(top10)
     ])
 
-    prompt = f"""以下是 AI 选出的 TOP 5 基金：
+    prompt = f"""以下是 AI 选出的 TOP {len(top10)} 基金：
 {fund_desc}
 
 为每只基金写一句话点评（15字以内），格式：
@@ -161,20 +160,19 @@ def comment_fund_picks(funds: list) -> list:
 2. 点评内容
 ...
 
-要求：说人话，突出核心优势或风险。"""
+要求：说人话，突出核心优势或风险。不要重复用相同句式。"""
 
     result = _call_deepseek(
         prompt,
         system="你是基金分析师，点评简短犀利。",
-        max_tokens=200,
-        cache_key=f"fund_comment_{funds[0]['code'] if funds else ''}",
+        max_tokens=400,
+        cache_key=f"fund_comment_10_{funds[0]['code'] if funds else ''}",
     )
 
     if result:
         lines = [l.strip() for l in result.strip().split("\n") if l.strip()]
-        for i, f in enumerate(top5):
+        for i, f in enumerate(top10):
             if i < len(lines):
-                # 去掉序号前缀
                 comment = lines[i].lstrip("0123456789.、）) ").strip()
                 f["aiComment"] = comment
     return funds
@@ -221,36 +219,108 @@ def comment_recommend_funds(allocations: list, risk_profile: str,
 
 
 def comment_stock_picks(stocks: list) -> list:
-    """给选股 TOP 列表加 DeepSeek 一句话点评"""
+    """给选股 TOP 列表加 DeepSeek 一句话点评（前 10 只）"""
     if not stocks:
         return stocks
 
-    top5 = stocks[:5]
+    top10 = stocks[:10]
     stock_desc = "\n".join([
-        f"{i+1}. {s['name']}({s['code']}) PE={s.get('pe','N/A')} 评分{s['score']}"
-        for i, s in enumerate(top5)
+        f"{i+1}. {s['name']}({s['code']}) PE={s.get('pe','N/A')} ROE={s.get('roe','N/A')} 评分{s['score']}"
+        for i, s in enumerate(top10)
     ])
 
-    prompt = f"""以下是 AI 选出的 TOP 5 股票：
+    prompt = f"""以下是 AI 选出的 TOP {len(top10)} 股票：
 {stock_desc}
 
 为每只股票写一句话点评（15字以内），格式同上。
-要求：说人话，突出核心逻辑。"""
+要求：说人话，突出核心逻辑。不要重复用相同句式。"""
 
     result = _call_deepseek(
         prompt,
         system="你是 A 股分析师，点评简短犀利。",
-        max_tokens=200,
-        cache_key=f"stock_comment_{stocks[0]['code'] if stocks else ''}",
+        max_tokens=400,
+        cache_key=f"stock_comment_10_{stocks[0]['code'] if stocks else ''}",
     )
 
     if result:
         lines = [l.strip() for l in result.strip().split("\n") if l.strip()]
-        for i, s in enumerate(top5):
+        for i, s in enumerate(top10):
             if i < len(lines):
                 comment = lines[i].lstrip("0123456789.、）) ").strip()
                 s["aiComment"] = comment
     return stocks
+
+
+def comment_single_stock(code: str, name: str = "", extra: dict = None) -> str:
+    """单只股票 AI 点评（按需调用，用户点击时触发）"""
+    extra = extra or {}
+    pe = extra.get("pe", "N/A")
+    roe = extra.get("roe", "N/A")
+    score = extra.get("score", "N/A")
+    gross_margin = extra.get("gross_margin", "N/A")
+
+    # 尝试拉最新新闻
+    news_text = ""
+    try:
+        from services.news_data import get_stock_news_by_code
+        news = get_stock_news_by_code(code, 5)
+        if news:
+            news_text = "\n最新新闻：\n" + "\n".join([f"- {n.get('title', '')}" for n in news[:5]])
+    except Exception:
+        pass
+
+    prompt = f"""分析 {name}({code})：
+PE={pe}, ROE={roe}, 毛利率={gross_margin}, 选股评分={score}
+{news_text}
+
+请从以下角度写 50-80 字的简短点评：
+1. 基本面亮点或风险
+2. 最新新闻的影响（如果有）
+3. 一句话建议（适合什么样的投资者）
+
+要求：说人话，不要官话套话。"""
+
+    result = _call_deepseek(
+        prompt,
+        system="你是专业 A 股分析师，点评简短、有数据支撑、说人话。",
+        max_tokens=300,
+        cache_key=f"single_stock_{code}",
+    )
+    return result or "暂无 AI 点评"
+
+
+def comment_single_fund(code: str, name: str = "", extra: dict = None) -> str:
+    """单只基金 AI 点评（按需调用，用户点击时触发）"""
+    extra = extra or {}
+    score = extra.get("score", "N/A")
+    returns = extra.get("returns", {})
+    fee = extra.get("fee", "N/A")
+
+    ret_text = ""
+    if returns:
+        parts = []
+        for k, label in [("3m", "近3月"), ("6m", "近6月"), ("1y", "近1年"), ("3y", "近3年")]:
+            if returns.get(k) is not None:
+                parts.append(f"{label}{returns[k]}%")
+        ret_text = "，".join(parts)
+
+    prompt = f"""分析基金 {name}({code})：
+评分={score}, 费率={fee}, 收益表现={ret_text or 'N/A'}
+
+请从以下角度写 50-80 字的简短点评：
+1. 收益稳定性和性价比
+2. 适合什么类型的投资者
+3. 一句话建议
+
+要求：说人话，不要官话套话。"""
+
+    result = _call_deepseek(
+        prompt,
+        system="你是基金分析师，点评简短实用。",
+        max_tokens=300,
+        cache_key=f"single_fund_{code}",
+    )
+    return result or "暂无 AI 点评"
 
 
 # ============================================================

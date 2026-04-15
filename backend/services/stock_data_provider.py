@@ -271,6 +271,12 @@ def _try_sina_xq_source() -> dict | None:
         print("[DATA_PROVIDER] 雪球补充完成: {}/{} 有PE数据, {:.1f}s".format(
             enriched_count, len(enriched), t_xq))
 
+        # Step 4: 如果雪球补充率 < 50%，用 Tushare 批量补 PE/PB/市值
+        if enriched_count < len(enriched) * 0.5:
+            enriched = _tushare_enrich_pe(enriched)
+            enriched_count = sum(1 for s in enriched if s["pe"] is not None)
+            print("[DATA_PROVIDER] Tushare 兜底后: {}/{} 有PE".format(enriched_count, len(enriched)))
+
         # 合并：补充过的 + 剩余基础数据
         all_stocks = enriched + rest_stocks
         elapsed = time.time() - t0
@@ -301,3 +307,119 @@ def _round_yi(val):
     if val is None:
         return None
     return round(val / 1e8, 1)
+
+
+def _tushare_enrich_pe(stocks: list) -> list:
+    """用 Tushare daily_basic 批量补 PE/PB/市值/换手率
+    Tushare 一次返回全市场当日数据，高效稳定
+    """
+    try:
+        import os
+        from pathlib import Path
+
+        # 确保 .env 已加载（uvicorn 可能未自动加载）
+        env_file = Path(__file__).parent.parent / ".env"
+        if env_file.exists():
+            for line in env_file.read_text().splitlines():
+                line = line.strip()
+                if line and not line.startswith("#") and "=" in line:
+                    k, v = line.split("=", 1)
+                    k, v = k.strip(), v.strip()
+                    # 强制设置（setdefault 不会覆盖空值）
+                    if k and v:
+                        os.environ[k] = v
+
+        token = os.getenv("TUSHARE_TOKEN", "")
+        if not token:
+            print("[DATA_PROVIDER] Tushare token 未配置，跳过 PE 补充")
+            return stocks
+
+        import tushare as ts
+        ts.set_token(token)
+        pro = ts.pro_api()
+
+        # 获取最新交易日的 daily_basic
+        # 先试今天，如果没数据就往前推
+        from datetime import datetime, timedelta
+        today = datetime.now()
+        df = None
+        for i in range(5):
+            trade_date = (today - timedelta(days=i)).strftime("%Y%m%d")
+            try:
+                df = pro.daily_basic(
+                    trade_date=trade_date,
+                    fields="ts_code,pe_ttm,pb,total_mv,turnover_rate_f"
+                )
+                if df is not None and len(df) > 100:
+                    break
+            except Exception:
+                continue
+
+        if df is None or len(df) < 100:
+            print("[DATA_PROVIDER] Tushare daily_basic 无数据")
+            return stocks
+
+        # 构建 code → PE/PB/市值/换手率 映射
+        pe_map = {}
+        for _, row in df.iterrows():
+            ts_code = str(row.get("ts_code", ""))
+            code = ts_code.split(".")[0]  # "600519.SH" → "600519"
+            pe_map[code] = {
+                "pe": row.get("pe_ttm"),
+                "pb": row.get("pb"),
+                "total_mv": row.get("total_mv"),  # 万元
+                "turnover": row.get("turnover_rate_f"),
+            }
+
+        # 补充
+        filled = 0
+        for s in stocks:
+            raw_code = s.get("code", "")
+            # 去掉新浪 sh/sz/bj 前缀
+            clean_code = raw_code
+            for prefix in ("sh", "sz", "bj", "SH", "SZ", "BJ"):
+                if clean_code.startswith(prefix):
+                    clean_code = clean_code[len(prefix):]
+                    break
+            ts_data = pe_map.get(clean_code)
+            if not ts_data:
+                continue
+
+            if s.get("pe") is None and ts_data.get("pe") is not None:
+                try:
+                    pe_val = float(ts_data["pe"])
+                    if 0 < pe_val < 10000:
+                        s["pe"] = round(pe_val, 2)
+                except (ValueError, TypeError):
+                    pass
+
+            if s.get("pb") is None and ts_data.get("pb") is not None:
+                try:
+                    pb_val = float(ts_data["pb"])
+                    if 0 < pb_val < 1000:
+                        s["pb"] = round(pb_val, 2)
+                except (ValueError, TypeError):
+                    pass
+
+            if s.get("market_cap") is None and ts_data.get("total_mv") is not None:
+                try:
+                    mv = float(ts_data["total_mv"])
+                    s["market_cap"] = round(mv / 10000, 1)  # 万元→亿元
+                except (ValueError, TypeError):
+                    pass
+
+            if s.get("turnover") is None and ts_data.get("turnover") is not None:
+                try:
+                    s["turnover"] = round(float(ts_data["turnover"]), 2)
+                except (ValueError, TypeError):
+                    pass
+
+            if s.get("pe") is not None:
+                filled += 1
+
+        print(f"[DATA_PROVIDER] Tushare 补充 {filled}/{len(stocks)} 只有 PE")
+        return stocks
+
+    except Exception as e:
+        print(f"[DATA_PROVIDER] Tushare enrich failed: {e}")
+        return stocks
