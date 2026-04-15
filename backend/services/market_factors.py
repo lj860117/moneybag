@@ -22,7 +22,7 @@ MODULE_META = {
 }
 import time
 import traceback
-from datetime import datetime
+from datetime import datetime, timedelta
 
 _factor_cache = {}
 
@@ -90,6 +90,22 @@ def get_stock_unlock_schedule() -> dict:
         df = ak.stock_restricted_release_summary_em()
         if df is not None and len(df) > 0:
             cols = list(df.columns)
+
+            # 找日期列并按日期排序
+            date_col = next((c for c in cols if "日期" in str(c) or "date" in str(c).lower() or "解禁" in str(c)), None)
+            if date_col:
+                try:
+                    import pandas as pd
+                    df[date_col] = pd.to_datetime(df[date_col], errors="coerce")
+                    df = df.dropna(subset=[date_col])
+                    df = df.sort_values(date_col, ascending=False)
+                    # 只保留最近60天内的数据
+                    cutoff = datetime.now() - timedelta(days=60)
+                    df = df[df[date_col] >= cutoff]
+                except Exception as e:
+                    print(f"[UNLOCK] Date sort failed: {e}")
+                    # 即使排序失败也继续，至少返回原始数据
+
             items = []
             for _, row in df.head(15).iterrows():
                 item = {}
@@ -99,6 +115,12 @@ def get_stock_unlock_schedule() -> dict:
                     try:
                         if val != val:  # NaN check
                             val = None
+                    except Exception:
+                        pass
+                    # 日期转字符串
+                    try:
+                        if hasattr(val, "strftime"):
+                            val = val.strftime("%Y-%m-%d")
                     except Exception:
                         pass
                     item[c] = val
@@ -119,8 +141,8 @@ def get_stock_unlock_schedule() -> dict:
 
             result["items"] = items
             result["count"] = len(items)
-            result["available"] = True
-            print(f"[UNLOCK] Got {len(items)} unlock events")
+            result["available"] = len(items) > 0
+            print(f"[UNLOCK] Got {len(items)} unlock events (recent 60d)")
 
     except Exception as e:
         print(f"[UNLOCK] Failed: {e}")
@@ -176,7 +198,24 @@ def get_etf_fund_flow() -> dict:
     result = {"top_inflow": [], "top_outflow": [], "total_etf": 0, "available": False}
     try:
         import akshare as ak
-        df = ak.fund_etf_fund_daily_em()
+        df = None
+
+        # 尝试多个可能的接口名（AKShare 频繁改名）
+        for func_name in [
+            "fund_etf_fund_daily_em",
+            "fund_etf_spot_em",
+            "fund_etf_fund_info_em",
+        ]:
+            if hasattr(ak, func_name):
+                try:
+                    df = getattr(ak, func_name)()
+                    if df is not None and len(df) > 0:
+                        print(f"[ETF_FLOW] Using interface: {func_name}")
+                        break
+                except Exception as e:
+                    print(f"[ETF_FLOW] {func_name} failed: {e}")
+                    df = None
+
         if df is not None and len(df) > 0:
             cols = list(df.columns)
             result["total_etf"] = len(df)
@@ -196,24 +235,27 @@ def get_etf_fund_flow() -> dict:
                 clean[fc] = clean[fc].apply(lambda x: _safe_float(x))
                 clean = clean.dropna(subset=[fc])
 
-                # TOP 5 净流入
-                top_in = clean.nlargest(5, fc)
-                for _, row in top_in.iterrows():
-                    item = {"name": str(row[nc]), "flow": round(float(row[fc]), 2)}
-                    if cc:
-                        item["code"] = str(row[cc])
-                    result["top_inflow"].append(item)
+                if len(clean) > 0:
+                    # TOP 5 净流入
+                    top_in = clean.nlargest(5, fc)
+                    for _, row in top_in.iterrows():
+                        item = {"name": str(row[nc]), "flow": round(float(row[fc]), 2)}
+                        if cc:
+                            item["code"] = str(row[cc])
+                        result["top_inflow"].append(item)
 
-                # TOP 5 净流出
-                top_out = clean.nsmallest(5, fc)
-                for _, row in top_out.iterrows():
-                    item = {"name": str(row[nc]), "flow": round(float(row[fc]), 2)}
-                    if cc:
-                        item["code"] = str(row[cc])
-                    result["top_outflow"].append(item)
+                    # TOP 5 净流出
+                    top_out = clean.nsmallest(5, fc)
+                    for _, row in top_out.iterrows():
+                        item = {"name": str(row[nc]), "flow": round(float(row[fc]), 2)}
+                        if cc:
+                            item["code"] = str(row[cc])
+                        result["top_outflow"].append(item)
 
-                result["available"] = True
-                print(f"[ETF_FLOW] Got {len(df)} ETFs, top inflow: {result['top_inflow'][0]['name'] if result['top_inflow'] else 'N/A'}")
+                    result["available"] = True
+                    print(f"[ETF_FLOW] Got {len(df)} ETFs, top inflow: {result['top_inflow'][0]['name'] if result['top_inflow'] else 'N/A'}")
+            else:
+                print(f"[ETF_FLOW] 列名匹配失败，可用列: {cols}")
 
     except Exception as e:
         print(f"[ETF_FLOW] Failed: {e}")

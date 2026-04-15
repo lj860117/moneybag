@@ -216,33 +216,55 @@ def get_global_pe() -> dict:
 
     result = {"us_pe": None, "cn_pe": None, "spread": None, "available": False}
 
+    def _extract_pe(df, label):
+        """从 DataFrame 提取 PE 值，带合理性校验"""
+        if df is None or len(df) == 0:
+            return None
+        last = df.iloc[-1]
+        # 优先找明确的 PE 列
+        pe_col = None
+        for c in df.columns:
+            c_lower = str(c).lower()
+            if "pe" in c_lower or "市盈率" in str(c):
+                pe_col = c
+                break
+        if pe_col:
+            val = _safe_num(last[pe_col])
+        elif len(df.columns) > 1:
+            # 降级：取第二列，但必须通过合理性校验
+            val = _safe_num(last.iloc[1])
+        else:
+            return None
+
+        # 合理性校验：全球主要市场 PE 通常在 5~60 之间
+        if val is not None and 3 < val < 80:
+            return round(val, 2)
+        else:
+            print(f"[GLOBAL_PE] {label} PE={val} 不在合理区间(3-80)，丢弃")
+            return None
+
     try:
         import akshare as ak
         # 美国 PE
         try:
             df_us = ak.stock_market_pe_lg(symbol="美国")
-            if df_us is not None and len(df_us) > 0:
-                last = df_us.iloc[-1]
-                pe_col = [c for c in df_us.columns if "pe" in str(c).lower() or "市盈率" in str(c)]
-                if pe_col:
-                    result["us_pe"] = round(_safe_num(last[pe_col[0]]), 2)
-                elif len(df_us.columns) > 1:
-                    result["us_pe"] = round(_safe_num(last.iloc[1]), 2)
+            result["us_pe"] = _extract_pe(df_us, "美国")
         except Exception as e:
             print(f"[GLOBAL] US PE failed: {e}")
 
         # 中国 PE
         try:
             df_cn = ak.stock_market_pe_lg(symbol="中国")
-            if df_cn is not None and len(df_cn) > 0:
-                last = df_cn.iloc[-1]
-                pe_col = [c for c in df_cn.columns if "pe" in str(c).lower() or "市盈率" in str(c)]
-                if pe_col:
-                    result["cn_pe"] = round(_safe_num(last[pe_col[0]]), 2)
-                elif len(df_cn.columns) > 1:
-                    result["cn_pe"] = round(_safe_num(last.iloc[1]), 2)
+            result["cn_pe"] = _extract_pe(df_cn, "中国")
         except Exception as e:
             print(f"[GLOBAL] CN PE failed: {e}")
+
+        # 额外校验：中美 PE 不应相同（如果相同大概率是数据源错误）
+        if result["us_pe"] and result["cn_pe"] and result["us_pe"] == result["cn_pe"]:
+            print(f"[GLOBAL_PE] 中美PE相同({result['us_pe']})，疑似数据源错误，标记不可用")
+            result["us_pe"] = None
+            result["cn_pe"] = None
+            result["notice"] = "中美PE数据异常（值相同），可能接口返回了错误数据"
 
         # PE 价差
         if result["us_pe"] and result["cn_pe"]:

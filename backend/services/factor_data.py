@@ -17,49 +17,76 @@ MODULE_META = {
 }
 import os
 import time
+import json
 from datetime import datetime, timedelta
 from config import FACTOR_CACHE_TTL, LLM_API_URL, LLM_API_KEY, LLM_MODEL
 
 factor_cache = {}
 
 def get_northbound_flow() -> dict:
-    """获取北向资金（沪股通+深股通）净流入数据"""
+    """获取北向资金（沪股通+深股通）净流入数据
+    注意：2024年8月19日起沪深交易所不再披露每日净流入明细，
+    stock_hsgt_hist_em 返回的数据8月19日后为空值。
+    降级方案：取8月19日前的历史趋势 + 标记数据不完整。
+    """
     cache_key = "northbound"
     now = time.time()
     if cache_key in factor_cache and now - factor_cache[cache_key]["ts"] < FACTOR_CACHE_TTL:
         return factor_cache[cache_key]["data"]
 
-    result = {"net_flow_today": 0, "net_flow_5d": 0, "net_flow_20d": 0, "trend": "中性", "available": False}
+    result = {"net_flow_today": 0, "net_flow_5d": 0, "net_flow_20d": 0, "trend": "中性", "available": False,
+              "notice": "2024年8月起交易所不再披露每日北向净流入，数据可能不完整"}
     try:
         import akshare as ak
+        df = None
         # 沪股通+深股通历史数据
         # AKShare 接口名变更：stock_hsgt_north_net_flow_in_em → stock_hsgt_hist_em
         if hasattr(ak, "stock_hsgt_hist_em"):
-            df = ak.stock_hsgt_hist_em(symbol="沪股通")
-        elif hasattr(ak, "stock_hsgt_north_net_flow_in_em"):
-            df = ak.stock_hsgt_north_net_flow_in_em(symbol="北上")
-        else:
-            df = None
+            try:
+                df = ak.stock_hsgt_hist_em(symbol="北向资金")
+            except Exception:
+                pass
+        if df is None and hasattr(ak, "stock_hsgt_north_net_flow_in_em"):
+            try:
+                df = ak.stock_hsgt_north_net_flow_in_em(symbol="北上")
+            except Exception:
+                pass
+
         if df is not None and len(df) >= 20:
             # 列名可能是 "净流入" / "当日净流入" / "value"
             val_col = next((c for c in df.columns if "净流入" in str(c) or "value" in str(c).lower()), None)
             date_col = next((c for c in df.columns if "日期" in str(c) or "date" in str(c).lower()), df.columns[0])
             if val_col:
                 df = df.sort_values(date_col, ascending=True)
-                vals = df[val_col].astype(float).values
-                result["net_flow_today"] = round(float(vals[-1]), 2)  # 亿元
-                result["net_flow_5d"] = round(float(sum(vals[-5:])), 2)
-                result["net_flow_20d"] = round(float(sum(vals[-20:])), 2)
-                result["available"] = True
-                if result["net_flow_5d"] > 50:
-                    result["trend"] = "大幅流入"
-                elif result["net_flow_5d"] > 10:
-                    result["trend"] = "净流入"
-                elif result["net_flow_5d"] < -50:
-                    result["trend"] = "大幅流出"
-                elif result["net_flow_5d"] < -10:
-                    result["trend"] = "净流出"
-                print(f"[NORTH] today={result['net_flow_today']}亿, 5d={result['net_flow_5d']}亿, 20d={result['net_flow_20d']}亿")
+                # 过滤掉空值行（2024年8月后数据可能为空）
+                valid_df = df.dropna(subset=[val_col])
+                if len(valid_df) >= 20:
+                    vals = valid_df[val_col].astype(float).values
+                    result["net_flow_today"] = round(float(vals[-1]), 2)  # 亿元
+                    result["net_flow_5d"] = round(float(sum(vals[-5:])), 2)
+                    result["net_flow_20d"] = round(float(sum(vals[-20:])), 2)
+                    result["available"] = True
+                    # 检查数据是否过旧（超过7天没更新视为不完整）
+                    try:
+                        import pandas as pd
+                        last_date = pd.to_datetime(valid_df[date_col].iloc[-1])
+                        days_old = (datetime.now() - last_date).days
+                        if days_old > 7:
+                            result["notice"] = f"数据最后更新于{days_old}天前，可能已过时"
+                            result["stale"] = True
+                        else:
+                            result["notice"] = ""
+                    except Exception:
+                        pass
+                    if result["net_flow_5d"] > 50:
+                        result["trend"] = "大幅流入"
+                    elif result["net_flow_5d"] > 10:
+                        result["trend"] = "净流入"
+                    elif result["net_flow_5d"] < -50:
+                        result["trend"] = "大幅流出"
+                    elif result["net_flow_5d"] < -10:
+                        result["trend"] = "净流出"
+                    print(f"[NORTH] today={result['net_flow_today']}亿, 5d={result['net_flow_5d']}亿, 20d={result['net_flow_20d']}亿")
     except Exception as e:
         print(f"[NORTH] Failed: {e}")
 
@@ -157,7 +184,9 @@ def get_shibor() -> dict:
     result = {"overnight": 0, "one_week": 0, "trend": "中性", "available": False}
     try:
         import akshare as ak
-        df = ak.rate_interbank(market="上海银行同业拆放利率(Shibor)", symbol="隔夜", indicator="利率")
+        # 修复：参数需严格匹配 AKShare 官方文档
+        # market="上海银行同业拆借市场", symbol="Shibor人民币", indicator="隔夜"
+        df = ak.rate_interbank(market="上海银行同业拆借市场", symbol="Shibor人民币", indicator="隔夜")
         if df is not None and len(df) >= 10:
             val_col = next((c for c in df.columns if "利率" in str(c) or "报价" in str(c)), None)
             if not val_col and len(df.columns) > 1:
@@ -193,28 +222,58 @@ def get_dividend_yield() -> dict:
     result = {"dividend_yield": 0, "level": "中性", "available": False}
     try:
         import akshare as ak
-        # 尝试从估值数据中获取股息率
-        df = ak.stock_index_pe_lg(symbol="沪深300")
-        if df is not None and len(df) > 0:
-            dy_col = next((c for c in df.columns if "股息率" in str(c)), None)
-            if dy_col:
-                dy_vals = df[dy_col].dropna().astype(float)
-                if len(dy_vals) > 0:
-                    current = float(dy_vals.iloc[-1])
-                    result["dividend_yield"] = round(current, 2)
-                    result["available"] = True
-                    # 历史百分位
-                    window = min(1250, len(dy_vals))
-                    recent = dy_vals.tail(window).values
-                    pct = round(sum(1 for d in recent if d <= current) / len(recent) * 100, 1)
-                    result["percentile"] = pct
-                    if pct > 70:
-                        result["level"] = "高股息(价值凸显)"
-                    elif pct > 40:
-                        result["level"] = "中等股息"
-                    else:
-                        result["level"] = "低股息(成长偏好)"
-                    print(f"[DIVIDEND] yield={current}%, pct={pct}%")
+        # 方案A：用 stock_a_lg_indicator 获取个股股息率（沪深300成分股代表）
+        # 方案B（降级）：从 stock_index_pe_lg 的数据推算
+        dy_value = None
+
+        # 尝试方案A：获取沪深300成分股加权股息率
+        try:
+            # 先用 stock_index_pe_lg 获取沪深300 PE，然后推算
+            df = ak.stock_index_pe_lg(symbol="沪深300")
+            if df is not None and len(df) > 0:
+                # 检查是否有股息率列
+                dy_col = next((c for c in df.columns if "股息率" in str(c)), None)
+                if dy_col:
+                    dy_vals = df[dy_col].dropna().astype(float)
+                    if len(dy_vals) > 0:
+                        dy_value = float(dy_vals.iloc[-1])
+                else:
+                    # 没有股息率列，尝试用 PE 推算（1/PE × 分红率估算）
+                    pe_col = next((c for c in df.columns if "pe" in str(c).lower() or "市盈率" in str(c)), None)
+                    if pe_col:
+                        pe_vals = df[pe_col].dropna().astype(float)
+                        if len(pe_vals) > 0:
+                            current_pe = float(pe_vals.iloc[-1])
+                            if 5 < current_pe < 100:  # 合理性校验
+                                # 沪深300平均分红率约30%，股息率 ≈ 分红率 / PE
+                                dy_value = round(30.0 / current_pe, 2)
+                                print(f"[DIVIDEND] PE={current_pe}, estimated DY={dy_value}%")
+        except Exception as e:
+            print(f"[DIVIDEND] stock_index_pe_lg failed: {e}")
+
+        # 方案B：尝试 stock_a_lg_indicator 获取代表性个股
+        if dy_value is None:
+            try:
+                df2 = ak.stock_a_lg_indicator(symbol="000300")  # 沪深300指数
+                if df2 is not None and len(df2) > 0:
+                    dy_col2 = next((c for c in df2.columns if "股息率" in str(c) or "dy" in str(c).lower()), None)
+                    if dy_col2:
+                        dy_value = float(df2[dy_col2].dropna().iloc[-1])
+            except Exception as e:
+                print(f"[DIVIDEND] stock_a_lg_indicator failed: {e}")
+
+        if dy_value is not None and dy_value > 0:
+            result["dividend_yield"] = round(dy_value, 2)
+            result["available"] = True
+            # 简单评级
+            if dy_value > 3:
+                result["level"] = "高股息(价值凸显)"
+            elif dy_value > 2:
+                result["level"] = "中等股息"
+            else:
+                result["level"] = "低股息(成长偏好)"
+            print(f"[DIVIDEND] yield={dy_value}%, level={result['level']}")
+
     except Exception as e:
         print(f"[DIVIDEND] Failed: {e}")
 
