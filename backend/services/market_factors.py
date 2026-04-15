@@ -254,7 +254,10 @@ def get_etf_fund_flow() -> dict:
 
                     if nc and rc:
                         clean = df[[nc, rc] + ([cc] if cc else [])].copy()
-                        clean[rc] = clean[rc].apply(lambda x: _safe_float(x))
+                        # 增长率可能是 "0.03%" 格式，先去掉百分号再转 float
+                        clean[rc] = clean[rc].apply(lambda x: _safe_float(
+                            str(x).replace("%", "").strip() if x is not None else x
+                        ))
                         clean = clean.dropna(subset=[rc])
                         result["total_etf"] = len(df)
 
