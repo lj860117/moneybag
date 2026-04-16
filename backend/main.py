@@ -63,7 +63,7 @@ from services.data_layer import (
 )
 
 # ---- FastAPI 应用 ----
-app = FastAPI(title="钱袋子 API", version="5.0.0")
+app = FastAPI(title="钱袋子 API", version="6.0.0-phase0")
 
 app.add_middleware(GZipMiddleware, minimum_size=1000)  # >1KB 自动 gzip
 app.add_middleware(
@@ -78,7 +78,8 @@ app.add_middleware(
 
 @app.get("/api/health")
 def health():
-    return {"status": "ok", "time": datetime.now().isoformat()}
+    from config import APP_VERSION
+    return {"status": "ok", "time": datetime.now().isoformat(), "version": APP_VERSION}
 
 
 # ---- 企业微信路由（已拆分到 routers/wxwork.py）----
@@ -2402,6 +2403,84 @@ def delete_user_data(user_id: str):
     if f.exists():
         f.unlink()
     return {"status": "ok"}
+
+
+# ---- API: 用户偏好（Phase 0 新增）----
+
+# 默认偏好
+USER_DEFAULTS = {
+    "display_mode": "simple",        # 'simple' | 'pro'
+    "risk_profile": "balanced",      # conservative / balanced / growth / aggressive
+    "push_preferences": {
+        "morning_brief": True,
+        "closing_review": True,
+        "risk_alert": True,
+        "trade_signal": True,
+        "breaking_news": True,
+    },
+    "watchlist_config": {
+        "stop_loss_pct": -0.08,
+        "take_profit_pct": 0.20,
+        "price_alert_range": 0.05,
+    },
+}
+
+# 两个用户的个性化覆盖
+USER_OVERRIDES = {
+    "LeiJiang": {
+        "display_mode": "pro",
+        "risk_profile": "growth",
+        "push_preferences": {
+            "morning_brief": True, "closing_review": True,
+            "risk_alert": True, "trade_signal": True, "breaking_news": True,
+        },
+        "watchlist_config": {
+            "stop_loss_pct": -0.10, "take_profit_pct": 0.25, "price_alert_range": 0.05,
+        },
+    },
+    "BuLuoGeLi": {
+        "display_mode": "simple",
+        "risk_profile": "balanced",
+        "push_preferences": {
+            "morning_brief": True, "closing_review": False,
+            "risk_alert": True, "trade_signal": False, "breaking_news": False,
+        },
+        "watchlist_config": {
+            "stop_loss_pct": -0.05, "take_profit_pct": 0.15, "price_alert_range": 0.03,
+        },
+    },
+}
+
+@app.get("/api/user/preference")
+def get_user_preference(userId: str):
+    """获取用户偏好（Simple/Pro模式、推送、盯盘阈值）"""
+    user = load_user(userId)
+    defaults = USER_DEFAULTS.copy()
+    overrides = USER_OVERRIDES.get(userId, {})
+
+    return {
+        "display_mode": user.get("display_mode", overrides.get("display_mode", defaults["display_mode"])),
+        "risk_profile": user.get("risk_profile", overrides.get("risk_profile", defaults["risk_profile"])),
+        "push_preferences": user.get("push_preferences", overrides.get("push_preferences", defaults["push_preferences"])),
+        "watchlist_config": user.get("watchlist_config", overrides.get("watchlist_config", defaults["watchlist_config"])),
+    }
+
+@app.put("/api/user/preference")
+def update_user_preference(userId: str, body: dict):
+    """更新用户偏好"""
+    from services.audit_log import audit_log
+    user = load_user(userId)
+
+    changed = {}
+    for key in ["display_mode", "risk_profile", "push_preferences", "watchlist_config"]:
+        if key in body:
+            old_val = user.get(key)
+            user[key] = body[key]
+            changed[key] = {"old": old_val, "new": body[key]}
+
+    save_user(user)
+    audit_log("preference_update", user_id=userId, detail=changed)
+    return {"success": True, "changed": list(changed.keys())}
 
 
 # ---- API: OCR 记账 ----

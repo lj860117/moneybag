@@ -89,3 +89,6 @@ DCA_MULTIPLIERS = {
 LLM_API_URL = os.environ.get("LLM_API_URL", "https://api.deepseek.com/v1/chat/completions")
 LLM_API_KEY = os.environ.get("LLM_API_KEY", "")
 LLM_MODEL = os.environ.get("LLM_MODEL", "deepseek-chat")
+
+# ---- 版本号（Phase 0 统一对齐）----
+APP_VERSION = "6.0.0-phase0"  # Phase 0 完成后改为 6.0.0

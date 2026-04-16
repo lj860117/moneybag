@@ -27,7 +27,7 @@ MODEL_ROUTING = {
 }
 
 # 限制
-DAILY_LIMIT = 50       # 每天最多 50 次
+DAILY_LIMIT = 100      # 每天最多 100 次（Phase 0 从 50 升级）
 BURST_LIMIT = 10       # 5 分钟内最多 10 次
 BURST_WINDOW = 300     # 5 分钟窗口
 CACHE_TTL = 3600       # 缓存 1 小时
@@ -62,6 +62,46 @@ class LLMGateway:
         self._daily_count = 0
         self._daily_date = date.today()
         self._burst_window = []    # 时间戳列表
+        self._cache_dirty = 0      # 脏缓存计数，每 5 次写磁盘
+        self._load_cache_from_disk()  # 启动时从磁盘恢复缓存
+
+    # ---- 缓存持久化（Phase 0 新增）----
+
+    CACHE_FILE = Path(os.environ.get("DATA_DIR", "./data")) / "cache" / "llm_cache.json"
+
+    def _load_cache_from_disk(self):
+        """启动时从磁盘恢复 LLM 缓存（忽略已过期的条目）"""
+        try:
+            if self.CACHE_FILE.exists():
+                raw = json.loads(self.CACHE_FILE.read_text(encoding="utf-8"))
+                now = time.time()
+                restored = 0
+                for k, v in raw.items():
+                    if now - v.get("ts", 0) < CACHE_TTL:
+                        self._cache[k] = v
+                        restored += 1
+                if restored:
+                    print(f"[LLM_GATEWAY] 💾 从磁盘恢复 {restored} 条缓存")
+        except Exception as e:
+            print(f"[LLM_GATEWAY] ⚠️ 缓存恢复失败（不影响运行）: {e}")
+
+    def _persist_cache_to_disk(self):
+        """将内存缓存写入磁盘（原子写）"""
+        try:
+            import tempfile
+            self.CACHE_FILE.parent.mkdir(parents=True, exist_ok=True)
+            # 只持久化未过期的条目
+            now = time.time()
+            valid = {k: v for k, v in self._cache.items() if now - v.get("ts", 0) < CACHE_TTL}
+            # 原子写：tmp + rename
+            fd, tmp_path = tempfile.mkstemp(dir=str(self.CACHE_FILE.parent), suffix=".tmp")
+            with os.fdopen(fd, "w", encoding="utf-8") as f:
+                json.dump(valid, f, ensure_ascii=False)
+                f.flush()
+                os.fsync(f.fileno())
+            os.replace(tmp_path, str(self.CACHE_FILE))
+        except Exception as e:
+            print(f"[LLM_GATEWAY] ⚠️ 缓存持久化失败: {e}")
 
     # ---- 核心调用 ----
 
@@ -202,6 +242,11 @@ class LLMGateway:
                 k: v for k, v in self._cache.items()
                 if now - v["ts"] < CACHE_TTL
             }
+        # 每 5 次新缓存写一次磁盘（Phase 0 持久化）
+        self._cache_dirty += 1
+        if self._cache_dirty >= 5:
+            self._persist_cache_to_disk()
+            self._cache_dirty = 0
 
     # ---- 熔断 ----
 
