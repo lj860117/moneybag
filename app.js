@@ -420,6 +420,8 @@ $('#app').innerHTML=`<div class="result-page fade-up">
 
 <div id="dailyFocusSection"></div>
 
+<div id="timingSection" style="display:none"></div>
+
 <div id="stewardBriefingCard" class="dashboard-card" style="border-left:3px solid #6366F1;display:none">
 <div class="dashboard-card-title">🤖 管家一句话</div>
 <div id="stewardBriefingText" style="font-size:13px;line-height:1.8;color:var(--text1)">加载中...</div>
@@ -437,7 +439,7 @@ $('#app').innerHTML=`<div class="result-page fade-up">
 <button class="action-btn secondary" onclick="showAddTxn()">➕ 记交易</button>
 <button class="action-btn secondary" onclick="startQuiz()">🔄 重新测评</button>
 </div>
-</div>`;renderNav();loadSignals();loadDailyFocus();loadHomeRiskAlert();loadHomeAllocationAdvice();loadUnifiedHero();loadStewardBriefing()}
+</div>`;renderNav();loadSignals();loadDailyFocus();loadTimingSection();loadHomeRiskAlert();loadHomeAllocationAdvice();loadUnifiedHero();loadStewardBriefing()}
 
 // ---- 首页：管家简报 ----
 async function loadStewardBriefing(){
@@ -513,6 +515,80 @@ try{const r=await fetch(`${API_BASE}/daily-focus`,{signal:AbortSignal.timeout(15
 if(!r.ok)return;const d=await r.json();const tips=d.tips||[];
 if(tips.length)el.innerHTML=`<div style="background:rgba(99,102,241,.06);border:1px solid rgba(99,102,241,.15);border-radius:12px;padding:12px 14px;margin-bottom:12px"><div style="font-size:13px;font-weight:700;margin-bottom:8px">🎯 今日关注 <span style="font-size:10px;color:var(--text2);font-weight:400">${d.source==='ai'?'AI':'默认'}</span></div>${tips.map(t=>`<div style="font-size:12px;line-height:1.8">${t}</div>`).join('')}</div>`
 }catch(e){console.warn('dailyFocus:',e)}}
+
+// Phase 0 (3.2): 入场时机 + 智能定投
+async function loadTimingSection(){
+const el=document.getElementById('timingSection');if(!el||!API_AVAILABLE)return;
+try{
+  const r=await fetch(`${API_BASE}/timing`,{signal:AbortSignal.timeout(10000)});
+  if(!r.ok)return;const d=await r.json();
+  const score=d.timingScore||50;
+  const color=score<30?'var(--green)':score<50?'#F59E0B':score<70?'#F97316':'var(--red)';
+  let dcaHtml='';
+  // Pro 模式加载智能定投
+  if(isProMode()){
+    try{
+      const dr=await fetch(`${API_BASE}/smart-dca`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({holdings:[]}),signal:AbortSignal.timeout(10000)});
+      if(dr.ok){const dd=await dr.json();dcaHtml=`<div style="margin-top:10px;padding:10px;border-radius:8px;background:rgba(99,102,241,.06);font-size:12px"><span style="font-weight:600">🧠 智能定投：</span>${dd.advice||''} <span style="color:var(--accent)">倍率 ${dd.multiplier||1.0}x</span></div>`}
+    }catch(e){}
+  }
+  el.style.display='block';
+  el.innerHTML=`<div style="background:rgba(148,163,184,.04);border:1px solid rgba(148,163,184,.1);border-radius:12px;padding:12px 14px;margin-bottom:12px">
+    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px">
+      <span style="font-size:13px;font-weight:700">⏱️ 入场时机</span>
+      <span style="font-size:20px;font-weight:700;color:${color}">${score}分</span>
+    </div>
+    <div style="font-size:14px;font-weight:600;margin-bottom:4px">${d.verdict||''}</div>
+    <div style="font-size:12px;color:var(--text2);line-height:1.6">${d.detail||''}</div>
+    ${isProMode()?`<div style="margin-top:8px;font-size:11px;color:var(--text3)">估值百分位: ${d.valuation?.percentile||'-'}% · 恐贪指数: ${d.fearGreed?.score||'-'}</div>`:''}
+    ${dcaHtml}
+  </div>`;
+}catch(e){console.warn('timing:',e)}}
+
+// Phase 0 (3.4): 盯盘预警轮询 + visibilitychange 智能控制
+let _alertPolling=null;
+function startAlertPolling(){
+  if(_alertPolling||!API_AVAILABLE)return;
+  _alertPolling=setInterval(async()=>{
+    try{
+      const r=await fetch(`${API_BASE}/watchlist/alerts?userId=${encodeURIComponent(getProfileId())}`,{signal:AbortSignal.timeout(10000)});
+      if(!r.ok)return;const d=await r.json();
+      if(d.alerts&&d.alerts.length>0){
+        // 更新首页预警 badge
+        const badge=document.getElementById('alertBadge');
+        if(badge){badge.style.display='block';badge.textContent=d.alerts.length}
+        // 高危预警弹 toast
+        d.alerts.filter(a=>a.level==='danger').forEach(a=>{
+          showToast(`⚠️ ${a.message}`,'danger');
+        });
+      }
+    }catch(e){}
+  },15000);
+}
+function stopAlertPolling(){if(_alertPolling){clearInterval(_alertPolling);_alertPolling=null}}
+
+// 页面可见性控制（三方 AI 审查共识）
+// 手机切后台/锁屏时暂停轮询，切回来时立即刷新
+document.addEventListener('visibilitychange',()=>{
+  if(document.hidden){stopAlertPolling()}
+  else{
+    startAlertPolling();
+    // 切回来时立即刷新一次
+    if(API_AVAILABLE){fetch(`${API_BASE}/watchlist/alerts?userId=${encodeURIComponent(getProfileId())}`,{signal:AbortSignal.timeout(10000)}).then(r=>r.json()).then(d=>{
+      if(d.alerts?.length){const badge=document.getElementById('alertBadge');if(badge){badge.style.display='block';badge.textContent=d.alerts.length}}
+    }).catch(()=>{})}
+  }
+});
+
+// 交易时段自动启动（09:25-15:05 工作日）
+function checkTradingHours(){
+  const now=new Date();const h=now.getHours();const m=now.getMinutes();const day=now.getDay();
+  if(day>=1&&day<=5&&((h===9&&m>=25)||h>=10)&&(h<15||(h===15&&m<=5))){startAlertPolling()}
+  else{stopAlertPolling()}
+}
+// 每 5 分钟检查是否进入/离开交易时段
+setInterval(checkTradingHours,300000);
+checkTradingHours(); // 首次检查
 
 // ---- 首页：风控预警摘要 ----
 async function loadHomeRiskAlert(){
@@ -2737,6 +2813,16 @@ ${relBadge}${holdingBadge}
 </div>`}).join('');
 html+=`<div style="font-size:11px;color:#475569;margin-top:12px;text-align:center">扫描于 ${new Date(d.scanned_at).toLocaleString('zh-CN')}</div>`;
 el2.innerHTML=html;
+// Phase 0 (3.1): 追加 AI 信号解读（Pro 模式调 /daily-signal/interpret）
+if(isProMode()&&API_AVAILABLE){
+  el2.insertAdjacentHTML('beforeend','<div id="signalInterpretBox" style="margin-top:16px;padding:12px;border-radius:10px;background:rgba(99,102,241,.06);border:1px solid rgba(99,102,241,.15)"><div class="dashboard-card-title" style="margin-bottom:8px">🤖 AI 信号解读</div><div style="text-align:center;padding:12px;color:var(--text2);font-size:12px"><div class="loading-spinner" style="width:16px;height:16px;margin:0 auto 6px;border-width:2px"></div>DeepSeek 正在解读 12 维信号...</div></div>');
+  fetch(`${API_BASE}/daily-signal/interpret`,{signal:AbortSignal.timeout(30000)}).then(r=>r.json()).then(sd=>{
+    const box=document.getElementById('signalInterpretBox');if(!box)return;
+    const interp=sd.interpretation||sd.detail||'';
+    const overall=sd.overall_score!==undefined?`<span style="font-size:20px;font-weight:700;color:${sd.overall_score>=60?'var(--green)':sd.overall_score>=40?'#F59E0B':'var(--red)'}">${sd.overall_score}分</span>`:'';
+    box.innerHTML=`<div class="dashboard-card-title" style="margin-bottom:8px">🤖 AI 信号解读 ${overall}</div><div style="font-size:13px;line-height:1.8;color:var(--text1);white-space:pre-wrap">${interp}</div>`;
+  }).catch(()=>{const box=document.getElementById('signalInterpretBox');if(box)box.innerHTML='<div class="dashboard-card-title">🤖 AI 信号解读</div><div style="color:var(--text2);font-size:12px">解读加载失败</div>'});
+}
 }catch(e){console.warn('Signal scout failed:',e);
 const el2=document.getElementById('signalScoutContent');
 if(el2)el2.innerHTML=`<div style="text-align:center;padding:20px;color:var(--text2)">信号加载失败<br><button onclick="renderSignalScout(document.getElementById('insightContent'))" style="margin-top:8px;padding:6px 16px;border-radius:6px;border:none;background:var(--accent);color:#fff;cursor:pointer;font-size:12px">🔄 重试</button></div>`}}

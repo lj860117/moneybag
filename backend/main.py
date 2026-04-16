@@ -1097,6 +1097,57 @@ def scan_holdings_api(userId: str = "default"):
     return scan_all_holdings(userId)
 
 
+# ---- API: 盯盘预警（Phase 0 Day 3 新增）----
+
+# 预警冷却（同一预警 30 分钟内不重复）
+_alert_cooldown = {}  # {alert_key: last_alert_time}
+
+@app.get("/api/watchlist/alerts")
+def get_watchlist_alerts(userId: str = "default"):
+    """盯盘预警轮询 — 前端每 15 秒调一次（交易时段）"""
+    import time
+    now = time.time()
+    cooldown_sec = 1800  # 30 分钟冷却
+
+    # 获取用户盯盘阈值
+    user = load_user(userId)
+    wc = user.get("watchlist_config", {})
+    stop_loss = wc.get("stop_loss_pct", -0.08)
+    take_profit = wc.get("take_profit_pct", 0.20)
+
+    # 扫描持仓
+    scan = scan_all_holdings(userId)
+    alerts = []
+    for h in (scan.get("holdings") or []):
+        pnl = h.get("pnlPct", 0) or 0
+        change = h.get("changePct", 0) or 0
+        name = h.get("name", h.get("code", "?"))
+
+        # 止损预警
+        if pnl / 100 <= stop_loss:
+            key = f"stoploss_{h['code']}_{userId}"
+            if now - _alert_cooldown.get(key, 0) > cooldown_sec:
+                alerts.append({"level": "danger", "type": "stop_loss", "code": h["code"], "name": name, "message": f"{name} 亏损 {pnl:.1f}%，触及止损线 {stop_loss*100:.0f}%"})
+                _alert_cooldown[key] = now
+
+        # 止盈预警
+        if pnl / 100 >= take_profit:
+            key = f"takeprofit_{h['code']}_{userId}"
+            if now - _alert_cooldown.get(key, 0) > cooldown_sec:
+                alerts.append({"level": "warning", "type": "take_profit", "code": h["code"], "name": name, "message": f"{name} 盈利 {pnl:.1f}%，触及止盈线 {take_profit*100:.0f}%"})
+                _alert_cooldown[key] = now
+
+        # 日内大幅波动
+        if abs(change) >= 5:
+            key = f"bigmove_{h['code']}_{userId}"
+            if now - _alert_cooldown.get(key, 0) > cooldown_sec:
+                direction = "暴涨" if change > 0 else "暴跌"
+                alerts.append({"level": "danger" if change < -5 else "warning", "type": "big_move", "code": h["code"], "name": name, "message": f"{name} 今日{direction} {change:+.1f}%"})
+                _alert_cooldown[key] = now
+
+    return {"alerts": alerts, "total_holdings": len(scan.get("holdings", []))}
+
+
 @app.post("/api/stock-holdings/analyze")
 async def analyze_stock_holdings(req: dict = {}):
     """收盘后 DeepSeek 深度分析全持仓（7 Skill 框架）"""
@@ -1816,12 +1867,42 @@ def calc_portfolio_pnl(portfolio: Portfolio):
 
 # ---- API: AI 对话分析 ----
 
+# ---- Phase 0 (3.6): 聊天意图预分类 ----
+import re as _re
+
+_INTENT_RULES = [
+    # (关键词列表, 意图, 可快速回答的 API 路径)
+    (["入场", "时机", "现在适合买", "该买吗", "能买吗", "进场"], "timing", "/api/timing"),
+    (["定投", "DCA", "每月投", "定投多少"], "smart_dca", "/api/smart-dca"),
+    (["止盈", "止损", "卖出", "该卖吗", "减仓"], "take_profit", None),
+    (["持仓分析", "诊断", "体检", "检查持仓"], "portfolio_doctor", "/api/portfolio-doctor/diagnose"),
+    (["配置建议", "资产配置", "怎么分配"], "allocation", None),
+    (["新闻", "今天发生", "消息面", "市场怎么样"], "news", None),
+    (["宏观", "GDP", "CPI", "利率", "经济"], "macro", None),
+    (["估值", "PE", "PB", "贵不贵"], "valuation", None),
+    (["基金", "选基", "推荐基金"], "fund", None),
+    (["北向", "外资", "净流入"], "northbound", None),
+]
+
+def classify_chat_intent(msg: str) -> dict:
+    """规则引擎意图分类（不调 LLM，毫秒级）"""
+    msg_lower = msg.lower()
+    for keywords, intent, api in _INTENT_RULES:
+        for kw in keywords:
+            if kw in msg_lower:
+                return {"intent": intent, "keyword": kw, "api": api}
+    return {"intent": "general", "keyword": None, "api": None}
+
+
 @app.post("/api/chat")
 async def chat_analysis(req: ChatRequest):
     """AI 对话分析 — 回答用户的理财问题"""
     user_msg = req.message.strip()
     if not user_msg:
         raise HTTPException(400, "消息不能为空")
+
+    # Phase 0 (3.6): 意图预分类（规则优先，不调 LLM）
+    intent = classify_chat_intent(user_msg)
 
     # 构建市场上下文
     market_ctx = _build_market_context()
@@ -1853,8 +1934,11 @@ async def chat_analysis(req: ChatRequest):
     if api_key:
         try:
             import httpx
-            print(f"[CHAT] Calling DeepSeek API...")
+            print(f"[CHAT] Calling DeepSeek API... intent={intent}")
             system_prompt = _build_system_prompt(market_ctx, portfolio_ctx)
+            # Phase 0: 注入意图提示（帮 LLM 聚焦回答方向）
+            if intent.get("intent") != "general":
+                system_prompt += f"\n\n## 用户意图预判\n用户可能在问关于「{intent['intent']}」的问题，请优先从这个角度回答。"
 
             async with httpx.AsyncClient(timeout=30) as client:
                 resp = await client.post(
@@ -1875,6 +1959,12 @@ async def chat_analysis(req: ChatRequest):
                     data = resp.json()
                     reply = data["choices"][0]["message"]["content"]
                     print(f"[CHAT] LLM reply OK, len={len(reply)}")
+                    # Phase 0 (3.7): 记录决策日志
+                    try:
+                        from services.decision_log import log_decision
+                        log_decision(user_id=uid, question=user_msg, advice=reply, source="chat", intent=intent.get("intent", "general"), model=model)
+                    except Exception as e:
+                        print(f"[CHAT] Decision log failed: {e}")
                     return {"reply": reply, "source": "ai"}
                 else:
                     print(f"[CHAT] DeepSeek error: {resp.text[:200]}")
@@ -1885,7 +1975,28 @@ async def chat_analysis(req: ChatRequest):
 
     # 降级：规则引擎回答
     reply = _rule_based_reply(user_msg, market_ctx, portfolio_ctx)
+    # Phase 0 (3.7): 规则引擎也记录
+    try:
+        from services.decision_log import log_decision
+        log_decision(user_id=uid, question=user_msg, advice=reply, source="rules", intent=intent.get("intent", "general"), model="rules")
+    except Exception:
+        pass
     return {"reply": reply, "source": "rules"}
+
+
+# ---- API: 决策日志查询（Phase 0 新增）----
+
+@app.get("/api/decision-log")
+def get_decision_log_api(userId: str = "", days: int = 7):
+    """查询最近 N 天的决策日志"""
+    from services.decision_log import get_decisions
+    return {"decisions": get_decisions(userId or None, days)}
+
+@app.get("/api/decision-log/stats")
+def get_decision_stats_api(userId: str = "", days: int = 30):
+    """决策统计（V8 复盘预览）"""
+    from services.decision_log import get_decision_stats
+    return get_decision_stats(userId or None, days)
 
 
 # ---- API: AI 对话分析（SSE 流式）----
