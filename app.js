@@ -480,7 +480,16 @@ bd.innerHTML=`
 <div style="text-align:center"><div style="color:var(--text2)">🏠 房产</div><div style="font-weight:700;color:#F59E0B">¥${fmtMoney(Math.round((b.property||{}).total||0))}</div></div>
 <div style="text-align:center"><div style="color:var(--text2)">💳 负债</div><div style="font-weight:700;color:var(--red)">-¥${fmtMoney(Math.round((b.liability||{}).total||0))}</div></div>`}
 const hel=document.getElementById('heroHealth');
-if(hel&&d.healthGrade)hel.innerHTML=`${d.healthGrade} · ${d.healthScore}分${d.healthIssues?.length?` · <span style="color:var(--red)">${d.healthIssues[0]}</span>`:''}`}
+if(hel&&d.healthGrade)hel.innerHTML=`${d.healthGrade} · ${d.healthScore}分${d.healthIssues?.length?` · <span style="color:var(--red)">${d.healthIssues[0]}</span>`:''}`
+// Phase 0: 加载家庭资产汇总
+if(API_AVAILABLE){fetch(`${API_BASE}/household/summary`,{signal:AbortSignal.timeout(10000)}).then(r=>r.json()).then(h=>{
+  if(h.members&&h.members.length>1){
+    const famEl=document.getElementById('heroBreakdown');
+    if(famEl){const famHtml=h.members.map(m=>`<div style="text-align:center"><div style="color:var(--text2)">${m.nickname}</div><div style="font-weight:700;color:var(--accent)">¥${fmtMoney(Math.round(m.value))}</div>${m.change?`<div style="font-size:10px;color:${m.change>=0?'var(--green)':'var(--red)'}">${m.change>=0?'+':''}¥${Math.round(m.change)}</div>`:''}</div>`).join('');
+    famEl.insertAdjacentHTML('beforeend',`<div style="width:100%;border-top:1px solid rgba(148,163,184,.1);margin-top:8px;padding-top:8px;display:flex;gap:12px;justify-content:center">${famHtml}</div>`)}
+  }
+}).catch(()=>{})}
+}
 
 // ---- 资产变更后异步刷新净资产（供添加/编辑/删除资产后调用）----
 async function _refreshNetWorthAfterAssetChange(){
@@ -1304,7 +1313,7 @@ return `<div style="margin-bottom:12px"><div style="font-size:12px;font-weight:7
 let insightTab='overview';
 function _insightTabs(){
 const all=[
-['overview','📊 总览'],['fundpick','🔍 选基'],['stockpick','🧠 选股'],['news','📰 新闻'],['policy','🏛️ 政策'],['tech','📈 技术'],['macro','📊 宏观'],['global','🌐 全球'],['signals','📡 信号'],['scorecard','📊 成绩单'],['doctor','🏥 体检'],['steward','🤖 管家'],['factorictest','🔬 因子检验'],['montecarlo','🎲 蒙特卡洛'],['aipredict','🤖 AI预测'],['geneticfactor','🧬 遗传因子'],['optimizer','⚡ 组合优化'],['altdata','📡 另类数据'],['rlposition','🎮 RL仓位'],['llmfactor','🧠 LLM因子'],['weekly','📋 周报']];
+['overview','📊 总览'],['deepimpact','🔍 深度分析'],['riskassess','🛡️ 风控评估'],['fundpick','🔍 选基'],['stockpick','🧠 选股'],['news','📰 新闻'],['policy','🏛️ 政策'],['tech','📈 技术'],['macro','📊 宏观'],['global','🌐 全球'],['signals','📡 信号'],['scorecard','📊 成绩单'],['doctor','🏥 体检'],['steward','🤖 管家'],['factorictest','🔬 因子检验'],['montecarlo','🎲 蒙特卡洛'],['aipredict','🤖 AI预测'],['geneticfactor','🧬 遗传因子'],['optimizer','⚡ 组合优化'],['altdata','📡 另类数据'],['rlposition','🎮 RL仓位'],['llmfactor','🧠 LLM因子'],['weekly','📋 周报']];
 const simple=['overview','news','policy','doctor','steward'];
 return isProMode()?all:all.filter(t=>simple.includes(t[0]))}
 async function renderInsight(){currentPage='insight';renderNav();const tabs=_insightTabs();
@@ -1314,6 +1323,9 @@ setTimeout(()=>{const bar=document.getElementById('insightTabBar');const active=
 if(!API_AVAILABLE){document.getElementById('insightContent').innerHTML='<div style="text-align:center;padding:40px;color:var(--text2)">后端离线，请启动后端服务获取实时数据</div>';return}
 // 独立 tab 不需要 dashboard 数据，秒开
 if(insightTab==='fundpick'){const el=document.getElementById('insightContent');if(el)renderFundPick(el);return}
+// Phase 0: 新闻深度分析 + 风控评估
+if(insightTab==='deepimpact'){const el=document.getElementById('insightContent');if(el)renderDeepImpact(el);return}
+if(insightTab==='riskassess'){const el=document.getElementById('insightContent');if(el)renderRiskAssess(el);return}
 if(insightTab==='stockpick'){const el=document.getElementById('insightContent');if(el)renderStockPick(el);return}
 if(insightTab==='factorictest'){const el=document.getElementById('insightContent');if(el)renderFactorIC(el);return}
 if(insightTab==='montecarlo'){const el=document.getElementById('insightContent');if(el)renderMonteCarlo(el);return}
@@ -1530,6 +1542,49 @@ function _updateFundPickBtns(){
 const tb=document.getElementById('fundPickTypeBar');const sb=document.getElementById('fundPickSortBar');
 if(tb)tb.innerHTML=[['all','全部'],['stock','股票型'],['bond','债券型'],['index','指数型'],['qdii','QDII']].map(([k,l])=>`<button class="section-tab ${fundPickType===k?'active':''}" onclick="fundPickType='${k}';_updateFundPickBtns();renderFundPickResult()" style="font-size:12px;padding:5px 10px">${l}</button>`).join('');
 if(sb)sb.innerHTML=[['score','📊 综合评分'],['1y','📈 近1年'],['3y','📈 近3年'],['ytd','📈 今年来']].map(([k,l])=>`<button class="section-tab ${fundPickSort===k?'active':''}" onclick="fundPickSort='${k}';_updateFundPickBtns();renderFundPickResult()" style="font-size:11px;padding:4px 8px">${l}</button>`).join('')}
+
+// Phase 0: 新闻深度影响分析（Pro 模式）
+async function renderDeepImpact(el){
+el.innerHTML=renderCard('🔍 新闻深度影响分析','loading');
+try{
+  const r=await fetch(`${API_BASE}/news/deep-impact`,{signal:AbortSignal.timeout(30000)});
+  if(!r.ok)throw new Error(`HTTP ${r.status}`);
+  const d=await r.json();
+  const impacts=d.impacts||[];
+  if(!impacts.length){el.innerHTML=renderCard('🔍 新闻深度影响分析','empty');return}
+  el.innerHTML=`<div class="dashboard-card">
+    <div class="dashboard-card-title">🔍 新闻深度影响分析（${impacts.length}条）</div>
+    ${impacts.map(imp=>{
+      const bull=imp.bullish?.length?`<span style="color:var(--green);font-size:11px">📈 ${imp.bullish.join(', ')}</span>`:'';
+      const bear=imp.bearish?.length?`<span style="color:var(--red);font-size:11px">📉 ${imp.bearish.join(', ')}</span>`:'';
+      return `<div style="padding:10px 0;border-bottom:1px solid rgba(148,163,184,.08)">
+        <div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap">
+          <span style="background:rgba(245,158,11,.12);color:#F59E0B;font-size:11px;padding:2px 6px;border-radius:4px">${imp.tag||'事件'}</span>
+          ${bull} ${bear}
+        </div>
+        <div style="font-size:13px;color:var(--text1);margin-top:6px;line-height:1.6">${imp.impact||imp.analysis||''}</div>
+      </div>`}).join('')}
+  </div>`;
+}catch(e){el.innerHTML=renderCard('🔍 新闻深度影响分析','error')}}
+
+// Phase 0: 新闻风控评估（Pro 模式）
+async function renderRiskAssess(el){
+el.innerHTML=renderCard('🛡️ 新闻风控评估','loading');
+try{
+  const r=await fetch(`${API_BASE}/news/risk-assess`,{signal:AbortSignal.timeout(30000)});
+  if(!r.ok)throw new Error(`HTTP ${r.status}`);
+  const d=await r.json();
+  const level=d.risk_level||d.level||'unknown';
+  const emoji=level==='low'?'🟢':level==='medium'?'🟡':'🔴';
+  el.innerHTML=`<div class="dashboard-card" style="border-left:3px solid ${level==='high'?'var(--red)':level==='medium'?'#F59E0B':'var(--green)'}">
+    <div class="dashboard-card-title">🛡️ 新闻风控评估</div>
+    <div style="font-size:20px;font-weight:700;margin:8px 0">${emoji} 风险等级：${level==='low'?'低':level==='medium'?'中':level==='high'?'高':level}</div>
+    <div style="font-size:13px;color:var(--text1);line-height:1.8">${d.summary||d.analysis||'暂无分析'}</div>
+    ${d.headlines?.length?`<div style="margin-top:12px;font-size:12px;color:var(--text2)"><b>分析了 ${d.headlines.length} 条新闻</b></div>`:''}
+    ${d.risk_factors?.length?`<div style="margin-top:8px">${d.risk_factors.map(f=>`<div style="padding:4px 0;font-size:12px;color:var(--text2)">⚠️ ${f}</div>`).join('')}</div>`:''}
+  </div>`;
+}catch(e){el.innerHTML=renderCard('🛡️ 新闻风控评估','error')}}
+
 async function renderFundPick(el){
 el.innerHTML=`<div class="dashboard-card" style="overflow:hidden">
 <div class="dashboard-card-title">🔍 基金智能筛选</div>
@@ -2131,7 +2186,7 @@ return`<div class="holding-card" onclick="showStockDetail('${h.code}')"><div cla
 let totalMV=holdings.reduce((s,h)=>s+(h.marketValue||0),0);let totalPnl=holdings.reduce((s,h)=>s+(h.pnl||0),0);
 let heroHtml='';if(holdings.length>0&&totalMV>0){const pnlC=totalPnl>=0?'var(--green)':'var(--red)';
 heroHtml=`<div class="pnl-hero"><div class="pnl-label">股票持仓总市值</div><div class="pnl-total-value">¥${totalMV.toLocaleString()}</div><div class="pnl-change ${totalPnl>=0?'pos':'neg'}" style="color:${pnlC}">${totalPnl>=0?'+':''}${totalPnl.toFixed(0)}</div><div class="pnl-sub">${holdings.length} 只股票 · ${scanRes.scannedAt?'更新于 '+scanRes.scannedAt.slice(11,16):''}</div></div>`}
-el.innerHTML=heroHtml+signalHtml+disciplineHtml+listHtml+`<div style="margin-top:16px"><button class="action-btn primary" onclick="showAddStockModal()" style="width:100%">➕ 添加股票</button></div><div style="margin-top:8px"><button class="action-btn secondary" onclick="renderStocksContent()" style="width:100%">🔄 刷新行情</button></div>`;
+el.innerHTML=heroHtml+signalHtml+disciplineHtml+listHtml+`<div style="margin-top:16px"><button class="action-btn primary" onclick="showAddStockModal()" style="width:100%">➕ 添加股票</button></div>${isProMode()?'<div style="margin-top:8px"><button class="action-btn secondary" onclick="runStockAnalysis()" style="width:100%;border-color:rgba(99,102,241,.4);color:#818CF8" id="stockAnalyzeBtn">🤖 AI 深度分析（全持仓）</button></div>':''}<div style="margin-top:8px"><button class="action-btn secondary" onclick="renderStocksContent()" style="width:100%">🔄 刷新行情</button></div><div id="stockAnalysisResult"></div>`;
 }catch(e){console.error('Stock load error:',e);document.getElementById('holdingsContent').innerHTML='<div style="text-align:center;padding:40px;color:var(--red)">加载失败: '+e.message+'</div>'}}
 
 function showAddStockModal(){const overlay=document.createElement('div');overlay.className='modal-overlay';overlay.onclick=e=>{if(e.target===overlay)overlay.remove()};
@@ -2139,6 +2194,38 @@ overlay.innerHTML=`<div class="modal-sheet"><div class="modal-handle"></div><div
 document.body.appendChild(overlay)}
 
 async function doAddStock(){const code=$('#addStockCode')?.value?.trim();if(!code){alert('请输入股票代码');return}
+
+// Phase 0: AI 深度分析（股票持仓 7-Skill 框架）
+async function runStockAnalysis(){
+const btn=document.getElementById('stockAnalyzeBtn');const res=document.getElementById('stockAnalysisResult');
+if(btn){btn.innerHTML='🤖 分析中...（预计 30-60 秒）';btn.disabled=true}
+if(res)res.innerHTML=renderCard('🤖 AI 股票持仓分析','loading');
+try{
+  const r=await fetch(`${API_BASE}/stock-holdings/analyze`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({userId:getProfileId()}),signal:AbortSignal.timeout(60000)});
+  const d=await r.json();
+  if(res)res.innerHTML=`<div class="dashboard-card" style="margin-top:12px;border-left:3px solid #6366F1">
+    <div class="dashboard-card-title">🤖 AI 持仓深度分析</div>
+    <div style="font-size:13px;line-height:1.8;color:var(--text1);white-space:pre-wrap">${d.analysis||'暂无分析'}</div>
+    <div style="font-size:10px;color:var(--text3);margin-top:8px">来源: ${d.source||'ai'}</div>
+  </div>`;
+}catch(e){if(res)res.innerHTML=renderCard('🤖 AI 股票持仓分析','error')}
+finally{if(btn){btn.innerHTML='🤖 AI 深度分析（全持仓）';btn.disabled=false}}}
+
+// Phase 0: AI 深度分析（基金持仓）
+async function runFundAnalysis(){
+const btn=document.getElementById('fundAnalyzeBtn');const res=document.getElementById('fundAnalysisResult');
+if(btn){btn.innerHTML='🤖 分析中...（预计 30-60 秒）';btn.disabled=true}
+if(res)res.innerHTML=renderCard('🤖 AI 基金持仓分析','loading');
+try{
+  const r=await fetch(`${API_BASE}/fund-holdings/analyze`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({userId:getProfileId()}),signal:AbortSignal.timeout(60000)});
+  const d=await r.json();
+  if(res)res.innerHTML=`<div class="dashboard-card" style="margin-top:12px;border-left:3px solid #10B981">
+    <div class="dashboard-card-title">🤖 AI 基金持仓分析</div>
+    <div style="font-size:13px;line-height:1.8;color:var(--text1);white-space:pre-wrap">${d.analysis||'暂无分析'}</div>
+    <div style="font-size:10px;color:var(--text3);margin-top:8px">来源: ${d.source||'ai'}</div>
+  </div>`;
+}catch(e){if(res)res.innerHTML=renderCard('🤖 AI 基金持仓分析','error')}
+finally{if(btn){btn.innerHTML='🤖 AI 深度分析（全持仓）';btn.disabled=false}}}
 const cost=parseFloat($('#addStockCost')?.value)||0;const shares=parseInt($('#addStockShares')?.value)||0;const note=$('#addStockNote')?.value||'';
 try{const r=await fetch(API_BASE+'/stock-holdings',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({code,costPrice:cost,shares,note,userId:getProfileId()})});
 const d=await r.json();if(d.error){alert(d.error);return}
@@ -2197,7 +2284,7 @@ ${h.pnlPct!=null?`<span style="color:${pnlColor};font-weight:600">盈亏 ${h.pnl
 // Hero
 let heroHtml='';const totalPnl=holdings.reduce((s,h)=>s+(h.pnl||0),0);
 if(holdings.length>0){heroHtml=`<div class="pnl-hero"><div class="pnl-label">基金持仓 ${holdings.length} 只</div><div class="pnl-change ${totalPnl>=0?'pos':'neg'}" style="color:${totalPnl>=0?'var(--green)':'var(--red)'}">总盈亏 ${totalPnl>=0?'+':''}¥${totalPnl.toFixed(0)}</div><div class="pnl-sub">${scanRes.scannedAt?'更新于 '+scanRes.scannedAt.slice(11,16):''}</div></div>`}
-el.innerHTML=heroHtml+signalHtml+listHtml+`<div style="margin-top:16px"><button class="action-btn primary" onclick="showAddFundModal()" style="width:100%">➕ 添加基金</button></div><div style="margin-top:8px"><button class="action-btn secondary" onclick="renderFundsContent()" style="width:100%">🔄 刷新估值</button></div>`;
+el.innerHTML=heroHtml+signalHtml+listHtml+`<div style="margin-top:16px"><button class="action-btn primary" onclick="showAddFundModal()" style="width:100%">➕ 添加基金</button></div>${isProMode()?'<div style="margin-top:8px"><button class="action-btn secondary" onclick="runFundAnalysis()" style="width:100%;border-color:rgba(16,185,129,.4);color:#10B981" id="fundAnalyzeBtn">🤖 AI 深度分析（全持仓）</button></div>':''}<div style="margin-top:8px"><button class="action-btn secondary" onclick="renderFundsContent()" style="width:100%">🔄 刷新估值</button></div><div id="fundAnalysisResult"></div>`;
 }catch(e){console.error('Fund load error:',e);el.innerHTML='<div style="text-align:center;padding:40px;color:var(--red)">加载失败: '+e.message+'</div>'}}
 
 function showAddFundModal(){const overlay=document.createElement('div');overlay.className='modal-overlay';overlay.onclick=e=>{if(e.target===overlay)overlay.remove()};

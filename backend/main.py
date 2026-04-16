@@ -2495,6 +2495,52 @@ def update_user_preference(userId: str, body: dict):
     return {"success": True, "changed": list(changed.keys())}
 
 
+# ---- API: 家庭资产汇总（Phase 0 Day 2 新增）----
+
+FAMILY_MEMBERS = ["LeiJiang", "BuLuoGeLi"]
+NICKNAMES = {"LeiJiang": "厉害了哥", "BuLuoGeLi": "部落格里"}
+
+@app.get("/api/household/summary")
+def household_summary():
+    """家庭资产汇总 — 两人持仓合计 + 各自明细"""
+    members = []
+    total_value = 0
+    total_change = 0
+
+    for uid in FAMILY_MEMBERS:
+        user = load_user(uid)
+        portfolio = ensure_v4_portfolio(user.get("portfolio") or {})
+        holdings = calc_holdings_from_transactions(portfolio.get("transactions", []))
+        assets = user.get("assets") or portfolio.get("assets") or []
+
+        try:
+            from services.unified_networth import calc_net_worth
+            nw = calc_net_worth(holdings, assets)
+        except Exception:
+            nw = {"total": 0, "daily_change": 0}
+
+        member_value = nw.get("total", 0)
+        member_change = nw.get("daily_change", 0)
+        members.append({
+            "userId": uid,
+            "nickname": NICKNAMES.get(uid, uid),
+            "value": member_value,
+            "change": member_change,
+        })
+        total_value += member_value
+        total_change += member_change
+
+    yesterday = total_value - total_change
+    change_pct = (total_change / yesterday) if yesterday > 0 else 0.0
+
+    return {
+        "total_value": total_value,
+        "daily_change": total_change,
+        "daily_change_pct": change_pct,
+        "members": members,
+    }
+
+
 # ---- API: OCR 记账 ----
 
 @app.post("/api/receipt/ocr")
