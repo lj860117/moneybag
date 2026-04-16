@@ -189,6 +189,7 @@ print('✅ V6.5 → V7 衔接验证通过')
 | V7.2 | DCF 估值 | 1.5h | `curl .../api/dcf/600519` 返回内在价值 |
 | V7.3 | 买卖决策 | 2h | `curl .../api/decisions?userId=LeiJiang` 返回操作列表 |
 | V7.4 | 前端展示 | 1h | Simple 3 秒看清买什么卖什么 |
+| V7.4.1 | 多空辩论依据可视化（5维雷达图+数据引用高亮） | 1.5h | 推荐/决策卡片展示评分细项 |
 | V7.5 | 推送增强 | 0.5h | 企微收到操作建议 |
 | V7.6 | 联调 | 1h | 全链路 |
 
@@ -4549,9 +4550,10 @@ if include_earnings_forecast:
 | **6.3** | 模块J：业务敞口分析 | 1天 | `business_exposure.py` |
 | **6.4** | Pipeline 整合 + Context 注入 | 1天 | `_build_market_context()` 扩展 |
 | **6.5** | 前端展示（Simple + Pro） | 2天 | app.js 新增 UI 组件 |
+| **6.5.1** | 券商交割单自动导入（CSV/Excel 解析） | 1天 | `portfolio_import.py` + API + 前端上传 |
 | **6.6** | 测试 + 联调 | 1.5天 | 端到端验证 |
 
-**总工时**：9-10 天
+**总工时**：10-11 天（+1 天券商导入）
 
 ### 与 V6 的关系
 
@@ -4578,6 +4580,319 @@ V6 (8-12天)                    V6.5 (9-10天)
 3. V6 完成后全力推进 V6.5
 
 ---
+
+### V6.5.1 券商交割单自动导入（来源：朋友建议 2026-04-16）
+
+> **场景**：你在券商/基金平台买卖后，导出交割单 CSV → 上传到钱袋子 → 自动解析为交易流水，不用手动一笔笔录入。
+> **前置依赖**：V4 交易流水制（`portfolio_calc.py`）已支持 BUY/SELL/DIVIDEND，本功能只是新增一个"批量导入"入口。
+
+#### 后端实现
+
+```python
+# services/portfolio_import.py（新建 ~200 行）
+
+import csv, io, re
+from datetime import datetime
+
+# 支持的券商格式（后续可扩展）
+BROKER_PARSERS = {
+    "通用CSV": parse_generic_csv,       # 通用格式（代码/名称/买卖/价格/数量/日期）
+    "华泰证券": parse_huatai,           # 华泰交割单格式
+    "中信证券": parse_citic,            # 中信交割单格式
+    "东方财富": parse_eastmoney,        # 东财导出格式
+    "天天基金": parse_ttfund,           # 天天基金交易记录
+    "支付宝基金": parse_alipay_fund,    # 支付宝基金交易记录
+}
+
+async def import_trades(user_id: str, file_content: bytes, filename: str, broker: str = "auto") -> dict:
+    """导入券商交割单，解析为标准交易流水"""
+    
+    # 1. 检测文件格式
+    if filename.endswith('.csv'):
+        text = file_content.decode('gbk', errors='replace')  # 券商导出通常是 GBK
+    elif filename.endswith('.xlsx'):
+        text = _parse_xlsx(file_content)  # openpyxl 解析
+    else:
+        return {"error": "仅支持 CSV 和 Excel 文件"}
+    
+    # 2. 自动识别券商（或用户指定）
+    if broker == "auto":
+        broker = _detect_broker(text)
+    
+    parser = BROKER_PARSERS.get(broker, parse_generic_csv)
+    
+    # 3. 解析为标准交易列表
+    trades = parser(text)
+    
+    # 4. 去重（跟现有流水对比，避免重复导入）
+    existing = load_user_transactions(user_id)
+    new_trades = _deduplicate(trades, existing)
+    
+    # 5. 预览（不直接写入，先给用户确认）
+    return {
+        "broker_detected": broker,
+        "total_parsed": len(trades),
+        "new_trades": len(new_trades),
+        "duplicates_skipped": len(trades) - len(new_trades),
+        "preview": new_trades[:20],  # 最多预览 20 条
+        "import_id": _gen_import_id(),  # 用于确认导入
+    }
+
+
+async def confirm_import(user_id: str, import_id: str) -> dict:
+    """用户确认后正式写入交易流水"""
+    pending = _get_pending_import(import_id)
+    if not pending:
+        return {"error": "导入已过期，请重新上传"}
+    
+    # 写入 V4 交易流水
+    count = 0
+    for trade in pending["new_trades"]:
+        add_transaction(user_id, {
+            "type": trade["type"],      # BUY / SELL / DIVIDEND
+            "code": trade["code"],      # 600519
+            "name": trade["name"],      # 贵州茅台
+            "amount": trade["amount"],  # 金额
+            "shares": trade["shares"],  # 份额/股数
+            "nav": trade["price"],      # 成交价/净值
+            "fee": trade.get("fee", 0), # 手续费
+            "date": trade["date"],      # 成交日期
+            "source": "import",         # 来源标记
+            "note": f"券商导入({trade.get('broker', '')})",
+        })
+        count += 1
+    
+    return {"imported": count, "message": f"成功导入 {count} 笔交易"}
+
+
+def parse_generic_csv(text: str) -> list:
+    """通用 CSV 解析（兼容大多数券商导出格式）"""
+    reader = csv.DictReader(io.StringIO(text))
+    trades = []
+    
+    for row in reader:
+        # 智能匹配列名（不同券商列名不同）
+        code = _find_field(row, ["证券代码", "股票代码", "基金代码", "代码"])
+        name = _find_field(row, ["证券名称", "股票名称", "基金名称", "名称"])
+        action = _find_field(row, ["买卖方向", "交易类型", "操作", "业务名称"])
+        price = _find_field(row, ["成交价格", "成交均价", "确认净值", "价格"])
+        qty = _find_field(row, ["成交数量", "成交股数", "确认份额", "数量"])
+        amount = _find_field(row, ["成交金额", "发生金额", "交易金额", "金额"])
+        fee = _find_field(row, ["手续费", "佣金", "费用"], default="0")
+        date_str = _find_field(row, ["成交日期", "交易日期", "确认日期", "日期"])
+        
+        if not code or not action:
+            continue
+        
+        trade_type = "BUY" if any(kw in str(action) for kw in ["买入", "申购", "买"]) else \
+                     "SELL" if any(kw in str(action) for kw in ["卖出", "赎回", "卖"]) else \
+                     "DIVIDEND" if "分红" in str(action) else None
+        
+        if trade_type:
+            trades.append({
+                "type": trade_type,
+                "code": _clean_code(code),
+                "name": str(name or ""),
+                "price": abs(float(price or 0)),
+                "shares": abs(float(qty or 0)),
+                "amount": abs(float(amount or 0)),
+                "fee": abs(float(fee or 0)),
+                "date": _parse_date(date_str),
+            })
+    
+    return trades
+
+
+def _find_field(row: dict, candidates: list, default=None):
+    """智能匹配列名（券商导出格式不统一）"""
+    for key in candidates:
+        if key in row and row[key]:
+            return row[key].strip()
+    return default
+```
+
+#### API
+
+```python
+# main.py（或 routers/portfolio.py）新增 2 个端点
+
+from fastapi import UploadFile, File, Form
+
+@app.post("/api/portfolio/import/preview")
+async def import_preview(
+    file: UploadFile = File(...),
+    userId: str = Form(...),
+    broker: str = Form("auto"),
+):
+    """上传交割单 → 解析预览（不写入）"""
+    content = await file.read()
+    return await import_trades(userId, content, file.filename, broker)
+
+@app.post("/api/portfolio/import/confirm")
+async def import_confirm(userId: str, import_id: str):
+    """确认导入 → 写入交易流水"""
+    return await confirm_import(userId, import_id)
+```
+
+#### 前端（资产页新增导入入口）
+
+```javascript
+// app.js — 资产页/持仓页新增"导入交割单"按钮
+
+function renderImportButton() {
+    return `
+    <button class="action-btn" onclick="showImportDialog()" style="
+        background: var(--card-bg); border: 1px dashed var(--border);
+        border-radius: 12px; padding: 12px; width: 100%; margin: 8px 0;
+        color: var(--text2); cursor: pointer;
+    ">
+        📄 导入券商交割单（CSV/Excel）
+    </button>`;
+}
+
+function showImportDialog() {
+    const overlay = document.getElementById('overlay');
+    overlay.style.display = 'flex';
+    const userName = getProfileId() === 'LeiJiang' ? '厉害了哥' : '部落格里';
+    overlay.innerHTML = `
+    <div class="modal-sheet">
+        <div class="modal-handle"></div>
+        <div class="modal-title">📄 导入交割单</div>
+        <div class="modal-subtitle">支持华泰/中信/东财/天天基金/支付宝等券商导出文件</div>
+        
+        <!-- ★ 多账号安全提示：显示当前导入的账户 -->
+        <div style="background:var(--accent-bg);border-radius:8px;padding:8px 12px;margin:8px 0;font-size:12px;">
+            ⚠️ 将导入到 <b>${userName}</b> 的账户，请确认是本人的交割单
+        </div>
+        
+        <div class="form-row">
+            <div class="form-label">选择文件</div>
+            <input type="file" id="importFile" accept=".csv,.xlsx" 
+                   class="form-input" style="padding:8px;">
+        </div>
+        
+        <div class="form-row">
+            <div class="form-label">券商（可自动识别）</div>
+            <select id="importBroker" class="form-input">
+                <option value="auto">自动识别</option>
+                <option value="通用CSV">通用 CSV</option>
+                <option value="华泰证券">华泰证券</option>
+                <option value="中信证券">中信证券</option>
+                <option value="东方财富">东方财富</option>
+                <option value="天天基金">天天基金</option>
+                <option value="支付宝基金">支付宝基金</option>
+            </select>
+        </div>
+        
+        <button class="form-submit" onclick="doImportPreview()">解析预览</button>
+        
+        <div id="importPreview" style="display:none;margin-top:12px;"></div>
+    </div>`;
+}
+
+async function doImportPreview() {
+    const file = document.getElementById('importFile').files[0];
+    if (!file) { alert('请选择文件'); return; }
+    
+    const formData = new FormData();
+    formData.append('file', file);
+    formData.append('userId', getProfileId());
+    formData.append('broker', document.getElementById('importBroker').value);
+    
+    const r = await fetch(API_BASE + '/api/portfolio/import/preview', {
+        method: 'POST', body: formData,
+    });
+    const d = await r.json();
+    
+    // 显示预览
+    const el = document.getElementById('importPreview');
+    el.style.display = 'block';
+    el.innerHTML = `
+        <div style="background:var(--card-bg);border-radius:8px;padding:12px;">
+            <div>识别券商：<b>${d.broker_detected}</b></div>
+            <div>解析 ${d.total_parsed} 笔，新增 ${d.new_trades} 笔，跳过重复 ${d.duplicates_skipped} 笔</div>
+            
+            <div style="margin-top:8px;max-height:200px;overflow-y:auto;font-size:11px;">
+                ${(d.preview || []).map(t => `
+                    <div style="padding:4px 0;border-bottom:1px solid var(--border);">
+                        ${t.date} ${t.type === 'BUY' ? '🟢买' : t.type === 'SELL' ? '🔴卖' : '💰分红'} 
+                        ${t.name}(${t.code}) ¥${t.amount}
+                    </div>
+                `).join('')}
+            </div>
+            
+            <button class="form-submit" onclick="doImportConfirm('${d.import_id}')" 
+                    style="margin-top:12px;background:#22c55e;">
+                ✅ 确认导入 ${d.new_trades} 笔
+            </button>
+        </div>`;
+}
+
+async function doImportConfirm(importId) {
+    const r = await fetch(API_BASE + '/api/portfolio/import/confirm', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({userId: getProfileId(), import_id: importId}),
+    });
+    const d = await r.json();
+    alert(d.message);
+    closeOverlay();
+    renderStocks();  // 刷新持仓页
+}
+```
+
+**UI 效果**：
+
+```
+持仓页底部：
+┌──────────────────────────────────┐
+│ 📄 导入券商交割单（CSV/Excel）    │  ← 点击弹出
+└──────────────────────────────────┘
+
+弹窗：
+┌──────────────────────────────────┐
+│ 📄 导入交割单                     │
+│ 支持华泰/中信/东财/天天基金/支付宝│
+│                                  │
+│ 选择文件  [选择CSV/Excel]         │
+│ 券商      [自动识别 ▼]            │
+│                                  │
+│ [解析预览]                        │
+│                                  │
+│ ┌──────────────────────────────┐ │
+│ │ 识别：华泰证券                │ │
+│ │ 解析 47 笔，新增 42 笔      │ │
+│ │                              │ │
+│ │ 2026-03-15 🟢买 沪深300ETF ¥5万│ │
+│ │ 2026-03-20 🟢买 茅台 ¥2万    │ │
+│ │ ...                          │ │
+│ │                              │ │
+│ │ [✅ 确认导入 42 笔]           │ │
+│ └──────────────────────────────┘ │
+└──────────────────────────────────┘
+```
+
+#### 验证
+
+| # | 验证项 | 方法 | 通过标准 |
+|---|--------|------|---------|
+| ① | CSV 解析 | 上传通用 CSV（手造 5 笔交易） | 预览显示 5 笔，字段正确 |
+| ② | 去重 | 同一文件上传两次 | 第二次显示"0 笔新增，5 笔重复跳过" |
+| ③ | 确认导入 | 点确认 → 检查交易流水 | `/api/portfolio/history` 多了 5 笔 |
+| ④ | 持仓计算 | 导入后看持仓 | 自动合并计算加权平均成本 |
+| ⑤ | GBK 编码 | 上传华泰导出的 GBK 文件 | 中文不乱码 |
+| ⑥ | 前端完整 | 弹窗→选文件→预览→确认→刷新持仓 | 全流程通 |
+| ⑦ | 多账号隔离 | LeiJiang 导入 5 笔 → 切换 BuLuoGeLi 看持仓 | BuLuoGeLi 持仓不受影响 |
+| ⑧ | 账户提示 | 弹窗顶部 | 显示"将导入到 厉害了哥/部落格里 的账户" |
+
+#### 代码规范
+
+| 铁律 | 状态 |
+|------|------|
+| **#18** | `/api/portfolio/import/*` 后端 → 前端弹窗+预览+确认 ✅ |
+| **#9** | 先预览不写入，确认后才导入（最小可用+安全） ✅ |
+| **#3** | 6 项验证清单 ✅ |
+| **代码组织** | 新建 `portfolio_import.py`，不在 main.py 写解析逻辑 ✅ |
 
 ## 📊 预期效果
 
@@ -4832,6 +5147,243 @@ Regime：{json.dumps(context.get('regime'), ensure_ascii=False)}
 
 ---
 
+## V7.4.1 多空辩论依据可视化（来源：朋友建议 2026-04-16）
+
+> **问题**：推荐引擎给出"建议买入，82 分"——但用户不知道 82 分怎么来的，哪个维度拉分、哪个维度拖后腿。
+> **方案**：每条推荐/决策卡片展示 5 维雷达图 + 每维度引用的具体数据指标。
+
+### 后端：推荐引擎已返回 dimension_scores，补充数据引用
+
+```python
+# services/recommend_engine.py — _calc_composite_score 增强
+
+async def _calc_composite_score(self, stock):
+    scores = {
+        'valuation': self._score_valuation(stock),
+        'earnings': self._score_earnings(stock),
+        'technical': self._score_technical(stock),
+        'capital': self._score_capital(stock),
+        'risk': self._score_risk(stock),
+    }
+    total = sum(scores[k] * RECOMMEND_WEIGHTS[k] for k in RECOMMEND_WEIGHTS)
+    
+    # ★ 新增：每个维度的数据引用（让用户知道分数怎么来的）
+    evidence = {
+        'valuation': {
+            'score': scores['valuation'],
+            'weight': f"{RECOMMEND_WEIGHTS['valuation']*100:.0f}%",
+            'factors': [
+                f"Forward PE {stock.get('forward_pe', '?')}（行业均值 {stock.get('industry_pe', '?')}）",
+                f"PEG {stock.get('peg', '?')}",
+                f"目标价空间 {stock.get('target_upside', '?')}%",
+            ],
+        },
+        'earnings': {
+            'score': scores['earnings'],
+            'weight': f"{RECOMMEND_WEIGHTS['earnings']*100:.0f}%",
+            'factors': [
+                f"EPS 增速 {stock.get('eps_growth', '?')}%",
+                f"机构覆盖 {stock.get('analyst_count', '?')} 家",
+                f"评级 {stock.get('rating', '?')}",
+            ],
+        },
+        'technical': {
+            'score': scores['technical'],
+            'weight': f"{RECOMMEND_WEIGHTS['technical']*100:.0f}%",
+            'factors': [
+                f"RSI {stock.get('rsi', '?')}",
+                f"MACD {'金叉' if stock.get('macd_cross') == 'golden' else '死叉'}",
+                f"{'在均线上方' if stock.get('above_ma20') else '在均线下方'}",
+            ],
+        },
+        'capital': {
+            'score': scores['capital'],
+            'weight': f"{RECOMMEND_WEIGHTS['capital']*100:.0f}%",
+            'factors': [
+                f"北向 {stock.get('northbound', '?')}",
+                f"融资 {stock.get('margin', '?')}",
+                f"主力 {stock.get('main_force', '?')}",
+            ],
+        },
+        'risk': {
+            'score': scores['risk'],
+            'weight': f"{RECOMMEND_WEIGHTS['risk']*100:.0f}%",
+            'factors': [
+                f"地缘敞口 {stock.get('geo_exposure', '低')}",
+                f"波动率 {stock.get('volatility', '?')}%",
+                f"行业集中度 {stock.get('industry_concentration', '?')}",
+            ],
+        },
+    }
+    
+    return {
+        **stock,
+        'total_score': round(total, 1),
+        'dimension_scores': scores,
+        'evidence': evidence,  # ★ 新增
+    }
+```
+
+### 前端：5 维雷达图 + 依据展开
+
+```javascript
+// app.js — V7 推荐卡片渲染
+
+function renderRecommendCard(item) {
+    const s = item.dimension_scores;
+    const e = item.evidence;
+    const color = item.total_score >= 80 ? '#22c55e' : 
+                  item.total_score >= 70 ? '#f59e0b' : '#6b7280';
+    
+    return `
+    <div class="recommend-card" style="
+        background: var(--card-bg); border-radius: 12px; padding: 16px; margin: 8px 0;
+        border-left: 4px solid ${color};
+    ">
+        <!-- 标题行 -->
+        <div style="display:flex;justify-content:space-between;align-items:center;">
+            <div>
+                <div style="font-weight:600;font-size:15px;">${item.name}（${item.code}）</div>
+                <div style="color:var(--text2);font-size:12px;margin-top:2px;">
+                    ${item.suggested_position?.action || ''}
+                    ${item.suggested_position?.position_pct ? ' · 建议仓位 ' + (item.suggested_position.position_pct*100) + '%' : ''}
+                </div>
+            </div>
+            <div style="font-size:24px;font-weight:700;color:${color};">${item.total_score}</div>
+        </div>
+        
+        <!-- 5 维雷达图（Chart.js Radar） -->
+        <canvas id="radar-${item.code}" width="200" height="200" style="margin:12px auto;display:block;"></canvas>
+        
+        <!-- R1 生成的推荐理由 -->
+        <div style="font-size:12px;color:var(--text2);margin:8px 0;line-height:1.6;">
+            ${item.reason || ''}
+        </div>
+        
+        <!-- 评分依据（可折叠）— Pro 模式 -->
+        ${currentMode === 'pro' ? `
+        <div class="evidence-toggle" onclick="toggleEvidence('${item.code}')" style="
+            font-size:11px; color:var(--accent); cursor:pointer; margin-top:8px;
+        ">
+            📊 查看评分依据 <span id="ev-arrow-${item.code}">▶</span>
+        </div>
+        <div id="evidence-${item.code}" style="display:none;margin-top:8px;">
+            ${Object.entries(e).map(([dim, data]) => `
+                <div style="padding:6px 0;border-bottom:1px solid var(--border);font-size:11px;">
+                    <div style="display:flex;justify-content:space-between;">
+                        <span style="font-weight:600;">${_dimLabel(dim)}（${data.weight}）</span>
+                        <span style="color:${data.score >= 70 ? '#22c55e' : data.score >= 50 ? '#f59e0b' : '#ef4444'};">
+                            ${data.score} 分
+                        </span>
+                    </div>
+                    <div style="color:var(--text2);margin-top:2px;">
+                        ${data.factors.map(f => `• ${f}`).join('<br>')}
+                    </div>
+                </div>
+            `).join('')}
+        </div>` : ''}
+    </div>`;
+}
+
+// 雷达图渲染（Chart.js）
+function renderRadar(code, scores) {
+    const ctx = document.getElementById('radar-' + code);
+    if (!ctx) return;
+    new Chart(ctx, {
+        type: 'radar',
+        data: {
+            labels: ['估值', '盈利', '技术', '资金', '风险'],
+            datasets: [{
+                data: [scores.valuation, scores.earnings, scores.technical, 
+                       scores.capital, scores.risk],
+                backgroundColor: 'rgba(59,130,246,0.15)',
+                borderColor: 'rgba(59,130,246,0.8)',
+                pointBackgroundColor: 'rgba(59,130,246,1)',
+                borderWidth: 2,
+            }],
+        },
+        options: {
+            scales: { r: { min: 0, max: 100, ticks: { display: false } } },
+            plugins: { legend: { display: false } },
+        },
+    });
+}
+
+function _dimLabel(dim) {
+    return {'valuation':'估值','earnings':'盈利','technical':'技术',
+            'capital':'资金','risk':'风险'}[dim] || dim;
+}
+
+function toggleEvidence(code) {
+    const el = document.getElementById('evidence-' + code);
+    const arrow = document.getElementById('ev-arrow-' + code);
+    el.style.display = el.style.display === 'none' ? 'block' : 'none';
+    arrow.textContent = el.style.display === 'none' ? '▶' : '▼';
+}
+```
+
+**UI 效果**：
+
+```
+Simple 模式（老婆看的——大白话，无数字指标）：
+┌──────────────────────────────────┐
+│ 沪深300ETF（510300）        推荐  │
+│ 👍 各方面表现不错                │
+│                                  │
+│      [5维雷达图——只看形状]        │
+│                                  │
+│ 估值低+盈利增速快                │
+│ 可以考虑定投                     │
+└──────────────────────────────────┘
+
+Pro 模式（你看的——多了评分+依据展开）：
+┌──────────────────────────────────┐
+│ 沪深300ETF（510300）         82  │
+│ 建议买入 · 仓位 5%              │
+│                                  │
+│      [5维雷达图]                 │
+│                                  │
+│ 估值低+盈利增速快，技术面金叉    │
+│                                  │
+│ 📊 查看评分依据 ▼                │
+│ ┌──────────────────────────────┐ │
+│ │ 估值（30%）            85 分 │ │
+│ │ • Forward PE 14.2（行业 18）│ │
+│ │ • PEG 0.8                   │ │
+│ │ • 目标价空间 +12%           │ │
+│ │──────────────────────────── │ │
+│ │ 盈利（25%）            78 分 │ │
+│ │ • EPS 增速 +11%             │ │
+│ │ • 机构覆盖 23 家            │ │
+│ │ • 评级：买入                │ │
+│ │──────────────────────────── │ │
+│ │ ...                         │ │
+│ └──────────────────────────────┘ │
+└──────────────────────────────────┘
+```
+
+### 验证
+
+| # | 验证项 | 方法 | 通过标准 |
+|---|--------|------|---------|
+| ① | API 返回 evidence | `curl /api/recommend/stocks?userId=LeiJiang&topN=3` | 每个推荐含 `evidence` 字段 + 5 维度 + 每维有 factors 列表 |
+| ② | 雷达图渲染 | Pro 模式打开推荐页 | Chart.js 雷达图 5 角正常显示 |
+| ③ | 依据展开 | Pro 模式点"查看评分依据" | 折叠展开 + 每维度显示分数+数据引用 |
+| ④ | Simple 大白话 | Simple 模式看推荐 | 雷达图只看形状 + "👍 各方面表现不错" + 无数字分数/无 PE/RSI |
+| ⑤ | 数据准确 | 对比某只股票的 PE/RSI 与资讯 Tab 显示的一致 | 数字一致 |
+| ⑥ | 多账号 | LeiJiang 和 BuLuoGeLi 各看推荐 | 推荐列表不同（基于各自持仓+风险画像） |
+
+### 代码规范
+
+| 铁律 | 状态 |
+|------|------|
+| **#18** | 后端 `evidence` 字段 → 前端 Pro 展开 ✅ |
+| **#3** | 5 项验证清单 ✅ |
+| **#9** | Simple 先有雷达图（最小可用），Pro 才有依据展开 ✅ |
+| **代码组织** | 逻辑在 `recommend_engine.py`，前端渲染在 app.js ✅ |
+
+---
+
 ## V7 实施计划 + 验收
 
 | Phase | 任务 | 时间 | 产出 |
@@ -4840,6 +5392,7 @@ Regime：{json.dumps(context.get('regime'), ensure_ascii=False)}
 | V7.2 | DCF 估值 | 1.5h | dcf_valuation.py |
 | V7.3 | 买卖决策 | 2h | decision_maker.py |
 | V7.4 | 前端展示 | 1h | app.js 推荐/决策渲染 |
+| V7.4.1 | 多空辩论可视化（5维雷达图+依据展开） | 1.5h | Chart.js 雷达图 + Pro 依据面板 |
 | V7.5 | 推送增强 | 0.5h | 早安简报加操作建议 |
 | V7.6 | 联调 | 1h | 全链路验证 |
 
