@@ -79,7 +79,19 @@ app.add_middleware(
 @app.get("/api/health")
 def health():
     from config import APP_VERSION
-    return {"status": "ok", "time": datetime.now().isoformat(), "version": APP_VERSION}
+    from services.llm_gateway import LLMGateway
+    budget = LLMGateway.instance().check_budget()
+    # Phase 0: API Key 状态检查
+    keys_status = {}
+    keys_status["deepseek"] = "ok" if os.environ.get("LLM_API_KEY") else "missing"
+    keys_status["tushare"] = "ok" if os.environ.get("TUSHARE_TOKEN") else "missing"
+    return {
+        "status": "ok",
+        "time": datetime.now().isoformat(),
+        "version": APP_VERSION,
+        "llm_usage": budget,
+        "keys_status": keys_status,
+    }
 
 
 # ---- 企业微信路由（已拆分到 routers/wxwork.py）----

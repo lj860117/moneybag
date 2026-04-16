@@ -92,3 +92,21 @@ LLM_MODEL = os.environ.get("LLM_MODEL", "deepseek-chat")
 
 # ---- 版本号（Phase 0 统一对齐）----
 APP_VERSION = "6.0.0-phase0"  # Phase 0 完成后改为 6.0.0
+
+# ---- Token 预算控制（Phase 0 新增）----
+TOKEN_BUDGET = {
+    "daily_budget_rmb":    3.0,         # ¥3/天（正常 ¥0.5，6倍余量）
+    "monthly_budget_rmb":  30.0,        # ¥30/月（硬上限）
+    "alert_threshold":     0.7,         # 70% 时推企微预警
+    "critical_threshold":  0.9,         # 90% 时降级为规则引擎
+    "on_exceed":           "degrade",   # 超限策略：降级/warn_only/hard_stop
+    "max_input_per_call":  50_000,      # 单次最大 5万 input token
+    "max_output_per_call": 30_000,      # 单次最大 3万 output token
+}
+
+# DeepSeek 定价（2026-04，¥/百万token）
+DEEPSEEK_PRICING = {
+    "input_cache_hit":    0.20,   # 缓存命中
+    "input_cache_miss":   2.03,   # 缓存未命中
+    "output":             3.04,   # 输出
+}

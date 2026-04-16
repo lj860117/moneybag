@@ -195,6 +195,10 @@ class LLMGateway:
 
                     # 8. 记账
                     self._record_usage(user_id, module, model, total_tokens)
+                    # Phase 0: 金额制 Token 预算记录
+                    input_tk = usage.get("prompt_tokens", usage.get("input_tokens", 0))
+                    output_tk = usage.get("completion_tokens", usage.get("output_tokens", 0))
+                    self._record_token_cost(user_id, model, input_tk, output_tk)
 
                     return result
                 else:
@@ -286,6 +290,93 @@ class LLMGateway:
         u["calls"] += 1
         u["tokens"] += tokens
         u["models"][model] = u["models"].get(model, 0) + 1
+
+    # ---- Phase 0: 金额制 Token 预算 ----
+
+    def _record_token_cost(self, user_id: str, model: str, input_tokens: int, output_tokens: int):
+        """记录本次调用的金额成本到磁盘（按天+按用户双维度）"""
+        try:
+            from config import TOKEN_BUDGET, DEEPSEEK_PRICING
+
+            # 估算成本（简化：假设 50% 缓存命中率）
+            input_rate = (DEEPSEEK_PRICING["input_cache_hit"] + DEEPSEEK_PRICING["input_cache_miss"]) / 2
+            cost = (input_tokens * input_rate + output_tokens * DEEPSEEK_PRICING["output"]) / 1_000_000
+
+            # 读取今日全局用量
+            usage_dir = Path(os.environ.get("DATA_DIR", "./data")) / "llm_usage"
+            usage_dir.mkdir(parents=True, exist_ok=True)
+            usage_file = usage_dir / f"{date.today()}.json"
+
+            if usage_file.exists():
+                daily = json.loads(usage_file.read_text(encoding="utf-8"))
+            else:
+                daily = {"date": date.today().isoformat(), "input_tokens": 0, "output_tokens": 0, "cost_rmb": 0.0, "calls": 0}
+
+            daily["input_tokens"] += input_tokens
+            daily["output_tokens"] += output_tokens
+            daily["cost_rmb"] = round(daily["cost_rmb"] + cost, 4)
+            daily["calls"] += 1
+
+            # 原子写
+            from services.persistence import atomic_write_json
+            atomic_write_json(usage_file, daily)
+
+            # 按用户记录
+            user_dir = usage_dir / "by_user"
+            user_dir.mkdir(parents=True, exist_ok=True)
+            user_file = user_dir / f"{user_id}_{date.today()}.json"
+            if user_file.exists():
+                user_daily = json.loads(user_file.read_text(encoding="utf-8"))
+            else:
+                user_daily = {"user_id": user_id, "date": date.today().isoformat(), "cost_rmb": 0.0, "calls": 0}
+            user_daily["cost_rmb"] = round(user_daily["cost_rmb"] + cost, 4)
+            user_daily["calls"] += 1
+            atomic_write_json(user_file, user_daily)
+
+            # 预警检查
+            budget = TOKEN_BUDGET.get("daily_budget_rmb", 3.0)
+            alert_pct = TOKEN_BUDGET.get("alert_threshold", 0.7)
+            critical_pct = TOKEN_BUDGET.get("critical_threshold", 0.9)
+
+            if daily["cost_rmb"] >= budget * critical_pct:
+                print(f"[LLM_GATEWAY] 🔴 日预算 90%！¥{daily['cost_rmb']:.2f} / ¥{budget}")
+            elif daily["cost_rmb"] >= budget * alert_pct:
+                print(f"[LLM_GATEWAY] 🟡 日预算 70%！¥{daily['cost_rmb']:.2f} / ¥{budget}")
+
+        except Exception as e:
+            print(f"[LLM_GATEWAY] ⚠️ Token 记账失败（不影响调用）: {e}")
+
+    def check_budget(self) -> dict:
+        """检查预算状态（供 /api/health 调用）"""
+        try:
+            from config import TOKEN_BUDGET
+            usage_dir = Path(os.environ.get("DATA_DIR", "./data")) / "llm_usage"
+            usage_file = usage_dir / f"{date.today()}.json"
+
+            if usage_file.exists():
+                daily = json.loads(usage_file.read_text(encoding="utf-8"))
+            else:
+                daily = {"cost_rmb": 0.0, "calls": 0}
+
+            budget = TOKEN_BUDGET.get("daily_budget_rmb", 3.0)
+            pct = daily["cost_rmb"] / budget if budget > 0 else 0
+
+            if pct >= TOKEN_BUDGET.get("critical_threshold", 0.9):
+                status = "critical"
+            elif pct >= TOKEN_BUDGET.get("alert_threshold", 0.7):
+                status = "warning"
+            else:
+                status = "ok"
+
+            return {
+                "today_cost_rmb": round(daily["cost_rmb"], 2),
+                "daily_budget_rmb": budget,
+                "usage_pct": round(pct * 100, 1),
+                "status": status,
+                "today_calls": daily.get("calls", 0),
+            }
+        except Exception:
+            return {"status": "unknown"}
 
     def get_usage(self, user_id: str = "") -> dict:
         """获取用量统计"""
