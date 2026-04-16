@@ -69,8 +69,28 @@ if((pid==='leijiang'||name==='leijiang')&&!localStorage.getItem('moneybag_ui_mod
 if(saved)return saved;
 return 'simple'}
 let _uiMode=_getDefaultUIMode();
-function toggleUIMode(){_uiMode=_uiMode==='simple'?'pro':'simple';localStorage.setItem('moneybag_ui_mode',_uiMode);localStorage.setItem('moneybag_ui_mode_set_by_user','1');location.reload()}
+function toggleUIMode(){
+  const oldMode=_uiMode;
+  _uiMode=_uiMode==='simple'?'pro':'simple';
+  localStorage.setItem('moneybag_ui_mode',_uiMode);
+  localStorage.setItem('moneybag_ui_mode_set_by_user','1');
+  // Phase 0: 同步到后端偏好 API（失败不阻塞，降级用 localStorage）
+  fetch(`${API_BASE}/user/preference?userId=${encodeURIComponent(getProfileId())}`,{
+    method:'PUT',headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({display_mode:_uiMode})
+  }).catch(()=>{});
+  location.reload()
+}
 function isProMode(){return _uiMode==='pro'}
+
+// Phase 0: 通用三态渲染（Loading / Error / Empty / Data）
+function renderCard(title, state, content=''){
+  if(state==='loading') return `<div class="dashboard-card"><div class="dashboard-card-title">${title}</div><div style="padding:16px;text-align:center;color:var(--text2)"><div class="loading-spinner" style="width:20px;height:20px;margin:0 auto 8px;border-width:2px"></div>加载中...</div></div>`;
+  if(state==='error') return `<div class="dashboard-card" style="border-left:3px solid var(--red)"><div class="dashboard-card-title">${title}</div><div style="padding:12px;text-align:center;color:var(--text2)">加载失败<br><button onclick="location.reload()" style="margin-top:8px;padding:4px 12px;border-radius:6px;border:none;background:var(--accent);color:#fff;cursor:pointer;font-size:12px">🔄 重试</button></div></div>`;
+  if(state==='empty') return `<div class="dashboard-card"><div class="dashboard-card-title">${title}</div><div style="padding:12px;text-align:center;color:var(--text2);font-size:12px">暂无数据</div></div>`;
+  return `<div class="dashboard-card"><div class="dashboard-card-title">${title}</div>${content}</div>`;
+}
+
 const _BASE_STORAGE_KEY='moneybag_portfolio';
 const _BASE_TXN_KEY='moneybag_transactions';
 const _BASE_ASSETS_KEY='moneybag_assets';
@@ -327,6 +347,46 @@ const hasServerHoldings=localStorage.getItem(_uk('moneybag_has_holdings'))==='1'
 const hasLocalData=txns.length>0||p.transactions?.length>0||assets.length>0||ledger.length>0||hasServerHoldings;
 if(!hasProfile&&!hasLocalData){
 $('#app').innerHTML=`<div class="landing stagger"><div class="landing-icon">💰</div><h1>你的钱，该怎么放？</h1><p class="subtitle">回答5个问题，AI帮你出一份<br>专属资产配置方案</p><button class="cta-btn" onclick="startQuiz()">开始测评</button><div class="trust-badges"><span class="trust-badge">不收费</span><span class="trust-badge">不推销</span><span class="trust-badge">不注册</span></div></div>`;renderNav();return}
+
+// Phase 0: 有用户但空仓 → 市场概览模式（机会导向）
+const hasHoldings=txns.length>0||p.transactions?.length>0||hasServerHoldings;
+if(hasProfile&&!hasHoldings){
+$('#app').innerHTML=`<div class="result-page fade-up">
+<div class="pnl-hero" style="margin-bottom:16px">
+<div class="pnl-label">💰 家庭净资产</div>
+<div style="font-size:10px;color:var(--text2);margin-top:2px">空仓观望中 👀</div>
+<div class="pnl-total-value" id="heroNetWorth">${fmtFull(Math.round(nw.netWorth))}</div>
+<div id="heroBreakdown" style="display:flex;gap:12px;justify-content:center;margin-top:12px;font-size:12px;flex-wrap:wrap">
+<div style="text-align:center"><div style="color:var(--text2)">💵 现金</div><div style="font-weight:700;color:var(--green)">¥${fmtMoney(Math.round(nw.assetTotal))}</div></div>
+</div>
+</div>
+
+<div class="dashboard-card" style="border-left:3px solid #F59E0B;margin-bottom:12px">
+<div class="dashboard-card-title">📊 市场概览</div>
+<div style="font-size:13px;color:var(--text1);line-height:1.8">空仓期间，AI 管家持续监控市场，寻找入场时机。</div>
+<div id="emptyPortfolioSignals" style="margin-top:8px;font-size:12px;color:var(--text2)">加载市场信号中...</div>
+</div>
+
+<div id="stewardBriefingCard" class="dashboard-card" style="border-left:3px solid #6366F1;display:none">
+<div class="dashboard-card-title">🤖 管家一句话</div>
+<div id="stewardBriefingText" style="font-size:13px;line-height:1.8;color:var(--text1)">加载中...</div>
+</div>
+
+<div id="dailyFocusSection"></div>
+
+<div class="bottom-actions" style="margin-top:16px">
+<button class="action-btn primary" onclick="navigateTo('stocks')">📈 开始建仓<div style="font-size:10px;font-weight:400;opacity:0.7;margin-top:2px">添加第一笔投资</div></button>
+<button class="action-btn secondary" onclick="navigateTo('chat')">💬 问问管家</button>
+<button class="action-btn secondary" onclick="startQuiz()">🔄 重新测评</button>
+</div>
+</div>`;renderNav();loadDailyFocus();loadStewardBriefing();loadUnifiedHero();
+// 加载空仓市场信号
+if(API_AVAILABLE){fetch(API_BASE+'/daily-signal?'+getProfileParam(),{signal:AbortSignal.timeout(10000)}).then(r=>r.json()).then(d=>{
+const el=document.getElementById('emptyPortfolioSignals');if(el){
+const sig=d.signal||d.overall_signal||'观望';const emoji=sig.includes('买')||sig.includes('good')?'🟢':sig.includes('卖')||sig.includes('bad')?'🔴':'🟡';
+el.innerHTML=`${emoji} 今日信号：${sig}<br>💡 ${d.suggestion||d.one_line||'持续关注市场变化'}`}
+}).catch(()=>{})}
+return}
 // 有数据 → 智能决策中心
 const nw=calcNetWorth();
 const monthNow=new Date();const monthStart=new Date(monthNow.getFullYear(),monthNow.getMonth(),1).toISOString();
@@ -2864,6 +2924,11 @@ migrateV3toV4();
 (async()=>{
   await checkAPI();
   await ensureProfile(); // 首次使用输入名字
+  // Phase 0: 从后端同步用户偏好（模式、推送、盯盘阈值）
+  try{
+    const prefR=await fetch(`${API_BASE}/user/preference?userId=${encodeURIComponent(getProfileId())}`,{signal:AbortSignal.timeout(5000)});
+    if(prefR.ok){const prefs=await prefR.json();if(prefs.display_mode&&!localStorage.getItem('moneybag_ui_mode_set_by_user')){_uiMode=prefs.display_mode;localStorage.setItem('moneybag_ui_mode',_uiMode)}}
+  }catch(e){/* 降级：用 localStorage */}
   _loadChatHistory(); // B3: 恢复聊天记录
   fetchNav();syncFromCloud();loadModelList();
   // 老用户跳过问卷：有 profile 且后端有数据 → 直接进首页
