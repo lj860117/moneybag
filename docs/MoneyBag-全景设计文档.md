@@ -5283,7 +5283,241 @@ async def run_review(userId: str):
 
 ---
 
-## V8 实施计划 + 验收
+## V8.5.1 测试分析自动化（AI 自测自修看门狗）
+
+> **两步走路径**：
+> - Phase 0 建好独立测试系统 `test_runner.py`（纯脚本，不涉及 AI）→ **基础设施**
+> - V8 阶段让 R1 接管测试分析 → **AI 诊断 + 修复建议**（不自动改代码）
+
+### 设计理念
+
+```
+Phase 0（现在）         V8（未来）
+┌──────────────┐       ┌──────────────────────────────┐
+│ test_runner   │       │ R1 分析测试趋势               │
+│ L1/L2/L3/L4  │──────►│ ↓                             │
+│ 结果→JSON存档 │       │ 诊断报告 + 修复建议            │
+│ 失败→推企微   │       │ ↓                             │
+└──────────────┘       │ 推企微给用户（不自动改代码）    │
+   你看 ✅/❌            └──────────────────────────────┘
+   手动处理                AI 告诉你哪里坏了、怎么修
+```
+
+### 核心原则
+
+> **AI 永远只给建议，不自动改代码。** 你确认后手动改，或者让 WorkBuddy 帮你改。
+
+### R1 测试分析任务
+
+```python
+# services/review_engine.py — V8.5.1 新增
+
+async def analyze_test_trends(days: int = 7) -> dict:
+    """R1 分析测试趋势，输出诊断报告"""
+
+    # 1. 读取最近 N 天的测试结果
+    test_results = load_test_results(days)
+
+    # 2. 统计
+    stats = {
+        "total_runs": len(test_results),
+        "overall_pass_rate": calc_pass_rate(test_results),
+        "by_level": {
+            "L1": calc_level_stats(test_results, "l1"),
+            "L2": calc_level_stats(test_results, "l2"),
+            "L3": calc_level_stats(test_results, "l3"),
+        },
+        "recurring_failures": find_recurring_failures(test_results),  # 连续 N 天失败的项
+        "latency_trends": calc_latency_trends(test_results),          # 响应时间趋势
+    }
+
+    # 3. 喂给 R1 分析
+    prompt = f"""你是钱袋子系统的运维诊断专家。
+
+以下是最近 {days} 天的自动化测试结果统计：
+
+{json.dumps(stats, ensure_ascii=False, indent=2)}
+
+请分析：
+1. 【紧急问题】哪些测试项连续失败？根本原因可能是什么？
+2. 【趋势预警】哪些指标在恶化（响应变慢、通过率下降）？
+3. 【修复建议】给出具体的修复步骤（改哪个文件、改什么）
+4. 【优化建议】基于数据，有什么可以优化的（如调整凌晨任务时间、更换数据源等）
+
+输出 JSON 格式：
+{{
+  "urgent": [{{"issue": "...", "cause": "...", "fix": "..."}}],
+  "warnings": [{{"trend": "...", "suggestion": "..."}}],
+  "optimizations": [{{"what": "...", "why": "...", "effort": "xh"}}]
+}}
+"""
+    result = await call_r1(prompt)
+    diagnosis = safe_parse_json(result)
+
+    # 4. 存档
+    save_diagnosis(diagnosis)
+
+    return diagnosis
+```
+
+### 凌晨任务集成
+
+```python
+# scripts/night_worker.py — 在 01:05 执行（test_runner 01:00 跑完后）
+
+BACKGROUND_TASKS_V8 = {
+    # ... 现有任务 ...
+    "test_diagnosis": {
+        "time": "01:05",
+        "engine": "r1",
+        "depends_on": "test_runner",   # test_runner 01:00 跑完后才执行
+        "func": "analyze_test_trends",
+        "args": {"days": 7},
+        "condition": "test_results_exist",  # 有测试结果才跑
+    },
+}
+```
+
+### 企微推送（只有发现问题才推）
+
+```python
+async def push_test_diagnosis(diagnosis: dict):
+    """有问题才推，没问题不打扰"""
+    urgent = diagnosis.get("urgent", [])
+    warnings = diagnosis.get("warnings", [])
+
+    if not urgent and not warnings:
+        return  # 一切正常，不推
+
+    msg = "🔬 AI 测试诊断报告\n"
+
+    if urgent:
+        msg += "\n🔴 紧急问题：\n"
+        for u in urgent:
+            msg += f"  • {u['issue']}\n"
+            msg += f"    原因：{u['cause']}\n"
+            msg += f"    修复：{u['fix']}\n"
+
+    if warnings:
+        msg += "\n🟡 趋势预警：\n"
+        for w in warnings:
+            msg += f"  • {w['trend']}\n"
+            msg += f"    建议：{w['suggestion']}\n"
+
+    await push_to_wxwork("LeiJiang", msg)
+    # 不推老婆——技术运维只推你
+```
+
+### 企微推送示例
+
+```
+🔬 AI 测试诊断报告
+
+🔴 紧急问题：
+  • AKShare SHIBOR 连续 5 天超时
+    原因：AKShare 1.18.55 的 SHIBOR 接口参数又变了
+    修复：factor_data.py 第 292 行，market 参数改为
+         "上海银行间同业拆放利率"（去掉"市场"二字）
+
+🟡 趋势预警：
+  • DeepSeek R1 响应时间从平均 2s 涨到 8s
+    建议：凌晨分析任务从 02:00 改到 03:00（避开高峰）
+  • 选股 API 返回条数从 5000 降到 3200
+    建议：检查 AKShare 版本，可能需要升级到 1.18.56
+```
+
+### 前端展示（Pro 模式复盘页扩展）
+
+```javascript
+// Pro 模式复盘页新增 "系统健康" Tab
+
+function renderTestDiagnosis(diagnosis) {
+    if (currentMode !== 'pro') return '';
+
+    const urgent = diagnosis.urgent || [];
+    const warnings = diagnosis.warnings || [];
+    const optimizations = diagnosis.optimizations || [];
+
+    return `
+    <div class="diagnosis-card">
+        <h3>🔬 AI 测试诊断</h3>
+        <div class="diagnosis-time">最近一次：${diagnosis.time || '暂无'}</div>
+
+        ${urgent.length > 0 ? `
+        <div class="diagnosis-section urgent">
+            <h4>🔴 紧急问题（${urgent.length}）</h4>
+            ${urgent.map(u => `
+                <div class="diagnosis-item">
+                    <div class="issue">${u.issue}</div>
+                    <div class="cause">原因：${u.cause}</div>
+                    <div class="fix">修复：<code>${u.fix}</code></div>
+                </div>
+            `).join('')}
+        </div>` : ''}
+
+        ${warnings.length > 0 ? `
+        <div class="diagnosis-section warning">
+            <h4>🟡 趋势预警（${warnings.length}）</h4>
+            ${warnings.map(w => `
+                <div class="diagnosis-item">
+                    <div class="trend">${w.trend}</div>
+                    <div class="suggestion">建议：${w.suggestion}</div>
+                </div>
+            `).join('')}
+        </div>` : ''}
+
+        ${urgent.length === 0 && warnings.length === 0 ?
+            '<div class="diagnosis-ok">🟢 最近 7 天系统运行正常</div>' : ''}
+    </div>`;
+}
+```
+
+**Simple 模式**：不显示任何诊断信息。
+**Pro 模式**：复盘页新增"系统健康"Tab，展示 AI 诊断结果。
+
+### API
+
+```python
+@app.get("/api/review/test-diagnosis")
+async def get_test_diagnosis(userId: str):
+    """获取最新的 AI 测试诊断结果"""
+    path = DATA_DIR / "test_diagnosis" / "latest.json"
+    if not path.exists():
+        return {"message": "暂无诊断结果", "urgent": [], "warnings": []}
+    return json.loads(path.read_text(encoding="utf-8"))
+```
+
+### 实施
+
+| 任务编号 | 内容 | 工时 | 前置依赖 |
+|---------|------|------|---------|
+| V8.5.1a | R1 测试分析 prompt + 统计函数 | 1h | Phase 0 test_runner 完成 + V8.1 验证引擎完成 |
+| V8.5.1b | 凌晨任务集成 + 企微推送 | 0.5h | V8.5.1a |
+| V8.5.1c | API + 前端 Pro 诊断卡片 | 0.5h | V8.5.1b |
+
+**总工时**：2h
+
+### 验证
+
+| # | 验证项 | 方法 | 通过标准 |
+|---|--------|------|---------|
+| ① | R1 能读取测试结果 | 手动触发 `analyze_test_trends(7)` | 返回 JSON 含 urgent/warnings |
+| ② | 诊断准确性 | 故意让 L3 SHIBOR 连续失败 3 天 → 触发分析 | urgent 里出现 SHIBOR 相关诊断 |
+| ③ | 企微推送 | 有 urgent 时 | 只推厉害了哥，不推老婆 |
+| ④ | 无问题不打扰 | 全通过时 | 不推送任何消息 |
+| ⑤ | 前端展示 | Pro 复盘页 | 显示诊断卡片 + Simple 不显示 |
+| ⑥ | 存档 | 检查 `data/test_diagnosis/` | 每次分析结果正确存档 |
+
+### 代码规范
+
+| 铁律 | 状态 |
+|------|------|
+| **#18** 后端做了前端必须接 | ✅ `/api/review/test-diagnosis` → Pro 复盘页诊断 Tab |
+| **#3** 改完立即验证 | ✅ 6 项验证清单 |
+| **#9** 最小可用先交 | ✅ Phase 0 独立脚本先跑起来，V8 才加 AI |
+| **代码组织** | ✅ 分析逻辑在 `review_engine.py`，不污染 main.py |
+
+---
 
 | Phase | 任务 | 时间 |
 |-------|------|------|
@@ -5294,6 +5528,7 @@ async def run_review(userId: str):
 | V8.3.2 | 记忆主动提炼（高频因子提取+注入上下文+前端） | 2h |
 | V8.4 | 触发机制 | 1天 |
 | V8.5 | 前端+推送 | 1.5天 |
+| V8.5.1 | 测试分析自动化（R1诊断+企微推送+前端卡片） | 2h |
 | **V8.6** | **研报追踪 + 券商评分 + 权重学习** | **6天** |
 | V8.7 | 联调 | 1天 |
 
@@ -5312,6 +5547,10 @@ async def run_review(userId: str):
 - [ ] **V8.3.2** 高频因子提取正确（5天=recurring / 10天=hot）
 - [ ] **V8.3.2** 主题注入 V3 上下文 + Pro 早安简报附"AI 近期关注"
 - [ ] **V8.3.2** Pro 复盘页显示持续关注主题卡片
+- [ ] **V8.5.1** R1 读取测试结果 → 输出 urgent/warnings JSON
+- [ ] **V8.5.1** 连续失败项被正确诊断（故意让 SHIBOR 连续失败 3 天验证）
+- [ ] **V8.5.1** 有问题推企微（只推厉害了哥）/ 无问题不打扰
+- [ ] **V8.5.1** Pro 复盘页显示"系统健康"诊断卡片 / Simple 不显示
 
 **启动条件**：V7上线≥1月 + decisions/≥200条 + 用户确认
 
