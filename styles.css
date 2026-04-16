@@ -1,6 +1,33 @@
-/* 钱袋子 V5.5 — 主样式 */
+/* 钱袋子 V6.0 — 主样式 + 亮/暗/系统主题（Phase 0 新增）*/
 *{margin:0;padding:0;box-sizing:border-box}
-:root{--bg:#0F172A;--bg2:#1E293B;--bg3:#334155;--card:#1E293B;--text:#F1F5F9;--text1:#F1F5F9;--text2:#94A3B8;--accent:#F59E0B;--green:#10B981;--red:#EF4444;--blue:#3B82F6;--radius:16px}
+
+/* 默认暗色主题 */
+:root{--bg:#0F172A;--bg2:#1E293B;--bg3:#334155;--card:#1E293B;--text:#F1F5F9;--text1:#F1F5F9;--text2:#94A3B8;--text3:#64748B;--accent:#F59E0B;--green:#10B981;--red:#EF4444;--blue:#3B82F6;--radius:16px}
+
+/* 亮色主题 */
+[data-theme="light"]{--bg:#F8FAFC;--bg2:#FFFFFF;--bg3:#E2E8F0;--card:#FFFFFF;--text:#0F172A;--text1:#1E293B;--text2:#64748B;--text3:#94A3B8;--accent:#D97706;--green:#059669;--red:#DC2626;--blue:#2563EB}
+
+/* 系统跟随（无 data-theme 属性时，跟随系统偏好）*/
+@media(prefers-color-scheme:light){
+  :root:not([data-theme]){--bg:#F8FAFC;--bg2:#FFFFFF;--bg3:#E2E8F0;--card:#FFFFFF;--text:#0F172A;--text1:#1E293B;--text2:#64748B;--text3:#94A3B8;--accent:#D97706;--green:#059669;--red:#DC2626;--blue:#2563EB}
+}
+
+/* 亮色模式下的额外调整 */
+[data-theme="light"] .pnl-hero,
+:root:not([data-theme]) .pnl-hero{background:linear-gradient(135deg,#F1F5F9,#E2E8F0)}
+[data-theme="light"] .modal-overlay,
+:root:not([data-theme]) .modal-overlay{background:rgba(0,0,0,.4)}
+[data-theme="light"] .chat-msg.user{color:#fff}
+[data-theme="light"] .chat-msg.bot{border:1px solid var(--bg3)}
+[data-theme="light"] .holding-card:active{background:var(--bg3)}
+[data-theme="light"] .option-btn:active{background:rgba(217,119,6,.1);border-color:var(--accent)}
+[data-theme="light"] .option-btn.selected{background:rgba(217,119,6,.1)}
+@media(prefers-color-scheme:light){
+  :root:not([data-theme]) .pnl-hero{background:linear-gradient(135deg,#F1F5F9,#E2E8F0)}
+  :root:not([data-theme]) .modal-overlay{background:rgba(0,0,0,.4)}
+  :root:not([data-theme]) .chat-msg.user{color:#fff}
+  :root:not([data-theme]) .chat-msg.bot{border:1px solid var(--bg3)}
+}
 body{font-family:'Noto Sans SC',-apple-system,sans-serif;background:var(--bg);color:var(--text);min-height:100vh;overflow-x:hidden;-webkit-tap-highlight-color:transparent;padding-top:32px}
 #app{max-width:480px;margin:0 auto;padding:20px 20px 100px;min-height:100vh}
 

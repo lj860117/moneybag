@@ -83,6 +83,24 @@ function toggleUIMode(){
 }
 function isProMode(){return _uiMode==='pro'}
 
+// Phase 0 (3.8): 亮/暗/系统 主题切换
+const _THEME_CYCLE=['system','dark','light'];
+let _currentTheme=localStorage.getItem('moneybag_theme')||'system';
+function applyTheme(theme){
+  _currentTheme=theme;
+  localStorage.setItem('moneybag_theme',theme);
+  if(theme==='light'){document.documentElement.setAttribute('data-theme','light')}
+  else if(theme==='dark'){document.documentElement.setAttribute('data-theme','dark')}
+  else{document.documentElement.removeAttribute('data-theme')} // system
+  const btn=document.getElementById('themeBtn');if(btn)btn.textContent=getThemeIcon();
+}
+function getThemeIcon(){return _currentTheme==='light'?'☀️':_currentTheme==='dark'?'🌙':'🖥️'}
+function cycleTheme(){
+  const idx=(_THEME_CYCLE.indexOf(_currentTheme)+1)%_THEME_CYCLE.length;
+  applyTheme(_THEME_CYCLE[idx]);
+}
+applyTheme(_currentTheme); // 启动时应用
+
 // Phase 0: 通用三态渲染（Loading / Error / Empty / Data）
 function renderCard(title, state, content=''){
   if(state==='loading') return `<div class="dashboard-card"><div class="dashboard-card-title">${title}</div><div style="padding:16px;text-align:center;color:var(--text2)"><div class="loading-spinner" style="width:20px;height:20px;margin:0 auto 8px;border-width:2px"></div>加载中...</div></div>`;
@@ -299,7 +317,7 @@ const tabs=[{id:'landing',icon:'🏠',label:'首页'},{id:'stocks',icon:'📈',l
 n.innerHTML=tabs.map(t=>`<div class="nav-item ${currentPage===t.id?'active':''}" onclick="navigateTo('${t.id}')"><div class="nav-icon">${t.icon}</div><div>${t.label}</div></div>`).join('');
 // 顶部用户名条
 let hdr=document.getElementById('profileHeader');if(!hdr){hdr=document.createElement('div');hdr.id='profileHeader';hdr.style.cssText='position:fixed;top:0;left:0;right:0;z-index:100;padding:6px 16px;font-size:12px;color:var(--text2,#94a3b8);background:var(--bg,#0f172a);display:flex;justify-content:space-between;align-items:center;border-bottom:1px solid var(--bg3,#334155)';document.body.appendChild(hdr);document.body.style.paddingTop='32px'}
-hdr.innerHTML=`<span onclick="showProfileSettings()" style="cursor:pointer">👋 ${_profileName||'未登录'} ⚙️</span><span style="display:flex;align-items:center;gap:8px"><button onclick="toggleUIMode()" style="font-size:10px;padding:2px 8px;border-radius:4px;border:1px solid var(--bg3);background:${isProMode()?'rgba(99,102,241,.2)':'rgba(16,185,129,.2)'};color:${isProMode()?'#818CF8':'#10B981'};cursor:pointer">${isProMode()?'🔬 专业':'🌱 简洁'}</button><span style="font-size:10px;color:var(--text3,#64748b)">${getProfileId().slice(0,8)}</span></span>`}
+hdr.innerHTML=`<span onclick="showProfileSettings()" style="cursor:pointer">👋 ${_profileName||'未登录'} ⚙️</span><span style="display:flex;align-items:center;gap:8px"><button onclick="cycleTheme()" style="font-size:10px;padding:2px 8px;border-radius:4px;border:1px solid var(--bg3);background:transparent;color:var(--text2);cursor:pointer" id="themeBtn">${getThemeIcon()}</button><button onclick="toggleUIMode()" style="font-size:10px;padding:2px 8px;border-radius:4px;border:1px solid var(--bg3);background:${isProMode()?'rgba(99,102,241,.2)':'rgba(16,185,129,.2)'};color:${isProMode()?'#818CF8':'#10B981'};cursor:pointer">${isProMode()?'🔬 专业':'🌱 简洁'}</button><span style="font-size:10px;color:var(--text3,#64748b)">${getProfileId().slice(0,8)}</span></span>`}
 
 function showProfileSettings(){
 const pid=getProfileId();const wxId=localStorage.getItem('moneybag_wxwork_uid')||'';
