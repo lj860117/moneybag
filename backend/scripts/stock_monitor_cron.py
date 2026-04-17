@@ -292,6 +292,49 @@ def run_close_review():
             except Exception as e:
                 print(f"  [推送] {name}: 失败: {e}")
 
+        # ---- V6 Phase 5: 收盘复盘自动存档到 analysis_history ----
+        try:
+            sys.path.insert(0, str(Path(__file__).parent.parent))
+            from services.analysis_history import save_analysis
+            full_text = ""
+            if review_text:
+                full_text += f"【管家复盘】\n{review_text}\n\n"
+            if diagnosis_text:
+                full_text += f"【R1 深度诊断】\n{diagnosis_text}"
+            if full_text.strip():
+                save_analysis(uid, "deepseek", "DeepSeek 收盘复盘", "full", full_text.strip(), direction="auto")
+                print(f"  [存档] {name}: 复盘已存 analysis_history")
+        except Exception as e:
+            print(f"  [存档] {name}: 失败: {e}")
+
+    # ---- V6: 地缘风险预警推送 ----
+    try:
+        sys.path.insert(0, str(Path(__file__).parent.parent))
+        from services.geopolitical import get_geopolitical_risk_score
+        geo = get_geopolitical_risk_score()
+        severity = geo.get("severity", 0)
+        if severity >= 3:
+            from services.wxwork_push import is_configured, send_daily_report_to
+            if is_configured():
+                geo_msg = f"🚨 地缘风险预警 (级别 {severity}/5)\n\n"
+                geo_msg += f"风险评分: {geo.get('score', 0)}/100\n"
+                geo_msg += f"级别: {geo.get('level', '未知')}\n"
+                events = geo.get('events', [])
+                if events:
+                    geo_msg += f"\n事件:\n" + "\n".join(f"• {e}" for e in events[:3])
+                geo_msg += "\n\n打开钱袋子查看详情"
+                for p in profiles:
+                    wxid = p.get("wxworkUserId", "")
+                    if wxid:
+                        send_daily_report_to(wxid, geo_msg)
+                print(f"  [地缘] severity={severity}, 已推送预警")
+            else:
+                print(f"  [地缘] severity={severity}, 企微未配置")
+        else:
+            print(f"  [地缘] severity={severity}, 无需预警")
+    except Exception as e:
+        print(f"  [地缘] 预警检查失败: {e}")
+
     # V4: 判断追踪 — 验证到期判断 + EMA 权重校准
     try:
         from services.judgment_tracker import verify_pending, calibrate

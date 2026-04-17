@@ -1280,7 +1280,7 @@ return `<div style="margin-bottom:12px"><div style="font-size:12px;font-weight:7
 let insightTab='overview';
 function _insightTabs(){
 const all=[
-['overview','📊 总览'],['fundpick','🔍 选基'],['stockpick','🧠 选股'],['news','📰 新闻'],['policy','🏛️ 政策'],['tech','📈 技术'],['macro','📊 宏观'],['global','🌐 全球'],['signals','📡 信号'],['scorecard','📊 成绩单'],['doctor','🏥 体检'],['steward','🤖 管家'],['factorictest','🔬 因子检验'],['montecarlo','🎲 蒙特卡洛'],['aipredict','🤖 AI预测'],['geneticfactor','🧬 遗传因子'],['optimizer','⚡ 组合优化'],['altdata','📡 另类数据'],['rlposition','🎮 RL仓位'],['llmfactor','🧠 LLM因子'],['weekly','📋 周报']];
+['overview','📊 总览'],['sector','🔥 行业'],['broker','🏛️ 研报'],['scenario','🎭 情景'],['fundpick','🔍 选基'],['stockpick','🧠 选股'],['news','📰 新闻'],['policy','🏛️ 政策'],['tech','📈 技术'],['macro','📊 宏观'],['global','🌐 全球'],['signals','📡 信号'],['scorecard','📊 成绩单'],['doctor','🏥 体检'],['steward','🤖 管家'],['factorictest','🔬 因子检验'],['montecarlo','🎲 蒙特卡洛'],['aipredict','🤖 AI预测'],['geneticfactor','🧬 遗传因子'],['optimizer','⚡ 组合优化'],['altdata','📡 另类数据'],['rlposition','🎮 RL仓位'],['llmfactor','🧠 LLM因子'],['weekly','📋 周报']];
 const simple=['overview','news','policy','doctor','steward'];
 return isProMode()?all:all.filter(t=>simple.includes(t[0]))}
 async function renderInsight(){currentPage='insight';renderNav();const tabs=_insightTabs();
@@ -1289,6 +1289,9 @@ $('#app').innerHTML=`<div class="insight-page fade-up"><div class="insight-heade
 setTimeout(()=>{const bar=document.getElementById('insightTabBar');const active=bar&&bar.querySelector('.section-tab.active');if(active&&bar){active.scrollIntoView({behavior:'smooth',inline:'center',block:'nearest'})}},50);
 if(!API_AVAILABLE){document.getElementById('insightContent').innerHTML='<div style="text-align:center;padding:40px;color:var(--text2)">后端离线，请启动后端服务获取实时数据</div>';return}
 // 独立 tab 不需要 dashboard 数据，秒开
+if(insightTab==='sector'){const el=document.getElementById('insightContent');if(el)renderSectorHot(el);return}
+if(insightTab==='broker'){const el=document.getElementById('insightContent');if(el)renderBrokerView(el);return}
+if(insightTab==='scenario'){const el=document.getElementById('insightContent');if(el)renderScenarioView(el);return}
 if(insightTab==='fundpick'){const el=document.getElementById('insightContent');if(el)renderFundPick(el);return}
 if(insightTab==='stockpick'){const el=document.getElementById('insightContent');if(el)renderStockPick(el);return}
 if(insightTab==='factorictest'){const el=document.getElementById('insightContent');if(el)renderFactorIC(el);return}
@@ -4265,4 +4268,99 @@ ${panelsHtml}${summaryHtml}
 
 function switchCompareTab(btn,src){btn.parentElement.querySelectorAll('.section-tab').forEach(b=>b.classList.remove('active'));btn.classList.add('active');
 btn.closest('.modal-content').querySelectorAll('.compare-panel').forEach(p=>{p.style.display=p.dataset.source===src?'':'none'})}
+
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// V6 补齐：行业热点 + 研报共识 + 情景分析 + 大宗商品
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+async function renderSectorHot(el){
+el.innerHTML='<div style="text-align:center;padding:20px"><div class="loading-spinner" style="width:24px;height:24px;margin:0 auto 8px;border-width:2px"></div>加载行业数据...</div>';
+try{
+const r=await fetch('/api/market-factors/all');const d=await r.json();
+const sr=d.sector_rotation||d;
+if(!sr.available&&!sr.top_gainers){el.innerHTML='<div style="text-align:center;padding:20px;color:var(--text2)">行业数据暂不可用</div>';return}
+const gainers=sr.top_gainers||sr.sectors||[];
+const signal=sr.rotation_signal||sr.pattern||'均衡';
+let html='<div class="dashboard-card" style="border-left:3px solid var(--accent)"><div class="dashboard-card-title">🔥 行业轮动信号</div><div style="font-size:16px;font-weight:800;margin:8px 0">'+signal+'</div></div>';
+if(gainers.length){html+='<div class="dashboard-card"><div class="dashboard-card-title">📈 涨幅TOP行业</div>';
+gainers.slice(0,10).forEach((s,i)=>{const name=s.name||s.板块名称||'';const chg=s.change_pct||s.涨跌幅||0;const color=chg>=0?'var(--bull,#22c55e)':'var(--bear,#ef4444)';
+html+=`<div style="display:flex;justify-content:space-between;padding:6px 0;border-bottom:1px solid var(--border,rgba(255,255,255,.05))"><span style="font-size:13px">${i+1}. ${name}</span><span style="font-size:13px;font-weight:700;color:${color}">${typeof chg==='number'?chg.toFixed(2)+'%':chg}</span></div>`});
+html+='</div>'}
+// 大宗商品
+try{const cr=await fetch('/api/market-factors/commodities');const cd=await cr.json();
+if(cd.available||cd.gold){html+='<div class="dashboard-card"><div class="dashboard-card-title">🛢️ 大宗商品</div>';
+if(cd.gold)html+=`<div style="display:flex;justify-content:space-between;padding:6px 0"><span>🥇 黄金</span><span style="font-weight:700">${cd.gold.price}${cd.gold.unit} <span style="color:${cd.gold.change_pct>=0?'var(--bull)':'var(--bear)'}">${cd.gold.change_pct>=0?'+':''}${cd.gold.change_pct?.toFixed(1)||0}%</span></span></div>`;
+if(cd.copper)html+=`<div style="display:flex;justify-content:space-between;padding:6px 0"><span>🔶 铜</span><span style="font-weight:700">${cd.copper.price}${cd.copper.unit} <span style="color:${cd.copper.change_pct>=0?'var(--bull)':'var(--bear)'}">${cd.copper.change_pct>=0?'+':''}${cd.copper.change_pct?.toFixed(1)||0}%</span></span></div>`;
+if(cd.crude_oil)html+=`<div style="display:flex;justify-content:space-between;padding:6px 0"><span>🛢️ 原油SC0</span><span style="font-weight:700">${cd.crude_oil.sc_price}元 ${cd.crude_oil.alert_level!=='normal'?'⚠️'+cd.crude_oil.alert_level:''}</span></div>`;
+html+='</div>'}}catch(e){}
+el.innerHTML=html}catch(e){el.innerHTML='<div style="text-align:center;padding:20px;color:#ef4444">加载失败: '+e.message+'</div>'}}
+
+async function renderBrokerView(el){
+el.innerHTML='<div style="text-align:center;padding:20px"><div class="loading-spinner" style="width:24px;height:24px;margin:0 auto 8px;border-width:2px"></div>加载研报数据...</div>';
+try{
+const[cr,lr]=await Promise.all([fetch('/api/broker/consensus').then(r=>r.json()),fetch('/api/broker/latest?limit=15').then(r=>r.json())]);
+let html='';
+if(cr.available){
+const bc=cr.bullish_count||0,brc=cr.bearish_count||0,nc=cr.neutral_count||0;
+const consColor=cr.consensus==='看多'||cr.consensus==='谨慎乐观'?'var(--bull,#22c55e)':cr.consensus==='看空'||cr.consensus==='偏空'?'var(--bear,#ef4444)':'var(--text2)';
+html+=`<div class="dashboard-card" style="border-left:3px solid ${consColor}"><div class="dashboard-card-title">🏛️ 机构研报共识</div>
+<div style="font-size:20px;font-weight:800;color:${consColor};margin:8px 0">${cr.consensus}</div>
+<div style="font-size:12px;color:var(--text2)">看多:${bc} | 看空:${brc} | 中性:${nc} | 共${cr.total_reports||0}篇</div>
+${cr.hot_sectors?.length?'<div style="margin-top:8px;font-size:12px">🔥 热门行业：'+cr.hot_sectors.map(s=>s.name).join('、')+'</div>':''}
+${cr.key_risks?.length?'<div style="margin-top:4px;font-size:12px;color:var(--bear)">⚠️ 关键风险：'+cr.key_risks.join('、')+'</div>':''}
+</div>`}
+const reports=lr.reports||[];
+if(reports.length){html+='<div class="dashboard-card"><div class="dashboard-card-title">📄 最新研报</div>';
+reports.slice(0,10).forEach(r=>{
+html+=`<div style="padding:8px 0;border-bottom:1px solid var(--border,rgba(255,255,255,.05))">
+<div style="font-size:13px;font-weight:600">${r.title||'无标题'}</div>
+<div style="font-size:11px;color:var(--text2);margin-top:2px">${r.org||''} · ${r.date||''} ${r.rating?'· 评级:'+r.rating:''}</div>
+</div>`});
+html+='</div>'}
+el.innerHTML=html||'<div style="text-align:center;padding:20px;color:var(--text2)">暂无研报数据</div>'}catch(e){el.innerHTML='<div style="text-align:center;padding:20px;color:#ef4444">加载失败: '+e.message+'</div>'}}
+
+async function renderScenarioView(el){
+el.innerHTML='<div style="text-align:center;padding:20px"><div class="loading-spinner" style="width:24px;height:24px;margin:0 auto 8px;border-width:2px"></div>加载情景...</div>';
+try{
+const r=await fetch('/api/scenarios');const d=await r.json();
+const scenarios=d.scenarios||[];
+let html='<div class="dashboard-card"><div class="dashboard-card-title">🎭 情景分析引擎</div><div style="font-size:12px;color:var(--text2);margin-bottom:12px">选择一个假设情景，AI 将推演对 A 股的影响（需 R1 推理，约 30 秒）</div>';
+scenarios.forEach(s=>{
+html+=`<div class="card" style="margin-bottom:8px;padding:12px;cursor:pointer;border:1px solid var(--border,rgba(255,255,255,.1));border-radius:12px" onclick="runScenario('${s.id}')">
+<div style="font-size:14px;font-weight:700;margin-bottom:4px">${s.name}</div>
+<div style="font-size:12px;color:var(--text2)">${s.description}</div>
+</div>`});
+html+='<div style="margin-top:12px"><div style="font-size:12px;color:var(--text2);margin-bottom:8px">💬 或输入自定义情景：</div><div style="display:flex;gap:8px"><input id="customScenarioInput" class="form-input" placeholder="如果美联储降息100BP..." style="flex:1"><button class="action-btn primary" onclick="runCustomScenario()" style="white-space:nowrap">分析</button></div></div></div>';
+el.innerHTML=html}catch(e){el.innerHTML='<div style="text-align:center;padding:20px;color:#ef4444">加载失败: '+e.message+'</div>'}}
+
+async function runScenario(id){
+const el=document.getElementById('insightContent');if(!el)return;
+el.innerHTML='<div style="text-align:center;padding:40px"><div class="loading-spinner" style="width:32px;height:32px;margin:0 auto 12px;border-width:3px"></div><div style="color:var(--text2)">🧠 R1 深度推理中...约需 30 秒</div></div>';
+try{const uid=getProfileId();const r=await fetch('/api/scenario/'+id+'?userId='+uid);const d=await r.json();
+if(d.error){el.innerHTML='<div style="padding:20px;color:var(--bear)">分析失败: '+d.error+'</div>';return}
+const a=d.analysis||{};
+let html='<div class="dashboard-card" style="border-left:3px solid var(--accent)"><div class="dashboard-card-title">🎭 '+d.scenario?.name+'</div>';
+html+='<div style="font-size:12px;color:var(--text2);margin-bottom:8px">概率: '+a.probability+' | 时间窗口: '+a.timeframe+'</div>';
+if(a.transmission_chain)html+='<div style="font-size:13px;line-height:1.7;margin-bottom:12px">'+a.transmission_chain+'</div>';
+if(a.sector_winners?.length)html+='<div style="font-size:12px;margin-bottom:4px">📈 受益行业：<span style="color:var(--bull)">'+a.sector_winners.join('、')+'</span></div>';
+if(a.sector_losers?.length)html+='<div style="font-size:12px;margin-bottom:4px">📉 受损行业：<span style="color:var(--bear)">'+a.sector_losers.join('、')+'</span></div>';
+if(a.portfolio_advice)html+='<div style="font-size:13px;margin-top:8px;padding:8px;background:rgba(59,130,246,.06);border-radius:8px">💡 '+a.portfolio_advice+'</div>';
+html+='<div style="font-size:11px;color:var(--text2);margin-top:8px">模型: '+d.model+' | 置信度: '+(a.confidence||0)+'%</div>';
+html+='</div><button class="action-btn secondary" onclick="renderScenarioView(document.getElementById(\'insightContent\'))" style="margin-top:12px;width:100%">← 返回情景列表</button>';
+el.innerHTML=html}catch(e){el.innerHTML='<div style="padding:20px;color:var(--bear)">请求失败: '+e.message+'</div>'}}
+
+async function runCustomScenario(){
+const input=document.getElementById('customScenarioInput');if(!input||!input.value.trim())return alert('请输入情景描述');
+const text=input.value.trim();const el=document.getElementById('insightContent');if(!el)return;
+el.innerHTML='<div style="text-align:center;padding:40px"><div class="loading-spinner" style="width:32px;height:32px;margin:0 auto 12px;border-width:3px"></div><div style="color:var(--text2)">🧠 自定义情景推理中...</div></div>';
+try{const uid=getProfileId();const r=await fetch('/api/scenario/custom',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({text,userId:uid})});const d=await r.json();
+if(d.error){el.innerHTML='<div style="padding:20px;color:var(--bear)">'+d.error+'</div>';return}
+const a=d.analysis||{};
+let html='<div class="dashboard-card" style="border-left:3px solid var(--accent)"><div class="dashboard-card-title">🎭 自定义情景</div><div style="font-size:12px;color:var(--text2)">'+text+'</div>';
+if(a.transmission_chain)html+='<div style="font-size:13px;line-height:1.7;margin:8px 0">'+a.transmission_chain+'</div>';
+if(a.sector_winners?.length)html+='<div style="font-size:12px;margin-bottom:4px">📈 受益：<span style="color:var(--bull)">'+a.sector_winners.join('、')+'</span></div>';
+if(a.sector_losers?.length)html+='<div style="font-size:12px;margin-bottom:4px">📉 受损：<span style="color:var(--bear)">'+a.sector_losers.join('、')+'</span></div>';
+if(a.portfolio_advice)html+='<div style="font-size:13px;margin-top:8px;padding:8px;background:rgba(59,130,246,.06);border-radius:8px">💡 '+a.portfolio_advice+'</div>';
+html+='</div><button class="action-btn secondary" onclick="renderScenarioView(document.getElementById(\'insightContent\'))" style="margin-top:12px;width:100%">← 返回</button>';
+el.innerHTML=html}catch(e){el.innerHTML='<div style="padding:20px;color:var(--bear)">'+e.message+'</div>'}}
 
