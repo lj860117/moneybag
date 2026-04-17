@@ -362,6 +362,7 @@ def get_news_sentiment_score() -> dict:
 
     try:
         # 获取最新新闻
+        from services.news_data import get_market_news, get_policy_news
         news = get_market_news(8)
         policy = get_policy_news(5)
         all_news = news + policy

@@ -767,7 +767,7 @@ const bgMap={STRONG_BUY:'rgba(16,185,129,.12)',BUY:'rgba(16,185,129,.08)',HOLD:'
 const borderMap={STRONG_BUY:'rgba(16,185,129,.3)',BUY:'rgba(16,185,129,.2)',HOLD:'rgba(245,158,11,.2)',SELL:'rgba(239,68,68,.2)',STRONG_SELL:'rgba(239,68,68,.3)'};
 const labelMap={STRONG_BUY:'强烈买入 🟢',BUY:'建议买入 🟢',HOLD:'持有观望 🟡',SELL:'建议减仓 🟠',STRONG_SELL:'强烈减仓 🔴'};
 
-let html=`<div class="section-title">🤖 今日量化信号 <span style="font-size:11px;color:var(--accent);font-weight:400">V5.0 · 13维多因子</span></div>`;
+let html=`<div class="section-title">🤖 今日量化信号 <span style="font-size:11px;color:var(--accent);font-weight:400">V${d.version||'5.0'} · ${(d.details||[]).length}维多因子</span></div>`;
 setExplain('signal','量化信号解读','钱袋子 V5.0 多因子信号系统融合了13个维度的数据（借鉴幻方量化）：\n\n📊 技术面(25%)：RSI(8%) + MACD(10%) + 布林带(7%)\n📈 基本面(30%)：估值(18%) + 股息率(5%) + 股债性价比(7%)\n💰 资金面(20%)：北向资金(10%) + 融资融券(5%) + SHIBOR(5%)\n😊 情绪面(15%)：恐惧贪婪(8%) + LLM新闻情绪(7%)\n🏛️ 宏观面(5%)：PMI+M2\n🌍 地缘面(5%)：地缘风险评估\n\n每个维度打分(-100~+100)，加权平均后得出综合信号。\n\n当前综合得分：'+(d.score||0)+'\n置信度：'+Math.round(d.confidence||0)+'%\n\n'+((d.details||[]).map(x=>(x.category||'')+' | '+x.name+'('+x.weight+')：'+x.detail).join('\n'))+'\n\n⚠️ 量化信号仅供参考，不构成投资建议。');
 html+=`<div style="background:${bgMap[d.overall]||bgMap.HOLD};border:1px solid ${borderMap[d.overall]||borderMap.HOLD};border-radius:16px;padding:16px;margin-bottom:12px;cursor:pointer" onclick="showExplain('signal')">
 <div style="display:flex;justify-content:space-between;align-items:center">
@@ -3138,7 +3138,7 @@ checkTradingHours();
         HOLD:'市场震荡 🟡', SELL:'市场偏空 🟠', STRONG_SELL:'市场疲弱 🔴'
       };
       html += `<div class="dashboard-card" style="background:${bgMap[signal.overall]||''};margin-top:8px">
-        <div class="dashboard-card-title">🌡️ 市场温度 <span style="font-size:11px;color:var(--accent);font-weight:400">V5.0 · 13维</span></div>
+        <div class="dashboard-card-title">🌡️ 市场温度 <span style="font-size:11px;color:var(--accent);font-weight:400">V${sig.version||'5.0'} · ${(sig.details||[]).length}维</span></div>
         <div style="font-size:16px;font-weight:800;margin-top:4px">${labelMap[signal.overall]||signal.overall}</div>
         <div style="font-size:12px;color:var(--text2);margin-top:4px">综合得分 ${signal.score||0} · 置信度 ${Math.round(signal.confidence||0)}%</div>
         <div style="font-size:13px;margin-top:8px;line-height:1.6">${signal.summary||''}</div>
@@ -3769,7 +3769,7 @@ checkTradingHours();
         <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px">
           <div style="width:32px;height:32px;border-radius:50%;background:${avatarColors[ci]};display:flex;align-items:center;justify-content:center;color:#fff;font-size:14px;font-weight:700">${(m.name || '?')[0]}</div>
           <div>
-            <div style="font-size:13px;font-weight:700">${m.name || '未命名'}</div>
+            <div style="font-size:13px;font-weight:700">${m.name || m.userId || '家庭成员'}</div>
             <div style="font-size:11px;color:var(--text2)">占比 ${pct}%</div>
           </div>
         </div>
