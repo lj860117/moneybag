@@ -3084,11 +3084,10 @@ checkTradingHours();
     anchor.parentNode.insertBefore(host, anchor);
 
     // 并行拉三份数据
-    const [timing, signal, impact] = await Promise.all([
-      _v6Fetch('/timing'),
-      _v6Fetch('/daily-signal'),
-      _v6Fetch('/news/impact')
-    ]);
+    // V7: 各自独立请求，不互相阻塞，5秒超时
+    const timing = await _v6Fetch('/timing', {timeout: 5000}).catch(()=>null);
+    const signal = await _v6Fetch('/daily-signal', {timeout: 5000}).catch(()=>null);
+    const impact = await _v6Fetch('/news/impact', {timeout: 5000}).catch(()=>null);
 
     let html = '';
 
