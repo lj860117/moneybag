@@ -3159,7 +3159,7 @@ checkTradingHours();
           ${n.affected_sectors ? `<div style="font-size:11px;color:var(--text2);margin-top:2px">影响：${(Array.isArray(n.affected_sectors)?n.affected_sectors:[n.affected_sectors]).join(' · ')}</div>` : ''}
         </div>`;
       }).join('');
-      html += _v6Card('📰 今日要闻（AI 影响分析）', rows, { badge: 'Phase 0' });
+      html += _v6Card('📰 今日要闻（AI 影响分析）', rows, { badge: 'Phase 2' });
     }
 
     if (!html) {
@@ -3230,7 +3230,7 @@ checkTradingHours();
       el.innerHTML = '<div style="text-align:center;padding:40px;color:var(--text2)">暂无深度影响数据</div>';
       return;
     }
-    let html = `<div class="section-title">💥 新闻深度影响分析 <span style="font-size:11px;color:var(--accent);font-weight:400">Phase 0 · AI 驱动</span></div>`;
+    let html = `<div class="section-title">💥 新闻深度影响分析 <span style="font-size:11px;color:var(--accent);font-weight:400">Phase 2 · AI 驱动</span></div>`;
     d.items.forEach(item => {
       const lvl = item.impact_level || item.level || 'neutral';
       const c = lvl === 'bullish' || lvl === 'positive' ? 'var(--green)'
@@ -3271,7 +3271,7 @@ checkTradingHours();
       return;
     }
 
-    let html = `<div class="section-title">🛡️ 组合风险评估 <span style="font-size:11px;color:var(--accent);font-weight:400">Phase 0 · Pro</span></div>`;
+    let html = `<div class="section-title">🛡️ 组合风险评估 <span style="font-size:11px;color:var(--accent);font-weight:400">Phase 2 · Pro</span></div>`;
 
     // 风险指标
     if (metrics) {
@@ -3404,7 +3404,7 @@ checkTradingHours();
     overlay.innerHTML = `<div class="modal-sheet" style="max-height:85vh;overflow-y:auto">
       <div class="modal-handle"></div>
       <div class="modal-title">${title}</div>
-      <div class="modal-subtitle" style="margin-bottom:12px">🤖 AI 深度分析 · Phase 0</div>
+      <div class="modal-subtitle" style="margin-bottom:12px">🤖 AI 深度分析 · Phase 2</div>
       ${body}
       <button class="form-submit" style="margin-top:16px" onclick="this.closest('.modal-overlay').remove()">关闭</button>
     </div>`;
@@ -3536,7 +3536,7 @@ checkTradingHours();
     }
 
     // === Pro 模式：12 维完整解读 ===
-    html += `<div class="section-title">🤖 AI 12 维信号深度解读 <span style="font-size:11px;color:var(--accent);font-weight:400">Phase 0 · DeepSeek</span></div>`;
+    html += `<div class="section-title">🤖 AI 13 维信号深度解读 <span style="font-size:11px;color:var(--accent);font-weight:400">Phase 2 · DeepSeek</span></div>`;
 
     // 总结论
     if (d.conclusion || d.summary) {
