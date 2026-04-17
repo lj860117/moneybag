@@ -767,15 +767,15 @@ const bgMap={STRONG_BUY:'rgba(16,185,129,.12)',BUY:'rgba(16,185,129,.08)',HOLD:'
 const borderMap={STRONG_BUY:'rgba(16,185,129,.3)',BUY:'rgba(16,185,129,.2)',HOLD:'rgba(245,158,11,.2)',SELL:'rgba(239,68,68,.2)',STRONG_SELL:'rgba(239,68,68,.3)'};
 const labelMap={STRONG_BUY:'强烈买入 🟢',BUY:'建议买入 🟢',HOLD:'持有观望 🟡',SELL:'建议减仓 🟠',STRONG_SELL:'强烈减仓 🔴'};
 
-let html=`<div class="section-title">🤖 今日量化信号 <span style="font-size:11px;color:var(--accent);font-weight:400">V4.5 · 12维多因子</span></div>`;
-setExplain('signal','量化信号解读','钱袋子 V4.5 多因子信号系统融合了12个维度的数据（借鉴幻方量化）：\n\n📊 技术面(25%)：RSI(8%) + MACD(10%) + 布林带(7%)\n📈 基本面(30%)：估值(18%) + 股息率(5%) + 股债性价比(7%)\n💰 资金面(20%)：北向资金(10%) + 融资融券(5%) + SHIBOR(5%)\n😊 情绪面(15%)：恐惧贪婪(8%) + LLM新闻情绪(7%)\n🏛️ 宏观面(10%)：PMI+M2\n\n每个维度打分(-100~+100)，加权平均后得出综合信号。\n\n当前综合得分：'+(d.score||0)+'\n置信度：'+Math.round(d.confidence||0)+'%\n\n'+((d.details||[]).map(x=>(x.category||'')+' | '+x.name+'('+x.weight+')：'+x.detail).join('\n'))+'\n\n⚠️ 量化信号仅供参考，不构成投资建议。');
+let html=`<div class="section-title">🤖 今日量化信号 <span style="font-size:11px;color:var(--accent);font-weight:400">V5.0 · 13维多因子</span></div>`;
+setExplain('signal','量化信号解读','钱袋子 V5.0 多因子信号系统融合了13个维度的数据（借鉴幻方量化）：\n\n📊 技术面(25%)：RSI(8%) + MACD(10%) + 布林带(7%)\n📈 基本面(30%)：估值(18%) + 股息率(5%) + 股债性价比(7%)\n💰 资金面(20%)：北向资金(10%) + 融资融券(5%) + SHIBOR(5%)\n😊 情绪面(15%)：恐惧贪婪(8%) + LLM新闻情绪(7%)\n🏛️ 宏观面(5%)：PMI+M2\n🌍 地缘面(5%)：地缘风险评估\n\n每个维度打分(-100~+100)，加权平均后得出综合信号。\n\n当前综合得分：'+(d.score||0)+'\n置信度：'+Math.round(d.confidence||0)+'%\n\n'+((d.details||[]).map(x=>(x.category||'')+' | '+x.name+'('+x.weight+')：'+x.detail).join('\n'))+'\n\n⚠️ 量化信号仅供参考，不构成投资建议。');
 html+=`<div style="background:${bgMap[d.overall]||bgMap.HOLD};border:1px solid ${borderMap[d.overall]||borderMap.HOLD};border-radius:16px;padding:16px;margin-bottom:12px;cursor:pointer" onclick="showExplain('signal')">
 <div style="display:flex;justify-content:space-between;align-items:center">
 <div><div style="font-size:20px;font-weight:900">${labelMap[d.overall]||'持有观望'}</div><div style="font-size:12px;color:var(--text2);margin-top:4px">${d.date||''} · 综合得分 ${d.score||0} · 置信度 ${Math.round(d.confidence||0)}%</div></div>
 <div style="font-size:11px;color:var(--accent)">点击看详情 ›</div></div>
 <div style="font-size:13px;margin-top:8px;line-height:1.6">${d.summary||''}</div></div>`;
 
-// V4.5 因子分组展示
+// V5.0 因子分组展示
 const catIcons={'技术面':'📊','基本面':'📈','资金面':'💰','情绪面':'😊','宏观面':'🏛️'};
 const catColors={'技术面':'#3B82F6','基本面':'#10B981','资金面':'#F59E0B','情绪面':'#EC4899','宏观面':'#8B5CF6'};
 if(d.factorGroups){
@@ -793,7 +793,7 @@ html+=`<div style="background:var(--card);border-radius:10px;padding:8px 10px">
 });
 html+=`</div>`}
 
-// V4.5 新闻情绪卡片
+// V5.0 新闻情绪卡片
 if(d.sentiment&&d.sentiment.available){
 const s=d.sentiment;
 const sentColor=s.score>20?'var(--green)':s.score<-20?'var(--red)':'var(--accent)';
@@ -1260,7 +1260,7 @@ content.innerHTML=`
 <div style="font-size:11px;color:var(--text2);margin-top:4px">低估多买 + 高估少买 = 更优收益</div></div>
 ${(()=>{const fm=fix.advancedMetrics||{};const sm=smart.advancedMetrics||{};
 if(!sm.winRate&&!sm.calmar)return '';
-return `<div style="margin-bottom:12px"><div style="font-size:12px;font-weight:700;margin-bottom:8px;color:var(--text1)">📐 V4.5 高级回测指标</div>
+return `<div style="margin-bottom:12px"><div style="font-size:12px;font-weight:700;margin-bottom:8px;color:var(--text1)">📐 V5.0 高级回测指标</div>
 <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:6px;font-size:11px">
 <div style="background:var(--card);border-radius:8px;padding:8px;text-align:center"><div style="color:var(--text2)">胜率</div><div style="font-weight:900;color:var(--accent);margin-top:2px">${fm.winRate||0}%</div><div style="font-size:10px;color:var(--green)">${sm.winRate||0}%</div></div>
 <div style="background:var(--card);border-radius:8px;padding:8px;text-align:center"><div style="color:var(--text2)">盈亏比</div><div style="font-weight:900;color:var(--accent);margin-top:2px">${fm.profitLossRatio||0}</div><div style="font-size:10px;color:var(--green)">${sm.profitLossRatio||0}</div></div>
@@ -1354,7 +1354,7 @@ cards.push(`<div style="background:var(--card);border-radius:12px;padding:12px;c
 <div style="font-size:18px;font-weight:900;color:${trColor};margin-top:4px">${tr.yield_10y}%</div>
 <div style="font-size:11px;color:var(--text2);margin-top:2px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${tr.equity_premium||'数据计算中'}</div></div>`)}
 if(!cards.length)return'';
-return`<div class="dashboard-card"><div class="dashboard-card-title">🔬 V4.5 多因子数据 <span style="font-size:11px;color:var(--accent);font-weight:400">借鉴幻方量化</span></div>
+return`<div class="dashboard-card"><div class="dashboard-card-title">🔬 V5.0 多因子数据 <span style="font-size:11px;color:var(--accent);font-weight:400">借鉴幻方量化</span></div>
 <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(140px,1fr));gap:8px">${cards.join('')}</div></div>`}
 
 function renderInsightOverview(el,d){
@@ -3138,7 +3138,7 @@ checkTradingHours();
         HOLD:'市场震荡 🟡', SELL:'市场偏空 🟠', STRONG_SELL:'市场疲弱 🔴'
       };
       html += `<div class="dashboard-card" style="background:${bgMap[signal.overall]||''};margin-top:8px">
-        <div class="dashboard-card-title">🌡️ 市场温度 <span style="font-size:11px;color:var(--accent);font-weight:400">V4.5 · 12维</span></div>
+        <div class="dashboard-card-title">🌡️ 市场温度 <span style="font-size:11px;color:var(--accent);font-weight:400">V5.0 · 13维</span></div>
         <div style="font-size:16px;font-weight:800;margin-top:4px">${labelMap[signal.overall]||signal.overall}</div>
         <div style="font-size:12px;color:var(--text2);margin-top:4px">综合得分 ${signal.score||0} · 置信度 ${Math.round(signal.confidence||0)}%</div>
         <div style="font-size:13px;margin-top:8px;line-height:1.6">${signal.summary||''}</div>
