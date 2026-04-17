@@ -4033,11 +4033,11 @@ checkTradingHours();
     _injectBadge(data);
   }
 
-  // --- 安装：劫持 renderNavigation ---
+  // --- 安装：劫持 renderNav（实际渲染顶栏+底栏的函数）---
   function _install(){
-    if (typeof renderNavigation !== 'function') return false;
-    _v6Hijack('renderNavigation', async function(){
-      // 延迟等 header DOM 就绪
+    if (typeof renderNav !== 'function') return false;
+    _v6Hijack('renderNav', async function(){
+      // 延迟等 header DOM 就绪（renderNav 会重写 hdr.innerHTML）
       await new Promise(r => setTimeout(r, 100));
       const data = await _fetchBudget();
       _injectBadge(data);
