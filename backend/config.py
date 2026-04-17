@@ -90,8 +90,17 @@ LLM_API_URL = os.environ.get("LLM_API_URL", "https://api.deepseek.com/v1/chat/co
 LLM_API_KEY = os.environ.get("LLM_API_KEY", "")
 LLM_MODEL = os.environ.get("LLM_MODEL", "deepseek-chat")
 
-# ---- 版本号（Phase 0 统一对齐）----
-APP_VERSION = "6.0.0-phase0"  # Phase 0 完成后改为 6.0.0
+# ---- 版本号（Phase 1 更新）----
+APP_VERSION = "6.1.0-phase1"  # V6 Phase 1: 地缘+原油数据层
+
+# ---- V6 Phase 1: 油价阈值（布伦特，美元/桶）----
+OIL_BRENT_NORMAL = 80      # 正常区间上限
+OIL_BRENT_WARNING = 100    # 警戒线
+OIL_BRENT_CRISIS = 120     # 危机线
+
+# ---- V6 Phase 1: 地缘事件缓存 TTL（秒）----
+GEO_CACHE_TTL = 1800       # 地缘新闻 30 分钟
+COMMODITY_CACHE_TTL = 3600  # 大宗商品 1 小时
 
 # ---- Token 预算控制（Phase 0 新增）----
 TOKEN_BUDGET = {
