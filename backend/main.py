@@ -3609,6 +3609,32 @@ def api_analysis_external(req: dict = {}):
         metadata=req.get("metadata"),
     )
 
+# ---- V6.5: 盈利预测 + 估值 ----
+@app.get("/api/earnings/{code}")
+def api_earnings(code: str):
+    """个股盈利预测（一致预期+评级分布+目标价）"""
+    from services.earnings_forecast import get_stock_forecast
+    return get_stock_forecast(code)
+
+@app.get("/api/valuation/{code}")
+def api_valuation(code: str):
+    """个股估值评估（Forward PE+PEG+目标价空间）"""
+    from services.valuation_engine import assess_valuation
+    return assess_valuation(code)
+
+# ---- V7: 推荐引擎 + 买卖决策 ----
+@app.get("/api/recommend/stocks")
+def api_recommend_stocks(userId: str = "", topN: int = 10, pool: str = "hot"):
+    """股票推荐（5维评分+R1理由+建议仓位）"""
+    from services.recommend_engine import get_stock_recommendations
+    return get_stock_recommendations(userId, topN, pool)
+
+@app.get("/api/decisions")
+def api_decisions(userId: str = ""):
+    """买卖决策（R1综合决策+三情景+操作建议）"""
+    from services.decision_maker import generate_decisions
+    return generate_decisions(userId or "default")
+
 
 # 兜底：让 /app.js 等直接路径也能访问
 @app.get("/{filename:path}")

@@ -91,7 +91,7 @@ LLM_API_KEY = os.environ.get("LLM_API_KEY", "")
 LLM_MODEL = os.environ.get("LLM_MODEL", "deepseek-chat")
 
 # ---- 版本号（Phase 1 更新）----
-APP_VERSION = "6.5.0-phase5"  # V6 Phase 5: 分析历史 + 前端接入
+APP_VERSION = "7.0.0"  # V6.5+V7: 盈利预测 + 估值 + 推荐引擎 + 买卖决策
 
 # ---- V6 Phase 1: 油价阈值（布伦特，美元/桶）----
 OIL_BRENT_NORMAL = 80      # 正常区间上限
