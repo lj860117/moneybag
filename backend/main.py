@@ -3497,6 +3497,49 @@ def api_llm_factor(code: str, count: int = 5, iterations: int = 2):
     return generate_alpha_factors(code=code, count=count, iterations=iterations)
 
 
+# ---- V6 Phase 4: 券商研报 ----
+@app.get("/api/broker/consensus")
+def api_broker_consensus():
+    """机构研报共识（多空比例+热门行业+关键风险）"""
+    from services.broker_research import get_broker_consensus
+    return get_broker_consensus()
+
+@app.get("/api/broker/latest")
+def api_broker_latest(limit: int = 20):
+    """最新研报列表"""
+    from services.broker_research import get_latest_reports
+    return {"reports": get_latest_reports(limit=limit)}
+
+@app.get("/api/broker/stock/{code}")
+def api_broker_stock(code: str, limit: int = 5):
+    """个股研报查询"""
+    from services.broker_research import get_stock_reports
+    return {"reports": get_stock_reports(code=code, limit=limit)}
+
+# ---- V6 Phase 4: 情景分析 ----
+@app.get("/api/scenarios")
+def api_scenarios_list():
+    """列出所有预设情景"""
+    from services.scenario_engine import list_scenarios
+    return {"scenarios": list_scenarios()}
+
+@app.get("/api/scenario/{scenario_id}")
+def api_scenario_analyze(scenario_id: str, userId: str = ""):
+    """预设情景分析（需 R1 推理，耗时较长）"""
+    from services.scenario_engine import analyze_scenario
+    return analyze_scenario(scenario_id=scenario_id, user_id=userId)
+
+@app.post("/api/scenario/custom")
+def api_scenario_custom(req: dict = {}):
+    """自定义情景分析"""
+    from services.scenario_engine import analyze_scenario
+    text = req.get("text", "")
+    user_id = req.get("userId", "")
+    if not text:
+        return {"error": "需要 text 参数描述假设情景"}
+    return analyze_scenario(custom_text=text, user_id=user_id)
+
+
 # 兜底：让 /app.js 等直接路径也能访问
 @app.get("/{filename:path}")
 def serve_frontend_file(filename: str):

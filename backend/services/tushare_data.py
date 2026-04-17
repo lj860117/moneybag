@@ -504,3 +504,101 @@ def get_shibor_rate(days: int = 30) -> dict:
           f"trend={result['trend']}")
 
     return result
+
+
+# ============================================================
+# 14. 融资融券（margin — 替代 AKShare 只有上交所的问题）
+# ============================================================
+
+def get_margin_data(days: int = 30) -> dict:
+    """获取融资融券数据（Tushare margin 接口）
+
+    相比 AKShare stock_margin_sse（只有上交所 ≈ 60%），Tushare 有沪+深+北全部数据。
+
+    Returns:
+        dict: {
+            "margin_balance": float,    # 融资余额（亿元）
+            "margin_change_5d": float,  # 5日变化百分比
+            "rzmre": float,             # 融资买入额（亿元/日）
+            "rqye": float,              # 融券余额（亿元）
+            "trend": str,               # 杠杆快速上升/温和上升/温和下降/快速下降
+            "available": bool,
+            "source": "tushare",
+            "data_date": str,
+        }
+    """
+    from datetime import datetime, timedelta
+
+    result = {
+        "margin_balance": 0, "margin_change_5d": 0, "rzmre": 0, "rqye": 0,
+        "trend": "中性", "available": False, "source": "tushare",
+    }
+
+    end_date = datetime.now().strftime("%Y%m%d")
+    start_date = (datetime.now() - timedelta(days=days + 10)).strftime("%Y%m%d")
+
+    rows = _call_tushare(
+        "margin",
+        {"start_date": start_date, "end_date": end_date},
+        "trade_date,exchange_id,rzye,rzmre,rzche,rqye,rzrqye",
+    )
+
+    if not rows:
+        print("[TUSHARE-MARGIN] margin 返回空")
+        return result
+
+    # 按日期聚合（沪+深+北 合计）
+    from collections import defaultdict
+    daily_totals = defaultdict(lambda: {"rzye": 0, "rzmre": 0, "rqye": 0, "rzrqye": 0})
+    for row in rows:
+        d = row.get("trade_date", "")
+        if not d:
+            continue
+        daily_totals[d]["rzye"] += float(row.get("rzye", 0) or 0)
+        daily_totals[d]["rzmre"] += float(row.get("rzmre", 0) or 0)
+        daily_totals[d]["rqye"] += float(row.get("rqye", 0) or 0)
+        daily_totals[d]["rzrqye"] += float(row.get("rzrqye", 0) or 0)
+
+    if not daily_totals:
+        return result
+
+    # 按日期排序
+    sorted_dates = sorted(daily_totals.keys())
+    if len(sorted_dates) < 6:
+        return result
+
+    latest = daily_totals[sorted_dates[-1]]
+    prev_5d = daily_totals[sorted_dates[-6]] if len(sorted_dates) >= 6 else daily_totals[sorted_dates[0]]
+
+    # 万元 → 亿元
+    def to_yi(v):
+        return round(v / 1e8, 2)
+
+    current_balance = latest["rzye"]
+    prev_balance = prev_5d["rzye"]
+    change_pct = round((current_balance - prev_balance) / max(prev_balance, 1) * 100, 2)
+
+    result["margin_balance"] = to_yi(current_balance)
+    result["margin_change_5d"] = change_pct
+    result["rzmre"] = to_yi(latest["rzmre"])
+    result["rqye"] = to_yi(latest["rqye"])
+    result["data_date"] = sorted_dates[-1]
+    result["available"] = True
+
+    # 趋势判断
+    if change_pct > 3:
+        result["trend"] = "杠杆快速上升"
+    elif change_pct > 1:
+        result["trend"] = "杠杆温和上升"
+    elif change_pct < -3:
+        result["trend"] = "杠杆快速下降"
+    elif change_pct < -1:
+        result["trend"] = "杠杆温和下降"
+    else:
+        result["trend"] = "杠杆平稳"
+
+    print(f"[TUSHARE-MARGIN] date={result['data_date']}, "
+          f"balance={result['margin_balance']}亿, 5d_change={change_pct:+.2f}%, "
+          f"trend={result['trend']}")
+
+    return result

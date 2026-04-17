@@ -109,16 +109,43 @@ def get_northbound_flow() -> dict:
 
 
 def get_margin_trading() -> dict:
-    """获取两融（融资融券）余额数据 — 市场杠杆情绪指标"""
+    """获取两融（融资融券）余额数据 — 市场杠杆情绪指标
+
+    V6 Phase 4 架构：Tushare margin（主，沪+深+北全市场） → AKShare（降级，仅上交所）
+    """
     cache_key = "margin"
     now = time.time()
     if cache_key in factor_cache and now - factor_cache[cache_key]["ts"] < FACTOR_CACHE_TTL:
         return factor_cache[cache_key]["data"]
 
     result = {"margin_balance": 0, "margin_change_5d": 0, "trend": "中性", "available": False}
+
+    # ── 方案 A（主）：Tushare margin（沪+深+北合计） ──
+    try:
+        from services.tushare_data import is_configured, get_margin_data as ts_margin
+        if is_configured():
+            ts_data = ts_margin(days=30)
+            if ts_data.get("available"):
+                result["margin_balance"] = ts_data.get("margin_balance", 0)
+                result["margin_change_5d"] = ts_data.get("margin_change_5d", 0)
+                result["rzmre"] = ts_data.get("rzmre", 0)
+                result["rqye"] = ts_data.get("rqye", 0)
+                result["trend"] = ts_data.get("trend", "中性")
+                result["available"] = True
+                result["source"] = "tushare"
+                result["data_date"] = ts_data.get("data_date", "")
+                print(f"[MARGIN] Tushare OK: balance={result['margin_balance']}亿, trend={result['trend']}")
+                factor_cache[cache_key] = {"data": result, "ts": now}
+                return result
+            else:
+                print("[MARGIN] Tushare 返回但 available=False，降级到 AKShare")
+    except Exception as e:
+        print(f"[MARGIN] Tushare failed, fallback AKShare: {e}")
+
+    # ── 方案 B（降级）：AKShare stock_margin_sse（仅上交所 ≈ 60%） ──
     try:
         import akshare as ak
-        df = ak.stock_margin_sse()  # 上交所融资融券
+        df = ak.stock_margin_sse()  # 仅上交所
         if df is not None and len(df) >= 20:
             bal_col = next((c for c in df.columns if "融资余额" in str(c)), None)
             if bal_col:
@@ -126,9 +153,11 @@ def get_margin_trading() -> dict:
                 current = vals[-1]
                 prev_5d = vals[-6] if len(vals) >= 6 else vals[0]
                 change_pct = (current - prev_5d) / prev_5d * 100 if prev_5d > 0 else 0
-                result["margin_balance"] = round(current / 1e8, 2)  # 转亿元
+                result["margin_balance"] = round(current / 1e8, 2)
                 result["margin_change_5d"] = round(change_pct, 2)
                 result["available"] = True
+                result["source"] = "akshare_fallback"
+                result["notice"] = "仅上交所数据（约60%市场），Tushare 不可用时降级"
                 if change_pct > 3:
                     result["trend"] = "杠杆快速上升"
                 elif change_pct > 1:
@@ -137,9 +166,9 @@ def get_margin_trading() -> dict:
                     result["trend"] = "杠杆快速下降"
                 elif change_pct < -1:
                     result["trend"] = "杠杆温和下降"
-                print(f"[MARGIN] balance={result['margin_balance']}亿, 5d_change={change_pct:.2f}%")
+                print(f"[MARGIN] AKShare fallback: balance={result['margin_balance']}亿(仅沪), 5d={change_pct:.2f}%")
     except Exception as e:
-        print(f"[MARGIN] Failed: {e}")
+        print(f"[MARGIN] AKShare also failed: {e}")
 
     factor_cache[cache_key] = {"data": result, "ts": now}
     return result
