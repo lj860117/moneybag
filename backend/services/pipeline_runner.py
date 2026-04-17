@@ -365,7 +365,33 @@ def step_portfolio_doctor(ctx: DecisionContext) -> DecisionContext:
 def step_risk_firewall(ctx: DecisionContext) -> DecisionContext:
     """Layer5: 风控防火墙
     铁律：单票≤25% TOP3≤60% 极端暂停 冷却48h + 全员观望 + per-user覆盖
+    V6 Phase 2: + 地缘风险一票否决 (severity=5 → blocked)
     """
+    # V6: 地缘风险一票否决
+    geo_severity = 0
+    if ctx.regime_params:
+        geo_severity = ctx.regime_params.get("geo_severity", 0)
+    
+    # 也从 modules_results 取（双保险）
+    geo_module = ctx.modules_results.get("geopolitical", {})
+    geo_severity = max(geo_severity, geo_module.get("max_severity", 0))
+    
+    if geo_severity >= 5:
+        # severity=5: 极端地缘风险 → 一票否决（如全面战争、核危机）
+        ctx.risk_alerts.append({
+            "source": "geo_risk_firewall",
+            "level": "danger",
+            "msg": f"🔴 地缘极端风险(severity={geo_severity})，一票否决所有操作建议",
+        })
+        print(f"[RISK] 地缘一票否决: severity={geo_severity}")
+    elif geo_severity >= 4:
+        # severity=4: 高风险 → 强制预警（已由 regime_engine 切到 cautious）
+        ctx.risk_alerts.append({
+            "source": "geo_risk_firewall",
+            "level": "warning",
+            "msg": f"⚠️ 地缘高风险(severity={geo_severity})，已切换谨慎管线，建议减少操作",
+        })
+
     # EV 拦截
     if getattr(ctx, "ev_blocked", False):
         ctx.risk_level = "warning"

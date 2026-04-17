@@ -1,6 +1,9 @@
 """
 钱袋子 — 信号引擎
-12维多因子综合信号 + 大师策略 + 智能定投 + 止盈策略
+13维多因子综合信号 + 大师策略 + 智能定投 + 止盈策略
+
+V6 Phase 2: 12维→13维，新增"地缘面"因子
+  宏观面 10% → 宏观面 5% + 地缘面 5%
 """
 import math
 from datetime import datetime
@@ -12,8 +15,8 @@ MODULE_META = {
     "input": [],
     "output": "daily_signal",
     "cost": "cpu",
-    "tags": ["信号", "12维", "技术指标", "定投", "止盈"],
-    "description": "12维多因子综合信号+大师策略+智能定投+止盈策略",
+    "tags": ["信号", "13维", "技术指标", "定投", "止盈", "地缘面"],
+    "description": "13维多因子综合信号+大师策略+智能定投+止盈策略(V6:含地缘面)",
     "layer": "analysis",
     "priority": 1,
 }
@@ -112,7 +115,7 @@ def calc_take_profit_strategy(cost: float, market_value: float, profile: str) ->
 # ============================================================
 
 def generate_daily_signal() -> dict:
-    """生成每日综合交易信号 — 12维多因子融合 + 大师策略"""
+    """生成每日综合交易信号 — 13维多因子融合 + 大师策略"""
     signal = {
         "date": datetime.now().strftime("%Y-%m-%d"),
         "overall": "HOLD",
@@ -123,7 +126,7 @@ def generate_daily_signal() -> dict:
         "smartDca": None,
         "sentiment": None,
         "riskMetrics": None,
-        "version": "4.5",
+        "version": "5.0",
     }
 
     scores = []  # (score, weight, name, detail, category)
@@ -326,9 +329,9 @@ def generate_daily_signal() -> dict:
     scores.append((sent_score, 0.07, "新闻情绪", sent_detail, "情绪面"))
     signal["sentiment"] = sentiment
 
-    # ===== 宏观面因子 (权重 10%) =====
+    # ===== 宏观面因子 (权重 5%，V6: 从10%拆出5%给地缘面) =====
 
-    # --- 12. 宏观经济信号 (10%) ---
+    # --- 12. 宏观经济信号 (5%) ---
     macro = get_macro_calendar()
     macro_score = 0
     macro_parts = []
@@ -354,7 +357,46 @@ def generate_daily_signal() -> dict:
         except (ValueError, TypeError):
             pass
     macro_detail = "宏观环境：" + ("、".join(macro_parts) if macro_parts else "暂无可量化数据")
-    scores.append((max(-50, min(50, macro_score)), 0.10, "宏观经济", macro_detail, "宏观面"))
+    scores.append((max(-50, min(50, macro_score)), 0.05, "宏观经济", macro_detail, "宏观面"))
+
+    # ===== 地缘面因子 (权重 5%，V6 Phase 2 新增) =====
+
+    # --- 13. 地缘政治风险 (5%) ---
+    try:
+        from services.geopolitical import get_geopolitical_risk_score
+        geo_risk = get_geopolitical_risk_score()
+        if geo_risk.get("available"):
+            geo_score_raw = geo_risk.get("score", 0)  # 0-100, 越高越危险
+            geo_level = geo_risk.get("level", "low")
+            geo_top = geo_risk.get("top_events", [])
+
+            # 风险分 → 信号分：风险0→信号+30(安全利好), 风险100→信号-80(极端bearish)
+            if geo_score_raw >= 80:
+                geo_signal = -80
+                geo_detail = f"🔴 地缘极端风险(score={geo_score_raw},{geo_level})"
+            elif geo_score_raw >= 60:
+                geo_signal = -50
+                geo_detail = f"🟠 地缘高风险(score={geo_score_raw},{geo_level})"
+            elif geo_score_raw >= 30:
+                geo_signal = -20
+                geo_detail = f"🟡 地缘中等风险(score={geo_score_raw},{geo_level})"
+            elif geo_score_raw > 0:
+                geo_signal = 0
+                geo_detail = f"地缘低风险(score={geo_score_raw},{geo_level})"
+            else:
+                geo_signal = 30
+                geo_detail = f"✅ 无地缘风险，市场环境稳定"
+
+            # 追加 top 事件描述
+            if geo_top:
+                top_titles = [e.get("title", "")[:30] for e in geo_top[:2]]
+                geo_detail += "，" + "；".join(top_titles)
+        else:
+            geo_signal, geo_detail = 0, "地缘风险数据暂不可用"
+    except Exception as e:
+        print(f"[SIGNAL] 地缘面因子获取失败: {e}")
+        geo_signal, geo_detail = 0, f"地缘风险数据异常({e})"
+    scores.append((geo_signal, 0.05, "地缘风险", geo_detail, "地缘面"))
 
     # ===== 加权综合 =====
     total_score = sum(s * w for s, w, _, _, _ in scores)
@@ -364,7 +406,7 @@ def generate_daily_signal() -> dict:
     # --- 信号判定 ---
     if final_score >= 40:
         signal["overall"] = "STRONG_BUY"
-        signal["summary"] = "🟢 强烈买入信号 — 12维多因子共振看多，是较好的加仓时机"
+        signal["summary"] = "🟢 强烈买入信号 — 13维多因子共振看多，是较好的加仓时机"
     elif final_score >= 20:
         signal["overall"] = "BUY"
         signal["summary"] = "🟢 买入信号 — 整体偏向看多，适合按计划定投或小额加仓"

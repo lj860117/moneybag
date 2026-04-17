@@ -54,12 +54,32 @@ def classify(force: bool = False) -> dict:
         params = _get_market_params()
         regime, confidence, desc = _classify_regime(params)
         
+        # V6 Phase 2: 地缘风险覆盖 — severity≥4 → 强制 cautious
+        geo_override = False
+        geo_severity = 0
+        try:
+            from services.geopolitical import get_geopolitical_events
+            geo_data = get_geopolitical_events()
+            geo_severity = geo_data.get("max_severity", 0)
+            if geo_severity >= 4:
+                geo_override = True
+                original_regime = regime
+                regime = "high_vol_bear"  # 强制切到 cautious pipeline
+                confidence = max(confidence, 70)
+                geo_cat = geo_data.get("top_category", "地缘风险")
+                desc = f"⚠️ 地缘风险覆盖（{geo_cat} severity={geo_severity}）原判定: {original_regime} → 强制 high_vol_bear"
+                print(f"[REGIME] 地缘覆盖: severity={geo_severity}, {original_regime} → high_vol_bear")
+        except Exception as e:
+            print(f"[REGIME] 地缘检查失败(不影响原判定): {e}")
+
         result = {
             "regime": regime,
             "confidence": confidence,
             "params": _clean_params(params),
             "description": desc,
             "timestamp": datetime.now().isoformat(),
+            "geo_override": geo_override,
+            "geo_severity": geo_severity,
         }
     except Exception as e:
         # 降级：数据获取失败时默认震荡
@@ -255,4 +275,7 @@ def enrich(ctx):
     ctx.regime_confidence = result["confidence"]
     ctx.regime_params = result.get("params", {})
     ctx.regime_description = result.get("description", "")
+    # V6 Phase 2: 地缘覆盖标记
+    ctx.regime_params["geo_override"] = result.get("geo_override", False)
+    ctx.regime_params["geo_severity"] = result.get("geo_severity", 0)
     return ctx

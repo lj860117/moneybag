@@ -1,6 +1,7 @@
 """
 钱袋子 — 新闻资讯数据
 基金新闻、市场新闻、政策新闻、影响分析
+V6 Phase 2: 新增 enrich() + NEWS_IMPACT_MAP 扩展（9→14条规则）
 """
 
 # ---- V4 底座：MODULE_META ----
@@ -10,8 +11,8 @@ MODULE_META = {
     "input": [],
     "output": "news",
     "cost": "cpu",
-    "tags": ['新闻', '情绪', '影响分析'],
-    "description": "新闻资讯：基金新闻+市场新闻+政策新闻+影响分析",
+    "tags": ["新闻", "情绪", "影响分析", "地缘", "大宗", "政策"],
+    "description": "新闻资讯+14条影响规则映射+持仓新闻+Pipeline enrich",
     "layer": "data",
     "priority": 2,
 }
@@ -243,7 +244,7 @@ def get_policy_news(limit: int = 20) -> list:
 
 # ---- 新闻→行业→基金 关联分析引擎 ----
 
-# 事件→行业→基金映射表（核心知识库）
+# 事件→行业→基金映射表（核心知识库, V6 Phase 2 扩展）
 NEWS_IMPACT_MAP = [
     {"keywords": ["降准", "降息", "LPR", "宽松", "流动性"],
      "impact": "利好：银行间流动性增加，利率下行推动股债双牛",
@@ -253,24 +254,26 @@ NEWS_IMPACT_MAP = [
      "impact": "利空：流动性收紧，成长股承压，美元走强",
      "bullish": ["000216"], "bearish": ["050025", "110020"],
      "sectors": ["黄金避险"], "tag": "货币收紧"},
-    {"keywords": ["关税", "贸易战", "制裁", "中美对抗"],
+    {"keywords": ["关税", "贸易战", "制裁", "中美对抗", "出口管制", "实体清单"],
      "impact": "出口承压，内需消费和国产替代受益",
      "bullish": ["110020", "008114"], "bearish": ["050025"],
      "sectors": ["内需消费", "国产替代"], "tag": "贸易摩擦"},
-    {"keywords": ["半导体", "芯片", "科技自主", "AI", "人工智能"],
+    {"keywords": ["半导体", "芯片", "科技自主", "AI", "人工智能", "算力"],
      "impact": "科技板块活跃，相关ETF受益",
      "bullish": ["110020"], "bearish": [],
      "sectors": ["科技", "半导体", "新能源"], "tag": "科技政策"},
-    {"keywords": ["战争", "地缘", "冲突", "中东", "俄乌"],
-     "impact": "避险情绪升温，黄金和债券受益",
+    {"keywords": ["战争", "地缘", "冲突", "中东", "俄乌", "台海", "军事",
+                   "空袭", "导弹", "以色列", "伊朗", "红海", "霍尔木兹", "胡塞"],
+     "impact": "避险情绪升温，黄金和债券受益，航空消费承压",
      "bullish": ["000216", "217022"], "bearish": ["110020", "050025"],
      "sectors": ["黄金", "债券", "军工"], "tag": "地缘风险"},
     {"keywords": ["刺激", "基建", "财政扩张", "国务院", "发改委"],
      "impact": "财政刺激利好周期股和基建链",
      "bullish": ["110020", "008114"], "bearish": [],
      "sectors": ["基建", "周期", "红利"], "tag": "财政刺激"},
-    {"keywords": ["油价", "OPEC", "原油", "大宗商品"],
-     "impact": "大宗商品价格影响通胀预期和周期股",
+    {"keywords": ["油价", "OPEC", "原油", "大宗商品", "石油危机",
+                   "OPEC减产", "油价暴涨", "能源危机", "天然气"],
+     "impact": "大宗商品价格影响通胀预期和周期股，输入性通胀压力",
      "bullish": ["000216", "008114"], "bearish": ["217022"],
      "sectors": ["能源", "黄金", "通胀链"], "tag": "大宗商品"},
     {"keywords": ["房地产", "楼市", "限购", "房贷"],
@@ -281,6 +284,27 @@ NEWS_IMPACT_MAP = [
      "impact": "汇率波动影响QDII基金和外贸企业",
      "bullish": [], "bearish": [],
      "sectors": ["外贸", "QDII"], "tag": "汇率波动"},
+    # V6 Phase 2 新增规则
+    {"keywords": ["印花税", "交易税", "减免"],
+     "impact": "印花税调整直接影响交易成本和市场情绪",
+     "bullish": ["110020"], "bearish": [],
+     "sectors": ["券商", "大盘"], "tag": "印花税调整"},
+    {"keywords": ["IPO", "注册制", "新股", "暂停IPO"],
+     "impact": "IPO节奏变化影响市场供需和并购预期",
+     "bullish": [], "bearish": [],
+     "sectors": ["券商", "次新股"], "tag": "IPO政策"},
+    {"keywords": ["新能源", "碳中和", "光伏", "风电", "锂电", "储能"],
+     "impact": "新能源政策推动绿色转型相关板块",
+     "bullish": ["110020"], "bearish": [],
+     "sectors": ["新能源", "光伏", "锂电"], "tag": "新能源政策"},
+    {"keywords": ["军工", "国防", "军费", "军事装备", "航天"],
+     "impact": "军工板块受国防预算和地缘局势双驱动",
+     "bullish": ["110020"], "bearish": [],
+     "sectors": ["军工", "航天"], "tag": "军工景气"},
+    {"keywords": ["银行倒闭", "债务危机", "主权违约", "资本外逃", "流动性危机"],
+     "impact": "系统性金融风险，避险资产受益，风险资产承压",
+     "bullish": ["000216", "217022"], "bearish": ["110020", "050025"],
+     "sectors": ["黄金", "债券"], "tag": "金融风险"},
 ]
 
 # 基金代码→名称映射
@@ -404,3 +428,75 @@ def format_holdings_news_for_prompt(holdings_news: dict) -> str:
             lines.append(f"- {n['title']}")
 
     return "\n".join(lines) if lines else ""
+
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# V6 Phase 2: Pipeline enrich() — 让新闻模块接入 Pipeline
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+def enrich(ctx):
+    """Pipeline Layer2 自动调用 — 新闻影响分析注入 DecisionContext
+
+    做 3 件事：
+    1. 拉政策新闻 → NEWS_IMPACT_MAP 匹配 → 哪些板块/基金受影响
+    2. 拉持仓新闻（如果有持仓）
+    3. 综合判断 direction（bullish/bearish/neutral）
+    """
+    try:
+        # 1. 政策新闻影响分析
+        policy_news = get_policy_news(limit=20)
+        impacts = analyze_news_impact(policy_news)
+
+        # 2. 持仓新闻（如果用户有持仓的话）
+        holdings_news = {}
+        if getattr(ctx, "stock_holdings", None) or getattr(ctx, "fund_holdings", None):
+            try:
+                holdings_news = get_holdings_news(
+                    getattr(ctx, "stock_holdings", []),
+                    getattr(ctx, "fund_holdings", []),
+                    limit_per=2,
+                )
+            except Exception as e:
+                print(f"[NEWS] holdings news failed: {e}")
+
+        # 3. 方向判断：统计 impact 中 bullish vs bearish 数量
+        bullish_count = sum(1 for i in impacts if i.get("bullish"))
+        bearish_count = sum(1 for i in impacts if i.get("bearish"))
+        if bullish_count > bearish_count + 1:
+            direction = "bullish"
+        elif bearish_count > bullish_count + 1:
+            direction = "bearish"
+        else:
+            direction = "neutral"
+
+        # 置信度：有影响分析 → 较高，否则较低
+        confidence = min(70, 30 + len(impacts) * 10) if impacts else 30
+
+        # 汇总 tags
+        triggered_tags = [i["tag"] for i in impacts]
+
+        ctx.modules_results["news_data"] = {
+            "direction": direction,
+            "score": 0.6 if direction == "bullish" else (0.4 if direction == "bearish" else 0.5),
+            "confidence": confidence,
+            "available": True,
+            "detail": f"匹配{len(impacts)}条影响规则: {', '.join(triggered_tags)}" if triggered_tags else "无明显政策信号",
+            "impacts": impacts[:5],  # 只保留前5条给 LLM
+            "policy_news_count": len(policy_news),
+            "holdings_news_summary": holdings_news.get("summary", ""),
+            "triggered_tags": triggered_tags,
+        }
+
+        if "news_data" not in ctx.modules_called:
+            ctx.modules_called.append("news_data")
+
+    except Exception as e:
+        print(f"[NEWS] enrich failed: {e}")
+        ctx.modules_results["news_data"] = {
+            "available": False,
+            "error": str(e),
+            "direction": "neutral",
+            "score": 0.5,
+        }
+
+    return ctx
