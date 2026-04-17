@@ -258,6 +258,9 @@ def warm_morning():
     
     print(f"[CACHE] 早盘预热完成 ✅")
 
+    # V7: 同步写入 precomputed 缓存
+    _write_precomputed_fast()
+
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 # 🟡 午间预热（13:05 跑）
@@ -292,6 +295,72 @@ def warm_midday():
         print(f"  ❌ {e}")
     
     print(f"[CACHE] 午间预热完成 ✅")
+
+    # V7: 同步写入 precomputed 缓存（白天 API 优先读这个）
+    _write_precomputed_fast()
+
+
+def _write_precomputed_fast():
+    """快速刷新 precomputed 缓存（给首页秒看用）"""
+    try:
+        sys.path.insert(0, str(Path(__file__).parent.parent))
+        from services.precomputed_cache import save_precomputed
+
+        # 恐贪指数
+        try:
+            from services.market_data import get_fear_greed_index
+            save_precomputed("fear_greed", get_fear_greed_index())
+        except Exception:
+            pass
+
+        # 估值百分位
+        try:
+            from services.market_data import get_valuation_percentile
+            save_precomputed("valuation", get_valuation_percentile())
+        except Exception:
+            pass
+
+        # 北向+融资+SHIBOR
+        try:
+            from services.factor_data import get_northbound_flow, get_shibor, get_margin_trading
+            save_precomputed("factors", {
+                "northbound": get_northbound_flow(),
+                "shibor": get_shibor(),
+                "margin": get_margin_trading(),
+            })
+        except Exception:
+            pass
+
+        # 行业轮动
+        try:
+            from services.sector_rotation import get_sector_rotation
+            sr = get_sector_rotation()
+            if sr.get("available"):
+                save_precomputed("sector_rotation", sr)
+        except Exception:
+            pass
+
+        # 研报共识
+        try:
+            from services.broker_research import get_broker_consensus
+            br = get_broker_consensus()
+            if br.get("available"):
+                save_precomputed("broker_consensus", br)
+        except Exception:
+            pass
+
+        # 13 维信号
+        try:
+            from services.signal import calculate_daily_signal
+            from services.signal import generate_daily_signal
+            signal = generate_daily_signal()
+            save_precomputed("daily_signal", signal)
+        except Exception:
+            pass
+
+        print(f"  ★ precomputed 缓存已刷新")
+    except Exception as e:
+        print(f"  precomputed 刷新失败: {e}")
 
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━

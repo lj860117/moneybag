@@ -439,9 +439,31 @@ def get_macro_data():
 
 @app.get("/api/dashboard")
 async def get_market_dashboard():
-    """V4.5 综合市场仪表盘 — 11个数据源并行请求"""
-    import asyncio
+    """V4.5 综合市场仪表盘 — 优先读预计算缓存，否则 11 源并行"""
+    # V7: 尝试从预计算缓存组装（秒出）
+    try:
+        from services.precomputed_cache import get_precomputed
+        pc_factors = get_precomputed("factors")
+        pc_fgi = get_precomputed("fear_greed")
+        pc_val = get_precomputed("valuation")
+        pc_signal = get_precomputed("daily_signal")
 
+        # 如果核心数据都有缓存，直接返回（秒出）
+        if pc_factors and pc_fgi and pc_val:
+            return {
+                "valuation": pc_val,
+                "fear_greed": pc_fgi,
+                "northbound": pc_factors.get("northbound", {}),
+                "margin": pc_factors.get("margin", {}),
+                "shibor": pc_factors.get("shibor", {}),
+                "from_cache": True,
+                "cache_note": "凌晨预计算数据，盘中每30分钟刷新",
+            }
+    except Exception:
+        pass
+
+    # 降级：实时并行拉取
+    import asyncio
     loop = asyncio.get_event_loop()
     # 把所有阻塞的数据源调用并行化
     (val, fgi_data, tech, news, macro,
