@@ -70,45 +70,43 @@ if(saved)return saved;
 return 'simple'}
 let _uiMode=_getDefaultUIMode();
 function toggleUIMode(){
-  const oldMode=_uiMode;
   _uiMode=_uiMode==='simple'?'pro':'simple';
   localStorage.setItem('moneybag_ui_mode',_uiMode);
   localStorage.setItem('moneybag_ui_mode_set_by_user','1');
-  // Phase 0: 同步到后端偏好 API（失败不阻塞，降级用 localStorage）
-  fetch(`${API_BASE}/user/preference?userId=${encodeURIComponent(getProfileId())}`,{
+  fetch(API_BASE+'/user/preference?userId='+encodeURIComponent(getProfileId()),{
     method:'PUT',headers:{'Content-Type':'application/json'},
     body:JSON.stringify({display_mode:_uiMode})
-  }).catch(()=>{});
+  }).catch(function(){});
   location.reload()
 }
 function isProMode(){return _uiMode==='pro'}
 
-// Phase 0 (3.8): 亮/暗/系统 主题切换
-const _THEME_CYCLE=['system','dark','light'];
-let _currentTheme=localStorage.getItem('moneybag_theme')||'system';
+// Phase 0: 亮/暗/系统 主题切换
+var _THEME_CYCLE=['system','dark','light'];
+var _currentTheme=localStorage.getItem('moneybag_theme')||'system';
 function applyTheme(theme){
   _currentTheme=theme;
   localStorage.setItem('moneybag_theme',theme);
   if(theme==='light'){document.documentElement.setAttribute('data-theme','light')}
   else if(theme==='dark'){document.documentElement.setAttribute('data-theme','dark')}
-  else{document.documentElement.removeAttribute('data-theme')} // system
-  const btn=document.getElementById('themeBtn');if(btn)btn.textContent=getThemeIcon();
+  else{document.documentElement.removeAttribute('data-theme')}
+  var btn=document.getElementById('themeBtn');if(btn)btn.textContent=getThemeIcon();
 }
 function getThemeIcon(){return _currentTheme==='light'?'☀️':_currentTheme==='dark'?'🌙':'🖥️'}
 function cycleTheme(){
-  const idx=(_THEME_CYCLE.indexOf(_currentTheme)+1)%_THEME_CYCLE.length;
+  var idx=(_THEME_CYCLE.indexOf(_currentTheme)+1)%_THEME_CYCLE.length;
   applyTheme(_THEME_CYCLE[idx]);
 }
-applyTheme(_currentTheme); // 启动时应用
+applyTheme(_currentTheme);
 
-// Phase 0: 通用三态渲染（Loading / Error / Empty / Data）
-function renderCard(title, state, content=''){
-  if(state==='loading') return `<div class="dashboard-card"><div class="dashboard-card-title">${title}</div><div style="padding:16px;text-align:center;color:var(--text2)"><div class="loading-spinner" style="width:20px;height:20px;margin:0 auto 8px;border-width:2px"></div>加载中...</div></div>`;
-  if(state==='error') return `<div class="dashboard-card" style="border-left:3px solid var(--red)"><div class="dashboard-card-title">${title}</div><div style="padding:12px;text-align:center;color:var(--text2)">加载失败<br><button onclick="location.reload()" style="margin-top:8px;padding:4px 12px;border-radius:6px;border:none;background:var(--accent);color:#fff;cursor:pointer;font-size:12px">🔄 重试</button></div></div>`;
-  if(state==='empty') return `<div class="dashboard-card"><div class="dashboard-card-title">${title}</div><div style="padding:12px;text-align:center;color:var(--text2);font-size:12px">暂无数据</div></div>`;
-  return `<div class="dashboard-card"><div class="dashboard-card-title">${title}</div>${content}</div>`;
+// Phase 0: 通用三态渲染
+function renderCard(title,state,content){
+  content=content||'';
+  if(state==='loading')return '<div class="dashboard-card"><div class="dashboard-card-title">'+title+'</div><div style="padding:16px;text-align:center;color:var(--text2)"><div class="loading-spinner" style="width:20px;height:20px;margin:0 auto 8px;border-width:2px"></div>加载中...</div></div>';
+  if(state==='error')return '<div class="dashboard-card" style="border-left:3px solid var(--red)"><div class="dashboard-card-title">'+title+'</div><div style="padding:12px;text-align:center;color:var(--text2)">加载失败</div></div>';
+  if(state==='empty')return '<div class="dashboard-card"><div class="dashboard-card-title">'+title+'</div><div style="padding:12px;text-align:center;color:var(--text2);font-size:12px">暂无数据</div></div>';
+  return '<div class="dashboard-card"><div class="dashboard-card-title">'+title+'</div>'+content+'</div>';
 }
-
 const _BASE_STORAGE_KEY='moneybag_portfolio';
 const _BASE_TXN_KEY='moneybag_transactions';
 const _BASE_ASSETS_KEY='moneybag_assets';
@@ -365,46 +363,6 @@ const hasServerHoldings=localStorage.getItem(_uk('moneybag_has_holdings'))==='1'
 const hasLocalData=txns.length>0||p.transactions?.length>0||assets.length>0||ledger.length>0||hasServerHoldings;
 if(!hasProfile&&!hasLocalData){
 $('#app').innerHTML=`<div class="landing stagger"><div class="landing-icon">💰</div><h1>你的钱，该怎么放？</h1><p class="subtitle">回答5个问题，AI帮你出一份<br>专属资产配置方案</p><button class="cta-btn" onclick="startQuiz()">开始测评</button><div class="trust-badges"><span class="trust-badge">不收费</span><span class="trust-badge">不推销</span><span class="trust-badge">不注册</span></div></div>`;renderNav();return}
-
-// Phase 0: 有用户但空仓 → 市场概览模式（机会导向）
-const hasHoldings=txns.length>0||p.transactions?.length>0||hasServerHoldings;
-if(hasProfile&&!hasHoldings){
-$('#app').innerHTML=`<div class="result-page fade-up">
-<div class="pnl-hero" style="margin-bottom:16px">
-<div class="pnl-label">💰 家庭净资产</div>
-<div style="font-size:10px;color:var(--text2);margin-top:2px">空仓观望中 👀</div>
-<div class="pnl-total-value" id="heroNetWorth">${fmtFull(Math.round(nw.netWorth))}</div>
-<div id="heroBreakdown" style="display:flex;gap:12px;justify-content:center;margin-top:12px;font-size:12px;flex-wrap:wrap">
-<div style="text-align:center"><div style="color:var(--text2)">💵 现金</div><div style="font-weight:700;color:var(--green)">¥${fmtMoney(Math.round(nw.assetTotal))}</div></div>
-</div>
-</div>
-
-<div class="dashboard-card" style="border-left:3px solid #F59E0B;margin-bottom:12px">
-<div class="dashboard-card-title">📊 市场概览</div>
-<div style="font-size:13px;color:var(--text1);line-height:1.8">空仓期间，AI 管家持续监控市场，寻找入场时机。</div>
-<div id="emptyPortfolioSignals" style="margin-top:8px;font-size:12px;color:var(--text2)">加载市场信号中...</div>
-</div>
-
-<div id="stewardBriefingCard" class="dashboard-card" style="border-left:3px solid #6366F1;display:none">
-<div class="dashboard-card-title">🤖 管家一句话</div>
-<div id="stewardBriefingText" style="font-size:13px;line-height:1.8;color:var(--text1)">加载中...</div>
-</div>
-
-<div id="dailyFocusSection"></div>
-
-<div class="bottom-actions" style="margin-top:16px">
-<button class="action-btn primary" onclick="navigateTo('stocks')">📈 开始建仓<div style="font-size:10px;font-weight:400;opacity:0.7;margin-top:2px">添加第一笔投资</div></button>
-<button class="action-btn secondary" onclick="navigateTo('chat')">💬 问问管家</button>
-<button class="action-btn secondary" onclick="startQuiz()">🔄 重新测评</button>
-</div>
-</div>`;renderNav();loadDailyFocus();loadStewardBriefing();loadUnifiedHero();
-// 加载空仓市场信号
-if(API_AVAILABLE){fetch(API_BASE+'/daily-signal?'+getProfileParam(),{signal:AbortSignal.timeout(10000)}).then(r=>r.json()).then(d=>{
-const el=document.getElementById('emptyPortfolioSignals');if(el){
-const sig=d.signal||d.overall_signal||'观望';const emoji=sig.includes('买')||sig.includes('good')?'🟢':sig.includes('卖')||sig.includes('bad')?'🔴':'🟡';
-el.innerHTML=`${emoji} 今日信号：${sig}<br>💡 ${d.suggestion||d.one_line||'持续关注市场变化'}`}
-}).catch(()=>{})}
-return}
 // 有数据 → 智能决策中心
 const nw=calcNetWorth();
 const monthNow=new Date();const monthStart=new Date(monthNow.getFullYear(),monthNow.getMonth(),1).toISOString();
@@ -438,8 +396,6 @@ $('#app').innerHTML=`<div class="result-page fade-up">
 
 <div id="dailyFocusSection"></div>
 
-<div id="timingSection" style="display:none"></div>
-
 <div id="stewardBriefingCard" class="dashboard-card" style="border-left:3px solid #6366F1;display:none">
 <div class="dashboard-card-title">🤖 管家一句话</div>
 <div id="stewardBriefingText" style="font-size:13px;line-height:1.8;color:var(--text1)">加载中...</div>
@@ -457,7 +413,7 @@ $('#app').innerHTML=`<div class="result-page fade-up">
 <button class="action-btn secondary" onclick="showAddTxn()">➕ 记交易</button>
 <button class="action-btn secondary" onclick="startQuiz()">🔄 重新测评</button>
 </div>
-</div>`;renderNav();loadSignals();loadDailyFocus();loadTimingSection();loadHomeRiskAlert();loadHomeAllocationAdvice();loadUnifiedHero();loadStewardBriefing()}
+</div>`;renderNav();loadSignals();loadDailyFocus();loadHomeRiskAlert();loadHomeAllocationAdvice();loadUnifiedHero();loadStewardBriefing()}
 
 // ---- 首页：管家简报 ----
 async function loadStewardBriefing(){
@@ -500,16 +456,7 @@ bd.innerHTML=`
 <div style="text-align:center"><div style="color:var(--text2)">🏠 房产</div><div style="font-weight:700;color:#F59E0B">¥${fmtMoney(Math.round((b.property||{}).total||0))}</div></div>
 <div style="text-align:center"><div style="color:var(--text2)">💳 负债</div><div style="font-weight:700;color:var(--red)">-¥${fmtMoney(Math.round((b.liability||{}).total||0))}</div></div>`}
 const hel=document.getElementById('heroHealth');
-if(hel&&d.healthGrade)hel.innerHTML=`${d.healthGrade} · ${d.healthScore}分${d.healthIssues?.length?` · <span style="color:var(--red)">${d.healthIssues[0]}</span>`:''}`
-// Phase 0: 加载家庭资产汇总
-if(API_AVAILABLE){fetch(`${API_BASE}/household/summary`,{signal:AbortSignal.timeout(10000)}).then(r=>r.json()).then(h=>{
-  if(h.members&&h.members.length>1){
-    const famEl=document.getElementById('heroBreakdown');
-    if(famEl){const famHtml=h.members.map(m=>`<div style="text-align:center"><div style="color:var(--text2)">${m.nickname}</div><div style="font-weight:700;color:var(--accent)">¥${fmtMoney(Math.round(m.value))}</div>${m.change?`<div style="font-size:10px;color:${m.change>=0?'var(--green)':'var(--red)'}">${m.change>=0?'+':''}¥${Math.round(m.change)}</div>`:''}</div>`).join('');
-    famEl.insertAdjacentHTML('beforeend',`<div style="width:100%;border-top:1px solid rgba(148,163,184,.1);margin-top:8px;padding-top:8px;display:flex;gap:12px;justify-content:center">${famHtml}</div>`)}
-  }
-}).catch(()=>{})}
-}
+if(hel&&d.healthGrade)hel.innerHTML=`${d.healthGrade} · ${d.healthScore}分${d.healthIssues?.length?` · <span style="color:var(--red)">${d.healthIssues[0]}</span>`:''}`}
 
 // ---- 资产变更后异步刷新净资产（供添加/编辑/删除资产后调用）----
 async function _refreshNetWorthAfterAssetChange(){
@@ -533,80 +480,6 @@ try{const r=await fetch(`${API_BASE}/daily-focus`,{signal:AbortSignal.timeout(15
 if(!r.ok)return;const d=await r.json();const tips=d.tips||[];
 if(tips.length)el.innerHTML=`<div style="background:rgba(99,102,241,.06);border:1px solid rgba(99,102,241,.15);border-radius:12px;padding:12px 14px;margin-bottom:12px"><div style="font-size:13px;font-weight:700;margin-bottom:8px">🎯 今日关注 <span style="font-size:10px;color:var(--text2);font-weight:400">${d.source==='ai'?'AI':'默认'}</span></div>${tips.map(t=>`<div style="font-size:12px;line-height:1.8">${t}</div>`).join('')}</div>`
 }catch(e){console.warn('dailyFocus:',e)}}
-
-// Phase 0 (3.2): 入场时机 + 智能定投
-async function loadTimingSection(){
-const el=document.getElementById('timingSection');if(!el||!API_AVAILABLE)return;
-try{
-  const r=await fetch(`${API_BASE}/timing`,{signal:AbortSignal.timeout(10000)});
-  if(!r.ok)return;const d=await r.json();
-  const score=d.timingScore||50;
-  const color=score<30?'var(--green)':score<50?'#F59E0B':score<70?'#F97316':'var(--red)';
-  let dcaHtml='';
-  // Pro 模式加载智能定投
-  if(isProMode()){
-    try{
-      const dr=await fetch(`${API_BASE}/smart-dca`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({holdings:[]}),signal:AbortSignal.timeout(10000)});
-      if(dr.ok){const dd=await dr.json();dcaHtml=`<div style="margin-top:10px;padding:10px;border-radius:8px;background:rgba(99,102,241,.06);font-size:12px"><span style="font-weight:600">🧠 智能定投：</span>${dd.advice||''} <span style="color:var(--accent)">倍率 ${dd.multiplier||1.0}x</span></div>`}
-    }catch(e){}
-  }
-  el.style.display='block';
-  el.innerHTML=`<div style="background:rgba(148,163,184,.04);border:1px solid rgba(148,163,184,.1);border-radius:12px;padding:12px 14px;margin-bottom:12px">
-    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px">
-      <span style="font-size:13px;font-weight:700">⏱️ 入场时机</span>
-      <span style="font-size:20px;font-weight:700;color:${color}">${score}分</span>
-    </div>
-    <div style="font-size:14px;font-weight:600;margin-bottom:4px">${d.verdict||''}</div>
-    <div style="font-size:12px;color:var(--text2);line-height:1.6">${d.detail||''}</div>
-    ${isProMode()?`<div style="margin-top:8px;font-size:11px;color:var(--text3)">估值百分位: ${d.valuation?.percentile||'-'}% · 恐贪指数: ${d.fearGreed?.score||'-'}</div>`:''}
-    ${dcaHtml}
-  </div>`;
-}catch(e){console.warn('timing:',e)}}
-
-// Phase 0 (3.4): 盯盘预警轮询 + visibilitychange 智能控制
-let _alertPolling=null;
-function startAlertPolling(){
-  if(_alertPolling||!API_AVAILABLE)return;
-  _alertPolling=setInterval(async()=>{
-    try{
-      const r=await fetch(`${API_BASE}/watchlist/alerts?userId=${encodeURIComponent(getProfileId())}`,{signal:AbortSignal.timeout(10000)});
-      if(!r.ok)return;const d=await r.json();
-      if(d.alerts&&d.alerts.length>0){
-        // 更新首页预警 badge
-        const badge=document.getElementById('alertBadge');
-        if(badge){badge.style.display='block';badge.textContent=d.alerts.length}
-        // 高危预警弹 toast
-        d.alerts.filter(a=>a.level==='danger').forEach(a=>{
-          showToast(`⚠️ ${a.message}`,'danger');
-        });
-      }
-    }catch(e){}
-  },15000);
-}
-function stopAlertPolling(){if(_alertPolling){clearInterval(_alertPolling);_alertPolling=null}}
-
-// 页面可见性控制（三方 AI 审查共识）
-// 手机切后台/锁屏时暂停轮询，切回来时立即刷新
-document.addEventListener('visibilitychange',()=>{
-  if(document.hidden){stopAlertPolling()}
-  else{
-    startAlertPolling();
-    // 切回来时立即刷新一次
-    if(API_AVAILABLE){fetch(`${API_BASE}/watchlist/alerts?userId=${encodeURIComponent(getProfileId())}`,{signal:AbortSignal.timeout(10000)}).then(r=>r.json()).then(d=>{
-      if(d.alerts?.length){const badge=document.getElementById('alertBadge');if(badge){badge.style.display='block';badge.textContent=d.alerts.length}}
-    }).catch(()=>{})}
-  }
-});
-
-// 交易时段自动启动（09:25-15:05 工作日）
-function checkTradingHours(){
-  const now=new Date();const h=now.getHours();const m=now.getMinutes();const day=now.getDay();
-  if(day>=1&&day<=5&&((h===9&&m>=25)||h>=10)&&(h<15||(h===15&&m<=5))){startAlertPolling()}
-  else{stopAlertPolling()}
-}
-// 每 5 分钟检查是否进入/离开交易时段
-setInterval(checkTradingHours,300000);
-checkTradingHours(); // 首次检查
 
 // ---- 首页：风控预警摘要 ----
 async function loadHomeRiskAlert(){
@@ -1407,7 +1280,7 @@ return `<div style="margin-bottom:12px"><div style="font-size:12px;font-weight:7
 let insightTab='overview';
 function _insightTabs(){
 const all=[
-['overview','📊 总览'],['deepimpact','🔍 深度分析'],['riskassess','🛡️ 风控评估'],['fundpick','🔍 选基'],['stockpick','🧠 选股'],['news','📰 新闻'],['policy','🏛️ 政策'],['tech','📈 技术'],['macro','📊 宏观'],['global','🌐 全球'],['signals','📡 信号'],['scorecard','📊 成绩单'],['doctor','🏥 体检'],['steward','🤖 管家'],['factorictest','🔬 因子检验'],['montecarlo','🎲 蒙特卡洛'],['aipredict','🤖 AI预测'],['geneticfactor','🧬 遗传因子'],['optimizer','⚡ 组合优化'],['altdata','📡 另类数据'],['rlposition','🎮 RL仓位'],['llmfactor','🧠 LLM因子'],['weekly','📋 周报']];
+['overview','📊 总览'],['fundpick','🔍 选基'],['stockpick','🧠 选股'],['news','📰 新闻'],['policy','🏛️ 政策'],['tech','📈 技术'],['macro','📊 宏观'],['global','🌐 全球'],['signals','📡 信号'],['scorecard','📊 成绩单'],['doctor','🏥 体检'],['steward','🤖 管家'],['factorictest','🔬 因子检验'],['montecarlo','🎲 蒙特卡洛'],['aipredict','🤖 AI预测'],['geneticfactor','🧬 遗传因子'],['optimizer','⚡ 组合优化'],['altdata','📡 另类数据'],['rlposition','🎮 RL仓位'],['llmfactor','🧠 LLM因子'],['weekly','📋 周报']];
 const simple=['overview','news','policy','doctor','steward'];
 return isProMode()?all:all.filter(t=>simple.includes(t[0]))}
 async function renderInsight(){currentPage='insight';renderNav();const tabs=_insightTabs();
@@ -1417,9 +1290,6 @@ setTimeout(()=>{const bar=document.getElementById('insightTabBar');const active=
 if(!API_AVAILABLE){document.getElementById('insightContent').innerHTML='<div style="text-align:center;padding:40px;color:var(--text2)">后端离线，请启动后端服务获取实时数据</div>';return}
 // 独立 tab 不需要 dashboard 数据，秒开
 if(insightTab==='fundpick'){const el=document.getElementById('insightContent');if(el)renderFundPick(el);return}
-// Phase 0: 新闻深度分析 + 风控评估
-if(insightTab==='deepimpact'){const el=document.getElementById('insightContent');if(el)renderDeepImpact(el);return}
-if(insightTab==='riskassess'){const el=document.getElementById('insightContent');if(el)renderRiskAssess(el);return}
 if(insightTab==='stockpick'){const el=document.getElementById('insightContent');if(el)renderStockPick(el);return}
 if(insightTab==='factorictest'){const el=document.getElementById('insightContent');if(el)renderFactorIC(el);return}
 if(insightTab==='montecarlo'){const el=document.getElementById('insightContent');if(el)renderMonteCarlo(el);return}
@@ -1636,49 +1506,6 @@ function _updateFundPickBtns(){
 const tb=document.getElementById('fundPickTypeBar');const sb=document.getElementById('fundPickSortBar');
 if(tb)tb.innerHTML=[['all','全部'],['stock','股票型'],['bond','债券型'],['index','指数型'],['qdii','QDII']].map(([k,l])=>`<button class="section-tab ${fundPickType===k?'active':''}" onclick="fundPickType='${k}';_updateFundPickBtns();renderFundPickResult()" style="font-size:12px;padding:5px 10px">${l}</button>`).join('');
 if(sb)sb.innerHTML=[['score','📊 综合评分'],['1y','📈 近1年'],['3y','📈 近3年'],['ytd','📈 今年来']].map(([k,l])=>`<button class="section-tab ${fundPickSort===k?'active':''}" onclick="fundPickSort='${k}';_updateFundPickBtns();renderFundPickResult()" style="font-size:11px;padding:4px 8px">${l}</button>`).join('')}
-
-// Phase 0: 新闻深度影响分析（Pro 模式）
-async function renderDeepImpact(el){
-el.innerHTML=renderCard('🔍 新闻深度影响分析','loading');
-try{
-  const r=await fetch(`${API_BASE}/news/deep-impact`,{signal:AbortSignal.timeout(30000)});
-  if(!r.ok)throw new Error(`HTTP ${r.status}`);
-  const d=await r.json();
-  const impacts=d.impacts||[];
-  if(!impacts.length){el.innerHTML=renderCard('🔍 新闻深度影响分析','empty');return}
-  el.innerHTML=`<div class="dashboard-card">
-    <div class="dashboard-card-title">🔍 新闻深度影响分析（${impacts.length}条）</div>
-    ${impacts.map(imp=>{
-      const bull=imp.bullish?.length?`<span style="color:var(--green);font-size:11px">📈 ${imp.bullish.join(', ')}</span>`:'';
-      const bear=imp.bearish?.length?`<span style="color:var(--red);font-size:11px">📉 ${imp.bearish.join(', ')}</span>`:'';
-      return `<div style="padding:10px 0;border-bottom:1px solid rgba(148,163,184,.08)">
-        <div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap">
-          <span style="background:rgba(245,158,11,.12);color:#F59E0B;font-size:11px;padding:2px 6px;border-radius:4px">${imp.tag||'事件'}</span>
-          ${bull} ${bear}
-        </div>
-        <div style="font-size:13px;color:var(--text1);margin-top:6px;line-height:1.6">${imp.impact||imp.analysis||''}</div>
-      </div>`}).join('')}
-  </div>`;
-}catch(e){el.innerHTML=renderCard('🔍 新闻深度影响分析','error')}}
-
-// Phase 0: 新闻风控评估（Pro 模式）
-async function renderRiskAssess(el){
-el.innerHTML=renderCard('🛡️ 新闻风控评估','loading');
-try{
-  const r=await fetch(`${API_BASE}/news/risk-assess`,{signal:AbortSignal.timeout(30000)});
-  if(!r.ok)throw new Error(`HTTP ${r.status}`);
-  const d=await r.json();
-  const level=d.risk_level||d.level||'unknown';
-  const emoji=level==='low'?'🟢':level==='medium'?'🟡':'🔴';
-  el.innerHTML=`<div class="dashboard-card" style="border-left:3px solid ${level==='high'?'var(--red)':level==='medium'?'#F59E0B':'var(--green)'}">
-    <div class="dashboard-card-title">🛡️ 新闻风控评估</div>
-    <div style="font-size:20px;font-weight:700;margin:8px 0">${emoji} 风险等级：${level==='low'?'低':level==='medium'?'中':level==='high'?'高':level}</div>
-    <div style="font-size:13px;color:var(--text1);line-height:1.8">${d.summary||d.analysis||'暂无分析'}</div>
-    ${d.headlines?.length?`<div style="margin-top:12px;font-size:12px;color:var(--text2)"><b>分析了 ${d.headlines.length} 条新闻</b></div>`:''}
-    ${d.risk_factors?.length?`<div style="margin-top:8px">${d.risk_factors.map(f=>`<div style="padding:4px 0;font-size:12px;color:var(--text2)">⚠️ ${f}</div>`).join('')}</div>`:''}
-  </div>`;
-}catch(e){el.innerHTML=renderCard('🛡️ 新闻风控评估','error')}}
-
 async function renderFundPick(el){
 el.innerHTML=`<div class="dashboard-card" style="overflow:hidden">
 <div class="dashboard-card-title">🔍 基金智能筛选</div>
@@ -2280,7 +2107,7 @@ return`<div class="holding-card" onclick="showStockDetail('${h.code}')"><div cla
 let totalMV=holdings.reduce((s,h)=>s+(h.marketValue||0),0);let totalPnl=holdings.reduce((s,h)=>s+(h.pnl||0),0);
 let heroHtml='';if(holdings.length>0&&totalMV>0){const pnlC=totalPnl>=0?'var(--green)':'var(--red)';
 heroHtml=`<div class="pnl-hero"><div class="pnl-label">股票持仓总市值</div><div class="pnl-total-value">¥${totalMV.toLocaleString()}</div><div class="pnl-change ${totalPnl>=0?'pos':'neg'}" style="color:${pnlC}">${totalPnl>=0?'+':''}${totalPnl.toFixed(0)}</div><div class="pnl-sub">${holdings.length} 只股票 · ${scanRes.scannedAt?'更新于 '+scanRes.scannedAt.slice(11,16):''}</div></div>`}
-el.innerHTML=heroHtml+signalHtml+disciplineHtml+listHtml+`<div style="margin-top:16px"><button class="action-btn primary" onclick="showAddStockModal()" style="width:100%">➕ 添加股票</button></div>${isProMode()?'<div style="margin-top:8px"><button class="action-btn secondary" onclick="runStockAnalysis()" style="width:100%;border-color:rgba(99,102,241,.4);color:#818CF8" id="stockAnalyzeBtn">🤖 AI 深度分析（全持仓）</button></div>':''}<div style="margin-top:8px"><button class="action-btn secondary" onclick="renderStocksContent()" style="width:100%">🔄 刷新行情</button></div><div id="stockAnalysisResult"></div>`;
+el.innerHTML=heroHtml+signalHtml+disciplineHtml+listHtml+`<div style="margin-top:16px"><button class="action-btn primary" onclick="showAddStockModal()" style="width:100%">➕ 添加股票</button></div><div style="margin-top:8px"><button class="action-btn secondary" onclick="renderStocksContent()" style="width:100%">🔄 刷新行情</button></div>`;
 }catch(e){console.error('Stock load error:',e);document.getElementById('holdingsContent').innerHTML='<div style="text-align:center;padding:40px;color:var(--red)">加载失败: '+e.message+'</div>'}}
 
 function showAddStockModal(){const overlay=document.createElement('div');overlay.className='modal-overlay';overlay.onclick=e=>{if(e.target===overlay)overlay.remove()};
@@ -2294,38 +2121,6 @@ const d=await r.json();if(d.error){alert(d.error);return}
 // 显示纪律检查警告
 if(d.warnings&&d.warnings.length>0){const warnMsg=d.warnings.map(w=>w.msg).join('\n');setTimeout(()=>alert('⚠️ 纪律提醒\n\n'+warnMsg),200)}
 document.querySelector('.modal-overlay')?.remove();renderStocksContent()}catch(e){alert('添加失败: '+e.message)}}
-
-// Phase 0: AI 深度分析（股票持仓 7-Skill 框架）
-async function runStockAnalysis(){
-const btn=document.getElementById('stockAnalyzeBtn');const res=document.getElementById('stockAnalysisResult');
-if(btn){btn.innerHTML='🤖 分析中...（预计 30-60 秒）';btn.disabled=true}
-if(res)res.innerHTML=renderCard('🤖 AI 股票持仓分析','loading');
-try{
-  const r=await fetch(`${API_BASE}/stock-holdings/analyze`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({userId:getProfileId()}),signal:AbortSignal.timeout(60000)});
-  const d=await r.json();
-  if(res)res.innerHTML=`<div class="dashboard-card" style="margin-top:12px;border-left:3px solid #6366F1">
-    <div class="dashboard-card-title">🤖 AI 持仓深度分析</div>
-    <div style="font-size:13px;line-height:1.8;color:var(--text1);white-space:pre-wrap">${d.analysis||'暂无分析'}</div>
-    <div style="font-size:10px;color:var(--text3);margin-top:8px">来源: ${d.source||'ai'}</div>
-  </div>`;
-}catch(e){if(res)res.innerHTML=renderCard('🤖 AI 股票持仓分析','error')}
-finally{if(btn){btn.innerHTML='🤖 AI 深度分析（全持仓）';btn.disabled=false}}}
-
-// Phase 0: AI 深度分析（基金持仓）
-async function runFundAnalysis(){
-const btn=document.getElementById('fundAnalyzeBtn');const res=document.getElementById('fundAnalysisResult');
-if(btn){btn.innerHTML='🤖 分析中...（预计 30-60 秒）';btn.disabled=true}
-if(res)res.innerHTML=renderCard('🤖 AI 基金持仓分析','loading');
-try{
-  const r=await fetch(`${API_BASE}/fund-holdings/analyze`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({userId:getProfileId()}),signal:AbortSignal.timeout(60000)});
-  const d=await r.json();
-  if(res)res.innerHTML=`<div class="dashboard-card" style="margin-top:12px;border-left:3px solid #10B981">
-    <div class="dashboard-card-title">🤖 AI 基金持仓分析</div>
-    <div style="font-size:13px;line-height:1.8;color:var(--text1);white-space:pre-wrap">${d.analysis||'暂无分析'}</div>
-    <div style="font-size:10px;color:var(--text3);margin-top:8px">来源: ${d.source||'ai'}</div>
-  </div>`;
-}catch(e){if(res)res.innerHTML=renderCard('🤖 AI 基金持仓分析','error')}
-finally{if(btn){btn.innerHTML='🤖 AI 深度分析（全持仓）';btn.disabled=false}}}
 
 function showStockDetail(code){const h=(_stockScanData?.holdings||[]).find(x=>x.code===code);if(!h)return;
 const overlay=document.createElement('div');overlay.className='modal-overlay';overlay.onclick=e=>{if(e.target===overlay)overlay.remove()};
@@ -2378,7 +2173,7 @@ ${h.pnlPct!=null?`<span style="color:${pnlColor};font-weight:600">盈亏 ${h.pnl
 // Hero
 let heroHtml='';const totalPnl=holdings.reduce((s,h)=>s+(h.pnl||0),0);
 if(holdings.length>0){heroHtml=`<div class="pnl-hero"><div class="pnl-label">基金持仓 ${holdings.length} 只</div><div class="pnl-change ${totalPnl>=0?'pos':'neg'}" style="color:${totalPnl>=0?'var(--green)':'var(--red)'}">总盈亏 ${totalPnl>=0?'+':''}¥${totalPnl.toFixed(0)}</div><div class="pnl-sub">${scanRes.scannedAt?'更新于 '+scanRes.scannedAt.slice(11,16):''}</div></div>`}
-el.innerHTML=heroHtml+signalHtml+listHtml+`<div style="margin-top:16px"><button class="action-btn primary" onclick="showAddFundModal()" style="width:100%">➕ 添加基金</button></div>${isProMode()?'<div style="margin-top:8px"><button class="action-btn secondary" onclick="runFundAnalysis()" style="width:100%;border-color:rgba(16,185,129,.4);color:#10B981" id="fundAnalyzeBtn">🤖 AI 深度分析（全持仓）</button></div>':''}<div style="margin-top:8px"><button class="action-btn secondary" onclick="renderFundsContent()" style="width:100%">🔄 刷新估值</button></div><div id="fundAnalysisResult"></div>`;
+el.innerHTML=heroHtml+signalHtml+listHtml+`<div style="margin-top:16px"><button class="action-btn primary" onclick="showAddFundModal()" style="width:100%">➕ 添加基金</button></div><div style="margin-top:8px"><button class="action-btn secondary" onclick="renderFundsContent()" style="width:100%">🔄 刷新估值</button></div>`;
 }catch(e){console.error('Fund load error:',e);el.innerHTML='<div style="text-align:center;padding:40px;color:var(--red)">加载失败: '+e.message+'</div>'}}
 
 function showAddFundModal(){const overlay=document.createElement('div');overlay.className='modal-overlay';overlay.onclick=e=>{if(e.target===overlay)overlay.remove()};
@@ -2831,16 +2626,6 @@ ${relBadge}${holdingBadge}
 </div>`}).join('');
 html+=`<div style="font-size:11px;color:#475569;margin-top:12px;text-align:center">扫描于 ${new Date(d.scanned_at).toLocaleString('zh-CN')}</div>`;
 el2.innerHTML=html;
-// Phase 0 (3.1): 追加 AI 信号解读（Pro 模式调 /daily-signal/interpret）
-if(isProMode()&&API_AVAILABLE){
-  el2.insertAdjacentHTML('beforeend','<div id="signalInterpretBox" style="margin-top:16px;padding:12px;border-radius:10px;background:rgba(99,102,241,.06);border:1px solid rgba(99,102,241,.15)"><div class="dashboard-card-title" style="margin-bottom:8px">🤖 AI 信号解读</div><div style="text-align:center;padding:12px;color:var(--text2);font-size:12px"><div class="loading-spinner" style="width:16px;height:16px;margin:0 auto 6px;border-width:2px"></div>DeepSeek 正在解读 12 维信号...</div></div>');
-  fetch(`${API_BASE}/daily-signal/interpret`,{signal:AbortSignal.timeout(30000)}).then(r=>r.json()).then(sd=>{
-    const box=document.getElementById('signalInterpretBox');if(!box)return;
-    const interp=sd.interpretation||sd.detail||'';
-    const overall=sd.overall_score!==undefined?`<span style="font-size:20px;font-weight:700;color:${sd.overall_score>=60?'var(--green)':sd.overall_score>=40?'#F59E0B':'var(--red)'}">${sd.overall_score}分</span>`:'';
-    box.innerHTML=`<div class="dashboard-card-title" style="margin-bottom:8px">🤖 AI 信号解读 ${overall}</div><div style="font-size:13px;line-height:1.8;color:var(--text1);white-space:pre-wrap">${interp}</div>`;
-  }).catch(()=>{const box=document.getElementById('signalInterpretBox');if(box)box.innerHTML='<div class="dashboard-card-title">🤖 AI 信号解读</div><div style="color:var(--text2);font-size:12px">解读加载失败</div>'});
-}
 }catch(e){console.warn('Signal scout failed:',e);
 const el2=document.getElementById('signalScoutContent');
 if(el2)el2.innerHTML=`<div style="text-align:center;padding:20px;color:var(--text2)">信号加载失败<br><button onclick="renderSignalScout(document.getElementById('insightContent'))" style="margin-top:8px;padding:6px 16px;border-radius:6px;border:none;background:var(--accent);color:#fff;cursor:pointer;font-size:12px">🔄 重试</button></div>`}}
@@ -3115,11 +2900,8 @@ migrateV3toV4();
 (async()=>{
   await checkAPI();
   await ensureProfile(); // 首次使用输入名字
-  // Phase 0: 从后端同步用户偏好（模式、推送、盯盘阈值）
-  try{
-    const prefR=await fetch(`${API_BASE}/user/preference?userId=${encodeURIComponent(getProfileId())}`,{signal:AbortSignal.timeout(5000)});
-    if(prefR.ok){const prefs=await prefR.json();if(prefs.display_mode&&!localStorage.getItem('moneybag_ui_mode_set_by_user')){_uiMode=prefs.display_mode;localStorage.setItem('moneybag_ui_mode',_uiMode)}}
-  }catch(e){/* 降级：用 localStorage */}
+  try{var prefR=await fetch(API_BASE+'/user/preference?userId='+encodeURIComponent(getProfileId()),{signal:AbortSignal.timeout(5000)});
+  if(prefR.ok){var prefs=await prefR.json();if(prefs.display_mode&&!localStorage.getItem('moneybag_ui_mode_set_by_user')){_uiMode=prefs.display_mode;localStorage.setItem('moneybag_ui_mode',_uiMode)}}}catch(e){}
   _loadChatHistory(); // B3: 恢复聊天记录
   fetchNav();syncFromCloud();loadModelList();
   // 老用户跳过问卷：有 profile 且后端有数据 → 直接进首页
@@ -3143,3 +2925,27 @@ migrateV3toV4();
   }
   renderLanding();
 })();
+
+// Phase 0: 盯盘预警轮询 + visibilitychange
+var _alertPolling=null;
+function startAlertPolling(){
+  if(_alertPolling||!API_AVAILABLE)return;
+  _alertPolling=setInterval(function(){
+    fetch(API_BASE+'/watchlist/alerts?userId='+encodeURIComponent(getProfileId()),{signal:AbortSignal.timeout(10000)}).then(function(r){return r.json()}).then(function(d){
+      if(d.alerts&&d.alerts.length>0){
+        d.alerts.filter(function(a){return a.level==='danger'}).forEach(function(a){showToast('⚠️ '+a.message,'danger')});
+      }
+    }).catch(function(){});
+  },15000);
+}
+function stopAlertPolling(){if(_alertPolling){clearInterval(_alertPolling);_alertPolling=null}}
+document.addEventListener('visibilitychange',function(){
+  if(document.hidden){stopAlertPolling()}else{startAlertPolling()}
+});
+function checkTradingHours(){
+  var now=new Date(),h=now.getHours(),m=now.getMinutes(),day=now.getDay();
+  if(day>=1&&day<=5&&((h===9&&m>=25)||h>=10)&&(h<15||(h===15&&m<=5))){startAlertPolling()}
+  else{stopAlertPolling()}
+}
+setInterval(checkTradingHours,300000);
+checkTradingHours();
