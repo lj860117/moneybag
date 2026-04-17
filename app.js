@@ -3843,14 +3843,26 @@ checkTradingHours();
   let _lastBudget = null;   // 缓存上次数据，避免闪烁
   let _pollTimer = null;
 
-  // --- 拉取预算数据 ---
+  // --- 拉取预算数据（含 keys_status + per-user 花费）---
   async function _fetchBudget(){
     try {
       const d = await _v6Fetch('/health');
       if (d && d.llm_usage) {
         _lastBudget = d.llm_usage;
-        return d.llm_usage;
+        // 附带 keys_status
+        if (d.keys_status) _lastBudget._keys = d.keys_status;
       }
+      // per-user 花费（只在详情弹窗需要，badge 不等它）
+      const uid = (typeof currentUserId !== 'undefined' && currentUserId) ? currentUserId : 'LeiJiang';
+      try {
+        const u = await _v6Fetch('/llm-usage?userId=' + uid);
+        if (u && _lastBudget) {
+          _lastBudget._userModules = u.modules || {};
+          _lastBudget._userCalls = u.daily_count || 0;
+          _lastBudget._userLimit = u.daily_limit || 100;
+          _lastBudget._userId = uid;
+        }
+      } catch(e2){ /* per-user 失败不阻塞 */ }
     } catch(e){ /* ignore */ }
     return _lastBudget;
   }
@@ -3967,8 +3979,39 @@ checkTradingHours();
           </div>
         </div>
 
+        <!-- 个人花费（我:¥xx）-->
+        ${data._userId ? '<div style="margin-top:12px;display:grid;grid-template-columns:1fr 1fr;gap:8px">' +
+          '<div style="background:rgba(99,102,241,.06);border-radius:10px;padding:10px 12px;text-align:center;border:1px solid rgba(99,102,241,.12)">' +
+            '<div style="font-size:10px;color:var(--text2)">' + data._userId + ' 调用</div>' +
+            '<div style="font-size:18px;font-weight:800;color:#6366F1;margin-top:2px">' + (data._userCalls || 0) + '</div>' +
+            '<div style="font-size:10px;color:var(--text2)">/ ' + (data._userLimit || 100) + ' 日限</div>' +
+          '</div>' +
+          '<div style="background:rgba(99,102,241,.06);border-radius:10px;padding:10px 12px;text-align:center;border:1px solid rgba(99,102,241,.12)">' +
+            '<div style="font-size:10px;color:var(--text2)">模块分布</div>' +
+            '<div style="font-size:11px;color:var(--text1);margin-top:4px;line-height:1.5">' +
+              (Object.keys(data._userModules || {}).length > 0 ?
+                Object.entries(data._userModules).slice(0, 4).map(function(e){ return e[0] + ':' + e[1]; }).join('<br>') :
+                '<span style="color:var(--text2)">今日暂无调用</span>') +
+            '</div>' +
+          '</div>' +
+        '</div>' : ''}
+
+        <!-- Key 健康状态 -->
+        ${data._keys ? '<div style="margin-top:12px;padding:10px 12px;background:var(--bg3);border-radius:10px">' +
+          '<div style="font-size:11px;color:var(--text2);margin-bottom:6px">🔑 API Key 健康</div>' +
+          '<div style="display:flex;gap:12px">' +
+            Object.entries(data._keys).map(function(e){
+              var ok = e[1] === 'ok';
+              return '<div style="display:flex;align-items:center;gap:4px">' +
+                '<span style="font-size:12px">' + (ok ? '🟢' : '🔴') + '</span>' +
+                '<span style="font-size:12px;font-weight:600;color:' + (ok ? '#10B981' : '#EF4444') + '">' + e[0] + '</span>' +
+              '</div>';
+            }).join('') +
+          '</div>' +
+        '</div>' : ''}
+
         <!-- 说明 -->
-        <div style="margin-top:16px;padding:10px 12px;background:rgba(99,102,241,.06);border-radius:10px;border:1px solid rgba(99,102,241,.12)">
+        <div style="margin-top:12px;padding:10px 12px;background:rgba(99,102,241,.06);border-radius:10px;border:1px solid rgba(99,102,241,.12)">
           <div style="font-size:11px;color:var(--text2);line-height:1.6">
             💡 <b>预算规则</b><br>
             · 日预算 ¥${budget}（月 ¥${((data.daily_budget_rmb || 3) * 30).toFixed(0)}）<br>

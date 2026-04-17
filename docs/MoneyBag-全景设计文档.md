@@ -125,10 +125,10 @@ python scripts/api_health_check.py         # API 健康
 # Token 预算 + Key 运维验证：
 curl -s http://localhost:8000/api/health | python3 -c "
 import json, sys; d = json.load(sys.stdin)
-# Token 预算
+# Token 预算（金额制，非 token 数）
 u = d.get('llm_usage', {})
-assert 'today_tokens' in u, '缺少 Token 预算字段'
-print(f'Token: {u[\"today_tokens\"]:,} / {u[\"daily_budget\"]:,}')
+assert 'today_cost_rmb' in u, '缺少 Token 预算字段'
+print(f'Cost: ¥{u[\"today_cost_rmb\"]:.2f} / ¥{u[\"daily_budget_rmb\"]:.0f} ({u[\"usage_pct\"]:.1f}%)')
 # Key 状态
 ks = d.get('keys_status', {})
 assert all(v == 'ok' for v in ks.values()), f'Key 异常: {ks}'
