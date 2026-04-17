@@ -81,7 +81,7 @@ function toggleUIMode(){
 }
 function isProMode(){return _uiMode==='pro'}
 
-// Phase 0: 亮/暗/系统 主题切换
+// Phase 5: 亮/暗/系统 主题切换
 var _THEME_CYCLE=['system','dark','light'];
 var _currentTheme=localStorage.getItem('moneybag_theme')||'system';
 function applyTheme(theme){
@@ -99,7 +99,7 @@ function cycleTheme(){
 }
 applyTheme(_currentTheme);
 
-// Phase 0: 通用三态渲染
+// Phase 5: 通用三态渲染
 function renderCard(title,state,content){
   content=content||'';
   if(state==='loading')return '<div class="dashboard-card"><div class="dashboard-card-title">'+title+'</div><div style="padding:16px;text-align:center;color:var(--text2)"><div class="loading-spinner" style="width:20px;height:20px;margin:0 auto 8px;border-width:2px"></div>加载中...</div></div>';
@@ -311,7 +311,7 @@ async function runDataAudit(){const btn=document.getElementById('auditBtn');if(b
 
 // ---- 底部导航 ----
 function renderNav(){let n=document.getElementById('btmNav');if(!n){n=document.createElement('div');n.id='btmNav';n.className='bottom-nav';document.body.appendChild(n)}
-const tabs=[{id:'landing',icon:'🏠',label:'首页'},{id:'stocks',icon:'📈',label:'持仓'},{id:'insight',icon:'📰',label:'资讯'},{id:'chat',icon:'🤖',label:'AI分析'},{id:'assets',icon:'🏦',label:'资产'}];
+const tabs=[{id:'landing',icon:'🏠',label:'首页'},{id:'stocks',icon:'📈',label:'持仓'},{id:'insight',icon:'📰',label:'资讯'},{id:'chat',icon:'🤖',label:'AI分析'},{id:'history',icon:'📋',label:'历史'},{id:'assets',icon:'🏦',label:'资产'}];
 n.innerHTML=tabs.map(t=>`<div class="nav-item ${currentPage===t.id?'active':''}" onclick="navigateTo('${t.id}')"><div class="nav-icon">${t.icon}</div><div>${t.label}</div></div>`).join('');
 // 顶部用户名条
 let hdr=document.getElementById('profileHeader');if(!hdr){hdr=document.createElement('div');hdr.id='profileHeader';hdr.style.cssText='position:fixed;top:0;left:0;right:0;z-index:100;padding:6px 16px;font-size:12px;color:var(--text2,#94a3b8);background:var(--bg,#0f172a);display:flex;justify-content:space-between;align-items:center;border-bottom:1px solid var(--bg3,#334155)';document.body.appendChild(hdr);document.body.style.paddingTop='32px'}
@@ -353,7 +353,7 @@ localStorage.setItem('moneybag_wxwork_uid',wxId);
 document.querySelector('.modal-overlay')?.remove();
 if(wxId){alert('✅ 绑定成功！盯盘异动将推送给: '+wxId)}else{alert('已清除企微绑定')}}
 
-function navigateTo(p){currentPage=p;renderNav();if(p==='landing')renderLanding();else if(p==='portfolio')renderPortfolio();else if(p==='stocks')renderStocks();else if(p==='insight')renderInsight();else if(p==='chat')renderChat();else if(p==='ledger')renderLedger();else if(p==='assets')renderAssets()}
+function navigateTo(p){currentPage=p;renderNav();if(p==='landing')renderLanding();else if(p==='portfolio')renderPortfolio();else if(p==='stocks')renderStocks();else if(p==='insight')renderInsight();else if(p==='chat')renderChat();else if(p==='history')renderHistory();else if(p==='ledger')renderLedger();else if(p==='assets')renderAssets()}
 
 // ---- 落地页（智能决策中心）----
 function renderLanding(){currentPage='landing';const p=loadPortfolio();const txns=loadTxns();const assets=loadAssets();const ledger=loadLedger();
@@ -2926,7 +2926,7 @@ migrateV3toV4();
   renderLanding();
 })();
 
-// Phase 0: 盯盘预警轮询 + visibilitychange
+// Phase 5: 盯盘预警轮询 + visibilitychange
 var _alertPolling=null;
 function startAlertPolling(){
   if(_alertPolling||!API_AVAILABLE)return;
@@ -2954,7 +2954,7 @@ checkTradingHours();
 
 // --- 00-common.js ---
 /* =========================================================================
- * V6 Phase 0 前端欠账补丁 - 公共工具
+ * V6 Phase 5 前端欠账补丁 - 公共工具
  * 追加式模块化：不改原函数体，通过劫持/后插注入新 UI
  * 依赖全局：API_BASE, API_AVAILABLE, getProfileParam, getProfileId, isProMode
  * ========================================================================= */
@@ -3159,7 +3159,7 @@ checkTradingHours();
           ${n.affected_sectors ? `<div style="font-size:11px;color:var(--text2);margin-top:2px">影响：${(Array.isArray(n.affected_sectors)?n.affected_sectors:[n.affected_sectors]).join(' · ')}</div>` : ''}
         </div>`;
       }).join('');
-      html += _v6Card('📰 今日要闻（AI 影响分析）', rows, { badge: 'Phase 2' });
+      html += _v6Card('📰 今日要闻（AI 影响分析）', rows, { badge: 'Phase 5' });
     }
 
     if (!html) {
@@ -3230,7 +3230,7 @@ checkTradingHours();
       el.innerHTML = '<div style="text-align:center;padding:40px;color:var(--text2)">暂无深度影响数据</div>';
       return;
     }
-    let html = `<div class="section-title">💥 新闻深度影响分析 <span style="font-size:11px;color:var(--accent);font-weight:400">Phase 2 · AI 驱动</span></div>`;
+    let html = `<div class="section-title">💥 新闻深度影响分析 <span style="font-size:11px;color:var(--accent);font-weight:400">Phase 5 · AI 驱动</span></div>`;
     d.items.forEach(item => {
       const lvl = item.impact_level || item.level || 'neutral';
       const c = lvl === 'bullish' || lvl === 'positive' ? 'var(--green)'
@@ -3271,7 +3271,7 @@ checkTradingHours();
       return;
     }
 
-    let html = `<div class="section-title">🛡️ 组合风险评估 <span style="font-size:11px;color:var(--accent);font-weight:400">Phase 2 · Pro</span></div>`;
+    let html = `<div class="section-title">🛡️ 组合风险评估 <span style="font-size:11px;color:var(--accent);font-weight:400">Phase 5 · Pro</span></div>`;
 
     // 风险指标
     if (metrics) {
@@ -3404,7 +3404,7 @@ checkTradingHours();
     overlay.innerHTML = `<div class="modal-sheet" style="max-height:85vh;overflow-y:auto">
       <div class="modal-handle"></div>
       <div class="modal-title">${title}</div>
-      <div class="modal-subtitle" style="margin-bottom:12px">🤖 AI 深度分析 · Phase 2</div>
+      <div class="modal-subtitle" style="margin-bottom:12px">🤖 AI 深度分析 · Phase 5</div>
       ${body}
       <button class="form-submit" style="margin-top:16px" onclick="this.closest('.modal-overlay').remove()">关闭</button>
     </div>`;
@@ -3536,7 +3536,7 @@ checkTradingHours();
     }
 
     // === Pro 模式：12 维完整解读 ===
-    html += `<div class="section-title">🤖 AI 13 维信号深度解读 <span style="font-size:11px;color:var(--accent);font-weight:400">Phase 2 · DeepSeek</span></div>`;
+    html += `<div class="section-title">🤖 AI 13 维信号深度解读 <span style="font-size:11px;color:var(--accent);font-weight:400">Phase 5 · DeepSeek</span></div>`;
 
     // 总结论
     if (d.conclusion || d.summary) {
@@ -4202,3 +4202,67 @@ checkTradingHours();
 })();
 
 // ===== V6 FRONTEND PATCHES END =====
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// V6 Phase 5: 分析历史页面
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+let historyTab='all';
+function renderHistory(){currentPage='history';renderNav();
+$('#app').innerHTML=`<div class="insight-page fade-up"><div class="insight-header"><h2>📋 分析历史</h2><p>AI/Claude/机构 分析记录</p></div>
+<div class="section-tab-bar"><button class="section-tab ${historyTab==='all'?'active':''}" onclick="historyTab='all';loadHistory()">全部</button><button class="section-tab ${historyTab==='deepseek'?'active':''}" onclick="historyTab='deepseek';loadHistory()">DeepSeek</button><button class="section-tab ${historyTab==='claude'?'active':''}" onclick="historyTab='claude';loadHistory()">Claude</button><button class="section-tab ${historyTab==='broker'?'active':''}" onclick="historyTab='broker';loadHistory()">机构</button></div>
+<div id="historyContent"><div style="text-align:center;padding:40px;color:var(--text2)"><div class="loading-spinner" style="width:32px;height:32px;margin:0 auto 12px;border-width:3px"></div>加载中...</div></div></div>`;
+loadHistory()}
+
+async function loadHistory(){const el=document.getElementById('historyContent');if(!el)return;
+const uid=getProfileId();const src=historyTab==='all'?'':historyTab;
+try{const r=await fetch(`/api/analysis/history?userId=${uid}&source=${src}&days=30`);const d=await r.json();
+if(!d.records||d.records.length===0){el.innerHTML='<div style="text-align:center;padding:40px;color:var(--text2)">暂无分析记录<br><span style="font-size:12px">AI分析后会自动存档</span></div>';return}
+let html='';let lastDate='';
+d.records.forEach(rec=>{const date=rec.created_at?.slice(0,10)||'';if(date!==lastDate){html+=`<div style="font-size:13px;font-weight:700;color:var(--text2);margin:16px 0 8px;padding-left:4px">${date}</div>`;lastDate=date}
+const dirColor=rec.direction==='看多'||rec.direction==='bullish'?'var(--bull,#22c55e)':rec.direction==='看空'||rec.direction==='bearish'?'var(--bear,#ef4444)':'var(--text2)';
+const srcIcon=rec.source==='deepseek'?'🤖':rec.source==='claude'?'🧠':rec.source==='broker'?'🏛️':'📝';
+html+=`<div class="card" style="margin-bottom:8px;padding:12px;cursor:pointer" onclick="showAnalysisDetail('${rec.id}')">
+<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px">
+<div style="font-size:14px;font-weight:600">${srcIcon} ${rec.source_label||rec.source} <span style="font-size:11px;font-weight:400;color:var(--text2)">${rec.type||''}</span></div>
+<div style="font-size:11px;color:var(--text2)">${rec.created_at?.slice(11,16)||''}</div></div>
+<div style="display:flex;gap:8px;margin-bottom:6px"><span style="font-size:12px;color:${dirColor};font-weight:600">${rec.direction||''}</span>${rec.confidence?'<span style="font-size:11px;color:var(--text2)">置信度:'+rec.confidence+'%</span>':''}</div>
+<div style="font-size:12px;color:var(--text2);line-height:1.5">${rec.preview||''}</div>
+</div>`});
+el.innerHTML=html+'<div style="text-align:center;padding:16px"><button class="action-btn secondary" onclick="showCompareView()" style="font-size:13px">📊 多源对比</button></div>'}catch(e){el.innerHTML='<div style="text-align:center;padding:20px;color:#ef4444">加载失败: '+e.message+'</div>'}}
+
+async function showAnalysisDetail(id){const uid=getProfileId();
+try{const r=await fetch(`/api/analysis/detail/${id}?userId=${uid}`);const d=await r.json();
+if(d.error){alert(d.error);return}
+const snap=d.market_snapshot||{};
+const snapHtml=Object.keys(snap).length?`<div style="margin-top:12px;padding:8px;background:var(--bg2,rgba(0,0,0,.05));border-radius:8px;font-size:11px;color:var(--text2)">📊 分析时市场: 恐贪=${snap.fear_greed||'-'} | 估值=${snap.valuation_pct||'-'}% | 北向5日=${snap.north_5d||'-'}亿</div>`:'';
+const modal=document.createElement('div');modal.className='modal-overlay';modal.onclick=e=>{if(e.target===modal)modal.remove()};
+modal.innerHTML=`<div class="modal-content" style="max-height:80vh;overflow-y:auto">
+<div class="modal-title">${d.source_label||d.source} · ${d.type||'分析'} <span style="font-size:12px;font-weight:400;color:var(--text2)">${d.created_at?.slice(0,16)||''}</span></div>
+<div style="margin:8px 0;font-size:13px;color:var(--accent)">${d.direction||''} ${d.confidence?'置信度'+d.confidence+'%':''}</div>
+<div style="font-size:13px;line-height:1.8;white-space:pre-wrap">${d.analysis||'无内容'}</div>
+${snapHtml}
+<button class="form-submit" style="margin-top:16px" onclick="this.closest('.modal-overlay').remove()">关闭</button>
+</div>`;document.body.appendChild(modal)}catch(e){alert('加载失败: '+e.message)}}
+
+async function showCompareView(){const uid=getProfileId();
+try{const r=await fetch(`/api/analysis/latest?userId=${uid}`);const d=await r.json();
+const sources=d.sources||{};const keys=Object.keys(sources);
+if(keys.length===0){alert('暂无分析记录');return}
+let tabsHtml=keys.map((k,i)=>`<button class="section-tab ${i===0?'active':''}" onclick="switchCompareTab(this,'${k}')">${sources[k].source_label||k}</button>`).join('');
+let panelsHtml=keys.map((k,i)=>`<div class="compare-panel" data-source="${k}" style="${i>0?'display:none':''}">
+<div style="font-size:13px;color:var(--accent);margin-bottom:8px">${sources[k].direction||'未知'} · ${sources[k].created_at?.slice(0,16)||''}</div>
+<div style="font-size:13px;line-height:1.8">${sources[k].preview||'无预览'}</div>
+</div>`).join('');
+let summaryHtml='<div style="margin-top:16px;padding:12px;background:var(--bg2,rgba(0,0,0,.05));border-radius:8px"><div style="font-size:13px;font-weight:600;margin-bottom:8px">📊 分歧汇总</div>';
+keys.forEach(k=>{summaryHtml+=`<div style="font-size:12px;margin-bottom:4px">${sources[k].source_label||k}: ${sources[k].direction||'未知'}</div>`});
+summaryHtml+='</div>';
+const modal=document.createElement('div');modal.className='modal-overlay';modal.onclick=e=>{if(e.target===modal)modal.remove()};
+modal.innerHTML=`<div class="modal-content" style="max-height:80vh;overflow-y:auto">
+<div class="modal-title">📊 多源分析对比</div>
+<div class="section-tab-bar" style="margin-bottom:12px">${tabsHtml}</div>
+${panelsHtml}${summaryHtml}
+<button class="form-submit" style="margin-top:16px" onclick="this.closest('.modal-overlay').remove()">关闭</button>
+</div>`;document.body.appendChild(modal)}catch(e){alert('加载失败: '+e.message)}}
+
+function switchCompareTab(btn,src){btn.parentElement.querySelectorAll('.section-tab').forEach(b=>b.classList.remove('active'));btn.classList.add('active');
+btn.closest('.modal-content').querySelectorAll('.compare-panel').forEach(p=>{p.style.display=p.dataset.source===src?'':'none'})}
+

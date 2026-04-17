@@ -1211,6 +1211,12 @@ async def analyze_stock_holdings(req: dict = {}):
             if resp.status_code == 200:
                 data = resp.json()
                 reply = data["choices"][0]["message"]["content"]
+                # V6 Phase 5: 自动存档到分析历史
+                try:
+                    from services.analysis_history import save_analysis
+                    save_analysis(uid, "deepseek", "DeepSeek V3", "stock", reply, direction="auto")
+                except Exception as e:
+                    print(f"[HISTORY] stock analyze 存档失败: {e}")
                 return {"analysis": reply, "source": "ai", "scan": scan}
     except Exception as e:
         print(f"[STOCK_ANALYZE] DeepSeek fail: {e}")
@@ -1331,8 +1337,15 @@ async def analyze_fund_holdings(req: dict = {}):
             )
             if resp.status_code == 200:
                 data = resp.json()
+                reply = data["choices"][0]["message"]["content"]
+                # V6 Phase 5: 自动存档到分析历史
+                try:
+                    from services.analysis_history import save_analysis
+                    save_analysis(uid, "deepseek", "DeepSeek V3", "fund", reply, direction="auto")
+                except Exception as e:
+                    print(f"[HISTORY] fund analyze 存档失败: {e}")
                 return {
-                    "analysis": data["choices"][0]["message"]["content"],
+                    "analysis": reply,
                     "source": "ai",
                     "scan": scan,
                 }
@@ -3335,6 +3348,17 @@ async def agent_analyze(req: dict):
             "skill_used": result.get("skill_used", ""),
         })
 
+    # V6 Phase 5: 自动存档到分析历史
+    try:
+        from services.analysis_history import save_analysis
+        analysis_text = result.get("analysis", "") or result.get("reply", "")
+        if analysis_text and result.get("source") == "ai":
+            save_analysis(user_id, "deepseek", "DeepSeek V3", "full", analysis_text,
+                         direction=result.get("direction", "unknown"),
+                         confidence=result.get("confidence", 0))
+    except Exception as e:
+        print(f"[HISTORY] agent analyze 存档失败: {e}")
+
     return result
 
 @app.get("/api/agent/signals/{user_id}")
@@ -3538,6 +3562,52 @@ def api_scenario_custom(req: dict = {}):
     if not text:
         return {"error": "需要 text 参数描述假设情景"}
     return analyze_scenario(custom_text=text, user_id=user_id)
+
+# ---- V6 Phase 5: 分析历史 ----
+@app.get("/api/analysis/history")
+def api_analysis_history(userId: str = "", source: str = "", type: str = "", days: int = 30):
+    """查询分析历史列表"""
+    from services.analysis_history import get_analysis_history
+    records = get_analysis_history(userId or "default", source=source, analysis_type=type, days=days)
+    return {"records": records, "total": len(records)}
+
+@app.get("/api/analysis/latest")
+def api_analysis_latest(userId: str = ""):
+    """各来源最新分析（对比视图）"""
+    from services.analysis_history import get_latest_by_source
+    return get_latest_by_source(userId or "default")
+
+@app.get("/api/analysis/detail/{record_id}")
+def api_analysis_detail(record_id: str, userId: str = ""):
+    """获取单条分析完整内容"""
+    from services.analysis_history import get_analysis_detail
+    return get_analysis_detail(userId or "default", record_id)
+
+@app.post("/api/analysis/compare")
+def api_analysis_compare(req: dict = {}):
+    """多源对比（获取各来源最新+可选强制刷新DS）"""
+    user_id = req.get("userId", "default")
+    from services.analysis_history import get_latest_by_source
+    return get_latest_by_source(user_id)
+
+@app.post("/api/analysis/external")
+def api_analysis_external(req: dict = {}):
+    """接收外部分析（Claude/WorkBuddy 自动推送入口）"""
+    from services.analysis_history import save_analysis
+    uid = req.get("userId", "default")
+    text = req.get("analysis", "")
+    if not text:
+        return {"ok": False, "error": "analysis 不能为空"}
+    return save_analysis(
+        user_id=uid,
+        source=req.get("source", "claude"),
+        source_label=req.get("sourceLabel", "Claude"),
+        analysis_type=req.get("type", "full"),
+        analysis_text=text,
+        direction=req.get("direction", "unknown"),
+        confidence=int(req.get("confidence", 0)),
+        metadata=req.get("metadata"),
+    )
 
 
 # 兜底：让 /app.js 等直接路径也能访问
