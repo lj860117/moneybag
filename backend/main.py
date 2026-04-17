@@ -2513,22 +2513,9 @@ def save_user_data(data: UserData):
     save_user(user)
     return {"status": "ok", "userId": data.userId}
 
-@app.get("/api/user/{user_id}")
-def get_user_data(user_id: str):
-    """读取用户数据"""
-    user = load_user(user_id)
-    return user
-
-@app.delete("/api/user/{user_id}")
-def delete_user_data(user_id: str):
-    """删除用户数据"""
-    f = _user_file(user_id)
-    if f.exists():
-        f.unlink()
-    return {"status": "ok"}
-
 
 # ---- API: 用户偏好（Phase 0 新增）----
+# ⚠️ 必须在 /api/user/{user_id} 之前定义，否则 FastAPI 会把 "preference" 当 user_id
 
 # 默认偏好
 USER_DEFAULTS = {
@@ -2604,6 +2591,21 @@ def update_user_preference(userId: str, body: dict):
     save_user(user)
     audit_log("preference_update", user_id=userId, detail=changed)
     return {"success": True, "changed": list(changed.keys())}
+
+
+@app.get("/api/user/{user_id}")
+def get_user_data(user_id: str):
+    """读取用户数据"""
+    user = load_user(user_id)
+    return user
+
+@app.delete("/api/user/{user_id}")
+def delete_user_data(user_id: str):
+    """删除用户数据"""
+    f = _user_file(user_id)
+    if f.exists():
+        f.unlink()
+    return {"status": "ok"}
 
 
 # ---- API: 家庭资产汇总（Phase 0 Day 2 新增）----
