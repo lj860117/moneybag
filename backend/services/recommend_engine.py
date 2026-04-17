@@ -81,6 +81,34 @@ def get_stock_recommendations(user_id: str = "", top_n: int = 10, pool: str = "h
     # 1. 获取候选池
     candidates = _get_candidate_pool(pool)
     if not candidates:
+        # 降级：尝试从 AKShare 拉热门股票
+        try:
+            import akshare as ak
+            df = ak.stock_zh_a_spot_em()
+            if df is not None and len(df) > 0:
+                cols = list(df.columns)
+                code_col = next((c for c in cols if "代码" in c), None)
+                name_col = next((c for c in cols if "名称" in c), None)
+                pe_col = next((c for c in cols if "市盈率" in c), None)
+                if code_col and name_col:
+                    # 取成交额 TOP 30（热门）
+                    vol_col = next((c for c in cols if "成交额" in c), None)
+                    if vol_col:
+                        df = df.sort_values(vol_col, ascending=False)
+                    for _, row in df.head(30).iterrows():
+                        c = str(row[code_col])
+                        if c.startswith(("0", "3", "6")):
+                            candidates.append({
+                                "code": c, "ts_code": c,
+                                "name": str(row.get(name_col, "")),
+                                "forecast_pe": float(row[pe_col]) if pe_col and row.get(pe_col) else None,
+                                "rating": "", "source": "akshare_hot",
+                            })
+                    print(f"[RECOMMEND] 降级候选池(AKShare热门): {len(candidates)} 只")
+        except Exception as e:
+            print(f"[RECOMMEND] 降级候选池也失败: {e}")
+
+    if not candidates:
         return {"recommendations": [], "pool_size": 0, "error": "候选池为空"}
 
     # 2. 逐个评分
