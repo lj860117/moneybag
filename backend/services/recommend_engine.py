@@ -37,22 +37,41 @@ RECOMMEND_WEIGHTS = {
     "risk": 0.15,
 }
 
+# V7.5 增强：按持有周期分类的权重
+PERIOD_WEIGHTS = {
+    "short": {  # 短线 1-2 周
+        "valuation": 0.05, "earnings": 0.10, "technical": 0.40,
+        "capital": 0.30, "risk": 0.15,
+        "label": "短线（1-2周）", "icon": "⚡",
+    },
+    "medium": {  # 中线 1-3 月
+        "valuation": 0.25, "earnings": 0.30, "technical": 0.15,
+        "capital": 0.20, "risk": 0.10,
+        "label": "中线（1-3月）", "icon": "📊",
+    },
+    "long": {  # 长线 6 月+
+        "valuation": 0.35, "earnings": 0.30, "technical": 0.05,
+        "capital": 0.10, "risk": 0.20,
+        "label": "长线（6月+）", "icon": "🏦",
+    },
+}
 
-def get_stock_recommendations(user_id: str = "", top_n: int = 10, pool: str = "hot") -> dict:
+
+def get_stock_recommendations(user_id: str = "", top_n: int = 10, pool: str = "hot", period: str = "medium") -> dict:
     """股票推荐主函数
 
     Args:
-        user_id: 用户 ID（用于排除已持仓、匹配风险偏好）
+        user_id: 用户 ID
         top_n: 返回前 N 个推荐
         pool: 候选池 - "hot"(研报热门) / "hs300"(沪深300) / "all"
-
-    Returns: {
-        "recommendations": [{code, name, total_score, dimension_scores, evidence, reason, suggested_position}],
-        "pool_size": int,
-        "generated_at": str,
-    }
+        period: 持有周期 - "short"(短线) / "medium"(中线) / "long"(长线)
     """
-    cache_key = f"rec_{user_id}_{pool}_{top_n}"
+    # 根据周期选择权重
+    weights = PERIOD_WEIGHTS.get(period, PERIOD_WEIGHTS["medium"])
+    period_label = weights.get("label", "中线")
+    active_weights = {k: v for k, v in weights.items() if k in RECOMMEND_WEIGHTS}
+
+    cache_key = f"rec_{user_id}_{pool}_{top_n}_{period}"
     now = time.time()
     if cache_key in _rec_cache and now - _rec_cache[cache_key]["ts"] < _REC_CACHE_TTL:
         return _rec_cache[cache_key]["data"]
@@ -91,7 +110,9 @@ def get_stock_recommendations(user_id: str = "", top_n: int = 10, pool: str = "h
         "pool_size": len(candidates),
         "scored_count": len(scored),
         "generated_at": datetime.now().isoformat(),
-        "weights": RECOMMEND_WEIGHTS,
+        "weights": active_weights,
+        "period": period,
+        "period_label": period_label,
     }
 
     print(f"[RECOMMEND] 完成: 候选{len(candidates)} → 评分{len(scored)} → 推荐{len(top)}")

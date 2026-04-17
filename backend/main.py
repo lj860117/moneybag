@@ -3624,16 +3624,28 @@ def api_valuation(code: str):
 
 # ---- V7: 推荐引擎 + 买卖决策 ----
 @app.get("/api/recommend/stocks")
-def api_recommend_stocks(userId: str = "", topN: int = 10, pool: str = "hot"):
-    """股票推荐（5维评分+R1理由+建议仓位）"""
+def api_recommend_stocks(userId: str = "", topN: int = 10, pool: str = "hot", period: str = "medium"):
+    """股票推荐（5维评分+R1理由+建议仓位+持有周期）"""
     from services.recommend_engine import get_stock_recommendations
-    return get_stock_recommendations(userId, topN, pool)
+    return get_stock_recommendations(userId, topN, pool, period)
 
 @app.get("/api/decisions")
 def api_decisions(userId: str = ""):
     """买卖决策（R1综合决策+三情景+操作建议）"""
     from services.decision_maker import generate_decisions
     return generate_decisions(userId or "default")
+
+@app.get("/api/exposure/{code}")
+def api_exposure(code: str):
+    """个股业务敞口（出口占比+地缘脆弱性）"""
+    from services.business_exposure import get_business_exposure
+    return get_business_exposure(code)
+
+@app.get("/api/fund-share/{ts_code}")
+def api_fund_share(ts_code: str):
+    """基金/ETF 份额变化"""
+    from services.tushare_data import get_fund_share
+    return get_fund_share(ts_code)
 
 
 # 兜底：让 /app.js 等直接路径也能访问

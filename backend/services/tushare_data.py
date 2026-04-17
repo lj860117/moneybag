@@ -602,3 +602,34 @@ def get_margin_data(days: int = 30) -> dict:
           f"trend={result['trend']}")
 
     return result
+
+
+# ============================================================
+# 15. 基金份额数据（fund_share — 2000积分门槛）
+# ============================================================
+
+def get_fund_share(ts_code: str, days: int = 30) -> dict:
+    """获取基金/ETF 每日份额变化"""
+    from datetime import datetime, timedelta
+    result = {"available": False, "source": "tushare"}
+    end_date = datetime.now().strftime("%Y%m%d")
+    start_date = (datetime.now() - timedelta(days=days + 10)).strftime("%Y%m%d")
+    rows = _call_tushare("fund_share", {"ts_code": ts_code, "start_date": start_date, "end_date": end_date},
+                         "ts_code,trade_date,fd_share,total_share,float_share")
+    if not rows:
+        return result
+    rows = sorted(rows, key=lambda x: x.get("trade_date", ""))
+    if len(rows) < 2:
+        return result
+    latest = rows[-1]
+    prev_5d = rows[-6] if len(rows) >= 6 else rows[0]
+    current_share = float(latest.get("fd_share", 0) or latest.get("total_share", 0) or 0)
+    prev_share = float(prev_5d.get("fd_share", 0) or prev_5d.get("total_share", 0) or 0)
+    if current_share <= 0:
+        return result
+    change_pct = round((current_share - prev_share) / max(prev_share, 1) * 100, 2)
+    result.update({"shares_latest": round(current_share / 1e8, 2), "shares_change_5d": round((current_share - prev_share) / 1e8, 2),
+                   "shares_change_pct": change_pct, "data_date": latest.get("trade_date", ""), "available": True})
+    result["trend"] = "份额大增" if change_pct > 5 else "温和增长" if change_pct > 1 else "大减" if change_pct < -5 else "温和减少" if change_pct < -1 else "稳定"
+    print(f"[TUSHARE-SHARE] {ts_code}: {result['shares_latest']}亿份, 5d{change_pct:+.2f}%")
+    return result
