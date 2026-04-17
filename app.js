@@ -123,7 +123,7 @@ Object.defineProperty(window,'SOURCES_KEY',{get(){return _uk(_BASE_SOURCES_KEY)}
 // ---- 多用户 Profile 系统 ----
 let _profileId = localStorage.getItem('moneybag_profile_id') || '';
 let _profileName = localStorage.getItem('moneybag_profile_name') || '';
-function getProfileId(){ return _profileId || 'default' }
+function getProfileId(){ const wx=localStorage.getItem('moneybag_wxwork_uid');return wx||_profileId||'default' }
 function getProfileParam(){ return `userId=${encodeURIComponent(getProfileId())}` }
 
 async function ensureProfile(){
@@ -1280,7 +1280,7 @@ return `<div style="margin-bottom:12px"><div style="font-size:12px;font-weight:7
 let insightTab='overview';
 function _insightTabs(){
 const all=[
-['overview','📊 总览'],['sector','🔥 行业'],['broker','🏛️ 研报'],['scenario','🎭 情景'],['recommend','💎 推荐'],['decisions','🎯 决策'],['fundpick','🔍 选基'],['stockpick','🧠 选股'],['news','📰 新闻'],['policy','🏛️ 政策'],['tech','📈 技术'],['macro','📊 宏观'],['global','🌐 全球'],['signals','📡 信号'],['scorecard','📊 成绩单'],['doctor','🏥 体检'],['steward','🤖 管家'],['factorictest','🔬 因子检验'],['montecarlo','🎲 蒙特卡洛'],['aipredict','🤖 AI预测'],['geneticfactor','🧬 遗传因子'],['optimizer','⚡ 组合优化'],['altdata','📡 另类数据'],['rlposition','🎮 RL仓位'],['llmfactor','🧠 LLM因子'],['weekly','📋 周报']];
+['overview','📊 总览'],['sector','🔥 行业'],['broker','🏛️ 研报'],['scenario','🎭 情景'],['fundpick','🔍 选基'],['stockpick','🧠 选股'],['news','📰 新闻'],['policy','🏛️ 政策'],['tech','📈 技术'],['macro','📊 宏观'],['global','🌐 全球'],['signals','📡 信号'],['scorecard','📊 成绩单'],['doctor','🏥 体检'],['steward','🤖 管家'],['factorictest','🔬 因子检验'],['montecarlo','🎲 蒙特卡洛'],['aipredict','🤖 AI预测'],['geneticfactor','🧬 遗传因子'],['optimizer','⚡ 组合优化'],['altdata','📡 另类数据'],['rlposition','🎮 RL仓位'],['llmfactor','🧠 LLM因子'],['weekly','📋 周报']];
 const simple=['overview','news','policy','doctor','steward'];
 return isProMode()?all:all.filter(t=>simple.includes(t[0]))}
 async function renderInsight(){currentPage='insight';renderNav();const tabs=_insightTabs();
@@ -1289,8 +1289,6 @@ $('#app').innerHTML=`<div class="insight-page fade-up"><div class="insight-heade
 setTimeout(()=>{const bar=document.getElementById('insightTabBar');const active=bar&&bar.querySelector('.section-tab.active');if(active&&bar){active.scrollIntoView({behavior:'smooth',inline:'center',block:'nearest'})}},50);
 if(!API_AVAILABLE){document.getElementById('insightContent').innerHTML='<div style="text-align:center;padding:40px;color:var(--text2)">后端离线，请启动后端服务获取实时数据</div>';return}
 // 独立 tab 不需要 dashboard 数据，秒开
-if(insightTab==='recommend'){const el=document.getElementById('insightContent');if(el)renderRecommend(el);return}
-if(insightTab==='decisions'){const el=document.getElementById('insightContent');if(el)renderDecisions(el);return}
 if(insightTab==='sector'){const el=document.getElementById('insightContent');if(el)renderSectorHot(el);return}
 if(insightTab==='broker'){const el=document.getElementById('insightContent');if(el)renderBrokerView(el);return}
 if(insightTab==='scenario'){const el=document.getElementById('insightContent');if(el)renderScenarioView(el);return}
@@ -4365,54 +4363,4 @@ if(a.sector_losers?.length)html+='<div style="font-size:12px;margin-bottom:4px">
 if(a.portfolio_advice)html+='<div style="font-size:13px;margin-top:8px;padding:8px;background:rgba(59,130,246,.06);border-radius:8px">💡 '+a.portfolio_advice+'</div>';
 html+='</div><button class="action-btn secondary" onclick="renderScenarioView(document.getElementById(\'insightContent\'))" style="margin-top:12px;width:100%">← 返回</button>';
 el.innerHTML=html}catch(e){el.innerHTML='<div style="padding:20px;color:var(--bear)">'+e.message+'</div>'}}
-
-// V7 推荐+决策前端函数
-async function renderRecommend(el){
-el.innerHTML='<div style="text-align:center;padding:30px"><div class="loading-spinner" style="width:28px;height:28px;margin:0 auto 10px;border-width:3px"></div>推荐引擎评分中...</div>';
-try{var uid=getProfileId();var r=await fetch('/api/recommend/stocks?userId='+uid+'&topN=10&pool=hot');var d=await r.json();
-var recs=d.recommendations||[];
-if(!recs.length){el.innerHTML='<div style="text-align:center;padding:30px;color:var(--text2)">暂无推荐</div>';return}
-var html='<div class="dashboard-card" style="border-left:3px solid var(--accent)"><div class="dashboard-card-title">\u{1F48E} AI \u63A8\u8350\u5F15\u64CE <span style="font-size:11px;color:var(--text2)">5\u7EF4\u8BC4\u5206 \u00B7 '+recs.length+'\u53EA</span></div><div style="font-size:12px;color:var(--text2);margin-bottom:8px">\u6743\u91CD: \u4F30\u503C30%+\u76C8\u521A25%+\u6280\u672F15%+\u8D44\u91D115%+\u98CE\u966915%</div></div>';
-recs.forEach(function(item,i){
-var s=item.dimension_scores||{};var pos=item.suggested_position||{};
-var color=item.total_score>=80?'#22c55e':item.total_score>=70?'#f59e0b':item.total_score>=60?'#6b7280':'#ef4444';
-var dims=['valuation','earnings','technical','capital','risk'];
-var labels={valuation:'\u4F30\u503C',earnings:'\u76C8\u5229',technical:'\u6280\u672F',capital:'\u8D44\u91D1',risk:'\u98CE\u9669'};
-var tags=dims.map(function(dd){var v=s[dd]||50;var dc=v>=70?'#22c55e':v>=50?'#f59e0b':'#ef4444';return '<span style="font-size:10px;padding:2px 6px;border-radius:4px;background:'+dc+'20;color:'+dc+'">'+labels[dd]+' '+v+'</span>'}).join('');
-html+='<div class="card" style="margin-bottom:8px;padding:12px;border-left:4px solid '+color+'">';
-html+='<div style="display:flex;justify-content:space-between;align-items:center"><div><div style="font-size:14px;font-weight:700">'+(i+1)+'. '+(item.name||item.code)+'</div>';
-html+='<div style="font-size:11px;color:var(--text2)">'+item.code+' \u00B7 '+(pos.action||'')+' '+(pos.position_pct?'\u4ED3\u4F4D'+pos.position_pct+'%':'')+'</div></div>';
-html+='<div style="font-size:22px;font-weight:800;color:'+color+'">'+item.total_score+'</div></div>';
-html+='<div style="display:flex;gap:4px;margin:8px 0;flex-wrap:wrap">'+tags+'</div>';
-if(item.reason)html+='<div style="font-size:12px;color:var(--text2);line-height:1.5">'+item.reason+'</div>';
-if(item.forecast_pe)html+='<div style="font-size:11px;color:var(--text2);margin-top:4px">PE='+item.forecast_pe+' ROE='+(item.forecast_roe||'?')+'% \u8BC4\u7EA7='+(item.rating||'?')+'</div>';
-html+='</div>'});
-el.innerHTML=html}catch(e){el.innerHTML='<div style="padding:20px;color:#ef4444">\u52A0\u8F7D\u5931\u8D25: '+e.message+'</div>'}}
-
-async function renderDecisions(el){
-el.innerHTML='<div style="text-align:center;padding:30px"><div class="loading-spinner" style="width:28px;height:28px;margin:0 auto 10px;border-width:3px"></div>\u{1F9E0} R1 \u7EFC\u5408\u51B3\u7B56\u4E2D...\u7EA6\u9700 30 \u79D2</div>';
-try{var uid=getProfileId();var r=await fetch('/api/decisions?userId='+uid);var d=await r.json();
-if(d.error){el.innerHTML='<div style="padding:20px;color:#ef4444">\u51B3\u7B56\u5931\u8D25: '+d.error+'</div>';return}
-var decs=d.decisions||[];var sc=d.scenarios||{};
-var html='<div class="dashboard-card" style="border-left:3px solid #6366F1"><div class="dashboard-card-title">\u{1F3AF} \u4E70\u5356\u51B3\u7B56 <span style="font-size:11px;color:var(--text2)">'+(d.model||'AI')+'</span></div>';
-if(d.overall_strategy)html+='<div style="font-size:13px;line-height:1.6;margin:8px 0">'+d.overall_strategy+'</div>';
-html+='<div style="font-size:11px;color:var(--text2)">Regime: '+(d.market_regime||'?')+'</div></div>';
-if(decs.length){decs.forEach(function(dec){
-var ac={buy:'#22c55e',add:'#22c55e',hold:'#f59e0b',reduce:'#ef4444',sell:'#ef4444'};
-var al={buy:'\u{1F7E2} \u4E70\u5165',add:'\u{1F7E2} \u52A0\u4ED3',hold:'\u{1F7E1} \u6301\u6709',reduce:'\u{1F534} \u51CF\u4ED3',sell:'\u{1F534} \u5356\u51FA'};
-var clr=ac[dec.action]||'var(--text2)';var lbl=al[dec.action]||dec.action;
-html+='<div class="card" style="margin-bottom:8px;padding:12px;border-left:3px solid '+clr+'">';
-html+='<div style="display:flex;justify-content:space-between;align-items:center"><div style="font-size:14px;font-weight:700">'+(dec.name||dec.symbol)+'</div><div style="font-size:13px;font-weight:700;color:'+clr+'">'+lbl+'</div></div>';
-if(dec.position_pct)html+='<div style="font-size:11px;color:var(--text2)">\u5EFA\u8BAE\u4ED3\u4F4D: '+dec.position_pct+'% \u00B7 \u7F6E\u4FE1\u5EA6: '+(dec.confidence||'?')+'%</div>';
-html+='<div style="font-size:12px;color:var(--text2);margin-top:4px">'+(dec.reason||'')+'</div>';
-if(dec.risk_warning)html+='<div style="font-size:11px;color:var(--bear);margin-top:4px">\u26A0\uFE0F '+dec.risk_warning+'</div>';
-html+='</div>'})}else{html+='<div style="text-align:center;padding:20px;color:var(--text2)">\u6682\u65E0\u64CD\u4F5C\u5EFA\u8BAE</div>'}
-if(sc.optimistic||sc.neutral||sc.pessimistic){html+='<div class="dashboard-card"><div class="dashboard-card-title">\u{1F4CA} \u4E09\u60C5\u666F\u5206\u6790</div>';
-if(sc.optimistic)html+='<div style="font-size:12px;margin:4px 0"><span style="color:#22c55e">\u{1F7E2} \u4E50\u89C2:</span> '+sc.optimistic+'</div>';
-if(sc.neutral)html+='<div style="font-size:12px;margin:4px 0"><span style="color:#f59e0b">\u{1F7E1} \u4E2D\u6027:</span> '+sc.neutral+'</div>';
-if(sc.pessimistic)html+='<div style="font-size:12px;margin:4px 0"><span style="color:#ef4444">\u{1F534} \u60B2\u89C2:</span> '+sc.pessimistic+'</div>';
-html+='</div>'}
-html+='<div style="font-size:11px;color:var(--text2);text-align:center;margin-top:12px">\u26A0\uFE0F AI \u5EFA\u8BAE\u4EC5\u4F9B\u53C2\u8003\uFF0C\u4E0D\u6784\u6210\u6295\u8D44\u5EFA\u8BAE\u3002\u6295\u8D44\u6709\u98CE\u9669\uFF0C\u5165\u5E02\u9700\u8C28\u614E\u3002</div>';
-el.innerHTML=html}catch(e){el.innerHTML='<div style="padding:20px;color:#ef4444">\u52A0\u8F7D\u5931\u8D25: '+e.message+'</div>'}}
-
 
