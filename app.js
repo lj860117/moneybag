@@ -2288,6 +2288,12 @@ overlay.innerHTML=`<div class="modal-sheet"><div class="modal-handle"></div><div
 document.body.appendChild(overlay)}
 
 async function doAddStock(){const code=$('#addStockCode')?.value?.trim();if(!code){alert('请输入股票代码');return}
+const cost=parseFloat($('#addStockCost')?.value)||0;const shares=parseInt($('#addStockShares')?.value)||0;const note=$('#addStockNote')?.value||'';
+try{const r=await fetch(API_BASE+'/stock-holdings',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({code,costPrice:cost,shares,note,userId:getProfileId()})});
+const d=await r.json();if(d.error){alert(d.error);return}
+// 显示纪律检查警告
+if(d.warnings&&d.warnings.length>0){const warnMsg=d.warnings.map(w=>w.msg).join('\n');setTimeout(()=>alert('⚠️ 纪律提醒\n\n'+warnMsg),200)}
+document.querySelector('.modal-overlay')?.remove();renderStocksContent()}catch(e){alert('添加失败: '+e.message)}}
 
 // Phase 0: AI 深度分析（股票持仓 7-Skill 框架）
 async function runStockAnalysis(){
@@ -2320,12 +2326,6 @@ try{
   </div>`;
 }catch(e){if(res)res.innerHTML=renderCard('🤖 AI 基金持仓分析','error')}
 finally{if(btn){btn.innerHTML='🤖 AI 深度分析（全持仓）';btn.disabled=false}}}
-const cost=parseFloat($('#addStockCost')?.value)||0;const shares=parseInt($('#addStockShares')?.value)||0;const note=$('#addStockNote')?.value||'';
-try{const r=await fetch(API_BASE+'/stock-holdings',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({code,costPrice:cost,shares,note,userId:getProfileId()})});
-const d=await r.json();if(d.error){alert(d.error);return}
-// 显示纪律检查警告
-if(d.warnings&&d.warnings.length>0){const warnMsg=d.warnings.map(w=>w.msg).join('\n');setTimeout(()=>alert('⚠️ 纪律提醒\n\n'+warnMsg),200)}
-document.querySelector('.modal-overlay')?.remove();renderStocksContent()}catch(e){alert('添加失败: '+e.message)}}
 
 function showStockDetail(code){const h=(_stockScanData?.holdings||[]).find(x=>x.code===code);if(!h)return;
 const overlay=document.createElement('div');overlay.className='modal-overlay';overlay.onclick=e=>{if(e.target===overlay)overlay.remove()};
