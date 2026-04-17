@@ -2949,3 +2949,874 @@ function checkTradingHours(){
 }
 setInterval(checkTradingHours,300000);
 checkTradingHours();
+
+// ===== V6 FRONTEND PATCHES START =====
+
+// --- 00-common.js ---
+/* =========================================================================
+ * V6 Phase 0 前端欠账补丁 - 公共工具
+ * 追加式模块化：不改原函数体，通过劫持/后插注入新 UI
+ * 依赖全局：API_BASE, API_AVAILABLE, getProfileParam, getProfileId, isProMode
+ * ========================================================================= */
+;(function(){
+  'use strict';
+  if (window._V6Patches) return; // 防重复加载
+  window._V6Patches = { version: '1.0.0', loadedAt: Date.now() };
+
+  // --- 通用 fetch 封装：统一超时 + 错误回退 ---
+  window._v6Fetch = async function(path, opts){
+    opts = opts || {};
+    const timeout = opts.timeout || 15000;
+    const url = (path.startsWith('http') ? path : API_BASE + path);
+    try {
+      const r = await fetch(url, Object.assign({
+        signal: AbortSignal.timeout(timeout)
+      }, opts));
+      if (!r.ok) throw new Error('HTTP ' + r.status);
+      return await r.json();
+    } catch (e) {
+      console.warn('[V6] fetch fail:', path, e.message);
+      return null;
+    }
+  };
+
+  // --- 等锚点出现再注入（带超时） ---
+  window._v6WaitEl = function(selector, maxMs){
+    maxMs = maxMs || 3000;
+    return new Promise(resolve => {
+      const start = Date.now();
+      const tick = () => {
+        const el = document.querySelector(selector);
+        if (el) return resolve(el);
+        if (Date.now() - start > maxMs) return resolve(null);
+        setTimeout(tick, 80);
+      };
+      tick();
+    });
+  };
+
+  // --- 卡片模板：统一风格 ---
+  window._v6Card = function(title, bodyHtml, opts){
+    opts = opts || {};
+    const border = opts.border ? `border-left:3px solid ${opts.border};` : '';
+    const badge = opts.badge
+      ? `<span style="font-size:10px;padding:2px 6px;border-radius:6px;background:rgba(59,130,246,.12);color:#3B82F6;margin-left:6px;font-weight:600">${opts.badge}</span>`
+      : '';
+    return `<div class="dashboard-card" style="${border}margin-top:8px">
+      <div class="dashboard-card-title">${title}${badge}</div>
+      ${bodyHtml}
+    </div>`;
+  };
+
+  // --- 骨架屏 ---
+  window._v6Skeleton = function(msg){
+    return `<div style="text-align:center;padding:24px;color:var(--text2)">
+      <div class="loading-spinner" style="width:24px;height:24px;margin:0 auto 8px;border-width:2px"></div>
+      <div style="font-size:12px">${msg || '加载中...'}</div>
+    </div>`;
+  };
+
+  // --- 劫持全局函数：链式包装，每次追加一个 afterFn 钩子 ---
+  window._v6Hijack = function(funcName, afterFn){
+    const orig = window[funcName];
+    if (typeof orig !== 'function') {
+      console.warn('[V6] hijack target not found:', funcName);
+      return;
+    }
+    // 允许多次劫持：每次在当前版本外面再包一层
+    const wrapped = async function(...args){
+      const r = await orig.apply(this, args);
+      try { await afterFn.apply(this, args); } catch(e){ console.warn('[V6] after hook error:', funcName, e); }
+      return r;
+    };
+    wrapped.__v6Hijacked = true;
+    wrapped.__orig = orig;
+    window[funcName] = wrapped;
+  };
+
+  // --- 持仓是否为空（判断是否进入"空仓模式"）---
+  window._v6IsEmptyHoldings = function(){
+    try {
+      const stocks = (typeof loadPortfolio === 'function') ? (loadPortfolio() || {}) : {};
+      const assets = (typeof loadAssets === 'function') ? (loadAssets() || []) : [];
+      // 三个迹象都为空才算空仓
+      const sCount = Object.keys(stocks.stocks || stocks || {}).length;
+      const aCount = (assets || []).length;
+      return sCount === 0 && aCount === 0;
+    } catch(e){ return false; }
+  };
+
+  console.log('[V6] common utils loaded');
+})();
+
+// --- 01-empty-landing.js ---
+/* =========================================================================
+ * V6 欠账 1/6：空仓首页市场概览
+ * 目标：持仓为空时，不再是一片空白；展示"市场温度+入场时机+今日焦点"
+ * 锚点：#dailyFocusSection（renderLanding 渲染出的每日焦点区域）
+ * 依赖 API：/api/timing, /api/daily-signal, /api/news/impact
+ * ========================================================================= */
+;(function(){
+  'use strict';
+
+  async function _v6RenderEmptyLanding(){
+    // 只在 landing 页且空仓时生效
+    if (typeof currentPage !== 'undefined' && currentPage !== 'landing') return;
+    if (!window._v6IsEmptyHoldings || !_v6IsEmptyHoldings()) return;
+
+    // 找插入锚：优先 #dailyFocusSection，否则 #signalsSection
+    const anchor = document.getElementById('dailyFocusSection')
+                || document.getElementById('signalsSection');
+    if (!anchor) return;
+
+    // 已注入过？避免重复
+    if (document.getElementById('v6EmptyHome')) return;
+
+    const host = document.createElement('div');
+    host.id = 'v6EmptyHome';
+    host.style.cssText = 'margin-top:12px';
+    host.innerHTML = _v6Skeleton('正在为你加载市场概览...');
+    anchor.parentNode.insertBefore(host, anchor);
+
+    // 并行拉三份数据
+    const [timing, signal, impact] = await Promise.all([
+      _v6Fetch('/timing'),
+      _v6Fetch('/daily-signal'),
+      _v6Fetch('/news/impact')
+    ]);
+
+    let html = '';
+
+    // === 欢迎卡 ===
+    html += `<div class="pnl-hero" style="background:linear-gradient(135deg,rgba(59,130,246,.08),rgba(16,185,129,.08));border:1px solid rgba(59,130,246,.15)">
+      <div style="font-size:18px;font-weight:800;margin-bottom:6px">👋 欢迎来到钱袋子</div>
+      <div style="font-size:13px;color:var(--text2);line-height:1.6">
+        还没添加持仓？没关系 —— 先看看<span style="color:var(--accent);font-weight:600">今日市场</span>的温度，
+        等到合适的时机再出手。
+      </div>
+      <div style="margin-top:12px;display:flex;gap:8px;flex-wrap:wrap">
+        <button class="action-btn primary" style="flex:1;min-width:120px" onclick="if(typeof showAddStockModal==='function')showAddStockModal()">➕ 添加股票</button>
+        <button class="action-btn secondary" style="flex:1;min-width:120px" onclick="if(typeof _nav==='function')_nav('stocks')">💰 管理持仓</button>
+      </div>
+    </div>`;
+
+    // === 入场时机卡 ===
+    if (timing && timing.signal) {
+      const colorMap = {
+        'STRONG_BUY':'var(--green)', 'BUY':'var(--green)',
+        'HOLD':'#F59E0B', 'WAIT':'#F59E0B',
+        'SELL':'var(--red)', 'STRONG_SELL':'var(--red)'
+      };
+      const labelMap = {
+        'STRONG_BUY':'🔥 强烈建议入场', 'BUY':'🟢 适合入场',
+        'HOLD':'🟡 可以观望', 'WAIT':'🟡 再等等',
+        'SELL':'🟠 暂缓入场', 'STRONG_SELL':'🔴 不宜入场'
+      };
+      const c = colorMap[timing.signal] || '#F59E0B';
+      const label = labelMap[timing.signal] || timing.signal;
+      html += _v6Card('⏰ 入场时机', `
+        <div style="display:flex;align-items:center;gap:12px">
+          <div style="font-size:22px;font-weight:900;color:${c}">${label}</div>
+          <div style="font-size:11px;color:var(--text2)">置信度 ${Math.round((timing.confidence||0)*100)}%</div>
+        </div>
+        <div style="font-size:13px;color:var(--text2);margin-top:6px;line-height:1.6">${timing.reason||timing.summary||''}</div>
+        ${timing.suggestion ? `<div style="font-size:12px;margin-top:8px;padding:8px;background:var(--bg3);border-radius:8px">💡 ${timing.suggestion}</div>` : ''}
+      `, { border: c });
+    }
+
+    // === 市场温度（来自 daily-signal）===
+    if (signal && signal.overall) {
+      const bgMap = {
+        STRONG_BUY:'rgba(16,185,129,.10)', BUY:'rgba(16,185,129,.08)',
+        HOLD:'rgba(245,158,11,.08)',
+        SELL:'rgba(239,68,68,.08)', STRONG_SELL:'rgba(239,68,68,.10)'
+      };
+      const labelMap = {
+        STRONG_BUY:'市场强势 🔥', BUY:'市场偏多 🟢',
+        HOLD:'市场震荡 🟡', SELL:'市场偏空 🟠', STRONG_SELL:'市场疲弱 🔴'
+      };
+      html += `<div class="dashboard-card" style="background:${bgMap[signal.overall]||''};margin-top:8px">
+        <div class="dashboard-card-title">🌡️ 市场温度 <span style="font-size:11px;color:var(--accent);font-weight:400">V4.5 · 12维</span></div>
+        <div style="font-size:16px;font-weight:800;margin-top:4px">${labelMap[signal.overall]||signal.overall}</div>
+        <div style="font-size:12px;color:var(--text2);margin-top:4px">综合得分 ${signal.score||0} · 置信度 ${Math.round(signal.confidence||0)}%</div>
+        <div style="font-size:13px;margin-top:8px;line-height:1.6">${signal.summary||''}</div>
+      </div>`;
+    }
+
+    // === 今日要闻（news/impact 前 3 条）===
+    if (impact && Array.isArray(impact.items) && impact.items.length) {
+      const rows = impact.items.slice(0, 3).map(n => {
+        const lvl = n.impact_level || n.level || 'neutral';
+        const c = lvl === 'bullish' || lvl === 'positive' ? 'var(--green)'
+                : lvl === 'bearish' || lvl === 'negative' ? 'var(--red)' : 'var(--text2)';
+        const tag = lvl === 'bullish' || lvl === 'positive' ? '利好' :
+                    lvl === 'bearish' || lvl === 'negative' ? '利空' : '中性';
+        return `<div style="padding:8px 0;border-bottom:1px solid var(--bg3);font-size:13px">
+          <span style="display:inline-block;font-size:10px;padding:2px 6px;border-radius:4px;background:${c};color:#fff;margin-right:6px">${tag}</span>
+          ${n.title || ''}
+          ${n.affected_sectors ? `<div style="font-size:11px;color:var(--text2);margin-top:2px">影响：${(Array.isArray(n.affected_sectors)?n.affected_sectors:[n.affected_sectors]).join(' · ')}</div>` : ''}
+        </div>`;
+      }).join('');
+      html += _v6Card('📰 今日要闻（AI 影响分析）', rows, { badge: 'Phase 0' });
+    }
+
+    if (!html) {
+      host.innerHTML = `<div class="dashboard-card"><div style="text-align:center;padding:20px;color:var(--text2);font-size:13px">市场数据暂不可用，请稍后刷新</div></div>`;
+    } else {
+      host.innerHTML = html;
+    }
+  }
+
+  // 劫持 renderLanding：原函数执行完后触发
+  function _install(){
+    if (typeof renderLanding !== 'function') return false;
+    _v6Hijack('renderLanding', async function(){
+      // 给原函数留点时间把 DOM 渲染稳
+      setTimeout(_v6RenderEmptyLanding, 150);
+    });
+    return true;
+  }
+
+  if (!_install()) {
+    // 如果 app.js 还没解析完，等一下
+    const t = setInterval(() => { if (_install()) clearInterval(t); }, 200);
+    setTimeout(() => clearInterval(t), 5000);
+  }
+
+  console.log('[V6-1] empty-landing patch installed');
+})();
+
+// --- 02-insight-protabs.js ---
+/* =========================================================================
+ * V6 欠账 2/6：insight 页 deep-impact + risk-assess 两个 Pro Tab
+ * 方式：劫持 _insightTabs()，在 Pro 模式下追加两个 tab
+ *       劫持 renderInsight()，拦截新 tab 渲染
+ * 依赖 API：/api/news/impact, /api/risk-metrics, /api/risk-actions
+ * ========================================================================= */
+;(function(){
+  'use strict';
+
+  const NEW_TABS = [
+    ['deepimpact', '💥 深度影响'],
+    ['riskassess', '🛡️ 风险评估']
+  ];
+
+  // --- 劫持 _insightTabs：Pro 模式下追加两个 tab ---
+  function _patchTabs(){
+    if (typeof _insightTabs !== 'function') return false;
+    if (_insightTabs.__v6Patched) return true;
+    const orig = _insightTabs;
+    window._insightTabs = function(){
+      const tabs = orig();
+      if (isProMode()) {
+        // 加在 weekly 之后
+        NEW_TABS.forEach(t => {
+          if (!tabs.find(x => x[0] === t[0])) tabs.push(t);
+        });
+      }
+      return tabs;
+    };
+    window._insightTabs.__v6Patched = true;
+    return true;
+  }
+
+  // --- deep-impact 渲染 ---
+  async function renderDeepImpact(el){
+    el.innerHTML = _v6Skeleton('正在分析新闻深度影响...');
+    const d = await _v6Fetch('/news/impact');
+    if (!d || !d.items || !d.items.length) {
+      el.innerHTML = '<div style="text-align:center;padding:40px;color:var(--text2)">暂无深度影响数据</div>';
+      return;
+    }
+    let html = `<div class="section-title">💥 新闻深度影响分析 <span style="font-size:11px;color:var(--accent);font-weight:400">Phase 0 · AI 驱动</span></div>`;
+    d.items.forEach(item => {
+      const lvl = item.impact_level || item.level || 'neutral';
+      const c = lvl === 'bullish' || lvl === 'positive' ? 'var(--green)'
+              : lvl === 'bearish' || lvl === 'negative' ? 'var(--red)' : '#F59E0B';
+      const tag = lvl === 'bullish' || lvl === 'positive' ? '📈 利好'
+               : lvl === 'bearish' || lvl === 'negative' ? '📉 利空' : '➖ 中性';
+      const sectors = item.affected_sectors
+        ? (Array.isArray(item.affected_sectors) ? item.affected_sectors : [item.affected_sectors]).join(' · ')
+        : '';
+      const score = item.impact_score != null ? item.impact_score : '';
+      html += `<div class="dashboard-card" style="border-left:3px solid ${c};margin-bottom:8px">
+        <div style="display:flex;justify-content:space-between;align-items:flex-start">
+          <div style="flex:1">
+            <div style="font-size:14px;font-weight:700;line-height:1.5">${item.title || ''}</div>
+            <div style="font-size:12px;color:var(--text2);margin-top:4px;line-height:1.6">${item.analysis || item.summary || ''}</div>
+          </div>
+          <div style="text-align:right;min-width:60px;margin-left:12px">
+            <div style="font-size:12px;font-weight:700;color:${c}">${tag}</div>
+            ${score !== '' ? `<div style="font-size:18px;font-weight:900;color:${c};margin-top:2px">${score}</div>` : ''}
+          </div>
+        </div>
+        ${sectors ? `<div style="font-size:11px;color:var(--text2);margin-top:6px;padding-top:6px;border-top:1px solid var(--bg3)">影响板块：${sectors}</div>` : ''}
+        ${item.duration ? `<div style="font-size:11px;color:var(--text2);margin-top:2px">影响周期：${item.duration}</div>` : ''}
+      </div>`;
+    });
+    el.innerHTML = html;
+  }
+
+  // --- risk-assess 渲染 ---
+  async function renderRiskAssess(el){
+    el.innerHTML = _v6Skeleton('正在评估风险...');
+    const [metrics, actions] = await Promise.all([
+      _v6Fetch('/risk-metrics?' + getProfileParam()),
+      _v6Fetch('/risk-actions?' + getProfileParam())
+    ]);
+    if (!metrics && !actions) {
+      el.innerHTML = '<div style="text-align:center;padding:40px;color:var(--text2)">暂无风险数据（需要先添加持仓）</div>';
+      return;
+    }
+
+    let html = `<div class="section-title">🛡️ 组合风险评估 <span style="font-size:11px;color:var(--accent);font-weight:400">Phase 0 · Pro</span></div>`;
+
+    // 风险指标
+    if (metrics) {
+      const riskColor = (metrics.risk_level || '') === 'high' ? 'var(--red)'
+                       : (metrics.risk_level || '') === 'medium' ? '#F59E0B' : 'var(--green)';
+      const riskLabel = (metrics.risk_level || '') === 'high' ? '⚠️ 高风险'
+                       : (metrics.risk_level || '') === 'medium' ? '🟡 中等' : '🟢 低风险';
+
+      html += `<div class="dashboard-card" style="border-left:3px solid ${riskColor}">
+        <div class="dashboard-card-title">📊 风险指标</div>
+        <div style="display:flex;align-items:center;gap:12px;margin-bottom:12px">
+          <div style="font-size:20px;font-weight:900;color:${riskColor}">${riskLabel}</div>
+          ${metrics.risk_score != null ? `<div style="font-size:13px;color:var(--text2)">综合风险分 ${metrics.risk_score}</div>` : ''}
+        </div>
+        <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(130px,1fr));gap:8px">`;
+
+      const metricItems = [
+        { k: 'max_drawdown', label: '最大回撤', fmt: v => (v * 100).toFixed(1) + '%', warn: v => v > 0.2 },
+        { k: 'sharpe_ratio', label: '夏普比率', fmt: v => v.toFixed(2), warn: v => v < 0.5 },
+        { k: 'volatility', label: '波动率', fmt: v => (v * 100).toFixed(1) + '%', warn: v => v > 0.25 },
+        { k: 'concentration', label: '集中度', fmt: v => (v * 100).toFixed(0) + '%', warn: v => v > 0.4 },
+        { k: 'beta', label: 'Beta', fmt: v => v.toFixed(2), warn: v => v > 1.3 },
+        { k: 'var_95', label: 'VaR 95%', fmt: v => (v * 100).toFixed(1) + '%', warn: v => v > 0.03 }
+      ];
+      metricItems.forEach(m => {
+        const val = metrics[m.k];
+        if (val == null) return;
+        const isWarn = m.warn(val);
+        html += `<div style="background:var(--bg3);border-radius:8px;padding:8px 10px">
+          <div style="font-size:11px;color:var(--text2)">${m.label}</div>
+          <div style="font-size:16px;font-weight:800;color:${isWarn ? 'var(--red)' : 'var(--green)'};margin-top:2px">${m.fmt(val)}</div>
+        </div>`;
+      });
+      html += '</div></div>';
+    }
+
+    // 风险行动建议
+    if (actions && actions.actions && actions.actions.length) {
+      html += `<div class="dashboard-card" style="margin-top:8px">
+        <div class="dashboard-card-title">🎯 风险调整建议</div>`;
+      actions.actions.forEach(a => {
+        const urgencyColor = a.urgency === 'high' ? 'var(--red)' : a.urgency === 'medium' ? '#F59E0B' : 'var(--green)';
+        html += `<div style="padding:8px 0;border-bottom:1px solid var(--bg3)">
+          <div style="font-size:13px;font-weight:600">${a.action || a.title || ''}</div>
+          <div style="font-size:12px;color:var(--text2);margin-top:2px">${a.reason || a.detail || ''}</div>
+          ${a.urgency ? `<div style="font-size:10px;color:${urgencyColor};margin-top:2px;font-weight:600">紧急度：${a.urgency}</div>` : ''}
+        </div>`;
+      });
+      html += '</div>';
+    }
+
+    el.innerHTML = html || '<div style="text-align:center;padding:40px;color:var(--text2)">风险数据计算中...</div>';
+  }
+
+  // --- 劫持 renderInsight：拦截新 tab ---
+  function _patchRender(){
+    if (typeof renderInsight !== 'function') return false;
+    _v6Hijack('renderInsight', async function(){
+      // renderInsight 最后可能 return 了，我们在后面检查 insightTab
+      await new Promise(r => setTimeout(r, 50));
+      if (typeof insightTab === 'undefined') return;
+      const el = document.getElementById('insightContent');
+      if (!el) return;
+      if (insightTab === 'deepimpact') renderDeepImpact(el);
+      else if (insightTab === 'riskassess') renderRiskAssess(el);
+    });
+    return true;
+  }
+
+  function _install(){
+    const a = _patchTabs();
+    const b = _patchRender();
+    return a && b;
+  }
+  if (!_install()) {
+    const t = setInterval(() => { if (_install()) clearInterval(t); }, 200);
+    setTimeout(() => clearInterval(t), 5000);
+  }
+
+  console.log('[V6-2] insight pro-tabs patch installed');
+})();
+
+// --- 03-holdings-ai.js ---
+/* =========================================================================
+ * V6 欠账 3/6：持仓页 Pro 模式 AI 深度分析按钮
+ * 方式：renderStocksContent / renderFundsContent 完成后，注入"AI 深度分析"按钮
+ *       点击后调用 /api/stock-holdings/analyze 或 /api/fund-holdings/analyze
+ * ========================================================================= */
+;(function(){
+  'use strict';
+
+  // --- 通用：渲染 AI 分析结果弹窗 ---
+  function _showAIAnalysis(title, data){
+    const overlay = document.createElement('div');
+    overlay.className = 'modal-overlay';
+    overlay.onclick = e => { if (e.target === overlay) overlay.remove(); };
+
+    let body = '';
+    if (data.error) {
+      body = `<div style="padding:20px;text-align:center;color:var(--red)">${data.error}</div>`;
+    } else if (data.analysis || data.summary) {
+      // 结构化输出
+      const summary = data.summary || data.analysis || '';
+      const sections = data.sections || data.details || [];
+      body = `<div style="font-size:14px;line-height:1.8;color:var(--text1);white-space:pre-wrap;margin-bottom:12px">${summary}</div>`;
+      if (Array.isArray(sections) && sections.length) {
+        sections.forEach(s => {
+          body += `<div class="dashboard-card" style="margin-bottom:8px">
+            <div style="font-size:13px;font-weight:700;margin-bottom:4px">${s.title || s.name || ''}</div>
+            <div style="font-size:12px;color:var(--text2);line-height:1.6">${s.content || s.detail || ''}</div>
+          </div>`;
+        });
+      }
+      if (data.risk_warnings && data.risk_warnings.length) {
+        body += `<div style="margin-top:8px;padding:10px;background:rgba(239,68,68,.06);border-radius:8px;border-left:3px solid var(--red)">
+          <div style="font-size:12px;font-weight:700;color:var(--red);margin-bottom:4px">⚠️ 风险提示</div>
+          ${data.risk_warnings.map(w => `<div style="font-size:12px;color:var(--text2);line-height:1.5">• ${w}</div>`).join('')}
+        </div>`;
+      }
+      if (data.suggestions && data.suggestions.length) {
+        body += `<div style="margin-top:8px;padding:10px;background:rgba(16,185,129,.06);border-radius:8px;border-left:3px solid var(--green)">
+          <div style="font-size:12px;font-weight:700;color:var(--green);margin-bottom:4px">💡 建议</div>
+          ${data.suggestions.map(s => `<div style="font-size:12px;color:var(--text2);line-height:1.5">• ${typeof s === 'string' ? s : (s.text || s.content || '')}</div>`).join('')}
+        </div>`;
+      }
+    } else {
+      body = `<div style="font-size:13px;color:var(--text2);line-height:1.6;white-space:pre-wrap">${JSON.stringify(data, null, 2)}</div>`;
+    }
+
+    overlay.innerHTML = `<div class="modal-sheet" style="max-height:85vh;overflow-y:auto">
+      <div class="modal-handle"></div>
+      <div class="modal-title">${title}</div>
+      <div class="modal-subtitle" style="margin-bottom:12px">🤖 AI 深度分析 · Phase 0</div>
+      ${body}
+      <button class="form-submit" style="margin-top:16px" onclick="this.closest('.modal-overlay').remove()">关闭</button>
+    </div>`;
+    document.body.appendChild(overlay);
+  }
+
+  // --- 注入按钮到持仓 content 底部 ---
+  function _injectStockAIBtn(){
+    if (!isProMode()) return;
+    const el = document.getElementById('holdingsContent');
+    if (!el) return;
+    if (el.querySelector('#v6StockAIBtn')) return;
+
+    // 找最后一个 action-btn
+    const btns = el.querySelectorAll('.action-btn');
+    if (!btns.length) return;
+    const lastBtn = btns[btns.length - 1].parentNode;
+
+    const wrap = document.createElement('div');
+    wrap.style.cssText = 'margin-top:8px';
+    wrap.innerHTML = `<button id="v6StockAIBtn" class="action-btn secondary" style="width:100%;background:linear-gradient(135deg,rgba(59,130,246,.08),rgba(168,85,247,.08));border:1px solid rgba(59,130,246,.2)" onclick="window._v6AnalyzeStocks()">
+      🧠 AI 深度分析（Pro）
+    </button>`;
+    lastBtn.parentNode.insertBefore(wrap, lastBtn.nextSibling);
+  }
+
+  function _injectFundAIBtn(){
+    if (!isProMode()) return;
+    const el = document.getElementById('holdingsContent');
+    if (!el) return;
+    if (el.querySelector('#v6FundAIBtn')) return;
+
+    const btns = el.querySelectorAll('.action-btn');
+    if (!btns.length) return;
+    const lastBtn = btns[btns.length - 1].parentNode;
+
+    const wrap = document.createElement('div');
+    wrap.style.cssText = 'margin-top:8px';
+    wrap.innerHTML = `<button id="v6FundAIBtn" class="action-btn secondary" style="width:100%;background:linear-gradient(135deg,rgba(16,185,129,.08),rgba(168,85,247,.08));border:1px solid rgba(16,185,129,.2)" onclick="window._v6AnalyzeFunds()">
+      🧠 AI 深度分析（Pro）
+    </button>`;
+    lastBtn.parentNode.insertBefore(wrap, lastBtn.nextSibling);
+  }
+
+  // --- 全局分析函数（按钮 onclick 调用）---
+  window._v6AnalyzeStocks = async function(){
+    const btn = document.getElementById('v6StockAIBtn');
+    if (btn) { btn.disabled = true; btn.innerHTML = '🧠 正在分析...请稍候（30s）'; }
+    const d = await _v6Fetch('/stock-holdings/analyze?' + getProfileParam(), { timeout: 60000 });
+    if (btn) { btn.disabled = false; btn.innerHTML = '🧠 AI 深度分析（Pro）'; }
+    if (d) _showAIAnalysis('📊 股票持仓 AI 深度分析', d);
+    else alert('分析请求失败，请稍后重试');
+  };
+
+  window._v6AnalyzeFunds = async function(){
+    const btn = document.getElementById('v6FundAIBtn');
+    if (btn) { btn.disabled = true; btn.innerHTML = '🧠 正在分析...请稍候（30s）'; }
+    const d = await _v6Fetch('/fund-holdings/analyze?' + getProfileParam(), { timeout: 60000 });
+    if (btn) { btn.disabled = false; btn.innerHTML = '🧠 AI 深度分析（Pro）'; }
+    if (d) _showAIAnalysis('💰 基金持仓 AI 深度分析', d);
+    else alert('分析请求失败，请稍后重试');
+  };
+
+  // --- 劫持 renderStocksContent / renderFundsContent ---
+  function _install(){
+    let ok = true;
+    if (typeof renderStocksContent === 'function') {
+      _v6Hijack('renderStocksContent', () => setTimeout(_injectStockAIBtn, 100));
+    } else { ok = false; }
+    if (typeof renderFundsContent === 'function') {
+      _v6Hijack('renderFundsContent', () => setTimeout(_injectFundAIBtn, 100));
+    } else { ok = false; }
+    return ok;
+  }
+
+  if (!_install()) {
+    const t = setInterval(() => { if (_install()) clearInterval(t); }, 200);
+    setTimeout(() => clearInterval(t), 5000);
+  }
+
+  console.log('[V6-3] holdings AI analysis patch installed');
+})();
+
+// --- 04-signal-interpret.js ---
+/* =========================================================================
+ * V6 欠账 4/6：信号页 AI 12 维解读卡片
+ * 方式：劫持 loadSignals()，在原始信号卡渲染完后追加 AI 解读区
+ * 依赖 API：/api/daily-signal/interpret
+ * ========================================================================= */
+;(function(){
+  'use strict';
+
+  async function _v6InjectSignalInterpret(){
+    // 仅 Pro 模式展示完整解读，Simple 模式展示精简版
+    const section = document.getElementById('signalsSection');
+    if (!section) return;
+    if (section.querySelector('#v6SignalInterpret')) return;
+
+    const host = document.createElement('div');
+    host.id = 'v6SignalInterpret';
+    host.style.cssText = 'margin-top:12px';
+    host.innerHTML = isProMode()
+      ? _v6Skeleton('🤖 AI 正在解读信号（约10s）...')
+      : _v6Skeleton('正在生成信号摘要...');
+    section.appendChild(host);
+
+    const d = await _v6Fetch('/daily-signal/interpret', { timeout: 45000 });
+    if (!d) {
+      host.innerHTML = `<div class="dashboard-card" style="border-left:3px solid var(--bg3)">
+        <div class="dashboard-card-title">🤖 AI 信号解读</div>
+        <div style="font-size:12px;color:var(--text2)">解读数据暂不可用</div>
+      </div>`;
+      return;
+    }
+
+    let html = '';
+
+    // === Simple 模式：只显示一句话结论 ===
+    if (!isProMode()) {
+      const conclusion = d.conclusion || d.summary || d.tldr || '';
+      if (conclusion) {
+        html = _v6Card('🤖 AI 一句话解读', `
+          <div style="font-size:14px;line-height:1.8;color:var(--text1)">${conclusion}</div>
+          <div style="font-size:11px;color:var(--accent);margin-top:6px">切换到 Pro 模式查看 12 维完整解读 ›</div>
+        `);
+      }
+      host.innerHTML = html;
+      return;
+    }
+
+    // === Pro 模式：12 维完整解读 ===
+    html += `<div class="section-title">🤖 AI 12 维信号深度解读 <span style="font-size:11px;color:var(--accent);font-weight:400">Phase 0 · DeepSeek</span></div>`;
+
+    // 总结论
+    if (d.conclusion || d.summary) {
+      html += `<div class="dashboard-card" style="background:linear-gradient(135deg,rgba(59,130,246,.06),rgba(16,185,129,.06));border:1px solid rgba(59,130,246,.12)">
+        <div style="font-size:14px;font-weight:700;margin-bottom:6px">📋 综合结论</div>
+        <div style="font-size:14px;line-height:1.8;color:var(--text1)">${d.conclusion || d.summary}</div>
+      </div>`;
+    }
+
+    // 12 维度逐条解读
+    const dims = d.dimensions || d.factors || d.details || [];
+    if (dims.length) {
+      const catIcons = {
+        '技术面':'📊','基本面':'📈','资金面':'💰','情绪面':'😊','宏观面':'🏛️',
+        'technical':'📊','fundamental':'📈','flow':'💰','sentiment':'😊','macro':'🏛️'
+      };
+      html += `<div style="display:grid;grid-template-columns:1fr;gap:6px;margin-top:8px">`;
+      dims.forEach(dim => {
+        const score = dim.score != null ? dim.score : '';
+        const scoreColor = score > 10 ? 'var(--green)' : score < -10 ? 'var(--red)' : '#F59E0B';
+        const icon = catIcons[dim.category || dim.cat || ''] || '📌';
+        html += `<div class="dashboard-card" style="margin:0;padding:10px 12px">
+          <div style="display:flex;justify-content:space-between;align-items:center">
+            <div style="font-size:13px;font-weight:700">${icon} ${dim.name || dim.title || ''}</div>
+            ${score !== '' ? `<div style="font-size:16px;font-weight:900;color:${scoreColor}">${score > 0 ? '+' : ''}${score}</div>` : ''}
+          </div>
+          <div style="font-size:12px;color:var(--text2);margin-top:4px;line-height:1.6">${dim.interpretation || dim.detail || dim.analysis || ''}</div>
+        </div>`;
+      });
+      html += '</div>';
+    }
+
+    // 操作建议
+    if (d.action_plan || d.suggestions) {
+      const items = d.action_plan || d.suggestions || [];
+      if (Array.isArray(items) && items.length) {
+        html += `<div class="dashboard-card" style="margin-top:8px;border-left:3px solid var(--accent)">
+          <div class="dashboard-card-title">🎯 操作建议</div>
+          ${items.map(a => `<div style="padding:6px 0;font-size:13px;border-bottom:1px solid var(--bg3)">${typeof a === 'string' ? a : (a.text || a.action || '')}</div>`).join('')}
+        </div>`;
+      }
+    }
+
+    host.innerHTML = html;
+  }
+
+  function _install(){
+    if (typeof loadSignals !== 'function') return false;
+    _v6Hijack('loadSignals', async function(){
+      // 等原函数的 DOM 渲染完
+      setTimeout(_v6InjectSignalInterpret, 300);
+    });
+    return true;
+  }
+
+  if (!_install()) {
+    const t = setInterval(() => { if (_install()) clearInterval(t); }, 200);
+    setTimeout(() => clearInterval(t), 5000);
+  }
+
+  console.log('[V6-4] signal-interpret patch installed');
+})();
+
+// --- 05-timing-dca.js ---
+/* =========================================================================
+ * V6 欠账 5/6：首页入场时机卡片 + Pro 智能定投
+ * 方式：劫持 renderLanding()，在已有用户（有持仓）首页追加时机卡 + 定投建议
+ * 依赖 API：/api/timing, /api/smart-dca
+ * ========================================================================= */
+;(function(){
+  'use strict';
+
+  async function _v6InjectTimingDCA(){
+    if (typeof currentPage !== 'undefined' && currentPage !== 'landing') return;
+
+    // 空仓首页已由 patch-01 处理时机卡，这里处理"有持仓"的首页
+    if (window._v6IsEmptyHoldings && _v6IsEmptyHoldings()) return;
+
+    // 找锚点：#signalsSection 后面，或 #dailyFocusSection 后面
+    const anchor = document.getElementById('signalsSection')
+                || document.getElementById('dailyFocusSection');
+    if (!anchor) return;
+    if (document.getElementById('v6TimingDCA')) return;
+
+    const host = document.createElement('div');
+    host.id = 'v6TimingDCA';
+    host.style.cssText = 'margin-top:12px';
+    host.innerHTML = _v6Skeleton('加载入场时机...');
+    // 插到 anchor 后面
+    anchor.parentNode.insertBefore(host, anchor.nextSibling);
+
+    const [timing, dca] = await Promise.all([
+      _v6Fetch('/timing'),
+      isProMode() ? _v6Fetch('/smart-dca?' + getProfileParam()) : null
+    ]);
+
+    let html = '';
+
+    // === 入场时机卡 ===
+    if (timing && timing.signal) {
+      const colorMap = {
+        'STRONG_BUY':'var(--green)', 'BUY':'var(--green)',
+        'HOLD':'#F59E0B', 'WAIT':'#F59E0B',
+        'SELL':'var(--red)', 'STRONG_SELL':'var(--red)'
+      };
+      const labelMap = {
+        'STRONG_BUY':'🔥 绝佳时机', 'BUY':'🟢 适合加仓',
+        'HOLD':'🟡 暂观望', 'WAIT':'🟡 不急',
+        'SELL':'🟠 谨慎', 'STRONG_SELL':'🔴 建议等待'
+      };
+      const c = colorMap[timing.signal] || '#F59E0B';
+      const label = labelMap[timing.signal] || timing.signal;
+      html += _v6Card('⏰ 入场时机判断', `
+        <div style="display:flex;align-items:center;gap:12px">
+          <div style="font-size:18px;font-weight:900;color:${c}">${label}</div>
+          <div style="font-size:11px;color:var(--text2)">置信度 ${Math.round((timing.confidence || 0) * 100)}%</div>
+        </div>
+        <div style="font-size:13px;color:var(--text2);margin-top:6px;line-height:1.6">${timing.reason || timing.summary || ''}</div>
+        ${timing.suggestion ? `<div style="font-size:12px;margin-top:8px;padding:8px;background:var(--bg3);border-radius:8px">💡 ${timing.suggestion}</div>` : ''}
+      `, { border: c });
+    }
+
+    // === Pro 智能定投建议 ===
+    if (dca && isProMode()) {
+      let dcaBody = '';
+
+      if (dca.recommendation || dca.plan) {
+        const rec = dca.recommendation || dca.plan || '';
+        dcaBody += `<div style="font-size:14px;line-height:1.8;margin-bottom:8px">${typeof rec === 'string' ? rec : (rec.summary || JSON.stringify(rec))}</div>`;
+      }
+
+      // 定投建议明细
+      if (dca.allocations && Array.isArray(dca.allocations)) {
+        dcaBody += `<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(140px,1fr));gap:6px">`;
+        dca.allocations.forEach(a => {
+          dcaBody += `<div style="background:var(--bg3);border-radius:8px;padding:8px 10px">
+            <div style="font-size:12px;font-weight:700">${a.name || a.code || ''}</div>
+            <div style="font-size:16px;font-weight:900;color:var(--accent);margin-top:2px">¥${a.amount || 0}</div>
+            <div style="font-size:11px;color:var(--text2)">${a.reason || a.frequency || ''}</div>
+          </div>`;
+        });
+        dcaBody += '</div>';
+      }
+
+      if (dca.total_monthly) {
+        dcaBody += `<div style="font-size:12px;color:var(--text2);margin-top:8px">📅 建议月定投总额：¥${dca.total_monthly}</div>`;
+      }
+
+      if (dca.risk_note) {
+        dcaBody += `<div style="font-size:11px;color:#F59E0B;margin-top:6px;padding:6px 8px;background:rgba(245,158,11,.06);border-radius:6px">⚠️ ${dca.risk_note}</div>`;
+      }
+
+      if (dcaBody) {
+        html += _v6Card('🤖 智能定投建议', dcaBody, { badge: 'Pro', border: 'var(--accent)' });
+      }
+    }
+
+    host.innerHTML = html || '';
+    // 如果完全没内容就移除容器
+    if (!html) host.remove();
+  }
+
+  function _install(){
+    if (typeof renderLanding !== 'function') return false;
+    // renderLanding 可能已被 patch-01 劫持，v6Hijack 已处理防重复
+    _v6Hijack('renderLanding', async function(){
+      setTimeout(_v6InjectTimingDCA, 250);
+    });
+    return true;
+  }
+
+  if (!_install()) {
+    const t = setInterval(() => { if (_install()) clearInterval(t); }, 200);
+    setTimeout(() => clearInterval(t), 5000);
+  }
+
+  console.log('[V6-5] timing-dca patch installed');
+})();
+
+// --- 06-household-hero.js ---
+/* =========================================================================
+ * V6 欠账 6/6：家庭成员资产汇总 Hero 明细展示
+ * 方式：劫持 loadOverviewHero()，在总览 hero 下方追加家庭汇总卡
+ * 依赖 API：/api/household/summary
+ * 条件：Pro 模式 + 有多个 profile 时显示
+ * ========================================================================= */
+;(function(){
+  'use strict';
+
+  async function _v6InjectHouseholdHero(){
+    if (!isProMode()) return;
+    const hero = document.getElementById('overviewHero');
+    if (!hero) return;
+    if (hero.querySelector('#v6HouseholdHero')) return;
+
+    // 拉家庭汇总
+    const d = await _v6Fetch('/household/summary');
+    if (!d || !d.members || d.members.length < 2) return; // 只有一个人就不展示
+
+    const host = document.createElement('div');
+    host.id = 'v6HouseholdHero';
+    host.style.cssText = 'margin-top:12px';
+
+    // 家庭总资产 Hero
+    const total = d.total_assets || d.totalAssets || 0;
+    const totalPnl = d.total_pnl || d.totalPnl || 0;
+    const pnlC = totalPnl >= 0 ? 'var(--green)' : 'var(--red)';
+
+    let html = `<div class="pnl-hero" style="background:linear-gradient(135deg,rgba(168,85,247,.08),rgba(59,130,246,.08));border:1px solid rgba(168,85,247,.12)">
+      <div class="pnl-label">👨‍👩‍👧‍👦 家庭总资产</div>
+      <div class="pnl-total-value">¥${total.toLocaleString()}</div>
+      ${totalPnl ? `<div class="pnl-change ${totalPnl >= 0 ? 'pos' : 'neg'}" style="color:${pnlC}">
+        总盈亏 ${totalPnl >= 0 ? '+' : ''}¥${totalPnl.toFixed(0)}
+      </div>` : ''}
+    </div>`;
+
+    // 成员明细
+    html += `<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:8px;margin-top:8px">`;
+    d.members.forEach(m => {
+      const mPnl = m.pnl || m.totalPnl || 0;
+      const mC = mPnl >= 0 ? 'var(--green)' : 'var(--red)';
+      const assets = m.total_assets || m.totalAssets || m.marketValue || 0;
+      const pct = total > 0 ? ((assets / total) * 100).toFixed(0) : 0;
+
+      // 头像颜色
+      const avatarColors = ['#3B82F6','#10B981','#F59E0B','#EC4899','#8B5CF6','#EF4444'];
+      const ci = (m.name || '').charCodeAt(0) % avatarColors.length;
+
+      html += `<div style="background:var(--card);border-radius:12px;padding:12px;cursor:pointer" onclick="if(typeof switchProfile==='function')switchProfile('${m.id || m.userId || ''}')">
+        <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px">
+          <div style="width:32px;height:32px;border-radius:50%;background:${avatarColors[ci]};display:flex;align-items:center;justify-content:center;color:#fff;font-size:14px;font-weight:700">${(m.name || '?')[0]}</div>
+          <div>
+            <div style="font-size:13px;font-weight:700">${m.name || '未命名'}</div>
+            <div style="font-size:11px;color:var(--text2)">占比 ${pct}%</div>
+          </div>
+        </div>
+        <div style="font-size:16px;font-weight:800">¥${assets.toLocaleString()}</div>
+        ${mPnl ? `<div style="font-size:12px;color:${mC};margin-top:2px">${mPnl >= 0 ? '+' : ''}¥${mPnl.toFixed(0)}</div>` : ''}
+        <div style="margin-top:6px;background:var(--bg3);border-radius:4px;height:4px;overflow:hidden">
+          <div style="height:100%;width:${pct}%;background:${avatarColors[ci]};border-radius:4px;transition:width .3s"></div>
+        </div>
+      </div>`;
+    });
+    html += '</div>';
+
+    // 资产配置对比
+    if (d.allocation_comparison) {
+      html += `<div class="dashboard-card" style="margin-top:8px">
+        <div class="dashboard-card-title">📊 家庭配置对比</div>
+        <div style="font-size:12px;color:var(--text2);line-height:1.6">${
+          typeof d.allocation_comparison === 'string' ? d.allocation_comparison
+          : JSON.stringify(d.allocation_comparison)
+        }</div>
+      </div>`;
+    }
+
+    // 建议
+    if (d.suggestions && d.suggestions.length) {
+      html += `<div class="dashboard-card" style="margin-top:8px;border-left:3px solid var(--accent)">
+        <div class="dashboard-card-title">💡 家庭资产建议</div>
+        ${d.suggestions.map(s => `<div style="padding:6px 0;font-size:12px;border-bottom:1px solid var(--bg3);line-height:1.5">${typeof s === 'string' ? s : (s.text || s.content || '')}</div>`).join('')}
+      </div>`;
+    }
+
+    host.innerHTML = html;
+    hero.appendChild(host);
+  }
+
+  function _install(){
+    if (typeof loadOverviewHero !== 'function') return false;
+    _v6Hijack('loadOverviewHero', async function(){
+      setTimeout(_v6InjectHouseholdHero, 200);
+    });
+    return true;
+  }
+
+  if (!_install()) {
+    const t = setInterval(() => { if (_install()) clearInterval(t); }, 200);
+    setTimeout(() => clearInterval(t), 5000);
+  }
+
+  console.log('[V6-6] household-hero patch installed');
+})();
+
+// ===== V6 FRONTEND PATCHES END =====
