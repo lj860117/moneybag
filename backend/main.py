@@ -1359,7 +1359,17 @@ async def analyze_fund_holdings(req: dict = {}):
 
 @app.get("/api/daily-signal")
 def get_daily_signal():
-    """每日综合交易信号（技术面+基本面+大师策略）"""
+    """每日综合交易信号（优先凌晨预计算缓存）"""
+    # V7: 优先读凌晨预计算
+    try:
+        from services.precomputed_cache import get_precomputed
+        cached = get_precomputed("daily_signal")
+        if cached:
+            cached["from_cache"] = True
+            return cached
+    except Exception:
+        pass
+    # 原有逻辑：内存缓存 30 分钟
     cache_key = "daily_signal"
     now = time.time()
     if cache_key in macro_cache and now - macro_cache[cache_key]["ts"] < 1800:
@@ -3549,7 +3559,15 @@ def api_scenarios_list():
 
 @app.get("/api/scenario/{scenario_id}")
 def api_scenario_analyze(scenario_id: str, userId: str = ""):
-    """预设情景分析（需 R1 推理，耗时较长）"""
+    """预设情景分析（优先凌晨预计算缓存）"""
+    try:
+        from services.precomputed_cache import get_precomputed
+        cached = get_precomputed(f"scenario_{scenario_id}")
+        if cached:
+            cached["from_cache"] = True
+            return cached
+    except Exception:
+        pass
     from services.scenario_engine import analyze_scenario
     return analyze_scenario(scenario_id=scenario_id, user_id=userId)
 
@@ -3622,18 +3640,35 @@ def api_valuation(code: str):
     from services.valuation_engine import assess_valuation
     return assess_valuation(code)
 
+@app.get("/api/dcf/{code}")
+def api_dcf(code: str):
+    """个股 DCF 估值（现金流折现法）"""
+    from services.valuation_engine import dcf_valuation
+    return dcf_valuation(code)
+
 # ---- V7: 推荐引擎 + 买卖决策 ----
 @app.get("/api/recommend/stocks")
 def api_recommend_stocks(userId: str = "", topN: int = 10, pool: str = "hot", period: str = "medium"):
-    """股票推荐（5维评分+R1理由+建议仓位+持有周期）"""
+    """股票推荐（优先凌晨预计算缓存，否则实时算）"""
+    from services.precomputed_cache import get_precomputed
+    cached = get_precomputed("recommendations")
+    if cached and not userId:  # 通用推荐用缓存
+        cached["from_cache"] = True
+        return cached
     from services.recommend_engine import get_stock_recommendations
     return get_stock_recommendations(userId, topN, pool, period)
 
 @app.get("/api/decisions")
 def api_decisions(userId: str = ""):
-    """买卖决策（R1综合决策+三情景+操作建议）"""
+    """买卖决策（优先凌晨预计算缓存，否则实时算）"""
+    uid = userId or "default"
+    from services.precomputed_cache import get_precomputed
+    cached = get_precomputed("decisions", user_id=uid)
+    if cached:
+        cached["from_cache"] = True
+        return cached
     from services.decision_maker import generate_decisions
-    return generate_decisions(userId or "default")
+    return generate_decisions(uid)
 
 @app.get("/api/exposure/{code}")
 def api_exposure(code: str):

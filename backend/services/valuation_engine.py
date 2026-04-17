@@ -239,3 +239,144 @@ def enrich(ctx):
         print(f"[VALUATION] enrich failed: {e}")
 
     return ctx
+
+
+# ============================================================
+# V7.2: DCF 简化估值（现金流折现）
+# ============================================================
+
+# 默认参数（V8 可调）
+DCF_DISCOUNT_RATE = 0.10      # 折现率 10%
+DCF_TERMINAL_GROWTH = 0.03    # 永续增长率 3%
+DCF_PROJECTION_YEARS = 5      # 预测期 5 年
+DCF_MARGIN_OF_SAFETY = 0.30   # 安全边际 30%
+
+
+def dcf_valuation(code: str) -> dict:
+    """DCF 简化估值（现金流折现法）
+
+    步骤：
+    1. 获取最新自由现金流（经营现金流 - 资本支出）
+    2. 用盈利预测增速作为未来增长率
+    3. 5年现金流预测 + 终值折现
+    4. 除以总股本 = 每股内在价值
+    5. 安全边际 30% = 买入价
+
+    Returns: {
+        "intrinsic_value": float,  # 每股内在价值
+        "buy_price": float,        # 安全边际买入价
+        "current_price": float,    # 当前价
+        "upside": float,           # 上涨空间 %
+        "verdict": str,            # 低估/合理/高估
+        "emoji": str,
+    }
+    """
+    cache_key = f"dcf_{code}"
+    now = time.time()
+    if cache_key in _val_cache and now - _val_cache[cache_key]["ts"] < _VAL_CACHE_TTL:
+        return _val_cache[cache_key]["data"]
+
+    result = {"available": False, "code": code, "method": "DCF"}
+
+    try:
+        from services.tushare_data import is_configured, get_financials, _code_to_ts, _call_tushare
+        if not is_configured():
+            return result
+
+        ts_code = _code_to_ts(code)
+
+        # 1. 获取自由现金流
+        # 用 fina_indicator 的 ocfps (每股经营现金流) 作为近似
+        fin = get_financials(code)
+        ocfps = fin.get("cash_flow_per_share")
+        if not ocfps or float(ocfps) <= 0:
+            result["error"] = "无有效现金流数据"
+            _val_cache[cache_key] = {"data": result, "ts": now}
+            return result
+
+        fcf_per_share = float(ocfps)
+
+        # 2. 获取盈利增速（从一致预期）
+        growth_rate = 0.08  # 默认 8%
+        try:
+            from services.earnings_forecast import get_consensus_eps
+            fc = get_consensus_eps(code)
+            if fc.get("available"):
+                eps_now = fin.get("eps")
+                eps_forecast = fc.get("eps_avg")
+                if eps_now and eps_forecast and float(eps_now) > 0:
+                    growth_rate = max(0.02, min(0.30, float(eps_forecast) / float(eps_now) - 1))
+        except Exception:
+            pass
+
+        # 3. 5年现金流预测
+        projected = []
+        current_fcf = fcf_per_share
+        for _ in range(DCF_PROJECTION_YEARS):
+            current_fcf *= (1 + growth_rate)
+            projected.append(current_fcf)
+
+        # 4. 折现
+        pv_fcf = sum(f / (1 + DCF_DISCOUNT_RATE) ** y for y, f in enumerate(projected, 1))
+
+        # 终值 = 最后一年 FCF × (1+g) / (r-g)
+        terminal = projected[-1] * (1 + DCF_TERMINAL_GROWTH) / (DCF_DISCOUNT_RATE - DCF_TERMINAL_GROWTH)
+        pv_terminal = terminal / (1 + DCF_DISCOUNT_RATE) ** DCF_PROJECTION_YEARS
+
+        intrinsic = round(pv_fcf + pv_terminal, 2)
+        buy_price = round(intrinsic * (1 - DCF_MARGIN_OF_SAFETY), 2)
+
+        # 5. 获取当前价
+        current_price = 0
+        try:
+            import akshare as ak
+            df = ak.stock_zh_a_spot_em()
+            if df is not None:
+                code_col = next((c for c in df.columns if "代码" in c), None)
+                price_col = next((c for c in df.columns if "最新价" in c), None)
+                if code_col and price_col:
+                    match = df[df[code_col].astype(str) == code]
+                    if len(match) > 0:
+                        current_price = float(match.iloc[0][price_col])
+        except Exception:
+            pass
+
+        result["intrinsic_value"] = intrinsic
+        result["buy_price"] = buy_price
+        result["current_price"] = current_price
+        result["fcf_per_share"] = round(fcf_per_share, 2)
+        result["growth_rate"] = round(growth_rate * 100, 1)
+        result["discount_rate"] = DCF_DISCOUNT_RATE * 100
+        result["margin_of_safety"] = DCF_MARGIN_OF_SAFETY * 100
+        result["available"] = True
+
+        if current_price > 0:
+            upside = round((intrinsic / current_price - 1) * 100, 1)
+            result["upside"] = upside
+
+            if current_price <= buy_price:
+                result["verdict"] = "低估（有安全边际）"
+                result["emoji"] = "🟢"
+            elif current_price <= intrinsic:
+                result["verdict"] = "合理偏低"
+                result["emoji"] = "🟡"
+            elif current_price <= intrinsic * 1.2:
+                result["verdict"] = "合理"
+                result["emoji"] = "🟡"
+            else:
+                result["verdict"] = "高估"
+                result["emoji"] = "🔴"
+        else:
+            result["upside"] = 0
+            result["verdict"] = "无法判断（缺当前价）"
+            result["emoji"] = "⚪"
+
+        print(f"[DCF] {code}: intrinsic=¥{intrinsic}, buy=¥{buy_price}, "
+              f"current=¥{current_price}, verdict={result['verdict']}")
+
+    except Exception as e:
+        print(f"[DCF] {code} failed: {e}")
+        result["error"] = str(e)
+
+    _val_cache[cache_key] = {"data": result, "ts": now}
+    return result

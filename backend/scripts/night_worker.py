@@ -507,14 +507,76 @@ def run_night_worker():
     # 01:30 数据预热
     step_data_warm()
 
+    # ★ 预热后立即保存因子缓存
+    try:
+        from services.precomputed_cache import save_precomputed
+        from services.factor_data import get_northbound_flow, get_shibor, get_margin_trading
+        from services.market_data import get_fear_greed_index, get_valuation_percentile
+        from services.sector_rotation import get_sector_rotation
+        from services.broker_research import get_broker_consensus
+
+        save_precomputed("factors", {
+            "northbound": get_northbound_flow(),
+            "shibor": get_shibor(),
+            "margin": get_margin_trading(),
+        })
+        save_precomputed("fear_greed", get_fear_greed_index())
+        save_precomputed("valuation", get_valuation_percentile())
+
+        sr = get_sector_rotation()
+        if sr.get("available"):
+            save_precomputed("sector_rotation", sr)
+
+        br = get_broker_consensus()
+        if br.get("available"):
+            save_precomputed("broker_consensus", br)
+
+        log("  ★ 因子+指标 预计算缓存已保存")
+    except Exception as e:
+        log(f"  预计算缓存保存失败: {e}")
+
     # 02:00 R1 Phase 1: 全局市场
     phase1 = step_r1_phase1()
+
+    # ★ 保存 13 维信号预计算
+    try:
+        from services.precomputed_cache import save_precomputed
+        from services.signal import calculate_daily_signal
+        signal = calculate_daily_signal()
+        save_precomputed("daily_signal", signal)
+        log("  ★ 13维信号预计算缓存已保存")
+    except Exception as e:
+        log(f"  信号预计算失败: {e}")
 
     # 02:30 R1 Phase 2: 持仓诊断
     phase2 = step_r1_phase2()
 
     # 03:00 R1 Phase 3: 推荐+决策
     phase3 = step_r1_phase3()
+
+    # ★ 保存推荐和决策到预计算缓存
+    try:
+        from services.precomputed_cache import save_precomputed
+        if phase3.get("recommendations"):
+            save_precomputed("recommendations", {"recommendations": phase3["recommendations"]})
+        for p in _load_profiles():
+            uid = p["id"]
+            dec_key = f"decisions_{uid}"
+            if dec_key in phase3:
+                save_precomputed("decisions", phase3[dec_key], user_id=uid)
+        # 预计算4个预设情景
+        try:
+            from services.scenario_engine import analyze_scenario, PRESET_SCENARIOS
+            for sid in PRESET_SCENARIOS:
+                result = analyze_scenario(scenario_id=sid)
+                if result.get("available"):
+                    save_precomputed(f"scenario_{sid}", result)
+            log("  ★ 4个预设情景已预计算")
+        except Exception as e:
+            log(f"  预设情景预计算失败: {e}")
+        log("  ★ 推荐+决策+情景 预计算缓存已保存")
+    except Exception as e:
+        log(f"  预计算缓存保存失败: {e}")
 
     # 04:00 生成分析产物
     products = step_generate_products(phase1, phase2, phase3)
