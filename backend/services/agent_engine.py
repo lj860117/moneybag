@@ -178,53 +178,42 @@ def run_analysis_cycle(
     else:
         user_msg = "请对当前市场和我的持仓做一次综合分析。"
 
-    # Step 4: 调用 DeepSeek
-    api_key = os.environ.get("LLM_API_KEY", "")
-    if not api_key:
-        result["analysis"] = "未配置 LLM API Key"
-        result["source"] = "no_key"
-        return result
-
+    # Step 4: 通过 LLMGateway 调用（统一计费+缓存+熔断）
     try:
-        import httpx
+        from services.llm_gateway import LLMGateway
+        # 模型名 → Gateway tier
+        tier = "llm_heavy" if model == "deepseek-reasoner" else "llm_light"
+        gw_result = LLMGateway.instance().call_sync(
+            prompt=user_msg,
+            system=full_system,
+            model_tier=tier,
+            user_id=user_id,
+            module=f"agent_{skill_key}",
+            max_tokens=1200,
+        )
 
-        model_base = "https://api.deepseek.com/v1"
-        with httpx.Client(timeout=60) as client:
-            resp = client.post(
-                f"{model_base}/chat/completions",
-                headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
-                json={
-                    "model": model,
-                    "messages": [
-                        {"role": "system", "content": full_system},
-                        {"role": "user", "content": user_msg},
-                    ],
-                    "max_tokens": 1200,
-                    "temperature": 0.7,
-                },
-            )
-            if resp.status_code == 200:
-                data = resp.json()
-                reply = data["choices"][0]["message"]["content"]
-                result["analysis"] = reply
-                result["source"] = "ai"
+        if gw_result.get("fallback"):
+            reason = gw_result.get("error") or gw_result.get("source", "unknown")
+            result["analysis"] = f"LLM 不可用（{reason}）"
+            result["source"] = gw_result.get("source", "error")
+        else:
+            reply = gw_result.get("content", "")
+            result["analysis"] = reply
+            result["source"] = gw_result.get("source", "ai")
 
-                # 尝试从回答中提取置信度
-                import re
-                conf_match = re.search(r"置信度[：:]\s*(\d+)%", reply)
-                if conf_match:
-                    result["confidence"] = int(conf_match.group(1))
+            # 尝试从回答中提取置信度
+            import re
+            conf_match = re.search(r"置信度[：:]\s*(\d+)%", reply)
+            if conf_match:
+                result["confidence"] = int(conf_match.group(1))
 
-                # 提取方向
-                if "偏多" in reply[:100] or "买入" in reply[:100]:
-                    result["direction"] = "bullish"
-                elif "偏空" in reply[:100] or "减仓" in reply[:100]:
-                    result["direction"] = "bearish"
-                else:
-                    result["direction"] = "neutral"
+            # 提取方向
+            if "偏多" in reply[:100] or "买入" in reply[:100]:
+                result["direction"] = "bullish"
+            elif "偏空" in reply[:100] or "减仓" in reply[:100]:
+                result["direction"] = "bearish"
             else:
-                result["analysis"] = f"DeepSeek 返回 {resp.status_code}"
-                result["source"] = "error"
+                result["direction"] = "neutral"
     except Exception as e:
         result["analysis"] = f"分析失败: {e}"
         result["source"] = "error"

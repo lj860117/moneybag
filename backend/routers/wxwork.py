@@ -134,28 +134,41 @@ async def callback_receive(
             system_prompt = _load_prompt_template()
             full_system = f"{system_prompt}\n\n## 实时市场数据\n{market_ctx}\n\n## 用户持仓\n{portfolio_ctx}"
 
-            import httpx
-            api_key = os.getenv("LLM_API_KEY", "")
-            if not api_key:
-                send_markdown("⚠️ AI 暂不可用（未配置 API Key）", user_id=from_user)
+            # 走 LLMGateway（统一计费+缓存+熔断）
+            from services.llm_gateway import LLMGateway
+            # 模型映射：偏好模型名 → Gateway tier
+            tier = "llm_heavy" if user_model == "deepseek-reasoner" else "llm_light"
+            gw_result = LLMGateway.instance().call_sync(
+                prompt=content,
+                system=full_system,
+                model_tier=tier,
+                user_id=user_id or from_user,
+                module="wxwork_chat",
+                max_tokens=800,
+            )
+
+            if gw_result.get("fallback"):
+                reason = gw_result.get("error") or gw_result.get("source", "unknown")
+                send_markdown(f"⚠️ AI 暂不可用（{reason}）", user_id=from_user)
                 return
 
-            with httpx.Client(timeout=30) as client:
-                resp = client.post(
-                    "https://api.deepseek.com/v1/chat/completions",
-                    headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
-                    json={
-                        "model": user_model,
-                        "messages": [
-                            {"role": "system", "content": full_system},
-                            {"role": "user", "content": content},
-                        ],
-                        "max_tokens": 800,
-                        "temperature": 0.7,
-                    },
-                )
-                data = resp.json()
-                reply = data["choices"][0]["message"]["content"]
+            reply = gw_result.get("content", "")
+            if not reply.strip():
+                send_markdown("⚠️ AI 返回为空，请稍后重试", user_id=from_user)
+                return
+
+            # 保存上下文接力（企微聊天也需要记忆串联）
+            if user_id:
+                try:
+                    from services.agent_memory import save_context
+                    save_context(user_id, {
+                        "last_analysis": reply[:300],
+                        "market_phase": "",
+                        "source": "wxwork_chat",
+                        "question": content[:100],
+                    })
+                except Exception as e:
+                    print(f"[WXWORK] save_context failed: {e}")
 
             reply_md = f"🤖 AI分析师 ({model_label})\n\n{reply}"
             send_markdown(reply_md, user_id=from_user)
