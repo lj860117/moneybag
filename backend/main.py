@@ -284,7 +284,30 @@ def get_signals(portfolio: Portfolio):
 
 @app.get("/api/timing")
 def get_timing_advice():
-    """获取当前入场时机建议"""
+    """获取当前入场时机建议（优先缓存）"""
+    # V7: 用缓存的估值和恐贪（如果有）
+    try:
+        from services.precomputed_cache import get_precomputed
+        pc_val = get_precomputed("valuation")
+        pc_fgi = get_precomputed("fear_greed")
+        if pc_val and pc_fgi:
+            val = pc_val
+            fgi_data = pc_fgi
+            fgi = fgi_data.get("score", 50)
+            timing_score = val.get("percentile", 50) * 0.6 + (100 - fgi) * 0.4
+            if timing_score < 30:
+                verdict, detail = "🟢 非常适合入场", "估值低+市场恐惧，历史最佳买入窗口。"
+            elif timing_score < 50:
+                verdict, detail = "🟡 适合定投入场", "估值合理，适合定投。"
+            elif timing_score < 70:
+                verdict, detail = "🟠 谨慎入场", "估值偏高，建议降低定投。"
+            else:
+                verdict, detail = "🔴 不建议入场", "估值高+市场贪婪，等回调。"
+            return {"timingScore": round(timing_score, 1), "signal": verdict.split(" ")[0],
+                    "verdict": verdict, "detail": detail,
+                    "valuationPct": val.get("percentile", 50), "fgi": fgi, "from_cache": True}
+    except Exception:
+        pass
     val = get_valuation_percentile()
     fgi_data = get_fear_greed_index()
     fgi = fgi_data["score"]
@@ -407,16 +430,22 @@ def get_policy_news_api(limit: int = 8):
 
 @app.get("/api/news/impact")
 def get_news_impact_api():
-    """分析最新新闻对持仓基金的影响"""
+    """分析最新新闻对持仓基金的影响（30分钟缓存）"""
+    cache_key = "news_impact"
+    now = time.time()
+    if cache_key in macro_cache and now - macro_cache[cache_key]["ts"] < 1800:
+        return macro_cache[cache_key]["data"]
     policy_news = get_policy_news(15)
     market_news = get_market_news(10)
     all_news = policy_news + market_news
     impacts = analyze_news_impact(all_news)
-    return {
+    result = {
         "impacts": impacts[:8],
         "total_news_analyzed": len(all_news),
         "timestamp": datetime.now().isoformat(),
     }
+    macro_cache[cache_key] = {"data": result, "ts": now}
+    return result
 
 
 # ---- API: 技术指标 ----
