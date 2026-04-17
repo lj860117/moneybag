@@ -69,6 +69,31 @@ def get_stock_recommendations(user_id: str = "", top_n: int = 10, pool: str = "h
     # 根据周期选择权重
     weights = PERIOD_WEIGHTS.get(period, PERIOD_WEIGHTS["medium"])
     period_label = weights.get("label", "中线")
+
+    # V7.5: 按用户风险偏好调整权重
+    if user_id:
+        try:
+            from services.user_service import get_user_preference
+            pref = get_user_preference(user_id)
+            risk_type = pref.get("riskType", "balanced")
+            if risk_type == "growth":
+                # 进攻型：加技术+资金，减风险
+                weights = {**weights, "technical": weights.get("technical", 0.15) + 0.05,
+                           "capital": weights.get("capital", 0.15) + 0.05,
+                           "risk": max(0.05, weights.get("risk", 0.15) - 0.10)}
+                period_label += " · 进攻型"
+            elif risk_type == "conservative":
+                # 保守型：加估值+风险，减技术
+                weights = {**weights, "valuation": weights.get("valuation", 0.30) + 0.10,
+                           "risk": weights.get("risk", 0.15) + 0.05,
+                           "technical": max(0.05, weights.get("technical", 0.15) - 0.10),
+                           "capital": max(0.05, weights.get("capital", 0.15) - 0.05)}
+                period_label += " · 保守型"
+            elif risk_type == "balanced":
+                period_label += " · 均衡型"
+        except Exception:
+            pass
+
     active_weights = {k: v for k, v in weights.items() if k in RECOMMEND_WEIGHTS}
 
     cache_key = f"rec_{user_id}_{pool}_{top_n}_{period}"
