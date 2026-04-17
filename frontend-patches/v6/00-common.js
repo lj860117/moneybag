@@ -82,12 +82,14 @@
   // --- 持仓是否为空（判断是否进入"空仓模式"）---
   window._v6IsEmptyHoldings = function(){
     try {
-      const stocks = (typeof loadPortfolio === 'function') ? (loadPortfolio() || {}) : {};
+      const p = (typeof loadPortfolio === 'function') ? (loadPortfolio() || {}) : {};
+      const txns = (typeof loadTxns === 'function') ? (loadTxns() || []) : [];
       const assets = (typeof loadAssets === 'function') ? (loadAssets() || []) : [];
-      // 三个迹象都为空才算空仓
-      const sCount = Object.keys(stocks.stocks || stocks || {}).length;
-      const aCount = (assets || []).length;
-      return sCount === 0 && aCount === 0;
+      // holdings 数组为空 + 无交易记录 + 无资产 = 空仓
+      const hCount = (p.holdings || []).length;
+      const tCount = txns.length;
+      const aCount = assets.length;
+      return hCount === 0 && tCount === 0 && aCount === 0;
     } catch(e){ return false; }
   };
 
