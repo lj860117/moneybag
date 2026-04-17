@@ -1,6 +1,9 @@
 """
 钱袋子 — V4.5 新因子数据
 北向资金、融资融券、国债收益率、SHIBOR、股息率、LLM情绪
+V6 Phase 3: 新增北向持股行业分布推算 + enrich() Pipeline 接入
+V6 Phase 3b: 北向资金从 AKShare 切换到 Tushare moneyflow_hsgt（消除 2024-08 数据断层）
+             SHIBOR 从 AKShare 切换到 Tushare shibor（提升稳定性）
 """
 
 # ---- V4 底座：MODULE_META ----
@@ -10,8 +13,8 @@ MODULE_META = {
     "input": [],
     "output": "factors",
     "cost": "cpu",
-    "tags": ['因子', '北向', '融资', '国债', '股息'],
-    "description": "V4.5新因子数据：北向资金+融资融券+国债收益率+SHIBOR+股息率+LLM情绪",
+    "tags": ["因子", "北向", "融资", "国债", "股息", "行业分布"],
+    "description": "因子数据：北向资金(含持股行业分布)+融资融券+国债+SHIBOR+股息率+Pipeline enrich",
     "layer": "data",
     "priority": 2,
 }
@@ -25,9 +28,10 @@ factor_cache = {}
 
 def get_northbound_flow() -> dict:
     """获取北向资金（沪股通+深股通）净流入数据
-    注意：2024年8月19日起沪深交易所不再披露每日净流入明细，
-    stock_hsgt_hist_em 返回的数据8月19日后为空值。
-    降级方案：取8月19日前的历史趋势 + 标记数据不完整。
+
+    V6 Phase 3b 架构：Tushare moneyflow_hsgt（主） → AKShare（降级）
+    - Tushare: 5000积分，moneyflow_hsgt 数据持续更新到最新交易日
+    - AKShare: stock_hsgt_hist_em 在 2024-08-16 后全 NaN，仅作为历史回看降级
     """
     cache_key = "northbound"
     now = time.time()
@@ -35,49 +39,59 @@ def get_northbound_flow() -> dict:
         return factor_cache[cache_key]["data"]
 
     result = {"net_flow_today": 0, "net_flow_5d": 0, "net_flow_20d": 0, "trend": "中性", "available": False,
-              "notice": "2024年8月起交易所不再披露每日北向净流入，数据可能不完整"}
+              "source": "none"}
+
+    # ── 方案 A（主）：Tushare moneyflow_hsgt ──
+    try:
+        from services.tushare_data import is_configured, get_northbound_flow as ts_north
+        if is_configured():
+            ts_data = ts_north(days=30)
+            if ts_data.get("available"):
+                result.update(ts_data)
+                print(f"[NORTH] Tushare OK: today={result['net_flow_today']}亿, 5d={result['net_flow_5d']}亿")
+                factor_cache[cache_key] = {"data": result, "ts": now}
+                return result
+            else:
+                print("[NORTH] Tushare 返回但 available=False，降级到 AKShare")
+    except Exception as e:
+        print(f"[NORTH] Tushare failed, fallback AKShare: {e}")
+
+    # ── 方案 B（降级）：AKShare stock_hsgt_hist_em ──
+    # 注意：2024-08-16 后数据全 NaN，只能拿到历史趋势
+    result["notice"] = "2024年8月起交易所不再披露每日北向净流入，AKShare 降级数据可能过旧"
     try:
         import akshare as ak
         df = None
-        # 沪股通+深股通历史数据
-        # AKShare 接口名变更：stock_hsgt_north_net_flow_in_em → stock_hsgt_hist_em
         if hasattr(ak, "stock_hsgt_hist_em"):
             try:
                 df = ak.stock_hsgt_hist_em(symbol="北向资金")
             except Exception:
                 pass
-        if df is None and hasattr(ak, "stock_hsgt_north_net_flow_in_em"):
-            try:
-                df = ak.stock_hsgt_north_net_flow_in_em(symbol="北上")
-            except Exception:
-                pass
 
         if df is not None and len(df) >= 20:
-            # 列名可能是 "净流入" / "当日净流入" / "value"
             val_col = next((c for c in df.columns if "净流入" in str(c) or "value" in str(c).lower()), None)
             date_col = next((c for c in df.columns if "日期" in str(c) or "date" in str(c).lower()), df.columns[0])
             if val_col:
                 df = df.sort_values(date_col, ascending=True)
-                # 过滤掉空值行（2024年8月后数据可能为空）
                 valid_df = df.dropna(subset=[val_col])
                 if len(valid_df) >= 20:
                     vals = valid_df[val_col].astype(float).values
-                    result["net_flow_today"] = round(float(vals[-1]), 2)  # 亿元
+                    result["net_flow_today"] = round(float(vals[-1]), 2)
                     result["net_flow_5d"] = round(float(sum(vals[-5:])), 2)
                     result["net_flow_20d"] = round(float(sum(vals[-20:])), 2)
                     result["available"] = True
-                    # 检查数据是否过旧（超过7天没更新视为不完整）
+                    result["source"] = "akshare_fallback"
+                    # 检查数据是否过旧
                     try:
                         import pandas as pd
                         last_date = pd.to_datetime(valid_df[date_col].iloc[-1])
                         days_old = (datetime.now() - last_date).days
                         if days_old > 7:
-                            result["notice"] = f"数据最后更新于{days_old}天前，可能已过时"
+                            result["notice"] = f"数据最后更新于{days_old}天前(AKShare降级)"
                             result["stale"] = True
-                        else:
-                            result["notice"] = ""
                     except Exception:
-                        pass
+                        result["stale"] = True
+
                     if result["net_flow_5d"] > 50:
                         result["trend"] = "大幅流入"
                     elif result["net_flow_5d"] > 10:
@@ -86,9 +100,9 @@ def get_northbound_flow() -> dict:
                         result["trend"] = "大幅流出"
                     elif result["net_flow_5d"] < -10:
                         result["trend"] = "净流出"
-                    print(f"[NORTH] today={result['net_flow_today']}亿, 5d={result['net_flow_5d']}亿, 20d={result['net_flow_20d']}亿")
+                    print(f"[NORTH] AKShare fallback: today={result['net_flow_today']}亿, stale={result.get('stale')}")
     except Exception as e:
-        print(f"[NORTH] Failed: {e}")
+        print(f"[NORTH] AKShare also failed: {e}")
 
     factor_cache[cache_key] = {"data": result, "ts": now}
     return result
@@ -175,17 +189,41 @@ def get_treasury_yield() -> dict:
 
 
 def get_shibor() -> dict:
-    """获取 SHIBOR 利率（银行间市场流动性指标）"""
+    """获取 SHIBOR 利率（银行间市场流动性指标）
+
+    V6 Phase 3b 架构：Tushare shibor（主） → AKShare rate_interbank（降级）
+    """
     cache_key = "shibor"
     now = time.time()
     if cache_key in factor_cache and now - factor_cache[cache_key]["ts"] < FACTOR_CACHE_TTL:
         return factor_cache[cache_key]["data"]
 
     result = {"overnight": 0, "one_week": 0, "trend": "中性", "available": False}
+
+    # ── 方案 A（主）：Tushare shibor ──
+    try:
+        from services.tushare_data import is_configured, get_shibor_rate as ts_shibor
+        if is_configured():
+            ts_data = ts_shibor(days=30)
+            if ts_data.get("available"):
+                result["overnight"] = ts_data.get("overnight", 0)
+                result["one_week"] = ts_data.get("one_week", 0)
+                result["one_month"] = ts_data.get("one_month", 0)
+                result["trend"] = ts_data.get("trend", "中性")
+                result["available"] = True
+                result["source"] = "tushare"
+                result["data_date"] = ts_data.get("data_date", "")
+                print(f"[SHIBOR] Tushare OK: ON={result['overnight']}%, trend={result['trend']}")
+                factor_cache[cache_key] = {"data": result, "ts": now}
+                return result
+            else:
+                print("[SHIBOR] Tushare 返回但 available=False，降级到 AKShare")
+    except Exception as e:
+        print(f"[SHIBOR] Tushare failed, fallback AKShare: {e}")
+
+    # ── 方案 B（降级）：AKShare rate_interbank ──
     try:
         import akshare as ak
-        # 修复：参数需严格匹配 AKShare 官方文档
-        # market="上海银行同业拆借市场", symbol="Shibor人民币", indicator="隔夜"
         df = ak.rate_interbank(market="上海银行同业拆借市场", symbol="Shibor人民币", indicator="隔夜")
         if df is not None and len(df) >= 10:
             val_col = next((c for c in df.columns if "利率" in str(c) or "报价" in str(c)), None)
@@ -198,15 +236,16 @@ def get_shibor() -> dict:
                     avg_5d = sum(vals[-5:]) / 5
                     result["overnight"] = round(current, 4)
                     result["available"] = True
+                    result["source"] = "akshare_fallback"
                     if current > avg_5d * 1.2:
                         result["trend"] = "流动性收紧"
                     elif current < avg_5d * 0.8:
                         result["trend"] = "流动性宽松"
                     else:
                         result["trend"] = "流动性平稳"
-                    print(f"[SHIBOR] overnight={current}%, trend={result['trend']}")
+                    print(f"[SHIBOR] AKShare fallback: ON={current}%, trend={result['trend']}")
     except Exception as e:
-        print(f"[SHIBOR] Failed: {e}")
+        print(f"[SHIBOR] AKShare also failed: {e}")
 
     factor_cache[cache_key] = {"data": result, "ts": now}
     return result
@@ -533,3 +572,180 @@ def get_fund_holding_detail(code: str) -> dict:
     return result
 
 
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# V6 Phase 3: 北向持股行业分布推算
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+def get_northbound_holdings() -> dict:
+    """获取北向资金持股个股列表 → 按行业聚合持仓市值
+
+    数据源: stock_hsgt_hold_stock_em(market="北向", indicator="今日排行")
+    返回: 2700+ 只持股个股含「所属板块」字段 → 按板块聚合总市值
+
+    注意: 虽然 2024-08 后不再披露每日净流入，但持股数据仍在更新。
+    这是比净流入更好的北向资金指标——直接看"外资重仓哪些行业"。
+    """
+    cache_key = "northbound_holdings"
+    now = time.time()
+    if cache_key in factor_cache and now - factor_cache[cache_key]["ts"] < 3600:
+        return factor_cache[cache_key]["data"]
+
+    result = {"available": False, "sectors": [], "total_stocks": 0, "total_market_value": 0}
+    try:
+        import akshare as ak
+        df = ak.stock_hsgt_hold_stock_em(market="北向", indicator="今日排行")
+
+        if df is None or len(df) < 100:
+            result["error"] = "北向持股数据不足"
+            factor_cache[cache_key] = {"data": result, "ts": now}
+            return result
+
+        # 找关键列
+        sector_col = next((c for c in df.columns if "所属板块" in c or "板块" in c), None)
+        mv_col = next((c for c in df.columns if "持股-市值" in c), None)
+
+        if not sector_col:
+            result["error"] = f"列名中无板块字段: {list(df.columns)}"
+            factor_cache[cache_key] = {"data": result, "ts": now}
+            return result
+
+        # 按行业聚合
+        import pandas as pd
+        if mv_col:
+            df[mv_col] = pd.to_numeric(df[mv_col], errors="coerce").fillna(0)
+            sector_agg = df.groupby(sector_col).agg(
+                stock_count=(sector_col, "size"),
+                total_mv=(mv_col, "sum"),
+            ).reset_index()
+            sector_agg = sector_agg.sort_values("total_mv", ascending=False)
+        else:
+            # 没有市值列，只按个数聚合
+            sector_agg = df.groupby(sector_col).size().reset_index(name="stock_count")
+            sector_agg["total_mv"] = 0
+            sector_agg = sector_agg.sort_values("stock_count", ascending=False)
+
+        total_mv = sector_agg["total_mv"].sum()
+        sectors = []
+        for _, row in sector_agg.iterrows():
+            name = str(row[sector_col])
+            mv = round(float(row.get("total_mv", 0)), 2)
+            cnt = int(row.get("stock_count", 0))
+            pct = round(mv / max(total_mv, 1) * 100, 2) if total_mv > 0 else 0
+            sectors.append({
+                "name": name,
+                "market_value": mv,
+                "stock_count": cnt,
+                "pct": pct,
+            })
+
+        result = {
+            "available": True,
+            "total_stocks": len(df),
+            "total_sectors": len(sectors),
+            "total_market_value": round(total_mv, 2),
+            "top_sectors": sectors[:15],
+            "sectors": sectors,
+            "data_date": str(df.iloc[0].get("日期", "")) if "日期" in df.columns else "",
+            "notice": "持股数据仍在更新（虽净流入停披露），反映外资行业偏好",
+        }
+
+        print(f"[NORTH] 持股行业分布: {len(sectors)}行业, TOP3={[s['name'] for s in sectors[:3]]}")
+
+    except Exception as e:
+        print(f"[NORTH] get_northbound_holdings failed: {e}")
+        result["error"] = str(e)
+
+    factor_cache[cache_key] = {"data": result, "ts": now}
+    return result
+
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# V6 Phase 3: Pipeline enrich()
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+def enrich(ctx):
+    """Pipeline Layer2 自动调用 — 注入北向资金 + 融资融券 + 国债 + 北向持股行业分布
+
+    做 3 件事:
+    1. 拉北向资金净流入（历史趋势，2024-08后可能 stale）
+    2. 拉北向持股行业分布（V6 新增，用持股市值推算行业偏好）
+    3. 拉融资融券 + 国债收益率 + SHIBOR 作为辅助因子
+    """
+    try:
+        # 1. 北向资金传统数据
+        north = get_northbound_flow()
+
+        # 2. V6: 北向持股行业分布
+        north_hold = get_northbound_holdings()
+
+        # 3. 融资融券
+        margin = get_margin_trading()
+
+        # 4. 国债收益率 + SHIBOR
+        treasury = get_treasury_yield()
+        shibor = get_shibor()
+
+        # 方向判断
+        north_trend = north.get("trend", "中性")
+        if north_trend in ("大幅流入", "净流入"):
+            direction = "bullish"
+            score = 0.65
+        elif north_trend in ("大幅流出", "净流出"):
+            direction = "bearish"
+            score = 0.35
+        else:
+            direction = "neutral"
+            score = 0.5
+
+        # 融资情绪辅助
+        margin_trend = margin.get("trend", "均衡")
+        if margin_trend == "加杠杆" and direction != "bearish":
+            score = min(score + 0.05, 0.7)
+        elif margin_trend == "去杠杆" and direction != "bullish":
+            score = max(score - 0.05, 0.3)
+
+        # 构造 detail
+        detail_parts = [f"北向:{north_trend}"]
+        if north.get("available"):
+            detail_parts.append(f"5日净流入{north.get('net_flow_5d', 0):.1f}亿")
+        if north.get("stale"):
+            detail_parts.append("⚠️北向净流入数据过旧")
+        if north_hold.get("available"):
+            top3 = [s["name"] for s in north_hold.get("top_sectors", [])[:3]]
+            detail_parts.append(f"外资重仓:{','.join(top3)}")
+        detail_parts.append(f"融资:{margin_trend}")
+        if treasury.get("available"):
+            detail_parts.append(f"10Y国债{treasury.get('yield_10y', 'N/A')}%")
+
+        ctx.modules_results["factor_data"] = {
+            "direction": direction,
+            "score": score,
+            "confidence": 50 if north.get("stale") else 65,
+            "available": True,
+            "detail": " | ".join(detail_parts),
+            "north_trend": north_trend,
+            "north_flow_5d": north.get("net_flow_5d", 0),
+            "north_flow_20d": north.get("net_flow_20d", 0),
+            "north_stale": north.get("stale", False),
+            "north_holdings_available": north_hold.get("available", False),
+            "north_top_sectors": north_hold.get("top_sectors", [])[:10],
+            "north_total_stocks": north_hold.get("total_stocks", 0),
+            "margin_trend": margin_trend,
+            "margin_balance": margin.get("balance", 0),
+            "treasury_10y": treasury.get("yield_10y"),
+            "shibor_on": shibor.get("on"),
+        }
+
+        if "factor_data" not in ctx.modules_called:
+            ctx.modules_called.append("factor_data")
+
+    except Exception as e:
+        print(f"[FACTOR] enrich failed: {e}")
+        ctx.modules_results["factor_data"] = {
+            "available": False,
+            "error": str(e),
+            "direction": "neutral",
+            "score": 0.5,
+        }
+
+    return ctx

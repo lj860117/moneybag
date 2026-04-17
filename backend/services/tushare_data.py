@@ -1,9 +1,9 @@
 """
 钱袋子 — Tushare Pro 数据层
-独立 service，提供稳定的 PE/PB/财务数据（替代 AKShare 不稳定源）
+独立 service，提供稳定的 PE/PB/财务/北向资金/SHIBOR 数据
 
-数据源：Tushare Pro API（需 2000 积分）
-接口：daily_basic（估值）+ fina_indicator（财务）+ daily（行情）
+数据源：Tushare Pro API（5000 积分）
+接口：daily_basic + fina_indicator + daily + moneyflow_hsgt + shibor 等
 """
 
 # ---- V4 底座：MODULE_META ----
@@ -13,8 +13,8 @@ MODULE_META = {
     "input": [],
     "output": "tushare_data",
     "cost": "cpu",
-    "tags": ['Tushare', 'PE', 'PB', '财务'],
-    "description": "Tushare Pro数据层：PE/PB/财务指标(替代AKShare不稳定源)",
+    "tags": ['Tushare', 'PE', 'PB', '财务', '北向资金', 'SHIBOR'],
+    "description": "Tushare Pro数据层(5000积分)：PE/PB/财务/北向资金/SHIBOR",
     "layer": "data",
     "priority": 1,
 }
@@ -338,3 +338,169 @@ def get_research_reports(code: str = "", limit: int = 10) -> list:
         "ts_code,report_date,report_title,author,org_name,rating,abstract",
     )
     return rows
+
+
+# ============================================================
+# 12. 北向资金流向（moneyflow_hsgt — 替代 AKShare 断层数据）
+# ============================================================
+
+def get_northbound_flow(days: int = 30) -> dict:
+    """获取北向资金净流入（Tushare moneyflow_hsgt）
+
+    原理：moneyflow_hsgt 返回每日沪股通/深股通的「买入成交额」和「卖出成交额」，
+    净流入 = 买入 - 卖出（单位：万元）。
+
+    相比 AKShare stock_hsgt_hist_em（2024-08 后全 NaN），Tushare 数据持续更新到最新交易日。
+
+    Returns:
+        dict: {
+            "net_flow_today": float,  # 今日净流入（亿元）
+            "net_flow_5d": float,     # 近5日累计净流入
+            "net_flow_20d": float,    # 近20日累计净流入
+            "trend": str,             # 大幅流入/净流入/中性/净流出/大幅流出
+            "available": bool,
+            "source": "tushare",
+            "data_date": str,         # 最新数据日期
+        }
+    """
+    from datetime import datetime, timedelta
+
+    result = {
+        "net_flow_today": 0, "net_flow_5d": 0, "net_flow_20d": 0,
+        "trend": "中性", "available": False, "source": "tushare",
+    }
+
+    end_date = datetime.now().strftime("%Y%m%d")
+    start_date = (datetime.now() - timedelta(days=days + 10)).strftime("%Y%m%d")  # 多取几天防节假日
+
+    rows = _call_tushare(
+        "moneyflow_hsgt",
+        {"start_date": start_date, "end_date": end_date},
+        "trade_date,ggt_ss,ggt_sz,hgt,sgt,north_money,south_money",
+    )
+
+    if not rows:
+        print("[TUSHARE-NORTH] moneyflow_hsgt 返回空")
+        return result
+
+    # 按日期升序排列
+    rows = sorted(rows, key=lambda x: x.get("trade_date", ""))
+
+    # 计算每日北向净流入（万元）
+    # north_money = 沪股通净买额 + 深股通净买额（Tushare 直接提供）
+    # 如果 north_money 字段可用就直接用，否则 hgt + sgt
+    daily_flows = []
+    for row in rows:
+        trade_date = row.get("trade_date", "")
+        # north_money 是直接的北向净买入（万元）
+        nm = row.get("north_money")
+        if nm is not None:
+            net_flow = float(nm)
+        else:
+            # 降级：hgt（沪股通）+ sgt（深股通）
+            hgt = float(row.get("hgt", 0) or 0)
+            sgt = float(row.get("sgt", 0) or 0)
+            net_flow = hgt + sgt
+        daily_flows.append({"date": trade_date, "net_flow": net_flow})
+
+    if len(daily_flows) < 5:
+        print(f"[TUSHARE-NORTH] 数据不足: {len(daily_flows)}天")
+        return result
+
+    # 单位转换：万元 → 亿元
+    def wan_to_yi(v):
+        return round(v / 10000, 2)
+
+    result["net_flow_today"] = wan_to_yi(daily_flows[-1]["net_flow"])
+    result["net_flow_5d"] = wan_to_yi(sum(d["net_flow"] for d in daily_flows[-5:]))
+    result["net_flow_20d"] = wan_to_yi(sum(d["net_flow"] for d in daily_flows[-20:]))
+    result["data_date"] = daily_flows[-1]["date"]
+    result["available"] = True
+
+    # 趋势判断（基于5日累计）
+    flow_5d = result["net_flow_5d"]
+    if flow_5d > 50:
+        result["trend"] = "大幅流入"
+    elif flow_5d > 10:
+        result["trend"] = "净流入"
+    elif flow_5d < -50:
+        result["trend"] = "大幅流出"
+    elif flow_5d < -10:
+        result["trend"] = "净流出"
+    else:
+        result["trend"] = "中性"
+
+    print(f"[TUSHARE-NORTH] date={result['data_date']}, "
+          f"today={result['net_flow_today']}亿, 5d={result['net_flow_5d']}亿, "
+          f"20d={result['net_flow_20d']}亿, trend={result['trend']}")
+
+    return result
+
+
+# ============================================================
+# 13. SHIBOR 利率（替代 AKShare rate_interbank）
+# ============================================================
+
+def get_shibor_rate(days: int = 30) -> dict:
+    """获取 SHIBOR 利率（Tushare shibor 接口）
+
+    相比 AKShare rate_interbank（东财接口不稳定），Tushare 的 shibor 数据更稳定。
+
+    Returns:
+        dict: {
+            "overnight": float,   # 隔夜利率 (%)
+            "one_week": float,    # 1周利率 (%)
+            "one_month": float,   # 1月利率 (%)
+            "trend": str,         # 流动性收紧/平稳/宽松
+            "available": bool,
+            "source": "tushare",
+            "data_date": str,
+        }
+    """
+    from datetime import datetime, timedelta
+
+    result = {
+        "overnight": 0, "one_week": 0, "one_month": 0,
+        "trend": "中性", "available": False, "source": "tushare",
+    }
+
+    end_date = datetime.now().strftime("%Y%m%d")
+    start_date = (datetime.now() - timedelta(days=days + 10)).strftime("%Y%m%d")
+
+    rows = _call_tushare(
+        "shibor",
+        {"start_date": start_date, "end_date": end_date},
+        "date,on,1w,2w,1m,3m,6m,9m,1y",
+    )
+
+    if not rows:
+        print("[TUSHARE-SHIBOR] shibor 返回空")
+        return result
+
+    # 按日期升序
+    rows = sorted(rows, key=lambda x: x.get("date", ""))
+
+    latest = rows[-1]
+    result["overnight"] = round(float(latest.get("on", 0) or 0), 4)
+    result["one_week"] = round(float(latest.get("1w", 0) or 0), 4)
+    result["one_month"] = round(float(latest.get("1m", 0) or 0), 4)
+    result["data_date"] = latest.get("date", "")
+    result["available"] = True
+
+    # 趋势判断：对比近5日均值
+    if len(rows) >= 5:
+        recent_on = [float(r.get("on", 0) or 0) for r in rows[-5:]]
+        avg_5d = sum(recent_on) / 5
+        current = result["overnight"]
+        if current > avg_5d * 1.2:
+            result["trend"] = "流动性收紧"
+        elif current < avg_5d * 0.8:
+            result["trend"] = "流动性宽松"
+        else:
+            result["trend"] = "流动性平稳"
+
+    print(f"[TUSHARE-SHIBOR] date={result['data_date']}, "
+          f"ON={result['overnight']}%, 1W={result['one_week']}%, "
+          f"trend={result['trend']}")
+
+    return result
