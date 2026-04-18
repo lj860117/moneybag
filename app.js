@@ -11,18 +11,16 @@
 // ============================================================
 (function _cleanLegacyIds() {
   try {
-    const FRONTEND_VERSION = '7.1.0';
+    // 只清旧账号残留，不依赖版本号，避免每次升级都清缓存扰动用户
     const BLACKLIST_NAMES = ['厉害了哥', '部落格里', 'test_a', 'test_v', 'test_user'];
-    const lastVersion = localStorage.getItem('moneybag_frontend_version');
-
-    // 检查 profile 名字是否在黑名单
     let needClean = false;
+
     try {
       const cur = localStorage.getItem('moneybag_current_profile');
       if (cur) {
         const p = JSON.parse(cur);
         if (p && BLACKLIST_NAMES.includes(p.name)) {
-          console.warn('[自毁升级] 检测到旧账号名:', p.name, '→ 清理并切换为企微ID');
+          console.warn('[清理] 检测到旧账号名:', p.name);
           needClean = true;
         }
       }
@@ -35,29 +33,24 @@
       }
     } catch (e) {}
 
-    if (needClean || (lastVersion && lastVersion !== FRONTEND_VERSION)) {
-      // 保留企微 context 信息，清掉 profile 和缓存
-      const wx = localStorage.getItem('moneybag_wxwork_ctx');
+    // 只有检测到黑名单名字才动手，其余情况什么都不做
+    if (needClean) {
+      // 保留企微 context（下次自动用企微ID登录）
       ['moneybag_current_profile', 'moneybag_profiles',
        'moneybag_market_cache', 'moneybag_ai_cache'].forEach(k => {
         localStorage.removeItem(k);
       });
-      localStorage.setItem('moneybag_frontend_version', FRONTEND_VERSION);
-      console.log('[自毁升级] localStorage 已清理，将重新登录');
+      console.log('[清理] 旧账号数据已清理，将重新登录');
 
-      // 清 SW 缓存
       if ('caches' in window) {
         caches.keys().then(keys => {
           keys.forEach(k => caches.delete(k));
-          // 刷一次让新前端生效
-          if (needClean) setTimeout(() => location.reload(), 500);
+          setTimeout(() => location.reload(), 500);
         });
       }
-    } else {
-      localStorage.setItem('moneybag_frontend_version', FRONTEND_VERSION);
     }
   } catch (e) {
-    console.error('[自毁升级] 失败:', e);
+    console.error('[清理] 失败:', e);
   }
 })();
 
