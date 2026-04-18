@@ -358,7 +358,45 @@ def _write_precomputed_fast():
         except Exception:
             pass
 
-        print(f"  ★ precomputed 缓存已刷新")
+        # P2.1: 新增 4 项预计算（扩展凌晨覆盖范围）
+
+        # 全球市场快照
+        try:
+            from services.global_market import get_global_snapshot
+            gs = get_global_snapshot()
+            if gs:
+                save_precomputed("global_snapshot", gs)
+        except Exception:
+            pass
+
+        # 新闻情绪打分
+        try:
+            from services.data_layer import get_news_sentiment_score
+            sentiment = get_news_sentiment_score()
+            if sentiment.get("available"):
+                save_precomputed("news_sentiment", sentiment)
+        except Exception:
+            pass
+
+        # 大宗商品价格
+        try:
+            from services.market_factors import get_commodity_impact_assessment
+            comm = get_commodity_impact_assessment()
+            if comm:
+                save_precomputed("commodities", comm)
+        except Exception:
+            pass
+
+        # 宏观数据（CPI/PMI/M2）
+        try:
+            from services.macro_data import get_macro_calendar
+            macro = get_macro_calendar()
+            if macro:
+                save_precomputed("macro", {"events": macro})
+        except Exception:
+            pass
+
+        print(f"  ★ precomputed 缓存已刷新（含P2.1扩展4项）")
     except Exception as e:
         print(f"  precomputed 刷新失败: {e}")
 
