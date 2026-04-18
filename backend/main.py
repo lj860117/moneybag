@@ -3771,7 +3771,7 @@ def api_recommend_stocks(userId: str = "", topN: int = 10, pool: str = "hot", pe
     """股票推荐（优先凌晨预计算缓存，否则实时算）"""
     from services.precomputed_cache import get_precomputed
     cached = get_precomputed("recommendations")
-    if cached and not userId:  # 通用推荐用缓存
+    if cached:  # 推荐是全局数据，有缓存就用（P0.4修复：去掉 not userId 限制）
         cached["from_cache"] = True
         return cached
     from services.recommend_engine import get_stock_recommendations
