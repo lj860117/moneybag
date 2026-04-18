@@ -120,6 +120,104 @@ def _collect_decision_context(user_id: str) -> dict:
     except Exception:
         pass
 
+    # ===== P0.1: 补采完整数据（解决信息饥荒） =====
+
+    # 北向资金
+    try:
+        from services.factor_data import get_northbound_flow
+        north = get_northbound_flow()
+        if north.get("available"):
+            ctx["northbound"] = {
+                "net_flow_today": north.get("net_flow_today", 0),
+                "net_flow_5d": north.get("net_flow_5d", 0),
+                "net_flow_20d": north.get("net_flow_20d", 0),
+                "trend": north.get("trend", ""),
+            }
+    except Exception as e:
+        print(f"[DECISION] 北向资金采集失败: {e}")
+
+    # 融资融券
+    try:
+        from services.factor_data import get_margin_trading
+        margin = get_margin_trading()
+        if margin.get("available"):
+            ctx["margin"] = {
+                "margin_balance": margin.get("margin_balance", 0),
+                "margin_change_5d": margin.get("margin_change_5d", 0),
+            }
+    except Exception as e:
+        print(f"[DECISION] 融资融券采集失败: {e}")
+
+    # SHIBOR
+    try:
+        from services.factor_data import get_shibor
+        shibor = get_shibor()
+        if shibor.get("available"):
+            ctx["shibor"] = {
+                "overnight": shibor.get("overnight", 0),
+                "trend": shibor.get("trend", ""),
+            }
+    except Exception as e:
+        print(f"[DECISION] SHIBOR采集失败: {e}")
+
+    # 新闻情绪
+    try:
+        from services.data_layer import get_news_sentiment_score
+        sentiment = get_news_sentiment_score()
+        if sentiment.get("available"):
+            ctx["news_sentiment"] = {
+                "score": sentiment.get("score", 0),
+                "level": sentiment.get("level", "中性"),
+                "reason": sentiment.get("reason", ""),
+            }
+    except Exception as e:
+        print(f"[DECISION] 新闻情绪采集失败: {e}")
+
+    # 研报共识
+    try:
+        from services.broker_research import get_broker_consensus
+        br = get_broker_consensus()
+        if br.get("available"):
+            ctx["broker_consensus"] = {
+                "total": br.get("total_reports", 0),
+                "consensus": br.get("consensus", ""),
+                "hot_industries": br.get("hot_industries", [])[:3],
+                "risk_keywords": br.get("risk_keywords", [])[:3],
+            }
+    except Exception as e:
+        print(f"[DECISION] 研报共识采集失败: {e}")
+
+    # 大宗商品
+    try:
+        from services.market_factors import get_commodity_impact_assessment
+        commodities = get_commodity_impact_assessment()
+        if commodities:
+            ctx["commodities"] = {
+                "oil_price": commodities.get("brent_estimate", {}).get("price", 0),
+                "oil_alert": commodities.get("brent_estimate", {}).get("alert_level", "normal"),
+                "gold_price": commodities.get("gold", {}).get("price", 0),
+            }
+    except Exception as e:
+        print(f"[DECISION] 大宗商品采集失败: {e}")
+
+    # 恐贪指数 + 估值百分位
+    try:
+        from services.data_layer import get_fear_greed_index, get_valuation_percentile
+        fgi = get_fear_greed_index()
+        ctx["fear_greed"] = {"score": fgi.get("score", 50), "level": fgi.get("level", "中性")}
+        val = get_valuation_percentile()
+        ctx["valuation"] = {"percentile": val.get("percentile", 50), "pe": val.get("current_pe", 0)}
+    except Exception as e:
+        print(f"[DECISION] 恐贪/估值采集失败: {e}")
+
+    # 13维信号分项详情（补充到已有的 signal 汇总之外）
+    try:
+        from services.signal import generate_daily_signal
+        full_signal = generate_daily_signal()
+        ctx["signal_details"] = full_signal.get("details", [])
+    except Exception as e:
+        print(f"[DECISION] 信号分项采集失败: {e}")
+
     return ctx
 
 
@@ -153,12 +251,79 @@ def _llm_decision(context: dict, user_id: str) -> dict:
     geo = context.get("geopolitical", {})
     regime = context.get("regime", "unknown")
 
-    prompt = f"""你是专业投资顾问。基于以下全量数据，为用户生成具体操作建议。
+    # ===== P0.1: 构建完整数据段（解决信息饥荒） =====
 
-## 市场状态
-- 13维信号: {signal.get('overall', 'HOLD')}, 得分{signal.get('score', 0)}, 置信度{signal.get('confidence', 0)}%
+    # 资金面
+    capital_lines = []
+    if context.get("northbound"):
+        n = context["northbound"]
+        capital_lines.append(f"- 北向资金: 今日{n['net_flow_today']:+.1f}亿，5日{n['net_flow_5d']:+.1f}亿，20日{n['net_flow_20d']:+.1f}亿，趋势={n['trend']}")
+    if context.get("margin"):
+        m = context["margin"]
+        capital_lines.append(f"- 融资融券: 余额{m['margin_balance']:.0f}亿，5日变动{m['margin_change_5d']:+.1f}%")
+    if context.get("shibor"):
+        s = context["shibor"]
+        capital_lines.append(f"- SHIBOR: 隔夜{s['overnight']}%，趋势={s['trend']}")
+    capital_text = "\n".join(capital_lines) if capital_lines else "- 资金面数据暂不可用"
+
+    # 情绪面
+    sentiment_lines = []
+    if context.get("fear_greed"):
+        fg = context["fear_greed"]
+        sentiment_lines.append(f"- 恐贪指数: {fg['score']:.0f}（{fg['level']}）")
+    if context.get("news_sentiment"):
+        ns = context["news_sentiment"]
+        sentiment_lines.append(f"- 新闻情绪: {ns['score']:+d}分（{ns['level']}）{'，' + ns['reason'] if ns.get('reason') else ''}")
+    sentiment_text = "\n".join(sentiment_lines) if sentiment_lines else "- 情绪面数据暂不可用"
+
+    # 基本面
+    fundamental_lines = []
+    if context.get("valuation"):
+        v = context["valuation"]
+        fundamental_lines.append(f"- 估值百分位: {v['percentile']}%，当前PE={v['pe']}")
+    if context.get("broker_consensus"):
+        br = context["broker_consensus"]
+        fundamental_lines.append(f"- 研报共识: {br['total']}篇，方向={br['consensus']}，热门行业={'、'.join(br['hot_industries'])}")
+    fundamental_text = "\n".join(fundamental_lines) if fundamental_lines else "- 基本面数据暂不可用"
+
+    # 大宗商品
+    commodity_text = "- 暂不可用"
+    if context.get("commodities"):
+        c = context["commodities"]
+        commodity_text = f"- 原油≈{c['oil_price']:.0f}美元/桶（{c['oil_alert']}），黄金={c['gold_price']:.0f}元/克"
+
+    # 13维信号分项
+    signal_detail_lines = []
+    for d in context.get("signal_details", []):
+        signal_detail_lines.append(f"  {d.get('category','')}/{d.get('name','')}: {d.get('score',0):+.1f}分（{d.get('weight','?')}）— {d.get('detail','')[:60]}")
+    signal_detail_text = "\n".join(signal_detail_lines) if signal_detail_lines else "  数据暂不可用"
+
+    # 地缘详情
+    geo_text = f"severity={geo.get('severity', 0)}, level={geo.get('level', '低')}"
+
+    prompt = f"""你是专业 A 股投资顾问，拥有 20 年从业经验。基于以下完整市场数据，为用户生成具体操作建议。
+
+## 13维综合信号
+- 信号: {signal.get('overall', 'HOLD')}，得分{signal.get('score', 0)}，置信度{signal.get('confidence', 0)}%
 - 市场 Regime: {regime}
-- 地缘风险: {geo.get('level', '低')} (severity={geo.get('severity', 0)})
+
+### 13维分项详情
+{signal_detail_text}
+
+## 资金面（聪明钱动向）
+{capital_text}
+
+## 情绪面
+{sentiment_text}
+
+## 基本面
+{fundamental_text}
+
+## 大宗商品
+{commodity_text}
+
+## 地缘风险
+- {geo_text}
 - 行业热点: {', '.join(context.get('hot_sectors', ['暂无']))}
 
 ## 用户持仓
@@ -177,7 +342,7 @@ def _llm_decision(context: dict, user_id: str) -> dict:
       "name": "名称",
       "action": "buy/sell/hold/reduce/add",
       "position_pct": 5,
-      "reason": "一句话理由",
+      "reason": "一句话理由（必须引用上述具体数据支撑）",
       "confidence": 75,
       "risk_warning": "主要风险"
     }}
@@ -193,10 +358,11 @@ def _llm_decision(context: dict, user_id: str) -> dict:
 
 注意：
 1. 空仓时推荐买入1-3只，有持仓时给出逐只操作建议
-2. 地缘风险高时降低仓位，提示风险
-3. action 只能是 buy/sell/hold/reduce/add 之一
-4. position_pct 是建议仓位百分比(0-20)
-5. confidence 是置信度(0-100)"""
+2. 决策理由必须引用具体数据（如"北向5日净流入145亿"），禁止空泛表述
+3. 地缘 severity≥4 时降低仓位，severity=5 时暂停所有买入
+4. action 只能是 buy/sell/hold/reduce/add 之一
+5. position_pct 是建议仓位百分比(0-20)
+6. confidence 是置信度(0-100)"""
 
     try:
         with httpx.Client(timeout=60) as client:
@@ -318,11 +484,21 @@ def _save_decision_log(user_id: str, decisions: dict, context: dict):
             "decisions": decisions,
             "context_summary": {
                 "signal": context.get("signal", {}),
+                "signal_details": context.get("signal_details", []),
                 "regime": context.get("regime"),
                 "geo_severity": context.get("geopolitical", {}).get("severity", 0),
                 "stock_count": len(context.get("stock_holdings", [])),
                 "fund_count": len(context.get("fund_holdings", [])),
                 "rec_count": len(context.get("recommendations", [])),
+                # P0.1: 完整数据快照（V8 复盘归因用）
+                "northbound": context.get("northbound"),
+                "margin": context.get("margin"),
+                "shibor": context.get("shibor"),
+                "news_sentiment": context.get("news_sentiment"),
+                "broker_consensus": context.get("broker_consensus"),
+                "commodities": context.get("commodities"),
+                "fear_greed": context.get("fear_greed"),
+                "valuation": context.get("valuation"),
             },
             "saved_at": datetime.now().isoformat(),
         }
