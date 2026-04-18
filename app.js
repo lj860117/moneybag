@@ -1520,8 +1520,17 @@ el.innerHTML=`
 <div style="text-align:center;margin-top:12px;font-size:13px;color:var(--text2)">${b.position||''}</div></div>
 <div style="text-align:center;padding:16px;font-size:12px;color:#475569;line-height:1.6">💡 点击任意卡片查看白话解释 · 技术指标是辅助参考，需结合估值和基本面综合判断</div>`}
 
-function renderInsightMacro(el,d){
-const macro=d.macro||[];
+async function renderInsightMacro(el,d){
+let macro=d.macro||[];
+// dashboard 走缓存时没有 macro，独立调 /api/macro 拉取
+if(!macro.length){
+  el.innerHTML='<div style="text-align:center;padding:40px;color:var(--text2)"><div class="loading-spinner" style="width:32px;height:32px;margin:0 auto 12px;border-width:3px"></div>正在加载宏观数据...</div>';
+  try{
+    const r=await fetch(API_BASE+'/macro',{signal:AbortSignal.timeout(15000)});
+    const j=await r.json();
+    macro=j.events||[];
+  }catch(e){console.warn('[macro] fetch failed:',e);macro=[]}
+}
 const macroKeyMap={'CPI':'cpi','PMI':'pmi','M2':'m2','PPI':'ppi'};
 el.innerHTML=`<div class="dashboard-card"><div class="dashboard-card-title">🏛️ 宏观经济数据 <span style="font-size:11px;color:var(--accent)">点击查看白话解释</span></div>
 ${macro.length?macro.map((e,i)=>{const mkey=Object.keys(macroKeyMap).find(k=>e.name.includes(k));const explainKey=mkey?macroKeyMap[mkey]:'macro_'+i;if(!mkey){setExplain(explainKey,e.name,'📊 '+e.name+'\n\n'+e.impact+'\n\n点击查看更多：可在百度搜索「'+e.name+' 最新数据」了解详情。')}return`<div class="macro-item" onclick="showExplain('${explainKey}')" style="cursor:pointer"><div class="macro-icon">${e.icon||'📅'}</div><div class="macro-info"><div class="macro-name">${e.name}</div><div class="macro-value">${e.value||'—'}</div><div class="macro-date">${e.date||''}</div><div class="macro-impact">${e.impact||''}</div></div><div class="news-arrow">›</div></div>`}).join(''):'<div style="text-align:center;padding:20px;color:var(--text2)">暂无数据</div>'}
