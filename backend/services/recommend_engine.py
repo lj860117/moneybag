@@ -300,18 +300,93 @@ def _score_earnings(stock: dict) -> int:
 
 
 def _score_technical(stock: dict) -> int:
-    """技术维度评分 (0-100)"""
-    score = 50
+    """技术维度评分 (0-100) — 个股级 RSI/MACD/均线
+    P0.2: 从空壳（永远50）改为真实评分
+    """
+    code = stock.get("code", "")
+    if not code:
+        return 50
+
+    # 检查缓存（1小时 TTL，避免重复拉 K 线）
+    cache_key = f"tech_{code}"
+    now = time.time()
+    if cache_key in _rec_cache and now - _rec_cache[cache_key].get("ts", 0) < 3600:
+        return _rec_cache[cache_key].get("score", 50)
+
     try:
-        code = stock.get("code", "")
-        if code:
-            from services.market_data import get_technical_indicators
-            # 注意：get_technical_indicators 是按指数（沪深300）的
-            # 个股技术面暂用默认分
-            pass
-    except Exception:
-        pass
-    return score
+        import akshare as ak
+        import numpy as np
+        from datetime import datetime as _dt, timedelta as _td
+
+        # 拉 60 日 K 线（前复权）
+        end_date = _dt.now().strftime("%Y%m%d")
+        start_date = (_dt.now() - _td(days=90)).strftime("%Y%m%d")
+        df = ak.stock_zh_a_hist(symbol=code, period="daily",
+                                 start_date=start_date, end_date=end_date, adjust="qfq")
+        if df is None or len(df) < 30:
+            return 50
+
+        close = df["收盘"].values.astype(float)
+        score = 50
+
+        # RSI(14)
+        deltas = np.diff(close)
+        gains = np.where(deltas > 0, deltas, 0)
+        losses = np.where(deltas < 0, -deltas, 0)
+        avg_gain = np.mean(gains[-14:])
+        avg_loss = np.mean(losses[-14:])
+        if avg_loss > 0:
+            rs = avg_gain / avg_loss
+            rsi = 100 - (100 / (1 + rs))
+        else:
+            rsi = 100
+        if rsi < 30:
+            score += 20  # 超卖
+        elif rsi < 40:
+            score += 10
+        elif rsi > 70:
+            score -= 20  # 超买
+        elif rsi > 60:
+            score -= 10
+
+        # MACD（12, 26, 9）
+        def _ema(arr, span):
+            result = np.zeros_like(arr)
+            result[0] = arr[0]
+            alpha = 2 / (span + 1)
+            for i in range(1, len(arr)):
+                result[i] = alpha * arr[i] + (1 - alpha) * result[i - 1]
+            return result
+
+        ema12 = _ema(close, 12)
+        ema26 = _ema(close, 26)
+        macd_line = ema12 - ema26
+        signal_line = _ema(macd_line, 9)
+        if len(macd_line) >= 2 and len(signal_line) >= 2:
+            if macd_line[-1] > signal_line[-1] and macd_line[-2] <= signal_line[-2]:
+                score += 15  # 金叉
+            elif macd_line[-1] < signal_line[-1] and macd_line[-2] >= signal_line[-2]:
+                score -= 15  # 死叉
+            elif macd_line[-1] > signal_line[-1]:
+                score += 5   # 多头
+            elif macd_line[-1] < signal_line[-1]:
+                score -= 5   # 空头
+
+        # MA20 位置
+        if len(close) >= 20:
+            ma20 = np.mean(close[-20:])
+            if close[-1] > ma20:
+                score += 10  # 站上均线
+            else:
+                score -= 10  # 跌破均线
+
+        final_score = max(0, min(100, score))
+        _rec_cache[cache_key] = {"score": final_score, "ts": now}
+        return final_score
+
+    except Exception as e:
+        print(f"[RECOMMEND] 技术评分失败 {code}: {e}")
+        return 50
 
 
 def _score_capital(stock: dict) -> int:
