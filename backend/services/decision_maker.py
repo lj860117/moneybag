@@ -201,7 +201,7 @@ def _llm_decision(context: dict, user_id: str) -> dict:
     try:
         with httpx.Client(timeout=60) as client:
             resp = client.post(
-                f"{LLM_API_URL}/chat/completions",
+                LLM_API_URL,
                 headers={"Authorization": f"Bearer {LLM_API_KEY}", "Content-Type": "application/json"},
                 json={
                     "model": "deepseek-reasoner",  # R1 深度推理

@@ -376,7 +376,7 @@ def _generate_reasons(top_items: list):
 
         with httpx.Client(timeout=30) as client:
             resp = client.post(
-                f"{LLM_API_URL}/chat/completions",
+                LLM_API_URL,
                 headers={"Authorization": f"Bearer {LLM_API_KEY}", "Content-Type": "application/json"},
                 json={
                     "model": "deepseek-chat",

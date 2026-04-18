@@ -303,7 +303,7 @@ def _call_llm_for_scenario(prompt: str, use_r1: bool = True) -> dict:
     try:
         with httpx.Client(timeout=60) as client:
             resp = client.post(
-                f"{api_url}/chat/completions",
+                api_url,
                 headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
                 json={
                     "model": model,
