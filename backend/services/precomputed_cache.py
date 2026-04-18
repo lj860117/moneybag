@@ -9,7 +9,7 @@ night_worker.py 凌晨算完后调用 save_precomputed() 写入磁盘
 
 import json
 import time
-from datetime import datetime, date
+from datetime import datetime, date, timedelta
 from pathlib import Path
 from config import DATA_DIR
 
@@ -50,10 +50,24 @@ def save_precomputed(key: str, data: dict, user_id: str = ""):
 
 
 def get_precomputed(key: str, user_id: str = "") -> dict:
-    """读取预计算缓存（如果有效）"""
+    """读取预计算缓存（如果有效）
+
+    非交易日（周末/节假日）自动延长 TTL——周五的数据周末一直可用。
+    """
     suffix = f"_{user_id}" if user_id else ""
+
+    # 先找今天的缓存
     filename = f"{key}{suffix}_{date.today()}.json"
     filepath = PRECOMPUTED_DIR / filename
+
+    # 如果今天没有，找最近 3 天的（覆盖周末）
+    if not filepath.exists():
+        for days_ago in range(1, 4):
+            d = date.today() - timedelta(days=days_ago)
+            alt = PRECOMPUTED_DIR / f"{key}{suffix}_{d}.json"
+            if alt.exists():
+                filepath = alt
+                break
 
     if not filepath.exists():
         return None
@@ -63,10 +77,21 @@ def get_precomputed(key: str, user_id: str = "") -> dict:
         ts = record.get("ts", 0)
         ttl = _PRECOMPUTED_TTL.get(key, 7200)
 
+        # 非交易日（周末）：TTL 延长到 72 小时
+        from datetime import datetime as dt
+        if dt.now().weekday() >= 5:  # 周六=5, 周日=6
+            ttl = max(ttl, 259200)  # 72小时
+
         if time.time() - ts > ttl:
             return None  # 过期
 
-        return record.get("data")
+        data = record.get("data")
+        if data and isinstance(data, dict):
+            # 标注数据来源时间
+            cached_at = record.get("computed_at", "")
+            if cached_at and dt.now().weekday() >= 5:
+                data["_cache_note"] = f"数据截至 {cached_at[:16]}（非交易日使用缓存）"
+        return data
     except Exception:
         return None
 
