@@ -737,8 +737,14 @@ def etf_flow_api():
 
 @app.get("/api/market-factors/all")
 def market_factors_all():
-    """全部市场微观因子"""
-    return get_all_market_factors()
+    """全部市场微观因子（非交易日加友好提示）"""
+    result = get_all_market_factors()
+    # 非交易日友好提示
+    sr = result.get("sector_rotation", result) if isinstance(result, dict) else {}
+    if not sr.get("available") and datetime.now().weekday() >= 5:
+        if isinstance(result, dict):
+            result["_weekend_note"] = "📅 非交易日，行业/大宗数据暂无更新，将在下个交易日自动恢复"
+    return result
 
 
 # ---- 持仓关联智能 API ----

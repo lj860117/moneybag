@@ -4279,7 +4279,7 @@ el.innerHTML='<div style="text-align:center;padding:20px"><div class="loading-sp
 try{
 const r=await fetch('/api/market-factors/all');const d=await r.json();
 const sr=d.sector_rotation||d;
-if(!sr.available&&!sr.top_gainers){el.innerHTML='<div style="text-align:center;padding:20px;color:var(--text2)">行业数据暂不可用</div>';return}
+if(!sr.available&&!sr.top_gainers){const note=d._weekend_note||'';el.innerHTML='<div style="text-align:center;padding:40px;color:var(--text2)">'+(note?'<div style="font-size:14px;margin-bottom:8px">📅</div><div style="font-size:13px;line-height:1.6">'+note+'</div>':'行业数据暂不可用')+'<br><button onclick="renderInsight()" style="margin-top:12px;padding:6px 16px;border-radius:8px;border:none;background:var(--accent);color:#fff;cursor:pointer;font-size:12px">🔄 重试</button></div>';return}
 const gainers=sr.top_gainers||sr.sectors||[];
 const signal=sr.rotation_signal||sr.pattern||'均衡';
 let html='<div class="dashboard-card" style="border-left:3px solid var(--accent)"><div class="dashboard-card-title">🔥 行业轮动信号</div><div style="font-size:16px;font-weight:800;margin:8px 0">'+signal+'</div></div>';
