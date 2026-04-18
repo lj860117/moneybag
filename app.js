@@ -1292,6 +1292,8 @@ if(!API_AVAILABLE){document.getElementById('insightContent').innerHTML='<div sty
 if(insightTab==='sector'){const el=document.getElementById('insightContent');if(el)renderSectorHot(el);return}
 if(insightTab==='broker'){const el=document.getElementById('insightContent');if(el)renderBrokerView(el);return}
 if(insightTab==='scenario'){const el=document.getElementById('insightContent');if(el)renderScenarioView(el);return}
+if(insightTab==='recommend'){const el=document.getElementById('insightContent');if(el)renderRecommendTab(el);return}
+if(insightTab==='decisions'){const el=document.getElementById('insightContent');if(el)renderDecisionsTab(el);return}
 if(insightTab==='fundpick'){const el=document.getElementById('insightContent');if(el)renderFundPick(el);return}
 if(insightTab==='stockpick'){const el=document.getElementById('insightContent');if(el)renderStockPick(el);return}
 if(insightTab==='factorictest'){const el=document.getElementById('insightContent');if(el)renderFactorIC(el);return}
@@ -4347,6 +4349,65 @@ if(a.portfolio_advice)html+='<div style="font-size:13px;margin-top:8px;padding:8
 html+='<div style="font-size:11px;color:var(--text2);margin-top:8px">模型: '+d.model+' | 置信度: '+(a.confidence||0)+'%</div>';
 html+='</div><button class="action-btn secondary" onclick="renderScenarioView(document.getElementById(\'insightContent\'))" style="margin-top:12px;width:100%">← 返回情景列表</button>';
 el.innerHTML=html}catch(e){el.innerHTML='<div style="padding:20px;color:var(--bear)">请求失败: '+e.message+'</div>'}}
+
+
+async function renderRecommendTab(el){
+el.innerHTML='<div style="text-align:center;padding:20px"><div class="loading-spinner" style="width:24px;height:24px;margin:0 auto 8px;border-width:2px"></div>加载推荐数据...</div>';
+try{
+const uid=getProfileId();
+const r=await fetch(API_BASE+'/recommend/stocks?userId='+uid+'&topN=10&period=medium',{signal:AbortSignal.timeout(15000)});
+if(!r.ok){el.innerHTML='<div style="text-align:center;padding:20px;color:var(--text2)">推荐数据暂不可用'+(r.status===504?' (周末数据源不活跃)':'')+'<br><button onclick="renderInsight()" style="margin-top:8px;padding:6px 16px;border-radius:8px;border:none;background:var(--accent);color:#fff;cursor:pointer">🔄 重试</button></div>';return}
+const d=await r.json();
+if(d.from_cache)console.log('[推荐] 来自缓存');
+const recs=d.recommendations||[];
+if(!recs.length){el.innerHTML='<div style="text-align:center;padding:20px;color:var(--text2)">暂无推荐'+(d.error?'：'+d.error:'')+'</div>';return}
+let html='<div class="dashboard-card" style="border-left:3px solid var(--accent)"><div class="dashboard-card-title">💎 AI 推荐 <span style="font-size:11px;color:var(--text2);font-weight:400">'+
+(d.period_label||'中线')+'</span></div><div style="font-size:12px;color:var(--text2);margin-bottom:8px">候选'+d.pool_size+'只 → 评分'+d.scored_count+'只 → Top '+recs.length+'</div></div>';
+recs.forEach((r,i)=>{
+const ds=r.dimension_scores||{};const sp=r.suggested_position||{};
+const scoreColor=r.total_score>=70?'var(--green)':r.total_score>=50?'var(--accent)':'var(--text2)';
+html+='<div class="dashboard-card" style="padding:12px;margin-bottom:8px"><div style="display:flex;justify-content:space-between;align-items:center"><div><span style="font-size:14px;font-weight:700">'+(i+1)+'. '+r.name+'</span><span style="font-size:11px;color:var(--text2);margin-left:6px">'+r.code+'</span></div><div style="text-align:right"><div style="font-size:18px;font-weight:900;color:'+scoreColor+'">'+r.total_score+'</div><div style="font-size:10px;color:var(--text2)">'+sp.emoji+' '+sp.action+'</div></div></div>';
+html+='<div style="display:flex;gap:6px;margin-top:8px;font-size:11px">'+
+['估值','盈利','技术','资金','风险'].map(k=>{
+const key=k==='估值'?'valuation':k==='盈利'?'earnings':k==='技术'?'technical':k==='资金'?'capital':'risk';
+const v=ds[key]||50;const c=v>=70?'#10B981':v<=30?'#EF4444':'#94A3B8';
+return '<div style="flex:1;text-align:center;padding:4px;background:var(--bg2);border-radius:6px"><div style="color:var(--text2)">'+k+'</div><div style="font-weight:700;color:'+c+'">'+v+'</div></div>'}).join('')+'</div>';
+if(r.reason)html+='<div style="font-size:12px;color:var(--text2);margin-top:6px;padding:6px 8px;background:var(--bg2);border-radius:6px">'+r.reason+'</div>';
+html+='</div>'});
+el.innerHTML=html;
+}catch(e){el.innerHTML='<div style="text-align:center;padding:20px;color:var(--text2)">加载超时<br><span style="font-size:12px">'+e.message+'</span><br><button onclick="renderInsight()" style="margin-top:8px;padding:6px 16px;border-radius:8px;border:none;background:var(--accent);color:#fff;cursor:pointer">🔄 重试</button></div>'}}
+
+
+async function renderDecisionsTab(el){
+el.innerHTML='<div style="text-align:center;padding:20px"><div class="loading-spinner" style="width:24px;height:24px;margin:0 auto 8px;border-width:2px"></div>加载决策数据...</div>';
+try{
+const uid=getProfileId();
+const r=await fetch(API_BASE+'/decisions?userId='+uid,{signal:AbortSignal.timeout(15000)});
+if(!r.ok){el.innerHTML='<div style="text-align:center;padding:20px;color:var(--text2)">决策数据暂不可用<br><button onclick="renderInsight()" style="margin-top:8px;padding:6px 16px;border-radius:8px;border:none;background:var(--accent);color:#fff;cursor:pointer">🔄 重试</button></div>';return}
+const d=await r.json();
+if(d.from_cache)console.log('[决策] 来自缓存');
+const decisions=d.decisions||[];
+if(!decisions.length&&!d.overall_strategy){el.innerHTML='<div style="text-align:center;padding:20px;color:var(--text2)">暂无决策建议'+(d.error?'：'+d.error:'')+'</div>';return}
+let html='';
+if(d.overall_strategy)html+='<div class="dashboard-card" style="border-left:3px solid var(--accent)"><div class="dashboard-card-title">🎯 总体策略</div><div style="font-size:14px;font-weight:600">'+d.overall_strategy+'</div><div style="font-size:11px;color:var(--text2);margin-top:4px">模型: '+(d.model||'?')+' | Regime: '+(d.market_regime||'?')+(d.from_cache?' | 📦缓存':'')+'</div></div>';
+const scenarios=d.scenarios||{};
+if(scenarios.optimistic||scenarios.neutral||scenarios.pessimistic){
+html+='<div class="dashboard-card"><div class="dashboard-card-title">🎭 三情景分析</div>';
+if(scenarios.optimistic)html+='<div style="font-size:12px;padding:4px 0">🟢 乐观: '+scenarios.optimistic+'</div>';
+if(scenarios.neutral)html+='<div style="font-size:12px;padding:4px 0">🟡 中性: '+scenarios.neutral+'</div>';
+if(scenarios.pessimistic)html+='<div style="font-size:12px;padding:4px 0">🔴 悲观: '+scenarios.pessimistic+'</div>';
+html+='</div>'}
+decisions.forEach(dec=>{
+const actionMap={buy:'🟢 买入',sell:'🔴 卖出',hold:'⚪ 持有',reduce:'🟠 减仓',add:'🟢 加仓'};
+const actionLabel=actionMap[dec.action]||dec.action;
+html+='<div class="dashboard-card" style="padding:12px;margin-bottom:8px"><div style="display:flex;justify-content:space-between;align-items:center"><div><span style="font-size:14px;font-weight:700">'+dec.name+'</span><span style="font-size:11px;color:var(--text2);margin-left:6px">'+dec.symbol+'</span></div><div style="font-size:14px;font-weight:800">'+actionLabel+'</div></div>';
+if(dec.position_pct)html+='<div style="font-size:12px;color:var(--text2);margin-top:4px">建议仓位: '+dec.position_pct+'% | 置信度: '+dec.confidence+'%</div>';
+if(dec.reason)html+='<div style="font-size:12px;margin-top:4px;padding:6px 8px;background:var(--bg2);border-radius:6px">'+dec.reason+'</div>';
+if(dec.risk_warning)html+='<div style="font-size:11px;color:var(--red);margin-top:4px">⚠️ '+dec.risk_warning+'</div>';
+html+='</div>'});
+if(d.generated_at)html+='<div style="font-size:11px;color:var(--text3);text-align:center;margin-top:8px">生成于 '+d.generated_at.slice(0,16)+'</div>';
+el.innerHTML=html;
+}catch(e){el.innerHTML='<div style="text-align:center;padding:20px;color:var(--text2)">加载超时<br><span style="font-size:12px">'+e.message+'</span><br><button onclick="renderInsight()" style="margin-top:8px;padding:6px 16px;border-radius:8px;border:none;background:var(--accent);color:#fff;cursor:pointer">🔄 重试</button></div>'}}
 
 async function runCustomScenario(){
 const input=document.getElementById('customScenarioInput');if(!input||!input.value.trim())return alert('请输入情景描述');
