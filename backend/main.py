@@ -2393,6 +2393,26 @@ def _build_market_context() -> str:
     except Exception:
         pass
 
+    # P1.1: 资金面三件套（北向/融资/SHIBOR）— 让 Chat AI 看到聪明钱动向
+    try:
+        north = get_northbound_flow()
+        if north.get("available"):
+            lines.append(f"\n资金面：北向资金今日{north.get('net_flow_today', 0):+.1f}亿，5日{north.get('net_flow_5d', 0):+.1f}亿（{north.get('trend', '')}）")
+    except Exception:
+        pass
+    try:
+        margin = get_margin_trading()
+        if margin.get("available"):
+            lines.append(f"融资融券：余额{margin.get('margin_balance', 0):.0f}亿，5日变动{margin.get('margin_change_5d', 0):+.1f}%")
+    except Exception:
+        pass
+    try:
+        shibor_data = get_shibor()
+        if shibor_data.get("available"):
+            lines.append(f"SHIBOR：隔夜{shibor_data.get('overnight', 0)}%（{shibor_data.get('trend', '')}）")
+    except Exception:
+        pass
+
     result = "\n".join(lines) if lines else "暂无市场数据"
     _market_ctx_cache["text"] = result
     _market_ctx_cache["ts"] = time.time()
