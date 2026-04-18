@@ -172,7 +172,14 @@ Object.defineProperty(window,'SOURCES_KEY',{get(){return _uk(_BASE_SOURCES_KEY)}
 // ---- 多用户 Profile 系统 ----
 let _profileId = localStorage.getItem('moneybag_profile_id') || '';
 let _profileName = localStorage.getItem('moneybag_profile_name') || '';
-function getProfileId(){ const wx=localStorage.getItem('moneybag_wxwork_uid');return wx||_profileId||'default' }
+// 统一 userId：优先企微 UID；否则用 profileName（因为后端数据按 name 存，如 LeiJiang/BuLuoGeLi）；最后兜底 profileId
+function getProfileId(){
+  const wx = localStorage.getItem('moneybag_wxwork_uid');
+  if (wx) return wx;
+  // _profileName 存在且看起来是用户名（非空、不是 default），优先用它
+  if (_profileName && _profileName !== 'default') return _profileName;
+  return _profileId || 'default';
+}
 function getProfileParam(){ return `userId=${encodeURIComponent(getProfileId())}` }
 
 async function ensureProfile(){
@@ -364,7 +371,7 @@ const tabs=[{id:'landing',icon:'🏠',label:'首页'},{id:'stocks',icon:'📈',l
 n.innerHTML=tabs.map(t=>`<div class="nav-item ${currentPage===t.id?'active':''}" onclick="navigateTo('${t.id}')"><div class="nav-icon">${t.icon}</div><div>${t.label}</div></div>`).join('');
 // 顶部用户名条
 let hdr=document.getElementById('profileHeader');if(!hdr){hdr=document.createElement('div');hdr.id='profileHeader';hdr.style.cssText='position:fixed;top:0;left:0;right:0;z-index:100;padding:6px 16px;font-size:12px;color:var(--text2,#94a3b8);background:var(--bg,#0f172a);display:flex;justify-content:space-between;align-items:center;border-bottom:1px solid var(--bg3,#334155)';document.body.appendChild(hdr);document.body.style.paddingTop='32px'}
-hdr.innerHTML=`<span onclick="showProfileSettings()" style="cursor:pointer">👋 ${_profileName||'未登录'} ⚙️</span><span style="display:flex;align-items:center;gap:8px"><button onclick="cycleTheme()" style="font-size:10px;padding:2px 8px;border-radius:4px;border:1px solid var(--bg3);background:transparent;color:var(--text2);cursor:pointer" id="themeBtn">${getThemeIcon()}</button><button onclick="toggleUIMode()" style="font-size:10px;padding:2px 8px;border-radius:4px;border:1px solid var(--bg3);background:${isProMode()?'rgba(99,102,241,.2)':'rgba(16,185,129,.2)'};color:${isProMode()?'#818CF8':'#10B981'};cursor:pointer">${isProMode()?'🔬 专业':'🌱 简洁'}</button><span style="font-size:10px;color:var(--text3,#64748b)">${getProfileId().slice(0,8)}</span></span>`}
+hdr.innerHTML=`<span onclick="showProfileSettings()" style="cursor:pointer">👋 ${_profileName||'未登录'} ⚙️</span><span style="display:flex;align-items:center;gap:8px"><button onclick="cycleTheme()" style="font-size:10px;padding:2px 8px;border-radius:4px;border:1px solid var(--bg3);background:transparent;color:var(--text2);cursor:pointer" id="themeBtn">${getThemeIcon()}</button><button onclick="toggleUIMode()" style="font-size:10px;padding:2px 8px;border-radius:4px;border:1px solid var(--bg3);background:${isProMode()?'rgba(99,102,241,.2)':'rgba(16,185,129,.2)'};color:${isProMode()?'#818CF8':'#10B981'};cursor:pointer">${isProMode()?'🔬 专业':'🌱 简洁'}</button></span>`}
 
 function showProfileSettings(){
 const pid=getProfileId();const wxId=localStorage.getItem('moneybag_wxwork_uid')||'';
