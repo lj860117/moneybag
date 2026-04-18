@@ -390,33 +390,88 @@ def _score_technical(stock: dict) -> int:
 
 
 def _score_capital(stock: dict) -> int:
-    """资金维度评分 (0-100)"""
+    """资金维度评分 (0-100) — 个股级北向持仓变化 + 全局趋势兜底
+    P1.2: 从全局同分改为个股化
+    """
+    ts_code = stock.get("ts_code", "")
     score = 50
+
+    # 1. Tushare hk_hold: 个股北向持仓占比变化（5000积分可用）
+    if ts_code:
+        try:
+            from services.tushare_data import _call_tushare
+            rows = _call_tushare("hk_hold", {"ts_code": ts_code, "limit": 10},
+                                  "trade_date,vol,ratio")
+            if rows and len(rows) >= 2:
+                latest_ratio = float(rows[0].get("ratio") or 0)
+                prev_ratio = float(rows[-1].get("ratio") or 0)
+                change = latest_ratio - prev_ratio
+                if change > 0.5:
+                    score = 80  # 外资显著加仓
+                elif change > 0.1:
+                    score = 65
+                elif change < -0.5:
+                    score = 25  # 外资显著减仓
+                elif change < -0.1:
+                    score = 40
+                return score
+        except Exception as e:
+            print(f"[RECOMMEND] hk_hold 查询失败 {ts_code}: {e}")
+
+    # 2. 兜底：全局北向趋势
     try:
-        from services.factor_data import get_northbound_flow, get_margin_trading
+        from services.factor_data import get_northbound_flow
         north = get_northbound_flow()
         if north.get("trend") in ("大幅流入", "净流入"):
-            score = 70
+            score = 65
         elif north.get("trend") in ("大幅流出", "净流出"):
-            score = 30
+            score = 35
     except Exception:
         pass
     return score
 
 
 def _score_risk(stock: dict) -> int:
-    """风险维度评分 (0-100, 越高越安全)"""
+    """风险维度评分 (0-100, 越高越安全) — 个股波动率 + 地缘加成
+    P1.2: 从全局同分改为个股化
+    """
     score = 60  # 默认中等安全
+    code = stock.get("code", "")
+
+    # 1. 个股 20 日年化波动率
+    if code:
+        try:
+            import akshare as ak
+            import numpy as np
+            from datetime import datetime as _dt, timedelta as _td
+            end_date = _dt.now().strftime("%Y%m%d")
+            start_date = (_dt.now() - _td(days=60)).strftime("%Y%m%d")
+            df = ak.stock_zh_a_hist(symbol=code, period="daily",
+                                     start_date=start_date, end_date=end_date, adjust="qfq")
+            if df is not None and len(df) >= 20:
+                close = df["收盘"].values.astype(float)
+                returns = np.diff(close) / close[:-1]
+                vol_20d = np.std(returns[-20:]) * (252 ** 0.5)  # 年化波动率
+                if vol_20d < 0.25:
+                    score = 80  # 低波动，安全
+                elif vol_20d < 0.40:
+                    score = 60
+                elif vol_20d < 0.60:
+                    score = 40
+                else:
+                    score = 25  # 高波动，危险
+        except Exception as e:
+            print(f"[RECOMMEND] 风险评分波动率失败 {code}: {e}")
+
+    # 2. 地缘加成（负面）
     try:
         from services.geopolitical import get_geopolitical_risk_score
         geo = get_geopolitical_risk_score()
         severity = geo.get("severity", 0)
         if severity >= 4:
-            score = 30  # 高地缘风险
+            score = max(10, score - 30)
         elif severity >= 2:
-            score = 50
-        else:
-            score = 75  # 无地缘风险
+            score = max(20, score - 15)
     except Exception:
         pass
     return score
