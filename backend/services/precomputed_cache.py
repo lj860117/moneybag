@@ -24,9 +24,9 @@ _PRECOMPUTED_TTL = {
     "sector_rotation": 7200,    # 2小时
     "broker_consensus": 14400,  # 4小时
     "scenarios": 28800,         # 8小时（情景分析变化慢）
-    "factors": 3600,            # 1小时（北向/融资等变化快）
+    "factors": 7200,            # 2小时（P0.4a: 从1h→2h，盘中cache_warmer每30分刷新兜底）
     "macro": 14400,             # 4小时
-    "fear_greed": 3600,         # 1小时
+    "fear_greed": 7200,         # 2小时（P0.4a: 从1h→2h）
     "valuation": 7200,          # 2小时
 }
 

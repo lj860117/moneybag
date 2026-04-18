@@ -468,16 +468,17 @@ def get_macro_data():
 
 @app.get("/api/dashboard")
 async def get_market_dashboard():
-    """V4.5 综合市场仪表盘 — 优先读预计算缓存，否则 11 源并行"""
-    # V7: 尝试从预计算缓存组装（秒出）
+    """V4.5 综合市场仪表盘 — 三级降级: 新鲜缓存 → 过期缓存 → 5s超时实时 → 空壳"""
+    import asyncio
+
+    # === 第1级: 新鲜缓存（秒出） ===
+    stale_result = None  # 保存过期缓存，备用
     try:
-        from services.precomputed_cache import get_precomputed
+        from services.precomputed_cache import get_precomputed, PRECOMPUTED_DIR
         pc_factors = get_precomputed("factors")
         pc_fgi = get_precomputed("fear_greed")
         pc_val = get_precomputed("valuation")
-        pc_signal = get_precomputed("daily_signal")
 
-        # 如果核心数据都有缓存，直接返回（秒出）
         if pc_factors and pc_fgi and pc_val:
             return {
                 "valuation": pc_val,
@@ -488,44 +489,85 @@ async def get_market_dashboard():
                 "from_cache": True,
                 "cache_note": "凌晨预计算数据，盘中每30分钟刷新",
             }
+
+        # === 第2级: 过期缓存也读出来备用 ===
+        # 直接读磁盘文件，跳过 TTL 检查
+        import json as _json
+        from pathlib import Path
+        from datetime import date as _date, timedelta as _td
+        for days_ago in range(4):  # 最多找 4 天前
+            d = _date.today() - _td(days=days_ago)
+            factors_f = PRECOMPUTED_DIR / f"factors_{d}.json"
+            fgi_f = PRECOMPUTED_DIR / f"fear_greed_{d}.json"
+            val_f = PRECOMPUTED_DIR / f"valuation_{d}.json"
+            if factors_f.exists() and fgi_f.exists() and val_f.exists():
+                try:
+                    pf = _json.loads(factors_f.read_text(encoding="utf-8")).get("data", {})
+                    pfgi = _json.loads(fgi_f.read_text(encoding="utf-8")).get("data", {})
+                    pval = _json.loads(val_f.read_text(encoding="utf-8")).get("data", {})
+                    stale_result = {
+                        "valuation": pval,
+                        "fear_greed": pfgi,
+                        "northbound": pf.get("northbound", {}),
+                        "margin": pf.get("margin", {}),
+                        "shibor": pf.get("shibor", {}),
+                        "from_cache": True,
+                        "stale": True,
+                        "cache_note": f"数据截至 {d}（缓存已过期，优先展示历史数据）",
+                    }
+                    break
+                except Exception:
+                    pass
     except Exception:
         pass
 
-    # 降级：实时并行拉取
-    import asyncio
-    loop = asyncio.get_event_loop()
-    # 把所有阻塞的数据源调用并行化
-    (val, fgi_data, tech, news, macro,
-     northbound, margin, treasury, shibor_data, dividend, sentiment
-    ) = await asyncio.gather(
-        loop.run_in_executor(None, get_valuation_percentile),
-        loop.run_in_executor(None, get_fear_greed_index),
-        loop.run_in_executor(None, get_technical_indicators),
-        loop.run_in_executor(None, lambda: get_market_news(8)),
-        loop.run_in_executor(None, get_macro_calendar),
-        loop.run_in_executor(None, get_northbound_flow),
-        loop.run_in_executor(None, get_margin_trading),
-        loop.run_in_executor(None, get_treasury_yield),
-        loop.run_in_executor(None, get_shibor),
-        loop.run_in_executor(None, get_dividend_yield),
-        loop.run_in_executor(None, get_news_sentiment_score),
-    )
+    # === 第3级: 实时拉取（5s 超时，不是之前的 30s） ===
+    try:
+        loop = asyncio.get_event_loop()
 
-    return {
-        "valuation": val,
-        "fearGreed": fgi_data,
-        "technical": tech,
-        "news": news,
-        "macro": macro,
-        "northbound": northbound,
-        "margin": margin,
-        "treasury": treasury,
-        "shibor": shibor_data,
-        "dividend": dividend,
-        "sentiment": sentiment,
-        "version": "4.5",
-        "updatedAt": datetime.now().isoformat(),
-    }
+        async def _fetch_realtime():
+            return await asyncio.gather(
+                loop.run_in_executor(None, get_valuation_percentile),
+                loop.run_in_executor(None, get_fear_greed_index),
+                loop.run_in_executor(None, get_technical_indicators),
+                loop.run_in_executor(None, lambda: get_market_news(8)),
+                loop.run_in_executor(None, get_macro_calendar),
+                loop.run_in_executor(None, get_northbound_flow),
+                loop.run_in_executor(None, get_margin_trading),
+                loop.run_in_executor(None, get_treasury_yield),
+                loop.run_in_executor(None, get_shibor),
+                loop.run_in_executor(None, get_dividend_yield),
+                loop.run_in_executor(None, get_news_sentiment_score),
+            )
+
+        (val, fgi_data, tech, news, macro,
+         northbound, margin, treasury, shibor_data, dividend, sentiment
+        ) = await asyncio.wait_for(_fetch_realtime(), timeout=8.0)
+
+        return {
+            "valuation": val,
+            "fearGreed": fgi_data,
+            "technical": tech,
+            "news": news,
+            "macro": macro,
+            "northbound": northbound,
+            "margin": margin,
+            "treasury": treasury,
+            "shibor": shibor_data,
+            "dividend": dividend,
+            "sentiment": sentiment,
+            "version": "4.5",
+            "updatedAt": datetime.now().isoformat(),
+        }
+    except (asyncio.TimeoutError, Exception) as e:
+        print(f"[DASHBOARD] 实时拉取超时/失败: {e}")
+
+    # === 第4级: 返回过期缓存（总好过空白） ===
+    if stale_result:
+        return stale_result
+
+    # === 第5级: 空壳（绝不转圈） ===
+    return {"valuation": {}, "fear_greed": {}, "from_cache": False, "error": "数据源暂不可用"}
 
 
 # ---- V4.5 API: 新因子单独接口 ----
