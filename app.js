@@ -4360,7 +4360,7 @@ if(!r.ok){el.innerHTML='<div style="text-align:center;padding:20px;color:var(--t
 const d=await r.json();
 if(d.from_cache)console.log('[推荐] 来自缓存');
 const recs=d.recommendations||[];
-if(!recs.length){el.innerHTML='<div style="text-align:center;padding:20px;color:var(--text2)">暂无推荐'+(d.error?'：'+d.error:'')+'</div>';return}
+if(!recs.length){const wn=d._weekend_note||'';el.innerHTML='<div style="text-align:center;padding:40px;color:var(--text2)">'+(wn?'<div style="font-size:24px;margin-bottom:8px">📅</div><div style="font-size:13px;line-height:1.6">'+wn+'</div>':'暂无推荐'+(d.error?'：'+d.error:''))+'</div>';return}
 let html='<div class="dashboard-card" style="border-left:3px solid var(--accent)"><div class="dashboard-card-title">💎 AI 推荐 <span style="font-size:11px;color:var(--text2);font-weight:400">'+
 (d.period_label||'中线')+'</span></div><div style="font-size:12px;color:var(--text2);margin-bottom:8px">候选'+d.pool_size+'只 → 评分'+d.scored_count+'只 → Top '+recs.length+'</div></div>';
 recs.forEach((r,i)=>{
