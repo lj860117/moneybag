@@ -3116,6 +3116,17 @@ checkTradingHours();
   'use strict';
 
   async function _v6RenderEmptyLanding(){
+    try {
+      await _v6RenderEmptyLandingImpl();
+    } catch (e) {
+      console.error('[V6-1] render failed, clearing skeleton:', e);
+      const host = document.getElementById('v6EmptyHome');
+      if (host) {
+        host.innerHTML = `<div class="dashboard-card"><div style="text-align:center;padding:20px;color:var(--text2);font-size:13px">市场数据渲染异常，请刷新重试<br><span style="font-size:11px;opacity:.6">${(e && e.message) || e}</span></div></div>`;
+      }
+    }
+  }
+  async function _v6RenderEmptyLandingImpl(){
     // 只在 landing 页且空仓时生效
     if (typeof currentPage !== 'undefined' && currentPage !== 'landing') return;
     if (!window._v6IsEmptyHoldings || !_v6IsEmptyHoldings()) return;
@@ -3191,7 +3202,7 @@ checkTradingHours();
         HOLD:'市场震荡 🟡', SELL:'市场偏空 🟠', STRONG_SELL:'市场疲弱 🔴'
       };
       html += `<div class="dashboard-card" style="background:${bgMap[signal.overall]||''};margin-top:8px">
-        <div class="dashboard-card-title">🌡️ 市场温度 <span style="font-size:11px;color:var(--accent);font-weight:400">V${sig.version||'5.0'} · ${(sig.details||[]).length}维</span></div>
+        <div class="dashboard-card-title">🌡️ 市场温度 <span style="font-size:11px;color:var(--accent);font-weight:400">V${signal.version||'5.0'} · ${(signal.details||[]).length}维</span></div>
         <div style="font-size:16px;font-weight:800;margin-top:4px">${labelMap[signal.overall]||signal.overall}</div>
         <div style="font-size:12px;color:var(--text2);margin-top:4px">综合得分 ${signal.score||0} · 置信度 ${Math.round(signal.confidence||0)}%</div>
         <div style="font-size:13px;margin-top:8px;line-height:1.6">${signal.summary||''}</div>
