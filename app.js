@@ -5,6 +5,62 @@
 // + 市场资讯 + 技术指标 + 宏观日历 + 收入源管理
 // ============================================================
 
+// ============================================================
+// 【自毁升级】2026-04-18: 清理所有"厉害了哥"等旧账号残留
+// 只要localStorage里有这些旧名字，全部清掉并重新用企微ID登录
+// ============================================================
+(function _cleanLegacyIds() {
+  try {
+    const FRONTEND_VERSION = '7.1.0';
+    const BLACKLIST_NAMES = ['厉害了哥', '部落格里', 'test_a', 'test_v', 'test_user'];
+    const lastVersion = localStorage.getItem('moneybag_frontend_version');
+
+    // 检查 profile 名字是否在黑名单
+    let needClean = false;
+    try {
+      const cur = localStorage.getItem('moneybag_current_profile');
+      if (cur) {
+        const p = JSON.parse(cur);
+        if (p && BLACKLIST_NAMES.includes(p.name)) {
+          console.warn('[自毁升级] 检测到旧账号名:', p.name, '→ 清理并切换为企微ID');
+          needClean = true;
+        }
+      }
+      const profiles = localStorage.getItem('moneybag_profiles');
+      if (profiles) {
+        const arr = JSON.parse(profiles);
+        if (Array.isArray(arr) && arr.some(p => BLACKLIST_NAMES.includes(p.name))) {
+          needClean = true;
+        }
+      }
+    } catch (e) {}
+
+    if (needClean || (lastVersion && lastVersion !== FRONTEND_VERSION)) {
+      // 保留企微 context 信息，清掉 profile 和缓存
+      const wx = localStorage.getItem('moneybag_wxwork_ctx');
+      ['moneybag_current_profile', 'moneybag_profiles',
+       'moneybag_market_cache', 'moneybag_ai_cache'].forEach(k => {
+        localStorage.removeItem(k);
+      });
+      localStorage.setItem('moneybag_frontend_version', FRONTEND_VERSION);
+      console.log('[自毁升级] localStorage 已清理，将重新登录');
+
+      // 清 SW 缓存
+      if ('caches' in window) {
+        caches.keys().then(keys => {
+          keys.forEach(k => caches.delete(k));
+          // 刷一次让新前端生效
+          if (needClean) setTimeout(() => location.reload(), 500);
+        });
+      }
+    } else {
+      localStorage.setItem('moneybag_frontend_version', FRONTEND_VERSION);
+    }
+  } catch (e) {
+    console.error('[自毁升级] 失败:', e);
+  }
+})();
+
 // ---- API 配置 ----
 // 优先相对路径（同源请求，无 Mixed Content 问题）
 // 用户直接访问腾讯云 http://150.158.47.189:8000 或 Railway https://...railway.app 都走 /api
