@@ -22,7 +22,7 @@ MODULE_META = {
 }
 
 from config import (
-    FACTOR_WEIGHTS, VALUATION_EXTREME, VALUATION_HIGH, VALUATION_LOW,
+    SIGNAL_WEIGHTS_V5, FACTOR_WEIGHTS, VALUATION_EXTREME, VALUATION_HIGH, VALUATION_LOW,
     DCA_MULTIPLIERS,
 )
 from services.data_layer import (
@@ -131,9 +131,12 @@ def generate_daily_signal() -> dict:
 
     scores = []  # (score, weight, name, detail, category)
 
+    # P0.3: 权重从 config.SIGNAL_WEIGHTS_V5 读取（Single Source of Truth）
+    _w = SIGNAL_WEIGHTS_V5
+
     # ===== 技术面因子 (权重合计 25%) =====
 
-    # --- 1. RSI 信号 (8%) ---
+    # --- 1. RSI 信号 ---
     tech = get_technical_indicators()
     rsi = tech.get("rsi", 50)
     if rsi < 25:
@@ -150,9 +153,9 @@ def generate_daily_signal() -> dict:
         rsi_score, rsi_detail = -60, f"RSI={rsi}，超买区，偏向卖出"
     else:
         rsi_score, rsi_detail = -80, f"RSI={rsi}，极度超买，强烈卖出信号"
-    scores.append((rsi_score, 0.08, "RSI", rsi_detail, "技术面"))
+    scores.append((rsi_score, _w["RSI"], "RSI", rsi_detail, "技术面"))
 
-    # --- 2. MACD 信号 (10%) ---
+    # --- 2. MACD 信号 ---
     macd = tech.get("macd", {})
     trend = macd.get("trend", "")
     if "金叉" in trend:
@@ -165,9 +168,9 @@ def generate_daily_signal() -> dict:
         macd_score, macd_detail = -30, f"MACD空头排列，下降趋势持续"
     else:
         macd_score, macd_detail = 0, "MACD数据不足"
-    scores.append((macd_score, 0.10, "MACD", macd_detail, "技术面"))
+    scores.append((macd_score, _w["MACD"], "MACD", macd_detail, "技术面"))
 
-    # --- 3. 布林带信号 (7%) ---
+    # --- 3. 布林带信号 ---
     boll = tech.get("bollinger", {})
     pos = boll.get("position", "")
     if "超卖" in pos:
@@ -180,7 +183,7 @@ def generate_daily_signal() -> dict:
         boll_score, boll_detail = -60, "价格高于布林上轨，超买回调风险"
     else:
         boll_score, boll_detail = 0, "布林带数据不足"
-    scores.append((boll_score, 0.07, "布林带", boll_detail, "技术面"))
+    scores.append((boll_score, _w["布林带"], "布林带", boll_detail, "技术面"))
 
     # ===== 基本面因子 (权重合计 30%) =====
 
@@ -199,7 +202,7 @@ def generate_daily_signal() -> dict:
         val_score, val_detail = -50, f"估值百分位{vp}%，偏高估（减少定投）"
     else:
         val_score, val_detail = -80, f"估值百分位{vp}%，极度高估（建议暂停或减仓）"
-    scores.append((val_score, 0.18, "估值", val_detail, "基本面"))
+    scores.append((val_score, _w["估值"], "估值", val_detail, "基本面"))
 
     # --- 5. 股息率因子 (5%) --- NEW
     dy = get_dividend_yield()
@@ -214,7 +217,7 @@ def generate_daily_signal() -> dict:
             dy_score, dy_detail = -20, f"股息率{dy_val}%（百分位{dy_pct}%），成长偏好期"
     else:
         dy_score, dy_detail = 0, "股息率数据暂不可用"
-    scores.append((dy_score, 0.05, "股息率", dy_detail, "基本面"))
+    scores.append((dy_score, _w["股息率"], "股息率", dy_detail, "基本面"))
 
     # --- 6. 国债收益率/股债性价比 (7%) --- NEW
     treasury = get_treasury_yield()
@@ -237,7 +240,7 @@ def generate_daily_signal() -> dict:
             tr_score, tr_detail = 0, f"10Y国债{y10}%，估值数据不足"
     else:
         tr_score, tr_detail = 0, "国债收益率数据暂不可用"
-    scores.append((tr_score, 0.07, "股债性价比", tr_detail, "基本面"))
+    scores.append((tr_score, _w["股债性价比"], "股债性价比", tr_detail, "基本面"))
 
     # ===== 资金面因子 (权重合计 20%) =====
 
@@ -260,7 +263,7 @@ def generate_daily_signal() -> dict:
             north_score, north_detail = -70, f"北向资金5日净流出{abs(flow_5d):.0f}亿，外资大幅撤退"
     else:
         north_score, north_detail = 0, "北向资金数据暂不可用"
-    scores.append((north_score, 0.10, "北向资金", north_detail, "资金面"))
+    scores.append((north_score, _w["北向资金"], "北向资金", north_detail, "资金面"))
 
     # --- 8. 融资融券 (5%) --- NEW 市场杠杆情绪
     margin = get_margin_trading()
@@ -279,7 +282,7 @@ def generate_daily_signal() -> dict:
             margin_score, margin_detail = 0, f"融资余额{m_bal:.0f}亿，杠杆水平稳定"
     else:
         margin_score, margin_detail = 0, "融资融券数据暂不可用"
-    scores.append((margin_score, 0.05, "融资融券", margin_detail, "资金面"))
+    scores.append((margin_score, _w["融资融券"], "融资融券", margin_detail, "资金面"))
 
     # --- 9. SHIBOR 流动性 (5%) --- NEW
     shibor = get_shibor()
@@ -294,7 +297,7 @@ def generate_daily_signal() -> dict:
             shibor_score, shibor_detail = 0, f"SHIBOR隔夜{overnight}%，{shibor_trend}"
     else:
         shibor_score, shibor_detail = 0, "SHIBOR数据暂不可用"
-    scores.append((shibor_score, 0.05, "SHIBOR", shibor_detail, "资金面"))
+    scores.append((shibor_score, _w["SHIBOR"], "SHIBOR", shibor_detail, "资金面"))
 
     # ===== 情绪面因子 (权重合计 15%) =====
 
@@ -311,7 +314,7 @@ def generate_daily_signal() -> dict:
         fgi_score, fgi_detail = -40, f"恐惧指数{fgi:.0f}（贪婪），市场偏乐观"
     else:
         fgi_score, fgi_detail = -80, f"恐惧指数{fgi:.0f}（极度贪婪），别人贪婪时恐惧"
-    scores.append((fgi_score, 0.08, "恐贪指数", fgi_detail, "情绪面"))
+    scores.append((fgi_score, _w["恐贪指数"], "恐贪指数", fgi_detail, "情绪面"))
 
     # --- 11. LLM新闻情绪 (7%) --- NEW 核心创新
     sentiment = get_news_sentiment_score()
@@ -326,7 +329,7 @@ def generate_daily_signal() -> dict:
             sent_detail += f"，{sentiment['reason']}"
     else:
         sent_score, sent_detail = 0, "新闻情绪数据暂不可用"
-    scores.append((sent_score, 0.07, "新闻情绪", sent_detail, "情绪面"))
+    scores.append((sent_score, _w["新闻情绪"], "新闻情绪", sent_detail, "情绪面"))
     signal["sentiment"] = sentiment
 
     # ===== 宏观面因子 (权重 5%，V6: 从10%拆出5%给地缘面) =====
@@ -357,7 +360,7 @@ def generate_daily_signal() -> dict:
         except (ValueError, TypeError):
             pass
     macro_detail = "宏观环境：" + ("、".join(macro_parts) if macro_parts else "暂无可量化数据")
-    scores.append((max(-50, min(50, macro_score)), 0.05, "宏观经济", macro_detail, "宏观面"))
+    scores.append((max(-50, min(50, macro_score)), _w["宏观经济"], "宏观经济", macro_detail, "宏观面"))
 
     # ===== 地缘面因子 (权重 5%，V6 Phase 2 新增) =====
 
@@ -396,7 +399,7 @@ def generate_daily_signal() -> dict:
     except Exception as e:
         print(f"[SIGNAL] 地缘面因子获取失败: {e}")
         geo_signal, geo_detail = 0, f"地缘风险数据异常({e})"
-    scores.append((geo_signal, 0.05, "地缘风险", geo_detail, "地缘面"))
+    scores.append((geo_signal, _w["地缘风险"], "地缘风险", geo_detail, "地缘面"))
 
     # ===== 加权综合 =====
     total_score = sum(s * w for s, w, _, _, _ in scores)
