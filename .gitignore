@@ -8,3 +8,7 @@ __pycache__/
 backend/data/
 .workbuddy-handoff/
 backend/scripts/seed_qa_*.py
+
+# ---- 测试诊断产物（本地分析，不入库）----
+data/consistency_runs/
+data/ab_test_runs/
