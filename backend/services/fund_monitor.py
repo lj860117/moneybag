@@ -231,7 +231,7 @@ def get_fund_nav_history(code: str, days: int = 60) -> list:
         import akshare as ak
         df = ak.fund_open_fund_info_em(symbol=code, indicator="单位净值走势")
         if df is None or df.empty:
-            return []
+            raise ValueError("AKShare 空数据")
         df = df.tail(days)
         result = []
         for _, row in df.iterrows():
@@ -242,7 +242,32 @@ def get_fund_nav_history(code: str, days: int = 60) -> list:
             })
         _nav_cache[cache_key] = {"data": result, "ts": now}
         return result
-    except Exception:
+    except Exception as e:
+        # 2026-04-19 A+: Tushare 降级
+        try:
+            from services.tushare_data import is_configured, get_fund_nav as ts_nav
+            if is_configured():
+                ts = ts_nav(code, days=days)
+                if ts.get("available") and ts.get("navs"):
+                    rows = ts["navs"][-days:]
+                    result = []
+                    prev_nav = None
+                    for r in rows:
+                        nav = _safe_float(r.get("unit_nav"))
+                        rate = None
+                        if prev_nav is not None and prev_nav > 0:
+                            rate = round((nav - prev_nav) / prev_nav * 100, 4) if nav is not None else None
+                        prev_nav = nav
+                        result.append({
+                            "date": r.get("nav_date", ""),
+                            "nav": nav,
+                            "rate": rate if rate is not None else 0,
+                        })
+                    print(f"[FUND_MONITOR] {code} Tushare 降级: {len(result)} 天")
+                    _nav_cache[cache_key] = {"data": result, "ts": now}
+                    return result
+        except Exception as te:
+            print(f"[FUND_MONITOR] {code} Tushare 也失败: {te}")
         return _nav_cache.get(cache_key, {}).get("data", [])
 
 

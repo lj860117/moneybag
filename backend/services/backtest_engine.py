@@ -45,21 +45,37 @@ def _get_stock_hist(code: str, period: str = "daily", days: int = 750) -> list:
         end = datetime.now().strftime("%Y%m%d")
         start = (datetime.now() - timedelta(days=days)).strftime("%Y%m%d")
 
-        # 尝试东方财富（可能被反爬）
+        # 2026-04-19 A3: 优先走统一 provider（Tushare 主 + AKShare 降级）
         try:
-            df = ak.stock_zh_a_hist(symbol=code, period=period, start_date=start, end_date=end, adjust="qfq")
-            if df is not None and len(df) > 5:
-                close_col = next((c for c in df.columns if "收盘" in str(c).lower() or "close" in str(c).lower()), None)
-                date_col = next((c for c in df.columns if "日期" in str(c).lower() or "date" in str(c).lower()), None)
-                if close_col and date_col:
-                    prices = [
-                        {"date": str(row[date_col])[:10], "close": float(row[close_col])}
-                        for _, row in df.iterrows()
-                        if row[close_col] is not None
-                    ]
-                    print(f"[BACKTEST] {code}: 东方财富 {len(prices)} 条")
-        except Exception as e:
-            print(f"[BACKTEST] {code} 东方财富失败: {e}")
+            from services.stock_price_provider import get_daily_df
+            _df = get_daily_df(code, days=days)
+            if _df is not None and len(_df) > 5 and "收盘" in _df.columns and "日期" in _df.columns:
+                prices = [
+                    {"date": str(row["日期"])[:10], "close": float(row["收盘"])}
+                    for _, row in _df.iterrows()
+                    if row["收盘"] is not None and not (isinstance(row["收盘"], float) and row["收盘"] != row["收盘"])
+                ]
+                print(f"[BACKTEST] {code}: provider {len(prices)} 条")
+        except Exception as _e:
+            print(f"[BACKTEST] {code} provider 失败，走原路径: {_e}")
+
+        # 原有降级逻辑（provider 失败时再走老路径）
+        if len(prices) < 10:
+            # 尝试东方财富（可能被反爬）
+            try:
+                df = ak.stock_zh_a_hist(symbol=code, period=period, start_date=start, end_date=end, adjust="qfq")
+                if df is not None and len(df) > 5:
+                    close_col = next((c for c in df.columns if "收盘" in str(c).lower() or "close" in str(c).lower()), None)
+                    date_col = next((c for c in df.columns if "日期" in str(c).lower() or "date" in str(c).lower()), None)
+                    if close_col and date_col:
+                        prices = [
+                            {"date": str(row[date_col])[:10], "close": float(row[close_col])}
+                            for _, row in df.iterrows()
+                            if row[close_col] is not None
+                        ]
+                        print(f"[BACKTEST] {code}: 东方财富 {len(prices)} 条")
+            except Exception as e:
+                print(f"[BACKTEST] {code} 东方财富失败: {e}")
 
         # 降级：新浪历史数据
         if len(prices) < 10:

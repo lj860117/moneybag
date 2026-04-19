@@ -57,13 +57,40 @@ def get_fund_nav(code: str) -> dict:
                 "nav": str(nav_val),
                 "date": str(latest["净值日期"]),
                 "change": str(change),
+                "source": "akshare",
             }
             _nav_cache[cache_key] = {"data": result, "ts": now}
             return result
     except Exception as e:
-        print(f"[NAV] Failed to fetch {code}: {e}")
+        print(f"[NAV] AKShare failed to fetch {code}: {e}")
 
-    # 降级：返回空
+    # 2026-04-19 A+: Tushare 降级（5000 积分基金净值接口）
+    try:
+        from services.tushare_data import is_configured, get_fund_nav as ts_nav
+        if is_configured():
+            ts = ts_nav(code, days=5)
+            if ts.get("available") and ts.get("unit_nav"):
+                latest_navs = ts.get("navs") or []
+                if len(latest_navs) >= 2:
+                    cur = float(latest_navs[-1]["unit_nav"])
+                    prev = float(latest_navs[-2]["unit_nav"])
+                    change = round((cur - prev) / prev * 100, 2) if prev else 0
+                else:
+                    change = 0
+                result = {
+                    "code": code,
+                    "nav": str(ts["unit_nav"]),
+                    "date": ts.get("nav_date", "")[:4] + "-" + ts.get("nav_date", "")[4:6] + "-" + ts.get("nav_date", "")[6:8] if ts.get("nav_date") else "",
+                    "change": str(change),
+                    "source": "tushare",
+                }
+                print(f"[NAV] Tushare 降级成功 {code}: nav={result['nav']}")
+                _nav_cache[cache_key] = {"data": result, "ts": now}
+                return result
+    except Exception as e:
+        print(f"[NAV] Tushare 降级也失败 {code}: {e}")
+
+    # 所有源失败
     return {"code": code, "nav": "N/A", "date": "N/A", "change": "0"}
 
 

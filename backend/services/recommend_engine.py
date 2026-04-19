@@ -318,11 +318,15 @@ def _score_technical(stock: dict) -> int:
         import numpy as np
         from datetime import datetime as _dt, timedelta as _td
 
-        # 拉 60 日 K 线（前复权）
+        # 拉 60 日 K 线（前复权）— 2026-04-19 A3: 走统一 provider
         end_date = _dt.now().strftime("%Y%m%d")
         start_date = (_dt.now() - _td(days=90)).strftime("%Y%m%d")
-        df = ak.stock_zh_a_hist(symbol=code, period="daily",
-                                 start_date=start_date, end_date=end_date, adjust="qfq")
+        try:
+            from services.stock_price_provider import get_daily_df
+            df = get_daily_df(code, days=90)
+        except Exception:
+            df = ak.stock_zh_a_hist(symbol=code, period="daily",
+                                     start_date=start_date, end_date=end_date, adjust="qfq")
         if df is None or len(df) < 30:
             return 50
 
@@ -446,8 +450,13 @@ def _score_risk(stock: dict) -> int:
             from datetime import datetime as _dt, timedelta as _td
             end_date = _dt.now().strftime("%Y%m%d")
             start_date = (_dt.now() - _td(days=60)).strftime("%Y%m%d")
-            df = ak.stock_zh_a_hist(symbol=code, period="daily",
-                                     start_date=start_date, end_date=end_date, adjust="qfq")
+            # 2026-04-19 A3: 走统一 provider
+            try:
+                from services.stock_price_provider import get_daily_df
+                df = get_daily_df(code, days=60)
+            except Exception:
+                df = ak.stock_zh_a_hist(symbol=code, period="daily",
+                                         start_date=start_date, end_date=end_date, adjust="qfq")
             if df is not None and len(df) >= 20:
                 close = df["收盘"].values.astype(float)
                 returns = np.diff(close) / close[:-1]

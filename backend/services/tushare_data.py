@@ -633,3 +633,206 @@ def get_fund_share(ts_code: str, days: int = 30) -> dict:
     result["trend"] = "份额大增" if change_pct > 5 else "温和增长" if change_pct > 1 else "大减" if change_pct < -5 else "温和减少" if change_pct < -1 else "稳定"
     print(f"[TUSHARE-SHARE] {ts_code}: {result['shares_latest']}亿份, 5d{change_pct:+.2f}%")
     return result
+
+
+# =====================================================================
+# 2026-04-19 A 阶段新增：股票日线 + 估值批量 + 基金全套
+# =====================================================================
+
+def get_daily_price(code: str, days: int = 120, adj: str = "qfq") -> list:
+    """
+    股票日线数据（Tushare pro_bar，自带前复权）
+    code: 可以是 000001 也可以是 000001.SZ
+    返回: [{trade_date, open, high, low, close, vol, pct_chg}]，按日期升序
+    """
+    from datetime import datetime, timedelta
+    ts_code = _code_to_ts(code)
+    end = datetime.now().strftime("%Y%m%d")
+    start = (datetime.now() - timedelta(days=days + 60)).strftime("%Y%m%d")
+    rows = _call_tushare(
+        "daily",
+        {"ts_code": ts_code, "start_date": start, "end_date": end},
+        "ts_code,trade_date,open,high,low,close,vol,amount,pct_chg",
+    )
+    if not rows:
+        return []
+    # 升序
+    rows = sorted(rows, key=lambda x: x.get("trade_date", ""))
+    return rows[-days:] if len(rows) > days else rows
+
+
+def get_valuation_batch_map(trade_date: str = "") -> dict:
+    """
+    按日期拉全市场 PE/PB/市值/换手率（一次返回几千条）
+    返回 {code(纯数字): {pe, pb, total_mv_亿, turnover, trade_date}}
+    trade_date: YYYYMMDD，空则自动找最近交易日
+    """
+    from datetime import datetime, timedelta
+    if not trade_date:
+        # 往前找最多 7 天，确保拿到交易日
+        for i in range(7):
+            td = (datetime.now() - timedelta(days=i)).strftime("%Y%m%d")
+            rows = _call_tushare(
+                "daily_basic",
+                {"trade_date": td},
+                "ts_code,trade_date,pe_ttm,pb,total_mv,turnover_rate_f",
+            )
+            if rows and len(rows) > 100:
+                trade_date = td
+                break
+        else:
+            return {}
+    else:
+        rows = _call_tushare(
+            "daily_basic",
+            {"trade_date": trade_date},
+            "ts_code,trade_date,pe_ttm,pb,total_mv,turnover_rate_f",
+        )
+        if not rows:
+            return {}
+
+    result = {}
+    for r in rows:
+        ts_code = r.get("ts_code", "")
+        if not ts_code:
+            continue
+        code = ts_code.split(".")[0]
+        try:
+            pe = r.get("pe_ttm")
+            pb = r.get("pb")
+            mv = r.get("total_mv")
+            tr = r.get("turnover_rate_f")
+            result[code] = {
+                "pe": round(float(pe), 2) if pe is not None and 0 < float(pe) < 10000 else None,
+                "pb": round(float(pb), 2) if pb is not None and 0 < float(pb) < 1000 else None,
+                "total_mv": round(float(mv) / 10000, 1) if mv is not None else None,  # 转亿
+                "turnover": round(float(tr), 2) if tr is not None else None,
+                "trade_date": trade_date,
+            }
+        except (ValueError, TypeError):
+            continue
+    print(f"[TUSHARE-BATCH] daily_basic {trade_date}: {len(result)} 只股票")
+    return result
+
+
+# -------- 基金全套（5000 积分解锁）--------
+
+def get_fund_nav(code: str, days: int = 60) -> dict:
+    """
+    基金净值（历史）
+    code: 006547 或 006547.OF
+    返回: {available, source, navs: [...], latest, unit_nav, accum_nav, change_pct}
+    """
+    from datetime import datetime, timedelta
+    ts_code = code if "." in code else f"{code}.OF"
+    end = datetime.now().strftime("%Y%m%d")
+    start = (datetime.now() - timedelta(days=days + 30)).strftime("%Y%m%d")
+    rows = _call_tushare(
+        "fund_nav",
+        {"ts_code": ts_code, "start_date": start, "end_date": end},
+        "ts_code,ann_date,nav_date,unit_nav,accum_nav,adj_nav",
+    )
+    if not rows:
+        return {"available": False, "source": "tushare", "code": code}
+    rows = sorted(rows, key=lambda x: x.get("nav_date", ""))
+    latest = rows[-1]
+    first = rows[0]
+    try:
+        chg = round((float(latest["unit_nav"]) - float(first["unit_nav"])) / float(first["unit_nav"]) * 100, 2)
+    except (ValueError, TypeError, KeyError, ZeroDivisionError):
+        chg = None
+    return {
+        "available": True,
+        "source": "tushare",
+        "code": code,
+        "unit_nav": float(latest["unit_nav"]) if latest.get("unit_nav") else None,
+        "accum_nav": float(latest["accum_nav"]) if latest.get("accum_nav") else None,
+        "nav_date": latest.get("nav_date", ""),
+        "change_pct": chg,
+        "navs": rows,
+    }
+
+
+def get_fund_manager(code: str) -> dict:
+    """基金经理信息"""
+    ts_code = code if "." in code else f"{code}.OF"
+    rows = _call_tushare(
+        "fund_manager",
+        {"ts_code": ts_code},
+        "ts_code,ann_date,name,gender,birth_year,edu,nationality,begin_date,end_date,resume",
+    )
+    if not rows:
+        return {"available": False, "source": "tushare"}
+    # 取当前在任的（end_date 为空的）
+    active = [r for r in rows if not r.get("end_date")]
+    if not active:
+        active = sorted(rows, key=lambda r: r.get("begin_date", ""))[-1:]
+    return {
+        "available": True,
+        "source": "tushare",
+        "managers": active[:5],  # 最多 5 位
+    }
+
+
+def get_fund_portfolio(code: str, period: str = "") -> dict:
+    """
+    基金持仓明细
+    period: YYYYMMDD 格式的报告期；空则取最近一期
+    """
+    from datetime import datetime
+    ts_code = code if "." in code else f"{code}.OF"
+    params = {"ts_code": ts_code}
+    if period:
+        params["period"] = period
+    rows = _call_tushare(
+        "fund_portfolio",
+        params,
+        "ts_code,ann_date,end_date,symbol,mkv,amount,stk_mkv_ratio,stk_float_ratio",
+    )
+    if not rows:
+        return {"available": False, "source": "tushare"}
+    # 同一个 end_date 内按 mkv 降序
+    latest_date = max((r.get("end_date", "") for r in rows), default="")
+    top_holdings = sorted(
+        [r for r in rows if r.get("end_date") == latest_date],
+        key=lambda r: float(r.get("mkv", 0) or 0),
+        reverse=True,
+    )[:10]
+    return {
+        "available": True,
+        "source": "tushare",
+        "end_date": latest_date,
+        "top_holdings": top_holdings,
+    }
+
+
+def get_fund_nav_by_date(nav_date: str) -> list:
+    """
+    按日期批量拉全市场基金净值（A++ 基金排行榜飞速版核心）
+    nav_date: YYYYMMDD
+    返回全部基金当天净值（一次调用可返回 1 万+ 条）
+    """
+    rows = _call_tushare(
+        "fund_nav",
+        {"nav_date": nav_date},
+        "ts_code,ann_date,nav_date,unit_nav,accum_nav,adj_nav",
+    )
+    print(f"[TUSHARE-FUND-BATCH] nav_date={nav_date}: {len(rows)} 条基金净值")
+    return rows
+
+
+def get_fund_basic_all() -> list:
+    """全量基金名单（场内 E + 场外 O）"""
+    rows_e = _call_tushare(
+        "fund_basic",
+        {"market": "E"},
+        "ts_code,name,fund_type,invest_type,status,list_date,due_date,issue_amount",
+    )
+    rows_o = _call_tushare(
+        "fund_basic",
+        {"market": "O"},
+        "ts_code,name,fund_type,invest_type,status,list_date,due_date,issue_amount",
+    )
+    all_rows = (rows_e or []) + (rows_o or [])
+    print(f"[TUSHARE-FUND-BASIC] 场内 {len(rows_e or [])} + 场外 {len(rows_o or [])} = {len(all_rows)}")
+    return all_rows

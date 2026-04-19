@@ -384,7 +384,20 @@ def _train_and_predict(features: list, labels: list, feature_names: list) -> dic
 # ============================================================
 
 def _get_price_volume(code: str, days: int = 800) -> tuple:
-    """获取价格和成交量序列"""
+    """获取价格和成交量序列（2026-04-19 A3: 改走统一 provider）"""
+    # 主源：统一 provider（Tushare 主 + AKShare 降级）
+    try:
+        from services.stock_price_provider import get_daily_df
+        _df = get_daily_df(code, days=days)
+        if _df is not None and len(_df) > 0 and "收盘" in _df.columns:
+            prices = _df["收盘"].dropna().astype(float).tolist()
+            volumes = _df["成交量"].dropna().astype(float).tolist() if "成交量" in _df.columns else None
+            if len(prices) > 0:
+                return prices, volumes
+    except Exception as _e:
+        print(f"[AI_PREDICTOR] provider 失败 {code}: {_e}")
+
+    # 老降级路径保留（provider 全失败时）
     try:
         import akshare as ak
         df = ak.stock_zh_a_hist(symbol=code, period="daily", adjust="qfq")
