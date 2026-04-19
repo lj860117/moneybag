@@ -4585,7 +4585,9 @@ el.innerHTML=html}catch(e){el.innerHTML='<div style="padding:20px;color:var(--be
   }
 
   // 需要自动加解释的术语关键词列表（跟 glossary.py 对齐）
+  // 2026-04-19 v7.2.2 扩充：首页/信号卡/大师辩论高频术语
   const _TERM_PATTERNS = [
+    // 英文指标（必须整词匹配）
     /\bPE(-TTM)?\b/gi,
     /\bPB\b/gi,
     /\bPEG\b/gi,
@@ -4598,9 +4600,15 @@ el.innerHTML=html}catch(e){el.innerHTML='<div style="padding:20px;color:var(--be
     /\bSHIBOR\b/gi,
     /\bDCF\b/gi,
     /\bEV\b/gi,
+    // 中文术语（整词匹配，较长的放前面避免子串冲突）
     /(夏普比率|Sortino|索提诺)/g,
     /(估值百分位|配置偏离度|恐贪指数|股债性价比|美林时钟)/g,
-    /(最大回撤|止盈止损|再平衡|定投|北向资金|两融|布林带|量比|凯利)/g,
+    /(最大回撤|止盈止损|再平衡|定投|北向资金|两融|布林带|量比|凯利|分歧度|置信度)/g,
+    // V7.2.2 新增：小白高频词
+    /(综合得分|持有观望|新闻情绪|沪深300|净资产)/g,
+    /(技术面|基本面|资金面|情绪面|宏观面|地缘面)/g,
+    /(巴菲特|格雷厄姆|林奇|塔勒布|仲裁官)/g,
+    /(百分位|关键词|分红)/g,
   ];
 
   // 给容器内的文本自动加 tooltip 下划线
@@ -4647,9 +4655,8 @@ el.innerHTML=html}catch(e){el.innerHTML='<div style="padding:20px;color:var(--be
           const key = m.toUpperCase();
           const entry = _glossaryCache[key] || _glossaryCache[m];
           if (!entry) return m;
-          const plain = (entry.plain || '').replace(/"/g, '&quot;');
-          const nm = (entry.name || m).replace(/"/g, '&quot;');
-          return '<span class="term-tip" data-term="' + m + '" title="' + nm + '：' + plain + '">' + m + '</span>';
+          // FIX 2026-04-19 v7.2.2: 去掉 title（手机不支持悬停），改用 data-term + 点击弹窗
+          return '<span class="term-tip" data-term="' + m + '" role="button" tabindex="0">' + m + '</span>';
         });
       }
       if (html !== text){
@@ -4686,6 +4693,43 @@ el.innerHTML=html}catch(e){el.innerHTML='<div style="padding:20px;color:var(--be
     setTimeout(() => enhanceTerms(app), 500);
   }
 
+  // ---- D. 点击术语弹出解释浮层（手机也能用） ----
+  function showTermPopup(term){
+    const key = (term || '').toUpperCase();
+    const entry = _glossaryCache[key] || _glossaryCache[term] || {name: term, plain: '暂无解释'};
+
+    // 关闭已有浮层
+    const old = document.getElementById('termPopupOverlay');
+    if (old) old.remove();
+
+    const overlay = document.createElement('div');
+    overlay.id = 'termPopupOverlay';
+    overlay.className = 'term-popup-overlay';
+    overlay.innerHTML = `
+      <div class="term-popup-sheet" onclick="event.stopPropagation()">
+        <div class="term-popup-handle"></div>
+        <div class="term-popup-title">📖 ${entry.name || term}</div>
+        ${entry.short ? `<div class="term-popup-short">${entry.short}</div>` : ''}
+        <div class="term-popup-plain">${entry.plain || '暂无解释'}</div>
+        ${entry.example ? `<div class="term-popup-example">💡 举例：${entry.example}</div>` : ''}
+        <button class="term-popup-close" onclick="document.getElementById('termPopupOverlay').remove()">知道了</button>
+      </div>
+    `;
+    overlay.onclick = (e) => { if (e.target === overlay) overlay.remove(); };
+    document.body.appendChild(overlay);
+  }
+
+  // 全局事件委托：点击任何 .term-tip 都弹窗
+  document.addEventListener('click', function(e){
+    const tip = e.target.closest && e.target.closest('.term-tip');
+    if (tip) {
+      e.preventDefault();
+      e.stopPropagation();
+      const term = tip.dataset.term || tip.textContent;
+      showTermPopup(term);
+    }
+  }, true);  // 用 capture 阶段，优先于业务代码的 click 处理
+
   // 启动
   if (document.readyState === 'loading'){
     document.addEventListener('DOMContentLoaded', function(){ init(); startAutoEnhance(); });
@@ -4695,5 +4739,10 @@ el.innerHTML=html}catch(e){el.innerHTML='<div style="padding:20px;color:var(--be
   }
 
   // 暴露给外部手动调用
-  window._v72 = { enhanceTerms: enhanceTerms, fetchMarketStatus: fetchMarketStatus, loadGlossary: loadGlossary };
+  window._v72 = {
+    enhanceTerms: enhanceTerms,
+    fetchMarketStatus: fetchMarketStatus,
+    loadGlossary: loadGlossary,
+    showTermPopup: showTermPopup
+  };
 })();

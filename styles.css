@@ -250,3 +250,91 @@ body{font-family:'Noto Sans SC',-apple-system,sans-serif;background:var(--bg);co
   vertical-align:middle;
   font-weight:500;
 }
+
+/* ---- D. 术语解释弹窗（v7.2.2 手机也能用）---- */
+.term-tip{
+  display:inline-block;
+  border-bottom:1px dashed var(--accent);
+  cursor:pointer;
+  padding:0 2px;
+  color:var(--accent);
+  font-weight:500;
+  -webkit-tap-highlight-color:rgba(245,158,11,.3);
+  transition:background .15s ease;
+  border-radius:3px;
+}
+.term-tip:active{
+  background:rgba(245,158,11,.2);
+}
+.term-tip::after{
+  content:'ⓘ';
+  font-size:9px;
+  opacity:0.6;
+  margin-left:2px;
+  vertical-align:super;
+}
+
+.term-popup-overlay{
+  position:fixed;top:0;left:0;right:0;bottom:0;
+  background:rgba(0,0,0,.65);
+  z-index:2000;
+  display:flex;align-items:flex-end;justify-content:center;
+  backdrop-filter:blur(4px);
+  -webkit-backdrop-filter:blur(4px);
+  animation:fadeIn .2s ease;
+}
+.term-popup-sheet{
+  background:var(--bg2);
+  width:100%;max-width:480px;
+  border-radius:20px 20px 0 0;
+  padding:20px 24px 32px;
+  animation:slideUp .3s ease;
+  max-height:80vh;overflow-y:auto;
+}
+.term-popup-handle{
+  width:40px;height:4px;
+  background:var(--bg3);
+  border-radius:2px;
+  margin:0 auto 16px;
+}
+.term-popup-title{
+  font-size:22px;font-weight:700;
+  margin-bottom:6px;
+  color:var(--text);
+}
+.term-popup-short{
+  font-size:13px;color:var(--accent);
+  margin-bottom:16px;
+  padding:6px 10px;
+  background:rgba(245,158,11,.12);
+  border-radius:6px;
+  display:inline-block;
+}
+.term-popup-plain{
+  font-size:16px;line-height:1.7;
+  color:var(--text1);
+  margin-bottom:12px;
+}
+.term-popup-example{
+  font-size:13px;line-height:1.6;
+  color:var(--text2);
+  padding:12px;
+  background:rgba(59,130,246,.08);
+  border-left:3px solid var(--blue);
+  border-radius:0 8px 8px 0;
+  margin-bottom:16px;
+}
+.term-popup-close{
+  width:100%;
+  padding:12px;
+  background:var(--accent);
+  color:#000;
+  border:none;border-radius:12px;
+  font-size:15px;font-weight:700;
+  cursor:pointer;
+  font-family:inherit;
+  margin-top:8px;
+}
+.term-popup-close:active{
+  transform:scale(.97);
+}
