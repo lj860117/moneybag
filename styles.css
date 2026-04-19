@@ -338,3 +338,23 @@ body{font-family:'Noto Sans SC',-apple-system,sans-serif;background:var(--bg);co
 .term-popup-close:active{
   transform:scale(.97);
 }
+
+/* ---- v7.2.3: 滚动时自动收起顶栏 ---- */
+.market-status-bar{
+  transition:transform .25s ease, opacity .25s ease, background .3s ease, color .3s ease;
+  will-change:transform;
+}
+.market-status-bar.is-hidden{
+  transform:translateY(-100%);
+  opacity:0;
+  pointer-events:none;
+}
+#profileHeader{
+  transition:transform .25s ease, opacity .25s ease;
+  will-change:transform;
+}
+#profileHeader.is-hidden{
+  transform:translateY(-100%);
+  opacity:0;
+  pointer-events:none;
+}

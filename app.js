@@ -4555,6 +4555,50 @@ el.innerHTML=html}catch(e){el.innerHTML='<div style="padding:20px;color:var(--be
     bar.innerHTML = (status.message || '') + ' · ' + (status.weekday || '');
   }
 
+  // ---- A2. 滚动时自动收起顶栏（向下滚起 / 向上滚出现）----
+  function setupAutoHideHeader(){
+    let lastScrollY = 0;
+    let ticking = false;
+    const SCROLL_THRESHOLD = 10; // 小于 10px 的抖动忽略
+    const HIDE_THRESHOLD = 60;   // 滚过 60px 后才开始隐藏
+
+    function onScroll(){
+      if (ticking) return;
+      ticking = true;
+      requestAnimationFrame(() => {
+        const y = window.scrollY || window.pageYOffset || 0;
+        const delta = y - lastScrollY;
+        const bar = document.getElementById('marketStatusBar');
+        const hdr = document.getElementById('profileHeader');
+
+        // 只在滚动超过阈值时响应
+        if (Math.abs(delta) < SCROLL_THRESHOLD){
+          ticking = false;
+          return;
+        }
+
+        if (y < HIDE_THRESHOLD){
+          // 顶部附近：一直显示
+          if (bar) bar.classList.remove('is-hidden');
+          if (hdr) hdr.classList.remove('is-hidden');
+        } else if (delta > 0){
+          // 向下滚：收起
+          if (bar) bar.classList.add('is-hidden');
+          if (hdr) hdr.classList.add('is-hidden');
+        } else {
+          // 向上滚：出现
+          if (bar) bar.classList.remove('is-hidden');
+          if (hdr) hdr.classList.remove('is-hidden');
+        }
+
+        lastScrollY = y;
+        ticking = false;
+      });
+    }
+
+    window.addEventListener('scroll', onScroll, {passive: true});
+  }
+
   // ---- B. 术语 tooltip ----
   let _glossaryCache = null;
   let _glossaryLoading = null;
@@ -4673,6 +4717,7 @@ el.innerHTML=html}catch(e){el.innerHTML='<div style="padding:20px;color:var(--be
   function init(){
     renderMarketBanner();
     loadGlossary();
+    setupAutoHideHeader();  // 新增：滚动时自动收起顶栏
     // 每 5 分钟刷一次横幅（跨越交易时段）
     setInterval(renderMarketBanner, 300000);
   }
