@@ -4979,14 +4979,22 @@ el.innerHTML=html}catch(e){el.innerHTML='<div style="padding:20px;color:var(--be
 
 /* ============================================================
    V7.4.2 待审记忆红点（2026-04-19）
+   V7.4.3: 只对家庭主账号（LeiJiang）显示，配偶/儿童账号完全安静
    - 顶部 profileHeader 右侧自动挂小红点
    - 有待审记忆就亮 + 数字
    - 点一下打开面板，一条条确认/拒绝
    - 不干扰其他 UI
    ============================================================ */
 (function() {
+  // 家庭主账号白名单（硬编码，和后端 FAMILY_ADMIN 保持一致）
+  const FAMILY_ADMIN_WHITELIST = ['LeiJiang'];
+
   function _uid() {
     try { return (window.getProfileId && window.getProfileId()) || localStorage.getItem('moneybag_profile_name') || 'default'; } catch(e) { return 'default'; }
+  }
+
+  function _isAdmin() {
+    return FAMILY_ADMIN_WHITELIST.includes(_uid());
   }
 
   async function fetchPending() {
@@ -5090,6 +5098,12 @@ el.innerHTML=html}catch(e){el.innerHTML='<div style="padding:20px;color:var(--be
   };
 
   async function refreshBadge() {
+    // V7.4.3: 非家庭主账号完全不拉、不显示红点
+    if (!_isAdmin()) {
+      const badge = document.getElementById('pendingBadge');
+      if (badge) badge.style.display = 'none';
+      return;
+    }
     const { count } = await fetchPending();
     renderBadge(count);
   }

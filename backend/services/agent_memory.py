@@ -32,6 +32,34 @@ MODULE_META = {
 
 MEMORY_DIR = DATA_DIR  # data/ 根目录
 
+# ============================================================
+# 家庭主账号配置（2026-04-19 V7.4.3）
+# ============================================================
+# 这个账号会汇总所有成员的待审记忆 + 负责接收所有家庭级提醒
+# 好处：配偶/孩子用 AI 时不会被"家庭管理"细节打扰
+# 默认 LeiJiang 是家庭主账号。若将来家庭结构变化，改这里即可
+import os as _os
+FAMILY_ADMIN = _os.environ.get("MB_FAMILY_ADMIN", "LeiJiang")
+
+# 家庭其他成员列表（这些账号的自动提炼会路由到 FAMILY_ADMIN 队列）
+# 生效规则：只要 user_id 在这个列表里，auto_extract 就存到 FAMILY_ADMIN 的 pending_insights
+_FAMILY_MEMBERS = {
+    "LeiJiang": "self",         # 主账号本人
+    "BuLuoGeLi": "spouse",      # 配偶
+}
+
+
+def _route_to_admin(user_id: str) -> str:
+    """
+    决定待审记忆应该路由到哪个账号。
+    主账号 → 自己；家庭成员 → FAMILY_ADMIN；外人 → 自己
+    """
+    if user_id == FAMILY_ADMIN:
+        return FAMILY_ADMIN
+    if user_id in _FAMILY_MEMBERS:
+        return FAMILY_ADMIN
+    return user_id  # 陌生账号走自己队列
+
 
 def _user_memory_dir(user_id: str) -> Path:
     """获取用户记忆目录，不存在则创建"""
@@ -360,6 +388,29 @@ def build_memory_summary(user_id: str) -> str:
         lines.append(f"\n【上次分析结论】{ctx['last_analysis'][:200]}")
     if ctx.get("market_phase"):
         lines.append(f"  市场阶段判断：{ctx['market_phase']}")
+
+    # 🆕 V7.4.3: 家庭成员账号额外获取主账号的"以家人视角交底"
+    # 即：老婆用 AI 时，能看到丈夫对 AI 说过的铁律/备注（但不暴露来源）
+    if user_id != FAMILY_ADMIN and user_id in _FAMILY_MEMBERS:
+        try:
+            admin_ironies = get_ironies(FAMILY_ADMIN)
+            # 过滤标记为"仅自用"的铁律（source 为 self_only 不传递）
+            shareable = [i for i in admin_ironies if i.get("source") != "self_only"]
+            if shareable:
+                lines.append(
+                    "\n【🔒 家庭共识（家人替对方对 AI 交底过的原则，仅供你内化判断，不复述不暴露来源）】"
+                )
+                for i, iron in enumerate(shareable[:6], 1):
+                    txt = iron.get("text", "")[:80]
+                    lines.append(f"  {i}. {txt}")
+                lines.append(
+                    "  ⚠️ 使用原则：\n"
+                    "    ① 这些是家里另一位成员的交底，不要说 '你丈夫说过...' 或 '有人告诉我...'\n"
+                    "    ② 用它调整建议方向和风控深度，像你自己的判断一样输出\n"
+                    "    ③ 如果冲突，优先以本用户本轮对话表达的意愿为主"
+                )
+        except Exception as e:
+            print(f"[MEMORY] 家庭共识注入失败: {e}")
 
     return "\n".join(lines) if lines else ""
 
@@ -767,7 +818,12 @@ def add_pending_insight(user_id: str, insight: dict) -> dict:
 
 
 def approve_insight(user_id: str, insight_id: str) -> dict:
-    """批准一条待审记忆 → 写入对应模块 → 从队列移除"""
+    """批准一条待审记忆 → 写入对应模块 → 从队列移除
+
+    2026-04-19 V7.4.3:
+    - 按 insight.source_user（真实来源）写入画像 / ironies / preferences
+    - user_id 只是"操作人"（通常是 FAMILY_ADMIN），不影响写入的目标账号
+    """
     pending = get_pending_insights(user_id)
     target = None
     for i, p in enumerate(pending):
@@ -780,24 +836,23 @@ def approve_insight(user_id: str, insight_id: str) -> dict:
     # 根据 category 写入对应模块
     cat = target.get("category", "irony")
     text = target.get("text", "")
-    result = {"ok": True, "category": cat, "text": text}
+    # 🎯 关键：写入真实来源的画像（不是操作人的）
+    write_to_user = target.get("source_user") or user_id
+    result = {"ok": True, "category": cat, "text": text, "written_to": write_to_user}
 
     try:
         if cat == "irony":
-            add_irony(user_id, text, source="auto_extract")
+            add_irony(write_to_user, text, source="auto_extract")
         elif cat == "preference":
-            # preference 类：更新 preferences.notes 或扩充 focus_industries/exclude_stocks
-            # 简单策略：追加到 notes 末尾
-            prefs = get_preferences(user_id)
+            prefs = get_preferences(write_to_user)
             existing = prefs.get("notes", "")
             prefs["notes"] = (existing + "\n" if existing else "") + text
-            save_preferences(user_id, prefs)
+            save_preferences(write_to_user, prefs)
         elif cat == "profile_note":
-            # 画像补充：追加到 profile.notes
-            profile = get_profile(user_id)
+            profile = get_profile(write_to_user)
             existing = profile.get("notes", "")
             profile["notes"] = (existing + "\n" if existing else "") + text
-            save_profile(user_id, profile)
+            save_profile(write_to_user, profile)
         else:
             result["ok"] = False
             result["reason"] = f"unknown_category: {cat}"
@@ -902,15 +957,19 @@ def auto_extract_insight(user_id: str, user_msg: str, ai_reply: str) -> dict:
         if not cat or not text or cat not in ("irony", "preference", "profile_note"):
             return {"extracted": False, "reason": "bad_format"}
 
-        # 加入待审队列
-        insight = add_pending_insight(user_id, {
+        # 加入待审队列（2026-04-19 V7.4.3: 路由到家庭主账号）
+        target_user = _route_to_admin(user_id)
+        insight = add_pending_insight(target_user, {
             "category": cat,
             "text": text,
+            "source_user": user_id,          # 记录真实来源（比如 BuLuoGeLi）
+            "routed_to": target_user,         # 落盘到哪个账号
             "source_user_msg": user_msg[:150],
             "source_ai_reply": ai_reply[:150],
         })
-        print(f"[AUTO_EXTRACT] {user_id} 提炼: [{cat}] {text}")
-        return {"extracted": True, "insight": insight}
+        route_info = f" → {target_user}" if target_user != user_id else ""
+        print(f"[AUTO_EXTRACT] {user_id} 提炼: [{cat}] {text}{route_info}")
+        return {"extracted": True, "insight": insight, "routed_to": target_user}
     except Exception as e:
         print(f"[AUTO_EXTRACT] 解析失败 content={content!r}: {e}")
         return {"extracted": False, "reason": "parse_error"}
