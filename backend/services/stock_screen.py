@@ -34,16 +34,9 @@ MODULE_META = {
 _stock_cache = {}
 
 # ---- 30 因子权重配置（默认值，可被 AI 覆盖）----
-# 7 大维度权重
-DEFAULT_DIM_WEIGHTS = {
-    "value": 0.20,      # 价值
-    "growth": 0.15,      # 成长
-    "quality": 0.18,     # 质量（提权：区分好坏公司的核心）
-    "momentum": 0.15,    # 动量
-    "risk": 0.12,        # 风险
-    "liquidity": 0.10,   # 流动性
-    "sentiment": 0.10,   # 舆情
-}
+# FIX 2026-04-19 F4: 权重统一从 config.STOCK_SCREEN_WEIGHTS 读取（Single Source of Truth）
+# 原来本地写了一份 quality=0.18，与 config.py 的 0.15 不一致
+from config import STOCK_SCREEN_WEIGHTS as DEFAULT_DIM_WEIGHTS
 
 # ---- DeepSeek 动态权重调整 ----
 _weight_cache = {}

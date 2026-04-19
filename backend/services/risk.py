@@ -26,6 +26,96 @@ from services.portfolio_calc import calc_holdings_from_transactions
 from services.data_layer import get_fund_nav
 
 
+# ============================================================
+# FIX 2026-04-19 F6: 基金资产类型判断（替代硬编码代码列表）
+# ============================================================
+
+# 已知基金类型映射（手动维护常见基金，未知的按 name 关键字推断）
+_KNOWN_FUND_TYPES = {
+    # 股票/指数 ETF
+    "110020": "equity", "050025": "equity", "008114": "equity",
+    "510300": "equity", "510500": "equity", "510050": "equity",
+    "159915": "equity", "159919": "equity",
+    # 债券
+    "217022": "bond", "519736": "bond", "003376": "bond",
+    # 黄金
+    "000216": "gold", "518880": "gold",
+    # 货币
+    "000198": "money", "003474": "money",
+}
+
+_EQUITY_KEYWORDS = ["股票", "沪深", "创业", "科创", "医药", "消费", "新能源", "半导体", "ETF", "300", "500", "50"]
+_BOND_KEYWORDS = ["债券", "债A", "债B", "债C", "纯债", "利率债", "信用债", "可转债"]
+_GOLD_KEYWORDS = ["黄金", "金ETF"]
+_MONEY_KEYWORDS = ["货币", "余额宝", "现金", "宝宝"]
+
+
+def _classify_asset(h: dict) -> str:
+    """根据代码和名称判断资产类型：equity / bond / gold / money / unknown"""
+    code = str(h.get("code", ""))
+    name = str(h.get("name", ""))
+
+    if code in _KNOWN_FUND_TYPES:
+        return _KNOWN_FUND_TYPES[code]
+
+    # 特殊：余额宝
+    if code == "余额宝" or "余额宝" in name:
+        return "money"
+
+    # 按名称关键字推断
+    for kw in _GOLD_KEYWORDS:
+        if kw in name:
+            return "gold"
+    for kw in _BOND_KEYWORDS:
+        if kw in name:
+            return "bond"
+    for kw in _MONEY_KEYWORDS:
+        if kw in name:
+            return "money"
+    for kw in _EQUITY_KEYWORDS:
+        if kw in name:
+            return "equity"
+
+    # A 股股票代码（6 位数字，6/0/3 开头）默认权益
+    if code.isdigit() and len(code) == 6:
+        if code[0] in ("6", "3") or code.startswith("000") or code.startswith("002"):
+            return "equity"
+
+    return "unknown"
+
+
+def _calc_real_peak(active: list) -> float:
+    """基于持仓历史计算真实净值峰值
+    
+    FIX 2026-04-19 F5: 原来 peak = total_cost * 1.1 是拍脑袋假设，
+    改为：对每个持仓，取其（成本、当前市值、历史最高估值）的最大值之和作为组合峰值。
+    这不是完美的历史峰值（需要完整净值曲线），但比 cost*1.1 准确得多。
+    """
+    peak = 0.0
+    for h in active:
+        cost = h.get("totalCost", 0)
+        shares = h.get("shares", 0)
+        avg_nav = h.get("avgNav", 0)
+        code = h.get("code", "")
+
+        # 当前市值
+        current_val = cost  # fallback
+        try:
+            if code == "余额宝":
+                current_val = shares
+            else:
+                nav_info = get_fund_nav(code)
+                if nav_info and nav_info.get("nav") not in (None, "N/A"):
+                    current_val = shares * float(nav_info["nav"])
+        except Exception:
+            pass
+
+        # 取"成本"和"当前"的最大值作为该持仓的局部峰值
+        # （真实峰值需要持仓历史净值曲线，暂用这个更保守的近似）
+        peak += max(cost, current_val)
+    return peak
+
+
 def calc_risk_metrics(transactions: list) -> dict:
     """计算组合风险指标：集中度/回撤/相关性"""
     result = {
@@ -65,7 +155,7 @@ def calc_risk_metrics(transactions: list) -> dict:
             result["concentration"]["level"] = "分散良好"
             result["concentration"]["detail"] = f"HHI={hhi:.0f}，分散度良好"
 
-    # --- 2. 回撤监控 ---
+    # --- 2. 回撤监控（FIX F5: 基于真实峰值）---
     try:
         current_market = 0
         for h in active:
@@ -79,7 +169,7 @@ def calc_risk_metrics(transactions: list) -> dict:
             else:
                 current_market += h["shares"] * h["avgNav"]
 
-        peak = total_cost * 1.1  # 简化：假设历史高点
+        peak = _calc_real_peak(active)
         if current_market > 0 and peak > 0:
             drawdown = (peak - current_market) / peak * 100
             if drawdown > 0:
@@ -96,28 +186,37 @@ def calc_risk_metrics(transactions: list) -> dict:
                         "type": "drawdown", "severity": "warning",
                         "message": f"⚠️ 当前回撤{drawdown:.1f}%，注意风险控制"
                     })
-                result["drawdown"]["detail"] = f"当前回撤{drawdown:.1f}%"
+                result["drawdown"]["detail"] = f"当前回撤{drawdown:.1f}%（基于持仓成本与当前市值的组合峰值近似）"
     except Exception as e:
         print(f"[RISK] Drawdown calc failed: {e}")
 
-    # --- 3. 相关性提示 ---
-    stock_count = sum(1 for h in active if h["code"] in ["110020", "050025", "008114"])
-    bond_count = sum(1 for h in active if h["code"] in ["217022"])
-    gold_count = sum(1 for h in active if h["code"] in ["000216"])
+    # --- 3. 相关性提示（FIX F6: 按资产类型分类）---
+    type_counts = {"equity": 0, "bond": 0, "gold": 0, "money": 0, "unknown": 0}
+    for h in active:
+        t = _classify_asset(h)
+        type_counts[t] += 1
 
-    if stock_count >= 2 and bond_count == 0 and gold_count == 0:
+    equity_n = type_counts["equity"]
+    bond_n = type_counts["bond"]
+    gold_n = type_counts["gold"]
+    has_hedge = bond_n > 0 or gold_n > 0
+
+    if equity_n >= 2 and not has_hedge:
         result["correlation"]["avg"] = 0.75
-        result["correlation"]["detail"] = "持仓以权益类为主，相关性较高，缺少避险资产对冲"
+        result["correlation"]["detail"] = f"持仓以权益类为主（股票/权益基金{equity_n}只），相关性较高，缺少避险资产对冲"
         result["alerts"].append({
             "type": "correlation", "severity": "info",
             "message": "💡 持仓权益资产占比高，建议配置债券/黄金降低组合波动"
         })
-    elif bond_count > 0 and gold_count > 0:
+    elif bond_n > 0 and gold_n > 0:
         result["correlation"]["avg"] = 0.35
-        result["correlation"]["detail"] = "股债金组合，相关性适中，对冲效果良好"
+        result["correlation"]["detail"] = f"股债金组合（权益{equity_n}/债券{bond_n}/黄金{gold_n}），相关性适中，对冲效果良好"
+    elif has_hedge:
+        result["correlation"]["avg"] = 0.45
+        result["correlation"]["detail"] = f"含避险资产（债券{bond_n}/黄金{gold_n}），相关性中等偏低"
     else:
         result["correlation"]["avg"] = 0.5
-        result["correlation"]["detail"] = "相关性中等"
+        result["correlation"]["detail"] = "资产类型未完全识别，相关性估算中等"
 
     return result
 

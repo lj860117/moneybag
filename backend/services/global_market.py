@@ -261,10 +261,23 @@ def get_global_pe() -> dict:
 
         # 额外校验：中美 PE 不应相同（如果相同大概率是数据源错误）
         if result["us_pe"] and result["cn_pe"] and result["us_pe"] == result["cn_pe"]:
-            print(f"[GLOBAL_PE] 中美PE相同({result['us_pe']})，疑似数据源错误，标记不可用")
-            result["us_pe"] = None
-            result["cn_pe"] = None
-            result["notice"] = "中美PE数据异常（值相同），可能接口返回了错误数据"
+            print(f"[GLOBAL_PE] 中美PE相同({result['us_pe']})，切换到备用数据源")
+            # FIX 2026-04-19 F11: 用不同接口重新获取
+            # 美国 → 标普 500 指数 PE; 中国 → 沪深 300 PE
+            try:
+                from services.market_data import get_valuation_percentile
+                cn_val = get_valuation_percentile()
+                if cn_val.get("current_pe"):
+                    result["cn_pe"] = round(float(cn_val["current_pe"]), 2)
+                    print(f"[GLOBAL_PE] 中国 PE 改用沪深300 = {result['cn_pe']}")
+            except Exception as e:
+                print(f"[GLOBAL_PE] 沪深300 fallback failed: {e}")
+                result["cn_pe"] = None
+
+            # 美国 PE 无可靠备用，暂时标记不可用（但保留沪深300 PE 给下游）
+            if result["cn_pe"] and result["us_pe"] == result["cn_pe"]:
+                result["us_pe"] = None
+                result["notice"] = "美国 PE 数据源异常，仅保留中国沪深300数据"
 
         # PE 价差
         if result["us_pe"] and result["cn_pe"]:

@@ -164,8 +164,74 @@ def update_stock_holding(code: str, user_id: str = "default", **kwargs) -> dict:
 # 2. 单只股票实时行情
 # ============================================================
 
+def _fallback_hist_close(code: str) -> dict:
+    """FIX 2026-04-19 F2: 实时数据拿不到时（非交易日/东财反爬），用最近一个交易日的日线收盘数据兜底
+    
+    多源降级：东方财富 → 新浪 → 返回空
+    """
+    import akshare as ak
+    from datetime import datetime, timedelta
+
+    # 源 1：东方财富（可能反爬）
+    try:
+        end = datetime.now().strftime("%Y%m%d")
+        start = (datetime.now() - timedelta(days=15)).strftime("%Y%m%d")
+        df = ak.stock_zh_a_hist(symbol=code, period="daily", start_date=start, end_date=end, adjust="qfq")
+        if df is not None and len(df) >= 1:
+            last = df.iloc[-1]
+            prev = df.iloc[-2] if len(df) >= 2 else last
+            close = float(last.get("收盘", 0) or 0)
+            prev_close = float(prev.get("收盘", 0) or 0)
+            if close > 0:
+                change = close - prev_close
+                change_pct = (change / prev_close * 100) if prev_close > 0 else 0
+                return {
+                    "price": close,
+                    "change": round(change, 2),
+                    "changePct": round(change_pct, 2),
+                    "volume": float(last.get("成交量", 0) or 0),
+                    "amount": float(last.get("成交额", 0) or 0),
+                    "high": float(last.get("最高", 0) or 0),
+                    "low": float(last.get("最低", 0) or 0),
+                    "open": float(last.get("开盘", 0) or 0),
+                    "prevClose": prev_close,
+                    "data_date": str(last.get("日期", ""))[:10],
+                    "is_snapshot": True,
+                }
+    except Exception as e:
+        print(f"[MONITOR-FALLBACK] {code} 东方财富日线失败: {e}")
+
+    # 源 2：新浪（降级）
+    try:
+        sym = (f"sh{code}" if code.startswith("6") else f"sz{code}")
+        df2 = ak.stock_zh_a_daily(symbol=sym, adjust="qfq")
+        if df2 is not None and len(df2) >= 1:
+            df2 = df2.tail(15)
+            last = df2.iloc[-1]
+            prev = df2.iloc[-2] if len(df2) >= 2 else last
+            close_col = next((c for c in df2.columns if "close" in str(c).lower()), None)
+            if close_col:
+                close = float(last[close_col])
+                prev_close = float(prev[close_col])
+                change = close - prev_close
+                change_pct = (change / prev_close * 100) if prev_close > 0 else 0
+                date_val = last.name if hasattr(last, "name") else ""
+                return {
+                    "price": close,
+                    "change": round(change, 2),
+                    "changePct": round(change_pct, 2),
+                    "prevClose": prev_close,
+                    "data_date": str(date_val)[:10],
+                    "is_snapshot": True,
+                }
+    except Exception as e:
+        print(f"[MONITOR-FALLBACK] {code} 新浪日线也失败: {e}")
+
+    return {}
+
+
 def get_stock_realtime(code: str) -> dict:
-    """获取单只股票实时行情（雪球数据源）"""
+    """获取单只股票实时行情（雪球数据源），非交易日/失败时降级到最近一个交易日日线"""
     cache_key = f"rt_{code}"
     now = time.time()
     if cache_key in _monitor_cache and now - _monitor_cache[cache_key]["ts"] < 30:
@@ -176,6 +242,7 @@ def get_stock_realtime(code: str) -> dict:
         "changePct": None, "volume": None, "amount": None,
         "high": None, "low": None, "open": None, "prevClose": None,
         "pe": None, "pb": None, "marketCap": None, "turnover": None,
+        "data_date": None, "is_snapshot": False,
     }
     try:
         import akshare as ak
@@ -210,6 +277,13 @@ def get_stock_realtime(code: str) -> dict:
 
     except Exception as e:
         print(f"[MONITOR] {code} realtime fail: {e}")
+
+    # FIX F2: 如果实时接口没拿到价格，降级到日线
+    if result["price"] is None:
+        fb = _fallback_hist_close(code)
+        if fb:
+            result.update({k: v for k, v in fb.items() if v is not None})
+            print(f"[MONITOR] {code} 降级到日线数据 ({result.get('data_date')})")
 
     _monitor_cache[cache_key] = {"data": result, "ts": time.time()}
     return result
@@ -417,6 +491,9 @@ def scan_all_holdings(user_id: str = "default") -> dict:
             "pnlPct": pnl_pct,
             "indicators": ind,
             "signals": anomalies,
+            # FIX 2026-04-19 F2: 透传数据新鲜度元信息
+            "is_snapshot": rt.get("is_snapshot", False),
+            "data_date": rt.get("data_date"),
         })
         all_signals.extend(anomalies)
 

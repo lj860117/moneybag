@@ -23,6 +23,8 @@ import time
 import json
 from datetime import datetime, timedelta
 from config import FACTOR_CACHE_TTL, LLM_API_URL, LLM_API_KEY, LLM_MODEL
+# FIX 2026-04-19: 补 import，解决 [TREASURY] Failed: name 'get_valuation_percentile' is not defined
+from services.market_data import get_valuation_percentile
 
 factor_cache = {}
 

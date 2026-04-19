@@ -63,7 +63,8 @@ from services.data_layer import (
 )
 
 # ---- FastAPI 应用 ----
-app = FastAPI(title="钱袋子 API", version="6.0.0-phase0")
+from config import APP_VERSION as _APP_VERSION
+app = FastAPI(title="钱袋子 API", version=_APP_VERSION)
 
 app.add_middleware(GZipMiddleware, minimum_size=1000)  # >1KB 自动 gzip
 app.add_middleware(
@@ -75,6 +76,59 @@ app.add_middleware(
 )
 
 # ---- API 路由 ----
+
+@app.get("/api/glossary")
+def get_glossary_api(term: str = None):
+    """FIX 2026-04-19 D4: 金融术语词典（小白可用性）
+    - 不传 term → 返回全部词典
+    - 传 term（如 ?term=PE）→ 返回单个解释
+    """
+    from services.glossary import get_glossary, explain_term
+    if term:
+        return {"term": term, **explain_term(term)}
+    return {"glossary": get_glossary()}
+
+
+@app.get("/api/market-status")
+def get_market_status():
+    """FIX 2026-04-19 F2: 市场状态 API，前端显示『今天是否交易日』
+    让用户看到数据来源时间戳，知道为什么盘中数据可能是昨天的
+    """
+    from services.signal_scout import is_trading_day
+    from datetime import datetime, time as dt_time
+    now = datetime.now()
+    trading_day = is_trading_day(now)
+
+    # 判断交易时段
+    t = now.time()
+    session = "closed"
+    if trading_day:
+        if dt_time(9, 30) <= t < dt_time(11, 30):
+            session = "morning"
+        elif dt_time(13, 0) <= t < dt_time(15, 0):
+            session = "afternoon"
+        elif t < dt_time(9, 30):
+            session = "pre_open"
+        elif dt_time(11, 30) <= t < dt_time(13, 0):
+            session = "lunch"
+        else:
+            session = "after_close"
+
+    return {
+        "is_trading_day": trading_day,
+        "session": session,
+        "now": now.isoformat(),
+        "weekday": now.strftime("%A"),
+        "message": {
+            "closed": "📅 非交易日，数据为最近一次收盘快照",
+            "pre_open": "🌅 开盘前（9:30 前），数据为昨日收盘",
+            "morning": "🟢 上午交易中（9:30-11:30）",
+            "lunch": "☕ 午休（11:30-13:00），数据为上午收盘",
+            "afternoon": "🟢 下午交易中（13:00-15:00）",
+            "after_close": "🌙 已收盘，数据为今日收盘",
+        }.get(session, "市场状态未知"),
+    }
+
 
 @app.get("/api/health")
 def health():
@@ -1255,16 +1309,37 @@ async def analyze_stock_holdings(req: dict = {}):
     if not scan.get("holdings"):
         return {"analysis": "暂无持仓股票，请先添加。", "source": "none"}
 
+    # FIX 2026-04-19 F2: 数据质量声明——让 LLM 知道哪些是实时、哪些是快照、哪些是 null
+    # 防止非交易日/反爬时 AI"编造"看似专业的数据
+    from services.signal_scout import is_trading_day
+    trading_day = is_trading_day()
+    total_holdings = len(scan["holdings"])
+    null_count = sum(1 for h in scan["holdings"] if h.get("price") is None)
+    snapshot_count = sum(1 for h in scan["holdings"] if h.get("is_snapshot"))
+
+    data_quality_notice = []
+    if not trading_day:
+        data_quality_notice.append("⚠️ 今天是非交易日，数据为最近一个交易日收盘快照")
+    if null_count > 0:
+        data_quality_notice.append(f"⚠️ {null_count}/{total_holdings} 只股票数据未能获取（price=null）")
+    if snapshot_count > 0:
+        data_quality_notice.append(f"📅 {snapshot_count}/{total_holdings} 只股票使用的是日线收盘数据（非盘中实时）")
+    data_quality_str = " | ".join(data_quality_notice) if data_quality_notice else "✅ 实时数据"
+
     # 构建持仓摘要给 DeepSeek
-    lines = ["【股票持仓盯盘数据】"]
+    lines = [f"【股票持仓盯盘数据 — {data_quality_str}】"]
     for h in scan["holdings"]:
-        ind = h.get("indicators", {})
-        pnl_str = f"盈亏{h['pnlPct']:+.1f}%" if h.get("pnlPct") is not None else ""
+        ind = h.get("indicators") or {}
+        price_str = f"¥{h['price']}" if h.get("price") is not None else "N/A(数据缺失)"
+        chg_str = f"{h['changePct']:+.2f}%" if h.get("changePct") is not None else "N/A"
+        pnl_str = f"盈亏{h['pnlPct']:+.1f}%" if h.get("pnlPct") is not None else "盈亏N/A"
+        data_date = h.get("data_date", "")
+        date_tag = f"[数据截至{data_date}]" if data_date else ""
         lines.append(
-            f"  {h['name']}({h['code']}) 现价¥{h.get('price','N/A')} "
-            f"涨跌{h.get('changePct','N/A')}% {pnl_str} "
+            f"  {h['name']}({h['code']}) 现价{price_str} "
+            f"涨跌{chg_str} {pnl_str} "
             f"RSI={ind.get('rsi14','N/A')} MACD={ind.get('macd_trend','N/A')} "
-            f"量比={ind.get('volume_ratio','N/A')}"
+            f"量比={ind.get('volume_ratio','N/A')} {date_tag}"
         )
     if scan.get("signals"):
         lines.append("\n【异动信号】")
@@ -1277,19 +1352,28 @@ async def analyze_stock_holdings(req: dict = {}):
     # 调用 DeepSeek 做深度分析
     api_key = os.environ.get("LLM_API_KEY")
     if not api_key:
-        return {"analysis": stock_ctx, "source": "data_only"}
+        return {"analysis": stock_ctx, "source": "data_only", "scan": scan, "data_quality": data_quality_str}
 
-    system_prompt = _load_prompt_template()
+    # FIX F2: 数据质量声明注入到 system prompt
+    base_prompt = _load_prompt_template()
+    system_prompt = (base_prompt + "\n\n"
+        "🔴 数据诚信铁律（必须遵守）：\n"
+        "1. 若持仓数据中字段为 N/A 或 null，绝对禁止编造具体数值。用『数据暂缺』『本次无法评估』代替。\n"
+        "2. 若标注为『非交易日数据』或『日线收盘快照』，必须在分析中明确说明基于哪一天的数据。\n"
+        "3. 禁止引用『PE约XX倍』『RSI=XX』等具体数字，除非原始数据中明确给出且不为 null。\n"
+        "4. 分析深度与数据完整度成正比——数据缺失越多，分析就该越保守、越短，明确告诉用户『等开盘后数据更新再看』。"
+    )
     user_prompt = f"""请对我的股票持仓做一次全面深度分析。
 
 {stock_ctx}
 
 {market_ctx}
 
-请按以下结构回答：
-1. 📊 总体评估（一句话结论）
-2. 逐只分析（每只股票：趋势判断+风险提示+操作建议）
-3. 🛡️ 风控经理总结（组合风险+操作优先级）"""
+请按以下结构回答（小白友好，每节≤200字）：
+1. 📊 **总体结论**（一句话，明确方向和置信度）
+2. 🟢 **多头观点** + 🔴 **空头观点**（各2-3条，用数据说话）
+3. 🛡️ **操作建议**（按持仓每只给 1-2 句，避免长篇）
+4. 📌 **数据说明**（本次使用什么数据、有哪些缺失）"""
 
     try:
         import httpx
@@ -1316,11 +1400,17 @@ async def analyze_stock_holdings(req: dict = {}):
                     save_analysis(uid, "deepseek", "DeepSeek V3", "stock", reply, direction="auto")
                 except Exception as e:
                     print(f"[HISTORY] stock analyze 存档失败: {e}")
-                return {"analysis": reply, "source": "ai", "scan": scan}
+                return {
+                    "analysis": reply,
+                    "source": "ai",
+                    "scan": scan,
+                    "data_quality": data_quality_str,
+                    "is_trading_day": trading_day,
+                }
     except Exception as e:
         print(f"[STOCK_ANALYZE] DeepSeek fail: {e}")
 
-    return {"analysis": stock_ctx, "source": "data_only", "scan": scan}
+    return {"analysis": stock_ctx, "source": "data_only", "scan": scan, "data_quality": data_quality_str}
 
 
 # ---- 基金持仓盯盘 API ----

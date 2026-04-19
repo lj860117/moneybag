@@ -180,6 +180,21 @@ class DecisionContext:
 
     def to_user_response(self) -> dict:
         """视图2: 给前端展示的结果（脱敏、结构化）"""
+        # FIX 2026-04-19 F14: 透出模块执行状态（成功/失败/跳过），让前端知道哪些维度缺失
+        modules_status = {
+            "called": len(self.modules_called),
+            "succeeded": sum(1 for r in self.modules_results.values()
+                             if isinstance(r, dict) and r.get("available", False)),
+            "failed": len(self.modules_errors) if self.modules_errors else 0,
+            "skipped": len(self.modules_skipped) if self.modules_skipped else 0,
+        }
+        # 缺失的模块（called 了但 modules_results 里没有 available=True 的）
+        missing_modules = []
+        for name in self.modules_called:
+            r = self.modules_results.get(name, {})
+            if not (isinstance(r, dict) and r.get("available", False)):
+                missing_modules.append(name)
+
         return {
             "direction": self.direction or self.final_direction,
             "confidence": self.confidence or self.final_confidence,
@@ -192,11 +207,16 @@ class DecisionContext:
             "pipeline_steps": self.pipeline_steps,
             "modules_called": self.modules_called,
             "modules_count": len(self.modules_called),
+            "modules_status": modules_status,                # 新：总览
+            "modules_errors": self.modules_errors or {},     # 新：具体错误
+            "modules_skipped": self.modules_skipped or [],   # 新：跳过列表
+            "modules_missing": missing_modules,              # 新：有调用但无结果的模块
             "modules_results": {
                 name: {
                     "available": r.get("available", False),
                     "direction": r.get("direction", "neutral"),
                     "confidence": r.get("confidence", r.get("score", 0)),
+                    "error": r.get("error") if not r.get("available", False) else None,
                 }
                 for name, r in self.modules_results.items()
                 if isinstance(r, dict)

@@ -93,21 +93,27 @@ def step_parallel_modules(ctx: DecisionContext) -> DecisionContext:
             meta = entry.get("meta", {})
             mod_info = {"name": name, **meta}
             
+            # FIX 2026-04-19 F14: 把每个模块都登记到 modules_called，
+            # 这样"缺少结果"的情况能在响应里显示出来，避免静默失败
+            if name not in ctx.modules_called:
+                ctx.modules_called.append(name)
+
             try:
                 # 检查 scope：private 模块需要 user_id
                 scope = mod_info.get("scope", "public")
                 if scope == "private" and not ctx.user_id:
+                    ctx.modules_skipped.append(f"{name}:no_user_id")
                     continue
                 
                 ctx = enrich_fn(ctx)
-                if name not in ctx.modules_called:
-                    ctx.modules_called.append(name)
             except Exception as e:
-                print(f"[PIPELINE] module {name}.enrich() failed: {e}")
+                err_msg = str(e)[:200]
+                print(f"[PIPELINE] module {name}.enrich() failed: {err_msg}")
                 ctx.modules_results[name] = {
                     "available": False,
-                    "error": str(e),
+                    "error": err_msg,
                 }
+                ctx.modules_errors[name] = err_msg
     except Exception as e:
         print(f"[PIPELINE] step_parallel_modules failed: {e}")
     

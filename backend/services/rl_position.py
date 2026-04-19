@@ -221,9 +221,19 @@ def train_on_history(code: str, days: int = 750) -> dict:
     """在历史数据上训练 Q-Learning Agent"""
     try:
         from services.backtest_engine import _get_stock_hist
-        prices = _get_stock_hist(code, days=days)
+        prices_raw = _get_stock_hist(code, days=days)
+        if len(prices_raw) < 200:
+            return {"error": f"数据不足: {len(prices_raw)}天"}
+
+        # FIX 2026-04-19 F9: _get_stock_hist 返回 [{"date":..., "close":...}, ...]
+        # 需要提取 close 字段再转 numpy，不能直接 np.array(prices) → float
+        if isinstance(prices_raw[0], dict):
+            prices = [float(p.get("close", 0) or 0) for p in prices_raw if p.get("close") is not None]
+        else:
+            prices = [float(p) for p in prices_raw]
+
         if len(prices) < 200:
-            return {"error": f"数据不足: {len(prices)}天"}
+            return {"error": f"有效收盘价不足: {len(prices)}天"}
 
         prices_arr = np.array(prices, dtype=np.float64)
         returns = np.diff(np.log(prices_arr))

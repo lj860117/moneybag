@@ -50,12 +50,14 @@ FACTOR_WEIGHTS = {
 }
 
 # ---- 7维选股权重（V5.0）----
+# FIX 2026-04-19 F4: 从 0.15 → 0.18，统一为 stock_screen.py 原有逻辑
+# quality 提权：区分好坏公司的核心，value 由 0.20 降为 0.20（保持），补偿来自 risk 降 0.15→0.12
 STOCK_SCREEN_WEIGHTS = {
     "value": 0.20,
     "growth": 0.15,
-    "quality": 0.15,
+    "quality": 0.18,     # 质量（提权：区分好坏公司的核心）
     "momentum": 0.15,
-    "risk": 0.15,
+    "risk": 0.12,
     "liquidity": 0.10,
     "sentiment": 0.10,
 }

@@ -22,6 +22,14 @@ from config import NAV_CACHE_TTL
 
 _nav_cache = {}
 
+def _looks_like_stock_code(code: str) -> bool:
+    """简易判断：A股股票代码（6位数字，首位 6/0/3），基金通常 0/1/5 开头但长度不同"""
+    if not code or not code.isdigit() or len(code) != 6:
+        return False
+    # A 股：60xxxx/00xxxx/30xxxx/688xxx/8xxxxx
+    return code[0] in ("6", "3") or code.startswith("000") or code.startswith("002") or code.startswith("688") or code.startswith("8")
+
+
 def get_fund_nav(code: str) -> dict:
     """获取单只基金的最新净值"""
     cache_key = code
@@ -29,6 +37,10 @@ def get_fund_nav(code: str) -> dict:
 
     if cache_key in _nav_cache and now - _nav_cache[cache_key]["ts"] < NAV_CACHE_TTL:
         return _nav_cache[cache_key]["data"]
+
+    # FIX 2026-04-19: 股票代码直接返回空，避免 akshare 去查基金净值导致 SyntaxError 噪音日志
+    if _looks_like_stock_code(code):
+        return {"code": code, "nav": "N/A", "date": "N/A", "change": "0", "skip_reason": "股票代码，非基金"}
 
     try:
         import akshare as ak
