@@ -371,8 +371,15 @@ async function runDataAudit(){const btn=document.getElementById('auditBtn');if(b
 function renderNav(){let n=document.getElementById('btmNav');if(!n){n=document.createElement('div');n.id='btmNav';n.className='bottom-nav';document.body.appendChild(n)}
 const tabs=[{id:'landing',icon:'🏠',label:'首页'},{id:'stocks',icon:'📈',label:'持仓'},{id:'insight',icon:'📰',label:'资讯'},{id:'chat',icon:'🤖',label:'AI分析'},{id:'history',icon:'📋',label:'历史'},{id:'assets',icon:'🏦',label:'资产'}];
 n.innerHTML=tabs.map(t=>`<div class="nav-item ${currentPage===t.id?'active':''}" onclick="navigateTo('${t.id}')"><div class="nav-icon">${t.icon}</div><div>${t.label}</div></div>`).join('');
-// 顶部用户名条
-let hdr=document.getElementById('profileHeader');if(!hdr){hdr=document.createElement('div');hdr.id='profileHeader';hdr.style.cssText='position:fixed;top:0;left:0;right:0;z-index:100;padding:6px 16px;font-size:12px;color:var(--text2,#94a3b8);background:var(--bg,#0f172a);display:flex;justify-content:space-between;align-items:center;border-bottom:1px solid var(--bg3,#334155)';document.body.appendChild(hdr);document.body.style.paddingTop='32px'}
+// 顶部用户名条（2026-04-19 V7.7: 只在首页显示，其他页面隐藏省屏幕空间）
+let hdr=document.getElementById('profileHeader');
+const showHeader = currentPage === 'landing';
+if(!hdr){hdr=document.createElement('div');hdr.id='profileHeader';hdr.style.cssText='position:fixed;top:0;left:0;right:0;z-index:100;padding:6px 16px;font-size:12px;color:var(--text2,#94a3b8);background:var(--bg,#0f172a);display:flex;justify-content:space-between;align-items:center;border-bottom:1px solid var(--bg3,#334155);transition:transform .2s ease';document.body.appendChild(hdr)}
+hdr.style.display = showHeader ? '' : 'none';
+// V7.7: 非首页同时把 marketStatusBar 也隐藏 + 清空 paddingTop
+const mktBar = document.getElementById('marketStatusBar');
+if (mktBar) mktBar.style.display = showHeader ? '' : 'none';
+document.body.style.paddingTop = showHeader ? '56px' : '0';
 hdr.innerHTML=`<span onclick="showProfileSettings()" style="cursor:pointer">👋 ${_profileName||'未登录'} ⚙️</span><span style="display:flex;align-items:center;gap:8px"><button onclick="cycleTheme()" style="font-size:10px;padding:2px 8px;border-radius:4px;border:1px solid var(--bg3);background:transparent;color:var(--text2);cursor:pointer" id="themeBtn">${getThemeIcon()}</button><button onclick="toggleUIMode()" style="font-size:10px;padding:2px 8px;border-radius:4px;border:1px solid var(--bg3);background:${isProMode()?'rgba(99,102,241,.2)':'rgba(16,185,129,.2)'};color:${isProMode()?'#818CF8':'#10B981'};cursor:pointer">${isProMode()?'🔬 专业':'🌱 简洁'}</button></span>`}
 
 function showProfileSettings(){
@@ -4545,10 +4552,9 @@ el.innerHTML=html}catch(e){el.innerHTML='<div style="padding:20px;color:var(--be
       bar.id = 'marketStatusBar';
       bar.className = 'market-status-bar';
       document.body.appendChild(bar);
-      // FIX 2026-04-19: 横幅放到 profileHeader 下方（top:32px），不遮挡用户名/模式切换/token
-      // body 总占位从 32px 增到 56px（profileHeader 32px + 状态横幅 24px）
-      document.body.style.paddingTop = '56px';
     }
+    // 2026-04-19 V7.7: paddingTop 由 renderNav 根据 currentPage 统一控制，这里不再写
+    // 非首页时 renderNav 会把 bar 和 hdr 都 display:none 并设 paddingTop=0
     const session = status.session || 'closed';
     let tone = 'closed'; // 默认灰色
     if (session === 'morning' || session === 'afternoon') tone = 'trading';
