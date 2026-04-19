@@ -172,7 +172,9 @@ Object.defineProperty(window,'SOURCES_KEY',{get(){return _uk(_BASE_SOURCES_KEY)}
 // ---- 多用户 Profile 系统 ----
 let _profileId = localStorage.getItem('moneybag_profile_id') || '';
 let _profileName = localStorage.getItem('moneybag_profile_name') || '';
-// 统一 userId：优先企微 UID；否则用 profileName（因为后端数据按 name 存，如 LeiJiang/BuLuoGeLi）；最后兜底 profileId
+// 2026-04-19 V7.7: 后端 id 已统一为 name（废弃 u_xxx），此函数本应直接返 _profileId
+// 但保留下面的 fallback 链：老 localStorage 可能还存 u_xxx，此时用 _profileName 兜底
+// （后端数据目录按 name 组织，如 data/LeiJiang/memory/）
 function getProfileId(){
   const wx = localStorage.getItem('moneybag_wxwork_uid');
   if (wx) return wx;

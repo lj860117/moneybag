@@ -67,11 +67,13 @@ def create_profile(req: dict):
         raise HTTPException(400, "名字不能为空")
 
     profiles = _load_profiles()
-    pid = f"u_{hashlib.md5(name.encode()).hexdigest()[:8]}"
+    # 2026-04-19 V7.7: id 直接用 name，废弃 u_xxx md5 哈希
+    # 老数据自动兼容：下面 73/76 两行会用 name 兜底找到 legacy 记录
+    pid = name
 
-    # 已存在用户直接返回
+    # 已存在用户直接返回（先按 id 找，再按 name/wxworkUserId 兜底兼容老 u_xxx 数据）
     existing = next((p for p in profiles if p["id"] == pid), None)
-    # 也按企微ID或名字匹配（清缓存后用不同名字登录的场景）
+    # 也按企微ID或名字匹配（清缓存后用不同名字登录的场景 + 老 u_xxx 用户）
     if not existing:
         existing = next((p for p in profiles if p.get("wxworkUserId") == name or p.get("name") == name), None)
     if existing:

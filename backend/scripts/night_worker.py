@@ -51,8 +51,9 @@ def _load_profiles():
         from services.stock_monitor import _load_profiles as lp
         return lp()
     except Exception:
-        return [{"id": "LeiJiang", "name": "厉害了哥", "wxworkUserId": ""},
-                {"id": "BuLuoGeLi", "name": "部落格里", "wxworkUserId": ""}]
+        # 2026-04-19 V7.7: id 统一为 name，废弃 u_xxx
+        return [{"id": "LeiJiang", "name": "LeiJiang", "wxworkUserId": "LeiJiang"},
+                {"id": "BuLuoGeLi", "name": "BuLuoGeLi", "wxworkUserId": "BuLuoGeLi"}]
 
 
 def _call_v3(prompt, max_tokens=500):
