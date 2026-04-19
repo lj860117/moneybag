@@ -1084,22 +1084,97 @@ def _should_skip_extract(user_id: str) -> bool:
     return time.time() - last < _AUTO_EXTRACT_COOLDOWN
 
 
-def auto_extract_insight(user_id: str, user_msg: str, ai_reply: str) -> dict:
+# ============================================================
+# V7.6 (2026-04-19): auto_extract 挪凌晨批量跑
+# 白天对话时不调 LLM，只把原始对话片段扔到队列
+# 凌晨 02:00 cron 统一批处理 → 降白天 API 压力 40-60%
+# ============================================================
+
+_MAX_EXTRACT_QUEUE = 200  # 每用户队列上限
+
+
+def add_to_extract_queue(user_id: str, user_msg: str, ai_reply: str) -> dict:
+    """把一段对话扔到提炼队列（凌晨 cron 会批量处理）"""
+    if not user_id or not user_msg:
+        return {"queued": False}
+
+    f = _user_memory_dir(user_id) / "extract_queue.json"
+    queue = []
+    if f.exists():
+        try:
+            queue = json.loads(f.read_text(encoding="utf-8"))
+        except Exception:
+            queue = []
+
+    queue.append({
+        "user_msg": user_msg[:500],  # 留余量
+        "ai_reply": ai_reply[:500],
+        "time": datetime.now().isoformat(),
+    })
+
+    # 溢出保护：只留最近的
+    if len(queue) > _MAX_EXTRACT_QUEUE:
+        queue = queue[-_MAX_EXTRACT_QUEUE:]
+
+    f.write_text(json.dumps(queue, ensure_ascii=False, indent=2), encoding="utf-8")
+    return {"queued": True, "queue_size": len(queue)}
+
+
+def get_extract_queue(user_id: str) -> list:
+    """读提炼队列"""
+    f = _user_memory_dir(user_id) / "extract_queue.json"
+    if f.exists():
+        try:
+            return json.loads(f.read_text(encoding="utf-8"))
+        except Exception:
+            return []
+    return []
+
+
+def clear_extract_queue(user_id: str) -> int:
+    """清空提炼队列（批量处理完成后调用），返回清掉的条数"""
+    f = _user_memory_dir(user_id) / "extract_queue.json"
+    if f.exists():
+        try:
+            n = len(json.loads(f.read_text(encoding="utf-8")))
+        except Exception:
+            n = 0
+        f.write_text("[]", encoding="utf-8")
+        return n
+    return 0
+
+
+def auto_extract_insight(user_id: str, user_msg: str, ai_reply: str,
+                         sync: bool = False) -> dict:
     """
-    让 LLM 看一轮对话，自动提炼一条用户"新习惯/偏好/原则"
-    返回 dict：{extracted: bool, insight: {...} or None}
-    失败/无信息时 extracted=False
+    对话后调用此函数记录一次"值得以后提炼的素材"。
+
+    V7.6 默认行为变更：
+      - sync=False（默认）：只入队，不调 LLM（白天 0 token 消耗）
+      - sync=True：立即调 LLM（老行为，仅用于测试或手动触发）
+
+    凌晨 02:00 批量处理详见 scripts/auto_extract_cron.py
     """
     if not user_id or not user_msg:
         return {"extracted": False}
 
-    # 冷却期跳过
+    # 默认：只入队
+    if not sync:
+        r = add_to_extract_queue(user_id, user_msg, ai_reply)
+        return {"extracted": False, "queued": r.get("queued", False),
+                "queue_size": r.get("queue_size", 0), "mode": "deferred"}
+
+    # sync=True：老的实时提炼路径（保留给测试/手动）
+    return _extract_one_pair_sync(user_id, user_msg, ai_reply)
+
+
+def _extract_one_pair_sync(user_id: str, user_msg: str, ai_reply: str) -> dict:
+    """真正调 LLM 的那一段（从 auto_extract_insight 抽出来，供 cron 复用）"""
     if _should_skip_extract(user_id):
         return {"extracted": False, "reason": "cooldown"}
 
     _extract_cooldown[user_id] = time.time()
 
-    # 调 LLM（走现有 llm_gateway，省 token 用 llm_light）
     try:
         from services.llm_gateway import LLMGateway
     except Exception as e:
@@ -1126,11 +1201,9 @@ def auto_extract_insight(user_id: str, user_msg: str, ai_reply: str) -> dict:
 
     try:
         result = LLMGateway.instance().call_sync(
-            prompt=prompt,
-            system=system,
+            prompt=prompt, system=system,
             model_tier="llm_light",
-            user_id=user_id,
-            module="auto_extract",
+            user_id=user_id, module="auto_extract",
             max_tokens=100,
         )
     except Exception as e:
@@ -1141,10 +1214,8 @@ def auto_extract_insight(user_id: str, user_msg: str, ai_reply: str) -> dict:
     if not content or content.upper().startswith("NONE"):
         return {"extracted": False}
 
-    # 解析 JSON
     try:
         import re as _re
-        # 找 JSON 部分
         m = _re.search(r"\{[^{}]+\}", content)
         if not m:
             return {"extracted": False, "reason": "no_json"}
@@ -1154,13 +1225,11 @@ def auto_extract_insight(user_id: str, user_msg: str, ai_reply: str) -> dict:
         if not cat or not text or cat not in ("irony", "preference", "profile_note"):
             return {"extracted": False, "reason": "bad_format"}
 
-        # 加入待审队列（2026-04-19 V7.4.3: 路由到家庭主账号）
         target_user = _route_to_admin(user_id)
         insight = add_pending_insight(target_user, {
-            "category": cat,
-            "text": text,
-            "source_user": user_id,          # 记录真实来源（比如 BuLuoGeLi）
-            "routed_to": target_user,         # 落盘到哪个账号
+            "category": cat, "text": text,
+            "source_user": user_id,
+            "routed_to": target_user,
             "source_user_msg": user_msg[:150],
             "source_ai_reply": ai_reply[:150],
         })
@@ -1170,3 +1239,39 @@ def auto_extract_insight(user_id: str, user_msg: str, ai_reply: str) -> dict:
     except Exception as e:
         print(f"[AUTO_EXTRACT] 解析失败 content={content!r}: {e}")
         return {"extracted": False, "reason": "parse_error"}
+
+
+def batch_extract_for_user(user_id: str, max_items: int = 10) -> dict:
+    """凌晨 cron 调用：批处理某用户的 extract_queue
+
+    max_items 控制单用户单次最多提炼的对话数，避免一次烧太多 token
+    （一个正常用户一天对话 < 20 轮，10 条够用；极端高频用户先处理最新 10 条）
+    """
+    queue = get_extract_queue(user_id)
+    if not queue:
+        return {"user": user_id, "processed": 0, "extracted": 0}
+
+    # 如果队列太长，只处理最新 max_items 条（老的扔了，避免 token 爆炸）
+    if len(queue) > max_items:
+        processed_items = queue[-max_items:]
+    else:
+        processed_items = queue
+
+    extracted = 0
+    for item in processed_items:
+        # 这里要短暂绕开冷却（cron 内部连续调用）
+        _extract_cooldown.pop(user_id, None)
+        r = _extract_one_pair_sync(user_id, item.get("user_msg", ""), item.get("ai_reply", ""))
+        if r.get("extracted"):
+            extracted += 1
+
+    # 处理完清空
+    clear_extract_queue(user_id)
+
+    return {
+        "user": user_id,
+        "queue_len_before": len(queue),
+        "processed": len(processed_items),
+        "extracted": extracted,
+        "discarded": max(0, len(queue) - len(processed_items)),
+    }

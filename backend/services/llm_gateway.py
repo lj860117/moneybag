@@ -181,12 +181,18 @@ class LLMGateway:
                     usage = data.get("usage", {})
                     total_tokens = usage.get("total_tokens", 0)
 
+                    # 2026-04-19 V7.6: 捞 DeepSeek 官方缓存命中/未命中 token
+                    cache_hit_tk = usage.get("prompt_cache_hit_tokens", 0)
+                    cache_miss_tk = usage.get("prompt_cache_miss_tokens", 0)
+
                     result = {
                         "content": content,
                         "reasoning": reasoning,
                         "source": "ai",
                         "model": model,
                         "tokens": total_tokens,
+                        "cache_hit_tokens": cache_hit_tk,
+                        "cache_miss_tokens": cache_miss_tk,
                         "fallback": False,
                     }
 
@@ -198,7 +204,12 @@ class LLMGateway:
                     # Phase 0: 金额制 Token 预算记录
                     input_tk = usage.get("prompt_tokens", usage.get("input_tokens", 0))
                     output_tk = usage.get("completion_tokens", usage.get("output_tokens", 0))
-                    self._record_token_cost(user_id, model, input_tk, output_tk)
+                    # V7.6: 传入真实缓存命中 token，用真实价格算成本
+                    self._record_token_cost(
+                        user_id, model, input_tk, output_tk,
+                        cache_hit_tokens=cache_hit_tk,
+                        cache_miss_tokens=cache_miss_tk,
+                    )
 
                     return result
                 else:
@@ -293,14 +304,32 @@ class LLMGateway:
 
     # ---- Phase 0: 金额制 Token 预算 ----
 
-    def _record_token_cost(self, user_id: str, model: str, input_tokens: int, output_tokens: int):
-        """记录本次调用的金额成本到磁盘（按天+按用户双维度）"""
+    def _record_token_cost(self, user_id: str, model: str,
+                           input_tokens: int, output_tokens: int,
+                           cache_hit_tokens: int = 0,
+                           cache_miss_tokens: int = 0):
+        """记录本次调用的金额成本到磁盘（按天+按用户双维度）
+
+        V7.6 (2026-04-19)：用真实 cache_hit/miss 算成本，不再猜 50%
+        """
         try:
             from config import TOKEN_BUDGET, DEEPSEEK_PRICING
 
-            # 估算成本（简化：假设 50% 缓存命中率）
-            input_rate = (DEEPSEEK_PRICING["input_cache_hit"] + DEEPSEEK_PRICING["input_cache_miss"]) / 2
-            cost = (input_tokens * input_rate + output_tokens * DEEPSEEK_PRICING["output"]) / 1_000_000
+            # V7.6: 用真实命中/未命中 token 算真实成本
+            # 若 DeepSeek 没返回这俩字段（老 API 或非 DS 模型），回退到 50% 估算
+            if cache_hit_tokens + cache_miss_tokens > 0:
+                # 真实命中数据
+                cost = (
+                    cache_hit_tokens * DEEPSEEK_PRICING["input_cache_hit"]
+                    + cache_miss_tokens * DEEPSEEK_PRICING["input_cache_miss"]
+                    + output_tokens * DEEPSEEK_PRICING["output"]
+                ) / 1_000_000
+                cache_ratio = cache_hit_tokens / (cache_hit_tokens + cache_miss_tokens)
+            else:
+                # 回退
+                input_rate = (DEEPSEEK_PRICING["input_cache_hit"] + DEEPSEEK_PRICING["input_cache_miss"]) / 2
+                cost = (input_tokens * input_rate + output_tokens * DEEPSEEK_PRICING["output"]) / 1_000_000
+                cache_ratio = None
 
             # 读取今日全局用量
             usage_dir = Path(os.environ.get("DATA_DIR", "./data")) / "llm_usage"
@@ -310,10 +339,17 @@ class LLMGateway:
             if usage_file.exists():
                 daily = json.loads(usage_file.read_text(encoding="utf-8"))
             else:
-                daily = {"date": date.today().isoformat(), "input_tokens": 0, "output_tokens": 0, "cost_rmb": 0.0, "calls": 0}
+                daily = {
+                    "date": date.today().isoformat(),
+                    "input_tokens": 0, "output_tokens": 0,
+                    "cache_hit_tokens": 0, "cache_miss_tokens": 0,
+                    "cost_rmb": 0.0, "calls": 0,
+                }
 
             daily["input_tokens"] += input_tokens
             daily["output_tokens"] += output_tokens
+            daily["cache_hit_tokens"] = daily.get("cache_hit_tokens", 0) + cache_hit_tokens
+            daily["cache_miss_tokens"] = daily.get("cache_miss_tokens", 0) + cache_miss_tokens
             daily["cost_rmb"] = round(daily["cost_rmb"] + cost, 4)
             daily["calls"] += 1
 
@@ -342,6 +378,15 @@ class LLMGateway:
                 print(f"[LLM_GATEWAY] 🔴 日预算 90%！¥{daily['cost_rmb']:.2f} / ¥{budget}")
             elif daily["cost_rmb"] >= budget * alert_pct:
                 print(f"[LLM_GATEWAY] 🟡 日预算 70%！¥{daily['cost_rmb']:.2f} / ¥{budget}")
+
+            # V7.6: 命中率偏低时打印提示（前 30 次调用后）
+            if daily["calls"] >= 30:
+                total_input = daily.get("cache_hit_tokens", 0) + daily.get("cache_miss_tokens", 0)
+                if total_input > 0:
+                    daily_hit_ratio = daily["cache_hit_tokens"] / total_input
+                    if daily_hit_ratio < 0.3 and daily["calls"] % 20 == 0:
+                        print(f"[LLM_GATEWAY] 📉 今日缓存命中率 {daily_hit_ratio * 100:.1f}% < 30%，"
+                              f"建议检查 system prompt 前缀是否稳定")
 
         except Exception as e:
             print(f"[LLM_GATEWAY] ⚠️ Token 记账失败（不影响调用）: {e}")
@@ -399,6 +444,67 @@ class LLMGateway:
         """剩余日调用数"""
         self._check_daily_reset()
         return max(0, DAILY_LIMIT - self._daily_count)
+
+    def get_cache_stats(self, days: int = 7) -> dict:
+        """获取近 N 天的 DeepSeek 官方缓存命中率统计（V7.6）"""
+        from datetime import timedelta
+        usage_dir = Path(os.environ.get("DATA_DIR", "./data")) / "llm_usage"
+        if not usage_dir.exists():
+            return {"days": 0, "items": []}
+
+        items = []
+        total_hit = 0
+        total_miss = 0
+        total_cost = 0.0
+        total_calls = 0
+        for i in range(days):
+            d = date.today() - timedelta(days=i)
+            f = usage_dir / f"{d}.json"
+            if not f.exists():
+                continue
+            try:
+                data = json.loads(f.read_text(encoding="utf-8"))
+            except Exception:
+                continue
+            hit = data.get("cache_hit_tokens", 0)
+            miss = data.get("cache_miss_tokens", 0)
+            total_in = hit + miss
+            ratio = hit / total_in if total_in > 0 else None
+            items.append({
+                "date": data.get("date", str(d)),
+                "calls": data.get("calls", 0),
+                "cost_rmb": data.get("cost_rmb", 0),
+                "cache_hit_tokens": hit,
+                "cache_miss_tokens": miss,
+                "cache_hit_ratio": round(ratio, 3) if ratio is not None else None,
+            })
+            total_hit += hit
+            total_miss += miss
+            total_cost += data.get("cost_rmb", 0)
+            total_calls += data.get("calls", 0)
+
+        total_in = total_hit + total_miss
+        avg_ratio = (total_hit / total_in) if total_in > 0 else None
+
+        # 估算"满命中"能省多少钱（假设全部 miss 变 hit）
+        try:
+            from config import DEEPSEEK_PRICING
+            potential_save = total_miss * (
+                DEEPSEEK_PRICING["input_cache_miss"] - DEEPSEEK_PRICING["input_cache_hit"]
+            ) / 1_000_000
+        except Exception:
+            potential_save = None
+
+        return {
+            "days": days,
+            "total_calls": total_calls,
+            "total_cost_rmb": round(total_cost, 4),
+            "total_cache_hit_tokens": total_hit,
+            "total_cache_miss_tokens": total_miss,
+            "avg_cache_hit_ratio": round(avg_ratio, 3) if avg_ratio is not None else None,
+            "potential_save_rmb_if_100pct_hit": round(potential_save, 4) if potential_save else None,
+            "items": items,
+        }
 
 
 # ---- 全局便捷函数 ----

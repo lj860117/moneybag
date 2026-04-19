@@ -480,3 +480,85 @@ class TestArchival:
         cold = mem.get_archived_decisions(uid)
         assert cold[0]["result_tracked"] is True
         assert cold[0]["result"]["win"] is True
+
+
+# =============================================================
+# V7.6 auto_extract 凌晨批量测试
+# =============================================================
+
+class TestAutoExtractDeferred:
+    """白天入队 + 凌晨批量提炼"""
+
+    def test_auto_extract_defaults_to_queue_only(self, mem):
+        """默认 sync=False：只入队，不调 LLM"""
+        uid = "test_defer_01"
+        r = mem.auto_extract_insight(uid, "我不碰杠杆", "好的收到")
+        assert r["extracted"] is False
+        assert r["queued"] is True
+        assert r["mode"] == "deferred"
+
+        queue = mem.get_extract_queue(uid)
+        assert len(queue) == 1
+        assert queue[0]["user_msg"] == "我不碰杠杆"
+
+    def test_queue_overflow_protection(self, mem):
+        """队列溢出保护：> 200 条只保留最新"""
+        uid = "test_defer_02"
+        for i in range(250):
+            mem.add_to_extract_queue(uid, f"消息 {i}", "答复")
+        q = mem.get_extract_queue(uid)
+        assert len(q) == 200, f"应上限 200 实际 {len(q)}"
+        # 老的被丢，新的保留
+        assert q[-1]["user_msg"] == "消息 249"
+
+    def test_clear_extract_queue(self, mem):
+        uid = "test_defer_03"
+        mem.add_to_extract_queue(uid, "a", "b")
+        mem.add_to_extract_queue(uid, "c", "d")
+        n = mem.clear_extract_queue(uid)
+        assert n == 2
+        assert mem.get_extract_queue(uid) == []
+
+    def test_sync_mode_still_works(self, mem, monkeypatch):
+        """sync=True 保留老的实时提炼路径（供测试/手动触发）"""
+        uid = "test_defer_04"
+
+        # Mock LLM 返回
+        class FakeGW:
+            @classmethod
+            def instance(cls):
+                return cls()
+            def call_sync(self, **kwargs):
+                return {"content": '{"category":"irony","text":"不追涨"}',
+                        "source": "ai"}
+
+        import services.llm_gateway as lg
+        monkeypatch.setattr(lg, "LLMGateway", FakeGW)
+
+        r = mem.auto_extract_insight(uid, "别追高", "好", sync=True)
+        assert r["extracted"] is True
+        assert r["insight"]["text"] == "不追涨"
+
+    def test_batch_extract_consumes_queue(self, mem, monkeypatch):
+        """batch_extract_for_user：处理完应清空队列"""
+        uid = "test_defer_05"
+
+        class FakeGW:
+            @classmethod
+            def instance(cls):
+                return cls()
+            def call_sync(self, **kwargs):
+                return {"content": "NONE", "source": "ai"}  # 都不提炼
+
+        import services.llm_gateway as lg
+        monkeypatch.setattr(lg, "LLMGateway", FakeGW)
+
+        # 入队 3 条
+        for i in range(3):
+            mem.auto_extract_insight(uid, f"消息 {i}", "答复")
+        assert len(mem.get_extract_queue(uid)) == 3
+
+        r = mem.batch_extract_for_user(uid)
+        assert r["processed"] == 3
+        assert r["extracted"] == 0  # LLM 都返回 NONE
+        assert mem.get_extract_queue(uid) == [], "批处理完必须清空队列"
