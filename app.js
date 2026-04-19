@@ -375,7 +375,9 @@ n.innerHTML=tabs.map(t=>`<div class="nav-item ${currentPage===t.id?'active':''}"
 let hdr=document.getElementById('profileHeader');
 const showHeader = currentPage === 'landing';
 if(!hdr){hdr=document.createElement('div');hdr.id='profileHeader';hdr.style.cssText='position:fixed;top:0;left:0;right:0;z-index:100;padding:6px 16px;font-size:12px;color:var(--text2,#94a3b8);background:var(--bg,#0f172a);display:flex;justify-content:space-between;align-items:center;border-bottom:1px solid var(--bg3,#334155);transition:transform .2s ease';document.body.appendChild(hdr)}
-hdr.style.display = showHeader ? '' : 'none';
+// V7.7.4 FIX: hdr.style.display = '' 会擦掉 cssText 里的 display:flex 导致 block fallback
+// 必须用 'flex' 明确指定，或者用 visibility/transform
+hdr.style.display = showHeader ? 'flex' : 'none';
 // V7.7: 非首页同时把 marketStatusBar 也隐藏 + 清空 paddingTop
 const mktBar = document.getElementById('marketStatusBar');
 if (mktBar) mktBar.style.display = showHeader ? '' : 'none';
@@ -4554,7 +4556,11 @@ el.innerHTML=html}catch(e){el.innerHTML='<div style="padding:20px;color:var(--be
       document.body.appendChild(bar);
     }
     // 2026-04-19 V7.7: paddingTop 由 renderNav 根据 currentPage 统一控制，这里不再写
-    // 非首页时 renderNav 会把 bar 和 hdr 都 display:none 并设 paddingTop=0
+    // 2026-04-19 V7.7.2 FIX: 初次渲染时 renderNav 可能已跑完但 bar 还没创建，
+    // 所以每次 renderMarketBanner 也要按当前页检查一下 display
+    if (typeof currentPage !== 'undefined') {
+      bar.style.display = currentPage === 'landing' ? '' : 'none';
+    }
     const session = status.session || 'closed';
     let tone = 'closed'; // 默认灰色
     if (session === 'morning' || session === 'afternoon') tone = 'trading';
