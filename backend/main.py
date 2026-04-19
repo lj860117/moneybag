@@ -3483,6 +3483,9 @@ from services.agent_memory import (
     # 2026-04-19 新增：画像/情绪/铁律
     get_profile, save_profile, get_emotion_summary, record_emotion,
     get_ironies, add_irony, remove_irony,
+    # 2026-04-19 新增：生活事件（生日/纪念日）
+    get_life_events, save_life_events, add_life_event, remove_life_event,
+    get_upcoming_events,
 )
 from services.agent_engine import run_analysis_cycle, save_signal_file
 
@@ -3565,6 +3568,39 @@ def api_remove_irony(user_id: str, iron_id: str):
 def api_get_emotion(user_id: str):
     """读用户情绪摘要"""
     return get_emotion_summary(user_id) or {"dominant": None, "sample_size": 0}
+
+
+@app.get("/api/agent/life-events/{user_id}")
+def api_get_life_events(user_id: str):
+    """读生活事件列表 + 未来 30 天即将到的"""
+    return {
+        "events": get_life_events(user_id),
+        "upcoming_30d": get_upcoming_events(user_id, days_ahead=30),
+    }
+
+
+@app.post("/api/agent/life-events")
+def api_add_life_event(req: dict):
+    """添加一个生活事件"""
+    user_id = req.get("userId", "")
+    title = req.get("title", "").strip()
+    date_str = req.get("date", "").strip()
+    if not user_id or not title or not date_str:
+        raise HTTPException(400, "userId, title, date required")
+    return add_life_event(
+        user_id,
+        title=title,
+        date_str=date_str,
+        is_lunar=bool(req.get("is_lunar", False)),
+        repeat_yearly=bool(req.get("repeat_yearly", True)),
+        remind_days_before=int(req.get("remind_days_before", 7)),
+    )
+
+
+@app.delete("/api/agent/life-events/{user_id}/{event_id}")
+def api_remove_life_event(user_id: str, event_id: str):
+    """删除生活事件"""
+    return {"ok": remove_life_event(user_id, event_id)}
 
 
 @app.post("/api/agent/analyze")

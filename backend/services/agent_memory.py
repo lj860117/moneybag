@@ -272,8 +272,26 @@ def build_memory_summary(user_id: str) -> str:
             p_lines.append(f"  核心目标：{', '.join(profile['life_goals'])}")
         if profile.get("drawdown_tolerance"):
             p_lines.append(f"  回撤容忍：{profile['drawdown_tolerance']}")
+        # 家庭情境（notes）单独显眼展示
+        if profile.get("notes"):
+            p_lines.append(f"\n【家庭情境】{profile['notes']}")
         if len(p_lines) > 1:
             lines.extend(p_lines)
+
+    # 🆕 未来 30 天内的生活事件（生日/纪念日）
+    try:
+        upcoming = get_upcoming_events(user_id, days_ahead=30)
+        if upcoming:
+            lines.append("\n【📅 近期生活事件】")
+            for evt in upcoming[:5]:
+                days = evt["days_until"]
+                label = "今天" if days == 0 else f"{days} 天后"
+                years = f"（{evt['years_passed']}周年）" if evt.get("years_passed") else ""
+                lunar_tag = "[农历]" if evt.get("is_lunar") else ""
+                lines.append(f"  {label}（{evt['upcoming_date']}）{lunar_tag}{evt['title']}{years}")
+            lines.append("  💡 若接近提醒阈值，回答末尾可顺带提一句")
+    except Exception as e:
+        print(f"[MEMORY] life_events 失败: {e}")
 
     # 用户偏好
     prefs = get_preferences(user_id)
@@ -530,3 +548,134 @@ def remove_irony(user_id: str, iron_id: str) -> bool:
     f = _user_memory_dir(user_id) / "ironies.json"
     f.write_text(json.dumps(new_list, ensure_ascii=False, indent=2), encoding="utf-8")
     return True
+
+
+# ============================================================
+# 9. 生活事件（2026-04-19 新增）— 生日/纪念日/孩子事件
+# ============================================================
+#
+# 数据结构：data/{userId}/memory/life_events.json
+# [
+#   {
+#     "id": "evt_xxx",
+#     "title": "老婆生日",
+#     "date": "1985-02-12",     # 固定日期（公历 or 农历月日）
+#     "is_lunar": true,          # 是否农历
+#     "repeat_yearly": true,     # 每年重复
+#     "remind_days_before": 7    # 提前几天提醒
+#   }
+# ]
+
+def get_life_events(user_id: str) -> list:
+    """读生活事件列表"""
+    f = _user_memory_dir(user_id) / "life_events.json"
+    if f.exists():
+        try:
+            return json.loads(f.read_text(encoding="utf-8"))
+        except Exception:
+            return []
+    return []
+
+
+def save_life_events(user_id: str, events: list) -> list:
+    """整体覆盖保存生活事件"""
+    f = _user_memory_dir(user_id) / "life_events.json"
+    f.write_text(json.dumps(events, ensure_ascii=False, indent=2), encoding="utf-8")
+    return events
+
+
+def add_life_event(user_id: str, title: str, date_str: str, is_lunar: bool = False,
+                   repeat_yearly: bool = True, remind_days_before: int = 7) -> dict:
+    """添加一个生活事件（date_str 格式 YYYY-MM-DD）"""
+    events = get_life_events(user_id)
+    event = {
+        "id": f"evt_{int(time.time())}_{len(events)}",
+        "title": title,
+        "date": date_str,
+        "is_lunar": is_lunar,
+        "repeat_yearly": repeat_yearly,
+        "remind_days_before": remind_days_before,
+        "created_at": datetime.now().isoformat(),
+    }
+    events.append(event)
+    save_life_events(user_id, events)
+    return event
+
+
+def remove_life_event(user_id: str, event_id: str) -> bool:
+    """删除生活事件"""
+    events = get_life_events(user_id)
+    new_list = [e for e in events if e.get("id") != event_id]
+    if len(new_list) == len(events):
+        return False
+    save_life_events(user_id, new_list)
+    return True
+
+
+def _lunar_to_solar_this_year(lunar_month: int, lunar_day: int, year: int) -> str:
+    """农历月日 → 今年的公历日期（YYYY-MM-DD）。失败返回 None"""
+    try:
+        from zhdate import ZhDate
+        d = ZhDate(year, lunar_month, lunar_day).to_datetime()
+        return d.strftime("%Y-%m-%d")
+    except Exception as e:
+        print(f"[LIFE_EVENTS] 农历转换失败 {year}-{lunar_month}-{lunar_day}: {e}")
+        return None
+
+
+def get_upcoming_events(user_id: str, days_ahead: int = 30) -> list:
+    """返回未来 N 天内会到的事件（农历自动算公历）"""
+    events = get_life_events(user_id)
+    today = datetime.now().date()
+    upcoming = []
+    for e in events:
+        date_str = e.get("date", "")
+        if not date_str or len(date_str) < 8:
+            continue
+        try:
+            # date 格式 YYYY-MM-DD，其中 YYYY 是原始年（用来算月日）
+            parts = date_str.split("-")
+            if len(parts) != 3:
+                continue
+            orig_year, m, d = int(parts[0]), int(parts[1]), int(parts[2])
+        except (ValueError, IndexError):
+            continue
+
+        # 计算"今年"和"明年"该事件的公历日期
+        candidates = []
+        for year in (today.year, today.year + 1):
+            if e.get("is_lunar"):
+                solar = _lunar_to_solar_this_year(m, d, year)
+                if solar:
+                    candidates.append(solar)
+            else:
+                # 公历直接拼
+                try:
+                    _ = datetime(year, m, d).date()
+                    candidates.append(f"{year:04d}-{m:02d}-{d:02d}")
+                except ValueError:
+                    # 比如 2 月 29 闰年日，非闰年跳过
+                    continue
+
+        for cand in candidates:
+            try:
+                cand_date = datetime.strptime(cand, "%Y-%m-%d").date()
+            except ValueError:
+                continue
+            days_until = (cand_date - today).days
+            if 0 <= days_until <= days_ahead:
+                # 原始年份 → 计算当时多少周年
+                years_passed = cand_date.year - orig_year if orig_year > 1900 else None
+                upcoming.append({
+                    "id": e.get("id"),
+                    "title": e.get("title", ""),
+                    "upcoming_date": cand,
+                    "days_until": days_until,
+                    "years_passed": years_passed,
+                    "is_lunar": e.get("is_lunar", False),
+                    "remind_days_before": e.get("remind_days_before", 7),
+                })
+                break  # 一个事件只返回最近一次
+
+    upcoming.sort(key=lambda x: x["days_until"])
+    return upcoming
