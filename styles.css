@@ -210,21 +210,12 @@ body{font-family:'Noto Sans SC',-apple-system,sans-serif;background:var(--bg);co
 
 /* body 已有 padding-top:32px 用来给状态栏留位，横幅刚好接上 */
 
-/* ---- B. 术语 tooltip ---- */
+/* ---- B. 术语 tooltip（v7.2.4: 去虚线，纯点击无视觉打扰）---- */
 .term-tip{
   display:inline;
-  border-bottom:1px dashed var(--accent);
-  cursor:help;
+  cursor:pointer;
   position:relative;
-}
-.term-tip:active{
-  color:var(--accent);
-}
-/* 移动端长按时用浏览器原生 title 即可；桌面端增强 */
-@media(hover:hover){
-  .term-tip:hover{
-    color:var(--accent);
-  }
+  -webkit-tap-highlight-color:rgba(245,158,11,.2);
 }
 
 /* ---- C. 数据新鲜度标记 ---- */
@@ -251,28 +242,14 @@ body{font-family:'Noto Sans SC',-apple-system,sans-serif;background:var(--bg);co
   font-weight:500;
 }
 
-/* ---- D. 术语解释弹窗（v7.2.2 手机也能用）---- */
+/* ---- D. 术语解释弹窗（v7.2.4 去掉虚线和角标，保留可点击）---- */
 .term-tip{
-  display:inline-block;
-  border-bottom:1px dashed var(--accent);
+  display:inline;
   cursor:pointer;
-  padding:0 2px;
-  color:var(--accent);
-  font-weight:500;
-  -webkit-tap-highlight-color:rgba(245,158,11,.3);
-  transition:background .15s ease;
+  -webkit-tap-highlight-color:rgba(245,158,11,.25);
   border-radius:3px;
 }
-.term-tip:active{
-  background:rgba(245,158,11,.2);
-}
-.term-tip::after{
-  content:'ⓘ';
-  font-size:9px;
-  opacity:0.6;
-  margin-left:2px;
-  vertical-align:super;
-}
+/* 去掉之前的虚线下划线、ⓘ 角标和橙色强调色——保持原文颜色不变 */
 
 .term-popup-overlay{
   position:fixed;top:0;left:0;right:0;bottom:0;
