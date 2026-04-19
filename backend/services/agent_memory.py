@@ -251,8 +251,19 @@ def build_memory_summary(user_id: str) -> str:
     """构建完整记忆摘要，注入 DeepSeek system prompt
 
     2026-04-19 扩充：加入用户画像 / 情绪状态 / 长期铁律
+    2026-04-19 V7.4.2：改为"隐性上下文"语气，AI 内在知道但不主动复述
     """
     lines = []
+
+    # 🔴 总原则（放最前，AI 一看就懂）
+    preamble = (
+        "【📌 使用下面这些信息的原则】\n"
+        "  ① 这是后台档案，你内在知道即可，不要在回答里复述这些事实\n"
+        "  ② 用这些信息调整你的语气、建议方向、风险提示深度，而非机械罗列\n"
+        "  ③ 只在用户情绪/场景自然匹配时，才微妙地融入相关细节\n"
+        "  ④ 回答要像真朋友而非读档案的 AI\n"
+    )
+    lines.append(preamble)
 
     # 🆕 用户画像（最重要，放最前）
     profile = get_profile(user_id)
@@ -272,24 +283,29 @@ def build_memory_summary(user_id: str) -> str:
             p_lines.append(f"  核心目标：{', '.join(profile['life_goals'])}")
         if profile.get("drawdown_tolerance"):
             p_lines.append(f"  回撤容忍：{profile['drawdown_tolerance']}")
-        # 家庭情境（notes）单独显眼展示
+        # 家庭情境（notes）- 隐性上下文，影响语气而非引用
         if profile.get("notes"):
-            p_lines.append(f"\n【家庭情境】{profile['notes']}")
+            p_lines.append(f"\n【🔒 家庭情境（理解用户背景用，不要在回答中复述这些事实）】\n  {profile['notes']}")
         if len(p_lines) > 1:
             lines.extend(p_lines)
 
-    # 🆕 未来 30 天内的生活事件（生日/纪念日）
+    # 🆕 未来 30 天内的生活事件（隐性上下文，AI 内在知道但不主动提）
     try:
-        upcoming = get_upcoming_events(user_id, days_ahead=30)
+        upcoming = get_upcoming_events(user_id, days_ahead=30, for_user=user_id)
         if upcoming:
-            lines.append("\n【📅 近期生活事件】")
+            lines.append("\n【🔒 隐性上下文（你内在知道，但不主动提及，仅在用户情绪/场景自然匹配时融入）】")
             for evt in upcoming[:5]:
                 days = evt["days_until"]
                 label = "今天" if days == 0 else f"{days} 天后"
                 years = f"（{evt['years_passed']}周年）" if evt.get("years_passed") else ""
                 lunar_tag = "[农历]" if evt.get("is_lunar") else ""
                 lines.append(f"  {label}（{evt['upcoming_date']}）{lunar_tag}{evt['title']}{years}")
-            lines.append("  💡 若接近提醒阈值，回答末尾可顺带提一句")
+            lines.append(
+                "  ⚠️ 使用原则：\n"
+                "    ① 不要机械地在回答末尾加 '提醒：X 天后是 Y' 这种规则化内容\n"
+                "    ② 只在用户表现出相关情绪/场景时（压力大/想冒险/问家庭/问教育/问孩子/状态低落）自然地提及\n"
+                "    ③ 提及时措辞要自然温暖，像朋友而非机器人\n"
+                "    ④ 大部分对话不提这些事，让用户感到'被理解'而非'被监视'")
     except Exception as e:
         print(f"[MEMORY] life_events 失败: {e}")
 
@@ -585,8 +601,12 @@ def save_life_events(user_id: str, events: list) -> list:
 
 
 def add_life_event(user_id: str, title: str, date_str: str, is_lunar: bool = False,
-                   repeat_yearly: bool = True, remind_days_before: int = 7) -> dict:
-    """添加一个生活事件（date_str 格式 YYYY-MM-DD）"""
+                   repeat_yearly: bool = True, remind_days_before: int = 7,
+                   visible_to: list = None, secret_from: list = None) -> dict:
+    """添加一个生活事件（date_str 格式 YYYY-MM-DD）
+    visible_to: 允许知道的用户列表（空 = 所有人）
+    secret_from: 需要瞒着的用户列表（比如结婚纪念日惊喜，secret_from=[老婆]）
+    """
     events = get_life_events(user_id)
     event = {
         "id": f"evt_{int(time.time())}_{len(events)}",
@@ -595,6 +615,8 @@ def add_life_event(user_id: str, title: str, date_str: str, is_lunar: bool = Fal
         "is_lunar": is_lunar,
         "repeat_yearly": repeat_yearly,
         "remind_days_before": remind_days_before,
+        "visible_to": visible_to or [],
+        "secret_from": secret_from or [],
         "created_at": datetime.now().isoformat(),
     }
     events.append(event)
@@ -623,12 +645,23 @@ def _lunar_to_solar_this_year(lunar_month: int, lunar_day: int, year: int) -> st
         return None
 
 
-def get_upcoming_events(user_id: str, days_ahead: int = 30) -> list:
-    """返回未来 N 天内会到的事件（农历自动算公历）"""
+def get_upcoming_events(user_id: str, days_ahead: int = 30, for_user: str = None) -> list:
+    """返回未来 N 天内会到的事件（农历自动算公历）
+    for_user: 以哪个用户视角查（用于过滤 secret_from）；默认 user_id 自己
+    """
     events = get_life_events(user_id)
+    target_user = for_user or user_id
     today = datetime.now().date()
     upcoming = []
     for e in events:
+        # 2026-04-19 V7.4.2: 可见性过滤
+        visible_to = e.get("visible_to") or []
+        secret_from = e.get("secret_from") or []
+        if visible_to and target_user not in visible_to:
+            continue  # 白名单限制且不在其中 → 跳过
+        if target_user in secret_from:
+            continue  # 这个事件对当前用户保密（比如结婚纪念日惊喜）
+
         date_str = e.get("date", "")
         if not date_str or len(date_str) < 8:
             continue
@@ -679,3 +712,205 @@ def get_upcoming_events(user_id: str, days_ahead: int = 30) -> list:
 
     upcoming.sort(key=lambda x: x["days_until"])
     return upcoming
+
+
+# ============================================================
+# 10. 自动记忆积累（2026-04-19 V7.4.2）— AI 从对话自己提炼
+# ============================================================
+#
+# 工作流：
+#   1. 用户每次问 AI → 对话结束后异步调一次 LLM 让它判断
+#      "这段对话有没有暴露用户的新习惯/偏好/原则"
+#   2. 如果有 → 存进 pending_insights.json（待审队列）
+#   3. 前端有红点提示 → 用户点"接受"/"拒绝"
+#      - 接受：写入对应的 profile / ironies / preferences
+#      - 拒绝：从队列删除
+#   4. 默认不自动入库（避免 AI 幻觉污染用户画像）
+
+_MAX_PENDING = 30
+_AUTO_EXTRACT_COOLDOWN = 60  # 同用户 60 秒内不重复提炼（省 token）
+
+
+def get_pending_insights(user_id: str) -> list:
+    """读待审记忆队列"""
+    f = _user_memory_dir(user_id) / "pending_insights.json"
+    if f.exists():
+        try:
+            return json.loads(f.read_text(encoding="utf-8"))
+        except Exception:
+            return []
+    return []
+
+
+def add_pending_insight(user_id: str, insight: dict) -> dict:
+    """添加一条待审记忆"""
+    pending = get_pending_insights(user_id)
+
+    # 简单去重（前 30 字匹配）
+    key = insight.get("text", "")[:30]
+    for p in pending:
+        if p.get("text", "")[:30] == key:
+            return p
+
+    insight.setdefault("id", f"ins_{int(time.time())}_{len(pending)}")
+    insight.setdefault("created_at", datetime.now().isoformat())
+    insight.setdefault("status", "pending")
+    pending.append(insight)
+
+    if len(pending) > _MAX_PENDING:
+        # 保留最近的
+        pending = pending[-_MAX_PENDING:]
+
+    f = _user_memory_dir(user_id) / "pending_insights.json"
+    f.write_text(json.dumps(pending, ensure_ascii=False, indent=2), encoding="utf-8")
+    return insight
+
+
+def approve_insight(user_id: str, insight_id: str) -> dict:
+    """批准一条待审记忆 → 写入对应模块 → 从队列移除"""
+    pending = get_pending_insights(user_id)
+    target = None
+    for i, p in enumerate(pending):
+        if p.get("id") == insight_id:
+            target = pending.pop(i)
+            break
+    if not target:
+        return {"ok": False, "reason": "not_found"}
+
+    # 根据 category 写入对应模块
+    cat = target.get("category", "irony")
+    text = target.get("text", "")
+    result = {"ok": True, "category": cat, "text": text}
+
+    try:
+        if cat == "irony":
+            add_irony(user_id, text, source="auto_extract")
+        elif cat == "preference":
+            # preference 类：更新 preferences.notes 或扩充 focus_industries/exclude_stocks
+            # 简单策略：追加到 notes 末尾
+            prefs = get_preferences(user_id)
+            existing = prefs.get("notes", "")
+            prefs["notes"] = (existing + "\n" if existing else "") + text
+            save_preferences(user_id, prefs)
+        elif cat == "profile_note":
+            # 画像补充：追加到 profile.notes
+            profile = get_profile(user_id)
+            existing = profile.get("notes", "")
+            profile["notes"] = (existing + "\n" if existing else "") + text
+            save_profile(user_id, profile)
+        else:
+            result["ok"] = False
+            result["reason"] = f"unknown_category: {cat}"
+    except Exception as e:
+        result["ok"] = False
+        result["reason"] = str(e)
+
+    # 从队列移除
+    f = _user_memory_dir(user_id) / "pending_insights.json"
+    f.write_text(json.dumps(pending, ensure_ascii=False, indent=2), encoding="utf-8")
+    return result
+
+
+def reject_insight(user_id: str, insight_id: str) -> bool:
+    """拒绝一条待审记忆"""
+    pending = get_pending_insights(user_id)
+    new_list = [p for p in pending if p.get("id") != insight_id]
+    if len(new_list) == len(pending):
+        return False
+    f = _user_memory_dir(user_id) / "pending_insights.json"
+    f.write_text(json.dumps(new_list, ensure_ascii=False, indent=2), encoding="utf-8")
+    return True
+
+
+# 冷却缓存（避免每次对话都调 LLM 提炼）
+_extract_cooldown = {}  # user_id → last_extract_time
+
+
+def _should_skip_extract(user_id: str) -> bool:
+    """判断是否在冷却期"""
+    last = _extract_cooldown.get(user_id, 0)
+    return time.time() - last < _AUTO_EXTRACT_COOLDOWN
+
+
+def auto_extract_insight(user_id: str, user_msg: str, ai_reply: str) -> dict:
+    """
+    让 LLM 看一轮对话，自动提炼一条用户"新习惯/偏好/原则"
+    返回 dict：{extracted: bool, insight: {...} or None}
+    失败/无信息时 extracted=False
+    """
+    if not user_id or not user_msg:
+        return {"extracted": False}
+
+    # 冷却期跳过
+    if _should_skip_extract(user_id):
+        return {"extracted": False, "reason": "cooldown"}
+
+    _extract_cooldown[user_id] = time.time()
+
+    # 调 LLM（走现有 llm_gateway，省 token 用 llm_light）
+    try:
+        from services.llm_gateway import LLMGateway
+    except Exception as e:
+        print(f"[AUTO_EXTRACT] llm_gateway unavailable: {e}")
+        return {"extracted": False, "reason": "no_llm"}
+
+    system = (
+        "你是'记忆提炼助手'。只分析用户的一轮对话，判断：\n"
+        "用户是否暴露了 *新的、具体的、长期的* 习惯/偏好/原则/禁忌？\n\n"
+        "严格规则：\n"
+        "1. 如果没有 → 只输出 NONE（不要解释）\n"
+        "2. 如果有 → 输出一行 JSON：{\"category\":\"irony|preference|profile_note\",\"text\":\"...20字以内...\"}\n"
+        "   - irony: 明确禁忌/原则（不买医药 / 不碰杠杆）\n"
+        "   - preference: 偏好（喜欢定投 / 关注消费板块）\n"
+        "   - profile_note: 家庭/工作等情境（老人生病 / 刚升职）\n"
+        "3. 不要提炼临时情绪（今天烦躁）、市场评论（大盘涨好）、问句（该买吗）\n"
+        "4. 只有高置信度的新信息才提炼，宁可遗漏不可乱编\n"
+    )
+    prompt = (
+        f"用户说：{user_msg[:300]}\n"
+        f"AI 答：{ai_reply[:300]}\n\n"
+        "提炼："
+    )
+
+    try:
+        result = LLMGateway.instance().call_sync(
+            prompt=prompt,
+            system=system,
+            model_tier="llm_light",
+            user_id=user_id,
+            module="auto_extract",
+            max_tokens=100,
+        )
+    except Exception as e:
+        print(f"[AUTO_EXTRACT] LLM 调用失败: {e}")
+        return {"extracted": False, "reason": "llm_error"}
+
+    content = (result.get("content") or "").strip()
+    if not content or content.upper().startswith("NONE"):
+        return {"extracted": False}
+
+    # 解析 JSON
+    try:
+        import re as _re
+        # 找 JSON 部分
+        m = _re.search(r"\{[^{}]+\}", content)
+        if not m:
+            return {"extracted": False, "reason": "no_json"}
+        data = json.loads(m.group(0))
+        cat = data.get("category", "").strip()
+        text = data.get("text", "").strip()
+        if not cat or not text or cat not in ("irony", "preference", "profile_note"):
+            return {"extracted": False, "reason": "bad_format"}
+
+        # 加入待审队列
+        insight = add_pending_insight(user_id, {
+            "category": cat,
+            "text": text,
+            "source_user_msg": user_msg[:150],
+            "source_ai_reply": ai_reply[:150],
+        })
+        print(f"[AUTO_EXTRACT] {user_id} 提炼: [{cat}] {text}")
+        return {"extracted": True, "insight": insight}
+    except Exception as e:
+        print(f"[AUTO_EXTRACT] 解析失败 content={content!r}: {e}")
+        return {"extracted": False, "reason": "parse_error"}

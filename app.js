@@ -4956,23 +4956,148 @@ el.innerHTML=html}catch(e){el.innerHTML='<div style="padding:20px;color:var(--be
   // 暴露给全局 + 给 profileHeader 绑定点击
   window.openProfileEditor = openProfileEditor;
 
-  // 等 profileHeader 渲染后挂载点击事件
-  const attachClick = () => {
-    const hdr = document.getElementById('profileHeader');
-    if (!hdr) return setTimeout(attachClick, 500);
-    // 防止重复绑定
-    if (hdr.dataset._profileEditorBound) return;
-    hdr.dataset._profileEditorBound = '1';
-    hdr.style.cursor = 'pointer';
-    hdr.title = '点击编辑我的画像';
-    hdr.addEventListener('click', (e) => {
-      // 只在点击用户名区域（左半边）时触发，避免干扰其他点击
-      const rect = hdr.getBoundingClientRect();
-      if (e.clientX - rect.left < rect.width * 0.6) {
-        openProfileEditor();
+  // 2026-04-19 V7.4.1: 应用户要求关闭前端画像 UI 入口
+  //   - 画像/铁律/事件后续由 AI 通过对话学习 + 用户口述给开发者修改
+  //   - openProfileEditor 函数保留（以后想恢复只需开启下面绑定）
+  // const attachClick = () => {
+  //   const hdr = document.getElementById('profileHeader');
+  //   if (!hdr) return setTimeout(attachClick, 500);
+  //   if (hdr.dataset._profileEditorBound) return;
+  //   hdr.dataset._profileEditorBound = '1';
+  //   hdr.style.cursor = 'pointer';
+  //   hdr.title = '点击编辑我的画像';
+  //   hdr.addEventListener('click', (e) => {
+  //     const rect = hdr.getBoundingClientRect();
+  //     if (e.clientX - rect.left < rect.width * 0.6) {
+  //       openProfileEditor();
+  //     }
+  //   });
+  //   console.log('[V7.3] profileHeader 点击已绑定 → 我的画像');
+  // };
+  // setTimeout(attachClick, 800);
+})();
+
+/* ============================================================
+   V7.4.2 待审记忆红点（2026-04-19）
+   - 顶部 profileHeader 右侧自动挂小红点
+   - 有待审记忆就亮 + 数字
+   - 点一下打开面板，一条条确认/拒绝
+   - 不干扰其他 UI
+   ============================================================ */
+(function() {
+  function _uid() {
+    try { return (window.getProfileId && window.getProfileId()) || localStorage.getItem('moneybag_profile_name') || 'default'; } catch(e) { return 'default'; }
+  }
+
+  async function fetchPending() {
+    const uid = _uid();
+    try {
+      const r = await fetch(window.API_BASE + '/agent/pending-insights/' + encodeURIComponent(uid));
+      if (!r.ok) return {items:[], count:0};
+      return await r.json();
+    } catch(e) { return {items:[], count:0}; }
+  }
+
+  function renderBadge(count) {
+    let badge = document.getElementById('pendingBadge');
+    if (!badge) {
+      badge = document.createElement('div');
+      badge.id = 'pendingBadge';
+      badge.style.cssText = 'position:fixed;top:6px;right:12px;z-index:101;padding:2px 8px;background:#EF4444;color:#fff;border-radius:10px;font-size:11px;font-weight:700;cursor:pointer;display:none;box-shadow:0 2px 6px rgba(239,68,68,.4)';
+      badge.title = '点击查看 AI 学到的新记忆';
+      badge.onclick = openPendingPanel;
+      document.body.appendChild(badge);
+    }
+    if (count > 0) {
+      badge.textContent = '💡 ' + count;
+      badge.style.display = 'block';
+    } else {
+      badge.style.display = 'none';
+    }
+  }
+
+  async function openPendingPanel() {
+    const { items } = await fetchPending();
+    const existing = document.getElementById('pendingPanelModal');
+    if (existing) existing.remove();
+
+    if (!items || items.length === 0) {
+      alert('暂无新的待审记忆');
+      return;
+    }
+
+    const modal = document.createElement('div');
+    modal.id = 'pendingPanelModal';
+    modal.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.75);z-index:10000;display:flex;align-items:flex-start;justify-content:center;overflow-y:auto;padding:20px 0';
+
+    const catLabel = {
+      irony: '🔒 铁律',
+      preference: '💙 偏好',
+      profile_note: '📋 情境',
+    };
+
+    const itemsHtml = items.map(i => {
+      const cat = catLabel[i.category] || i.category;
+      const src = i.source_user_msg ? `<div style="font-size:11px;color:var(--text3,#64748b);margin-top:6px">💬 "${(i.source_user_msg||'').slice(0,60).replace(/</g,'&lt;')}..."</div>` : '';
+      return `<div style="padding:12px;background:var(--bg,#0f172a);border-radius:8px;margin-bottom:10px;border-left:3px solid var(--accent,#F59E0B)">
+        <div style="font-size:12px;color:var(--text2,#94a3b8);margin-bottom:4px">${cat}</div>
+        <div style="font-size:14px;color:var(--text,#f1f5f9);line-height:1.5">${(i.text||'').replace(/</g,'&lt;')}</div>
+        ${src}
+        <div style="display:flex;gap:8px;margin-top:10px">
+          <button onclick="window._approveInsight('${i.id}')" style="flex:1;padding:8px;background:var(--accent,#F59E0B);color:#000;border:none;border-radius:6px;cursor:pointer;font-size:13px;font-weight:600">✅ 记下来</button>
+          <button onclick="window._rejectInsight('${i.id}')" style="flex:1;padding:8px;background:var(--bg3,#334155);color:var(--text2,#94a3b8);border:none;border-radius:6px;cursor:pointer;font-size:13px">❌ 忽略</button>
+        </div>
+      </div>`;
+    }).join('');
+
+    modal.innerHTML = `
+      <div style="background:var(--bg2,#1e293b);padding:20px;border-radius:12px;max-width:500px;width:90%;max-height:calc(100vh - 40px);overflow-y:auto;position:relative">
+        <button onclick="document.getElementById('pendingPanelModal').remove()" style="position:absolute;top:12px;right:12px;background:none;border:none;color:var(--text2,#94a3b8);font-size:20px;cursor:pointer">×</button>
+        <h3 style="margin:0 0 4px;color:var(--accent,#F59E0B)">💡 AI 学到的新记忆</h3>
+        <p style="color:var(--text2,#94a3b8);font-size:12px;margin:0 0 16px">AI 在和你聊天时发现了这些信息。记下来 → 下次对话 AI 就会用；忽略 → 直接丢弃。</p>
+        ${itemsHtml}
+      </div>`;
+
+    document.body.appendChild(modal);
+  }
+
+  window._approveInsight = async function(id) {
+    const uid = _uid();
+    try {
+      const r = await fetch(window.API_BASE + '/agent/insight/approve', {
+        method:'POST', headers:{'Content-Type':'application/json'},
+        body: JSON.stringify({userId: uid, id})
+      });
+      if (r.ok) {
+        await openPendingPanel(); // 刷新面板
+        refreshBadge();
       }
-    });
-    console.log('[V7.3] profileHeader 点击已绑定 → 我的画像');
+    } catch(e) { alert('批准失败: ' + e.message); }
   };
-  setTimeout(attachClick, 800);
+
+  window._rejectInsight = async function(id) {
+    const uid = _uid();
+    try {
+      const r = await fetch(window.API_BASE + '/agent/insight/reject', {
+        method:'POST', headers:{'Content-Type':'application/json'},
+        body: JSON.stringify({userId: uid, id})
+      });
+      if (r.ok) {
+        await openPendingPanel();
+        refreshBadge();
+      }
+    } catch(e) { alert('拒绝失败: ' + e.message); }
+  };
+
+  async function refreshBadge() {
+    const { count } = await fetchPending();
+    renderBadge(count);
+  }
+
+  // 启动后 1 秒首次拉 + 每 5 分钟刷一次
+  setTimeout(refreshBadge, 1000);
+  setInterval(refreshBadge, 5 * 60 * 1000);
+  // 暴露供手动触发
+  window.refreshPendingBadge = refreshBadge;
+  window.openPendingPanel = openPendingPanel;
 })();

@@ -2179,6 +2179,21 @@ async def chat_analysis(req: ChatRequest):
                         log_decision(user_id=uid, question=user_msg, advice=reply, source="chat", intent=intent.get("intent", "general"), model=model)
                     except Exception as e:
                         print(f"[CHAT] Decision log failed: {e}")
+
+                    # 2026-04-19 V7.4.2: 后台异步提炼记忆（不阻塞用户响应）
+                    if req.userId and len(user_msg) > 10 and len(reply) > 30:
+                        try:
+                            import threading
+                            from services.agent_memory import auto_extract_insight
+                            t = threading.Thread(
+                                target=auto_extract_insight,
+                                args=(req.userId, user_msg, reply),
+                                daemon=True,
+                            )
+                            t.start()
+                        except Exception as e:
+                            print(f"[CHAT] auto_extract 启动失败: {e}")
+
                     return {"reply": reply, "source": "ai"}
                 else:
                     print(f"[CHAT] DeepSeek error: {resp.text[:200]}")
@@ -3486,6 +3501,8 @@ from services.agent_memory import (
     # 2026-04-19 新增：生活事件（生日/纪念日）
     get_life_events, save_life_events, add_life_event, remove_life_event,
     get_upcoming_events,
+    # 2026-04-19 V7.4.2 新增：自动记忆积累（待审队列）
+    get_pending_insights, approve_insight, reject_insight,
 )
 from services.agent_engine import run_analysis_cycle, save_signal_file
 
@@ -3601,6 +3618,35 @@ def api_add_life_event(req: dict):
 def api_remove_life_event(user_id: str, event_id: str):
     """删除生活事件"""
     return {"ok": remove_life_event(user_id, event_id)}
+
+
+# ========== 2026-04-19 V7.4.2 新增：自动记忆积累（待审队列）==========
+
+@app.get("/api/agent/pending-insights/{user_id}")
+def api_get_pending(user_id: str):
+    """读待审记忆队列（前端红点提示用）"""
+    items = get_pending_insights(user_id)
+    return {"items": items, "count": len(items)}
+
+
+@app.post("/api/agent/insight/approve")
+def api_approve_insight(req: dict):
+    """批准一条待审记忆 → 写入对应模块"""
+    user_id = req.get("userId", "")
+    insight_id = req.get("id", "")
+    if not user_id or not insight_id:
+        raise HTTPException(400, "userId and id required")
+    return approve_insight(user_id, insight_id)
+
+
+@app.post("/api/agent/insight/reject")
+def api_reject_insight(req: dict):
+    """拒绝一条待审记忆"""
+    user_id = req.get("userId", "")
+    insight_id = req.get("id", "")
+    if not user_id or not insight_id:
+        raise HTTPException(400, "userId and id required")
+    return {"ok": reject_insight(user_id, insight_id)}
 
 
 @app.post("/api/agent/analyze")
