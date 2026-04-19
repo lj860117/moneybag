@@ -4542,7 +4542,10 @@ el.innerHTML=html}catch(e){el.innerHTML='<div style="padding:20px;color:var(--be
       bar = document.createElement('div');
       bar.id = 'marketStatusBar';
       bar.className = 'market-status-bar';
-      document.body.insertBefore(bar, document.body.firstChild);
+      document.body.appendChild(bar);
+      // FIX 2026-04-19: 横幅放到 profileHeader 下方（top:32px），不遮挡用户名/模式切换/token
+      // body 总占位从 32px 增到 56px（profileHeader 32px + 状态横幅 24px）
+      document.body.style.paddingTop = '56px';
     }
     const session = status.session || 'closed';
     let tone = 'closed'; // 默认灰色

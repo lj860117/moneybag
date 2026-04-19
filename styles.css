@@ -175,16 +175,18 @@ body{font-family:'Noto Sans SC',-apple-system,sans-serif;background:var(--bg);co
    ============================================================ */
 
 /* ---- A. 顶部市场状态横幅 ---- */
+/* FIX 2026-04-19: top:32px 让位给 profileHeader（账户/主题/模式/token），避免遮挡 */
 .market-status-bar{
-  position:fixed;top:0;left:0;right:0;z-index:999;
-  padding:6px 16px;
-  font-size:12px;font-weight:500;
+  position:fixed;top:32px;left:0;right:0;z-index:99;
+  padding:3px 16px;
+  font-size:11px;font-weight:500;
   text-align:center;
   backdrop-filter:blur(8px);
   -webkit-backdrop-filter:blur(8px);
   border-bottom:1px solid rgba(255,255,255,.08);
   transition:background .3s ease,color .3s ease;
   white-space:nowrap;overflow:hidden;text-overflow:ellipsis;
+  line-height:1.6;
 }
 .market-status-bar.tone-trading{
   background:rgba(16,185,129,.9);color:#fff;
