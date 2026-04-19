@@ -46,11 +46,20 @@ def _load_profiles() -> list:
 
 
 def scan_user(user_id: str) -> dict:
-    """扫描单个用户的全持仓（股票+基金）"""
+    """扫描单个用户的全持仓（股票+基金）
+
+    V7.7 (2026-04-19): 空仓时直接跳过，返回 empty 标记，不调 API 不写盘
+    """
     all_alerts = []
 
-    # 股票扫描
+    # V7.7 空仓预检：股票和基金都空就直接返回
     stock_holdings = load_stock_holdings(user_id)
+    fund_holdings = load_fund_holdings(user_id)
+    if not stock_holdings and not fund_holdings:
+        print(f"  [空仓] {user_id} 无任何持仓，跳过扫描")
+        return {"combined": None, "alerts": [], "empty": True}
+
+    # 股票扫描
     stock_result = None
     if stock_holdings:
         print(f"  [股票] {len(stock_holdings)} 只...")
@@ -60,9 +69,8 @@ def scan_user(user_id: str) -> dict:
         # 纪律类告警也推送（止损/止盈/集中度）
         discipline = stock_result.get("discipline", [])
         all_alerts.extend([d for d in discipline if d["level"] in ("danger", "warning")])
-    
+
     # 基金扫描
-    fund_holdings = load_fund_holdings(user_id)
     fund_result = None
     if fund_holdings:
         print(f"  [基金] {len(fund_holdings)} 只...")
@@ -83,7 +91,7 @@ def scan_user(user_id: str) -> dict:
     (user_dir / "latest.json").write_text(
         json.dumps(combined, ensure_ascii=False, indent=2), encoding="utf-8")
 
-    return {"combined": combined, "alerts": all_alerts}
+    return {"combined": combined, "alerts": all_alerts, "empty": False}
 
 
 def push_user_alerts(user_id: str, wxwork_uid: str, alerts: list):
@@ -139,6 +147,10 @@ def run_scan():
         print(f"[CRON] 扫描用户: {name} ({uid})")
         result = scan_user(uid)
         all_results[uid] = result["combined"]
+
+        # V7.7: 空仓用户跳过后续信号推送和 alert 推送
+        if result.get("empty"):
+            continue
 
         # v3.0: 信号匹配+推送（取代旧的单纯 alert 推送）
         try:

@@ -278,6 +278,12 @@ def step_r1_phase3():
     for p in profiles:
         uid = p["id"]
         try:
+            # V7.7: 空仓用户跳过决策生成（generate_decisions 依赖持仓）
+            from services.stock_monitor import load_stock_holdings
+            from services.fund_monitor import load_fund_holdings
+            if not load_stock_holdings(uid) and not load_fund_holdings(uid):
+                log(f"  跳过 {p.get('name', uid)}: 空仓无需决策")
+                continue
             from services.decision_maker import generate_decisions
             dec = generate_decisions(uid)
             results[f"decisions_{uid}"] = dec
@@ -292,25 +298,61 @@ def step_r1_phase3():
 # 04:00 生成分析产物
 # ============================================================
 
+def _get_fund_recommendations(top_n=5, category="stock"):
+    """V7.7: 基金推荐 — 直接读 fund_rank_ts.json 的 ranks.{category} 已排好序列表
+
+    category: stock / hybrid / bond / index / qdii / etf
+    默认 stock（股票型基金），给空仓小白用户一个中高收益的起步选项
+    """
+    try:
+        import json as _json
+        rank_file = Path("/opt/moneybag/backend/data/fund_rank_ts.json")
+        if not rank_file.exists():
+            rank_file = Path("./data/fund_rank_ts.json")
+        if not rank_file.exists():
+            return []
+        data = _json.loads(rank_file.read_text(encoding="utf-8"))
+        ranks = data.get("ranks", {})
+        if not isinstance(ranks, dict):
+            return []
+        category_list = ranks.get(category) or ranks.get("all") or []
+        if not isinstance(category_list, list):
+            return []
+        return category_list[:top_n]
+    except Exception as e:
+        log(f"  基金推荐失败: {e}")
+        return []
+
+
 def step_generate_products(phase1, phase2, phase3):
     log("📝 04:00 生成分析产物")
 
     products = {}
     today = date.today().isoformat()
 
-    # 综合简报
+    # 综合简报（市场面 + 推荐）
     macro = phase1.get("macro_analysis", "暂无宏观分析")
     recs = phase3.get("recommendations", [])
     rec_text = "\n".join(f"  {i+1}. {r.get('name', '')} 评分{r.get('total_score', 0)}"
                          for i, r in enumerate(recs[:5])) if recs else "  暂无推荐"
+
+    # V7.7: 基金推荐（给空仓小白，直接用 Tushare 排行榜已评分的 Top）
+    fund_recs = _get_fund_recommendations(top_n=5, category="stock")
+    fund_rec_text = "\n".join(
+        f"  {i+1}. {f.get('name', '')}（{f.get('code', '')}）近1年{f.get('return_1y', '?')}%"
+        for i, f in enumerate(fund_recs[:5])
+    ) if fund_recs else "  暂无基金推荐"
 
     briefing = f"""📊 {today} AI 投研日报
 
 【宏观研判】
 {macro}
 
-【今日推荐 Top 5】
+【今日股票推荐 Top 5】
 {rec_text}
+
+【今日基金推荐 Top 5】
+{fund_rec_text}
 """
 
     # 逐用户简报
@@ -318,15 +360,35 @@ def step_generate_products(phase1, phase2, phase3):
     for p in profiles:
         uid = p["id"]
         name = p.get("name", uid)
-        diag = phase2.get(uid, {}).get("diagnosis", "暂无诊断")
-        dec = phase3.get(f"decisions_{uid}", {})
-        dec_text = ""
-        for d in dec.get("decisions", [])[:5]:
-            action_label = {"buy": "买入", "sell": "卖出", "hold": "持有", "reduce": "减仓", "add": "加仓"}.get(d.get("action", ""), d.get("action", ""))
-            dec_text += f"  {d.get('name', '')} → {action_label}: {d.get('reason', '')}\n"
 
-        scenarios = dec.get("scenarios", {})
-        user_briefing = f"""{briefing}
+        # V7.7: 判断是否空仓（phase2 里没 diagnosis 或 stock_count+fund_count=0）
+        user_phase2 = phase2.get(uid, {})
+        is_empty = (
+            not user_phase2 or
+            (user_phase2.get("stock_count", 0) == 0 and user_phase2.get("fund_count", 0) == 0)
+        )
+
+        if is_empty:
+            # ✨ V7.7 空仓版：只有市场概况 + 推荐，不做诊断、不给操作建议
+            user_briefing = f"""{briefing}
+👋 {name}，今天还没买任何股票或基金。
+
+下面几条推荐可以参考，想试的话先小额定投，别一次梭哈。
+
+⚠️ AI建议仅供参考，不构成投资建议"""
+        else:
+            # 持仓版（原有逻辑）
+            diag = user_phase2.get("diagnosis", "暂无诊断")
+            dec = phase3.get(f"decisions_{uid}", {})
+            dec_text = ""
+            for d in dec.get("decisions", [])[:5]:
+                action_label = {"buy": "买入", "sell": "卖出", "hold": "持有",
+                                "reduce": "减仓", "add": "加仓"}.get(d.get("action", ""),
+                                                                       d.get("action", ""))
+                dec_text += f"  {d.get('name', '')} → {action_label}: {d.get('reason', '')}\n"
+
+            scenarios = dec.get("scenarios", {})
+            user_briefing = f"""{briefing}
 【{name} 持仓诊断】
 {diag}
 
