@@ -333,9 +333,18 @@ def get_rl_recommendation(code: str) -> dict:
 
         # 用当前市场状态获取建议
         from services.backtest_engine import _get_stock_hist
-        prices = _get_stock_hist(code, days=60)
-        if len(prices) < 30:
+        prices_raw = _get_stock_hist(code, days=60)
+        if len(prices_raw) < 30:
             return {"error": "当前数据不足"}
+
+        # FIX 2026-04-19 F9 (part 2): 同样的 dict list 处理
+        if isinstance(prices_raw[0], dict):
+            prices = [float(p.get("close", 0) or 0) for p in prices_raw if p.get("close") is not None]
+        else:
+            prices = [float(p) for p in prices_raw]
+
+        if len(prices) < 30:
+            return {"error": "有效收盘价不足"}
 
         prices_arr = np.array(prices, dtype=np.float64)
         returns = np.diff(np.log(prices_arr))
