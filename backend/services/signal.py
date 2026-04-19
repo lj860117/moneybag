@@ -66,14 +66,9 @@ def calc_smart_dca(base_amount: float, valuation_pct: float) -> dict:
 
 def calc_take_profit_strategy(cost: float, market_value: float, profile: str) -> dict:
     """止盈止损策略：根据风险类型给目标收益率和止损线"""
-    # 不同风险类型的止盈止损参数
-    params = {
-        "保守型": {"target_pct": 15, "stop_loss_pct": -8, "partial_pct": 10},
-        "稳健型": {"target_pct": 20, "stop_loss_pct": -10, "partial_pct": 15},
-        "平衡型": {"target_pct": 30, "stop_loss_pct": -15, "partial_pct": 20},
-        "进取型": {"target_pct": 50, "stop_loss_pct": -20, "partial_pct": 30},
-        "激进型": {"target_pct": 80, "stop_loss_pct": -25, "partial_pct": 40},
-    }
+    # FIX 2026-04-19 V7.2: 参数表从 config 读取
+    from config import TAKE_PROFIT_STOP_LOSS
+    params = TAKE_PROFIT_STOP_LOSS
     p = params.get(profile, params["平衡型"])
 
     current_pnl_pct = ((market_value - cost) / cost * 100) if cost > 0 else 0

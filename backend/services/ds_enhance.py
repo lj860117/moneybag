@@ -96,13 +96,15 @@ def analyze_idle_cash(cash_amount: float, monthly_expense: float = 0, risk_profi
         emergency_fund = monthly_expense * 6
         idle_cash = max(0, cash_amount - emergency_fund)
     else:
-        # 没有支出数据，按 30% 作为应急
-        emergency_fund = cash_amount * 0.3
-        idle_cash = cash_amount * 0.7
+        # 没有支出数据，按默认比例作为应急
+        # FIX 2026-04-19 V7.2: 从 config 读取
+        from config import CASH_MGMT_DEFAULTS as _CASH
+        emergency_fund = cash_amount * _CASH["emergency_ratio"]
+        idle_cash = cash_amount * (1 - _CASH["emergency_ratio"])
 
     # 银行活期损失计算
-    bank_rate = 0.002  # 活期 0.2%
-    inflation = 0.01  # 通胀约 1%
+    bank_rate = _CASH["bank_rate_current"]  # 活期 0.2%
+    inflation = _CASH["inflation_rate"]     # 通胀约 1%
     annual_loss = cash_amount * (inflation - bank_rate)
 
     # 构建 prompt

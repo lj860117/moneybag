@@ -202,51 +202,50 @@ def _dynamic_adjust(base: dict, val_pct: float, fgi: float) -> dict:
     """
     Level 1 动态调整：根据实时市场数据微调配置
     返回调整后的目标比例（小数）
+    FIX 2026-04-19 V7.2: 全部步长从 config.ALLOCATION_ADJUST 读取
     """
+    from config import ALLOCATION_ADJUST as _ADJ
     s, b, c = base["stock"], base["bond"], base["cash"]
 
     # 1. 估值调整（±10%）
     if val_pct > 85:
         # 极度高估 → 大幅减股
-        s -= 0.10
-        b += 0.05
-        c += 0.05
+        d = _ADJ["valuation_extreme_high"]
+        s += d["s"]; b += d["b"]; c += d["c"]
     elif val_pct > 70:
         # 高估 → 小幅减股
-        s -= 0.05
-        b += 0.03
-        c += 0.02
+        d = _ADJ["valuation_high"]
+        s += d["s"]; b += d["b"]; c += d["c"]
     elif val_pct < 15:
         # 极度低估 → 大幅加股
-        s += 0.10
-        b -= 0.05
-        c -= 0.05
+        d = _ADJ["valuation_extreme_low"]
+        s += d["s"]; b += d["b"]; c += d["c"]
     elif val_pct < 30:
         # 低估 → 小幅加股
-        s += 0.05
-        b -= 0.03
-        c -= 0.02
+        d = _ADJ["valuation_low"]
+        s += d["s"]; b += d["b"]; c += d["c"]
 
     # 2. 恐贪指数调整（±5%）
     if fgi > 80:
         # 极度贪婪 → 别人贪婪我恐惧，减股
-        s -= 0.05
-        c += 0.05
+        d = _ADJ["fgi_extreme_greed"]
+        s += d["s"]; c += d["c"]
     elif fgi < 20:
         # 极度恐惧 → 别人恐惧我贪婪，加股
-        s += 0.05
-        c -= 0.05
+        d = _ADJ["fgi_extreme_fear"]
+        s += d["s"]; c += d["c"]
 
-    # 3. 塔勒布铁律：现金永远 ≥ 15%（反脆弱）
-    if c < 0.15:
-        diff = 0.15 - c
-        c = 0.15
+    # 3. 塔勒布铁律：现金永远 ≥ cash_floor（反脆弱）
+    _cash_floor = _ADJ["cash_floor"]
+    if c < _cash_floor:
+        diff = _cash_floor - c
+        c = _cash_floor
         # 从股票里扣
         s -= diff
 
     # 4. 合理性约束
-    s = max(0.05, min(0.90, s))
-    b = max(0.0, min(0.80, b))
+    s = max(_ADJ["stock_min"], min(_ADJ["stock_max"], s))
+    b = max(0.0, min(_ADJ["bond_max"], b))
     c = max(0.10, min(0.50, c))
 
     # 归一化

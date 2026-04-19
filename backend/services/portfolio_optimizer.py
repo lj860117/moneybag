@@ -94,7 +94,14 @@ def _annual_stats(returns_matrix):
 # 方法 1: 均值-方差优化（最大夏普比率）
 # ============================================================
 
-def _max_sharpe(mean_ret, cov_matrix, rf=0.02, max_weight=0.20):
+# FIX 2026-04-19 V7.2: 统一从 config 读取默认参数
+from config import PORTFOLIO_OPTIMIZER_DEFAULTS as _OPT_DEFAULTS
+_RF_DEFAULT         = _OPT_DEFAULTS["risk_free"]
+_MAX_WEIGHT_DEFAULT = _OPT_DEFAULTS["max_weight"]
+_CVAR_ALPHA_DEFAULT = _OPT_DEFAULTS["cvar_alpha"]
+
+
+def _max_sharpe(mean_ret, cov_matrix, rf=_RF_DEFAULT, max_weight=_MAX_WEIGHT_DEFAULT):
     """最大夏普比率组合"""
     n = len(mean_ret)
 
@@ -115,7 +122,7 @@ def _max_sharpe(mean_ret, cov_matrix, rf=0.02, max_weight=0.20):
 # 方法 2: 最小方差组合
 # ============================================================
 
-def _min_variance(cov_matrix, max_weight=0.20):
+def _min_variance(cov_matrix, max_weight=_MAX_WEIGHT_DEFAULT):
     """最小方差组合"""
     n = cov_matrix.shape[0]
 
@@ -134,7 +141,7 @@ def _min_variance(cov_matrix, max_weight=0.20):
 # 方法 3: CVaR 优化（幻方量化方法）
 # ============================================================
 
-def _min_cvar(returns_matrix, alpha=0.05, max_weight=0.20):
+def _min_cvar(returns_matrix, alpha=_CVAR_ALPHA_DEFAULT, max_weight=_MAX_WEIGHT_DEFAULT):
     """最小 CVaR 组合（条件在险价值）"""
     T, n = returns_matrix.shape
 
@@ -257,7 +264,7 @@ def _evaluate_portfolio(weights, mean_ret, cov_matrix, returns_matrix, rf=0.02):
 # 公开 API
 # ============================================================
 
-def optimize_portfolio(user_id: str, method: str = "all", max_weight: float = 0.20) -> dict:
+def optimize_portfolio(user_id: str, method: str = "all", max_weight: float = _MAX_WEIGHT_DEFAULT) -> dict:
     """
     对用户持仓进行组合优化
 

@@ -181,8 +181,9 @@ def run_backtest(strategy: str = "smart_dca", years: int = 3, monthly_amount: fl
             metrics["profitLossRatio"] = round(avg_gain / avg_loss, 2) if avg_loss > 0.01 else 99.99
 
             # 5. Sortino 比率 = (收益-无风险利率) / 下行标准差
-            # FIX 2026-04-19: 原值 0.15 = 15%/月（严重错误），实际应为 1.8%年化/12 ≈ 0.0015
-            risk_free_monthly = 0.0015  # 年化 1.8% ÷ 12
+            # FIX 2026-04-19 V7.2: 从 config.BACKTEST_DEFAULTS 集中读取
+            from config import BACKTEST_DEFAULTS
+            risk_free_monthly = BACKTEST_DEFAULTS["risk_free_monthly"]  # 0.0015 (年化1.8%/12)
             downside = [r for r in monthly_returns if r < risk_free_monthly]
             if downside:
                 downside_std = (sum((r - risk_free_monthly) ** 2 for r in downside) / len(downside)) ** 0.5

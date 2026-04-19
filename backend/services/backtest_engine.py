@@ -154,8 +154,10 @@ def _calc_metrics(prices: list) -> dict:
     else:
         volatility = 0
 
-    # 夏普比率（无风险利率 2%）
-    risk_free = 0.02
+    # 夏普比率（无风险利率从 config 读取）
+    # FIX 2026-04-19 V7.2: 统一硬编码治理
+    from config import PORTFOLIO_OPTIMIZER_DEFAULTS
+    risk_free = PORTFOLIO_OPTIMIZER_DEFAULTS["risk_free"]  # 0.02
     sharpe = (annual_return - risk_free) / volatility if volatility > 0 else 0
 
     # 胜率（日涨天数占比）

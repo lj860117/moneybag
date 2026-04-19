@@ -2172,7 +2172,11 @@ disciplineHtml=`<div class="dashboard-card" style="border-left:3px solid #F59E0B
 // 持仓列表
 let listHtml='';if(holdings.length===0){listHtml=`<div style="text-align:center;padding:40px;color:var(--text2)"><div style="font-size:48px;margin-bottom:16px">📈</div><div style="font-size:16px;margin-bottom:8px">还没有持仓股票</div><div style="font-size:13px">点击下方按钮添加你的第一只股票</div></div>`}else{
 listHtml=holdings.map(h=>{const pctC=h.changePct>=0?'var(--green)':'var(--red)';const pnlC=(h.pnlPct||0)>=0?'var(--green)':'var(--red)';const weightTag=h.weight?` · 仓位${h.weight}%`:'';const industryTag=h.industry&&h.industry!=='未知'?` · ${h.industry}`:'';
-return`<div class="holding-card" onclick="showStockDetail('${h.code}')"><div class="holding-top"><div class="holding-info"><div class="holding-name">${h.name||h.code}</div><div class="holding-meta">${h.code}${industryTag}${weightTag}</div></div><div class="holding-amount"><div class="holding-money" style="color:${pctC}">${h.price?'¥'+h.price.toFixed(2):'--'}</div><div class="holding-pct" style="color:${pctC}">${h.changePct!=null?(h.changePct>=0?'+':'')+h.changePct.toFixed(2)+'%':'--'}</div></div></div>${h.costPrice&&h.shares?`<div class="holding-pnl-row"><div class="holding-pnl-item"><div class="holding-pnl-label">持仓市值</div><div class="holding-pnl-val">¥${(h.marketValue||0).toLocaleString()}</div></div><div class="holding-pnl-item"><div class="holding-pnl-label">盈亏</div><div class="holding-pnl-val ${(h.pnlPct||0)>=0?'pos':'neg'}" style="color:${pnlC}">${h.pnl!=null?((h.pnl>=0?'+':'')+h.pnl.toFixed(0)):''} ${h.pnlPct!=null?'('+((h.pnlPct>=0?'+':'')+h.pnlPct.toFixed(1))+'%)':''}</div></div><div class="holding-pnl-item"><div class="holding-pnl-label">成本价</div><div class="holding-pnl-val">¥${h.costPrice}</div></div></div>`:''}</div>`}).join('')}
+// V7.2 FIX: 数据新鲜度标签
+const freshTag = h.is_snapshot
+  ? `<span class="data-stale-badge" title="非交易日/盘后数据">📅 ${h.data_date||'收盘快照'}</span>`
+  : (h.price!=null ? `<span class="data-fresh-badge" title="实时行情">⚡ 实时</span>` : '');
+return`<div class="holding-card" onclick="showStockDetail('${h.code}')"><div class="holding-top"><div class="holding-info"><div class="holding-name">${h.name||h.code}${freshTag}</div><div class="holding-meta">${h.code}${industryTag}${weightTag}</div></div><div class="holding-amount"><div class="holding-money" style="color:${pctC}">${h.price?'¥'+h.price.toFixed(2):'--'}</div><div class="holding-pct" style="color:${pctC}">${h.changePct!=null?(h.changePct>=0?'+':'')+h.changePct.toFixed(2)+'%':'--'}</div></div></div>${h.costPrice&&h.shares?`<div class="holding-pnl-row"><div class="holding-pnl-item"><div class="holding-pnl-label">持仓市值</div><div class="holding-pnl-val">¥${(h.marketValue||0).toLocaleString()}</div></div><div class="holding-pnl-item"><div class="holding-pnl-label">盈亏</div><div class="holding-pnl-val ${(h.pnlPct||0)>=0?'pos':'neg'}" style="color:${pnlC}">${h.pnl!=null?((h.pnl>=0?'+':'')+h.pnl.toFixed(0)):''} ${h.pnlPct!=null?'('+((h.pnlPct>=0?'+':'')+h.pnlPct.toFixed(1))+'%)':''}</div></div><div class="holding-pnl-item"><div class="holding-pnl-label">成本价</div><div class="holding-pnl-val">¥${h.costPrice}</div></div></div>`:''}</div>`}).join('')}
 // 汇总
 let totalMV=holdings.reduce((s,h)=>s+(h.marketValue||0),0);let totalPnl=holdings.reduce((s,h)=>s+(h.pnl||0),0);
 let heroHtml='';if(holdings.length>0&&totalMV>0){const pnlC=totalPnl>=0?'var(--green)':'var(--red)';
@@ -4500,3 +4504,193 @@ if(a.portfolio_advice)html+='<div style="font-size:13px;margin-top:8px;padding:8
 html+='</div><button class="action-btn secondary" onclick="renderScenarioView(document.getElementById(\'insightContent\'))" style="margin-top:12px;width:100%">← 返回</button>';
 el.innerHTML=html}catch(e){el.innerHTML='<div style="padding:20px;color:var(--bear)">'+e.message+'</div>'}}
 
+
+
+// ============================================================
+// V7.2 前端小白可用性补丁 (2026-04-19)
+// - 顶部横幅：接入 /api/market-status，非交易日/盘中提示
+// - 术语 tooltip：接入 /api/glossary，专业术语悬浮解释
+// - 持仓数据新鲜度：is_snapshot + data_date 显示
+// 独立模块，不触碰已有业务代码
+// ============================================================
+(function _v72PolishPatch(){
+  'use strict';
+
+  // ---- A. 顶部横幅：市场状态条 ----
+  let _marketStatusCache = null;
+  let _marketStatusTs = 0;
+
+  async function fetchMarketStatus(){
+    const now = Date.now();
+    if (_marketStatusCache && now - _marketStatusTs < 300000) return _marketStatusCache; // 5min 缓存
+    try{
+      const r = await fetch(API_BASE + '/market-status', {signal: AbortSignal.timeout(3000)});
+      if (r.ok) {
+        _marketStatusCache = await r.json();
+        _marketStatusTs = now;
+        return _marketStatusCache;
+      }
+    }catch(e){}
+    return null;
+  }
+
+  async function renderMarketBanner(){
+    const status = await fetchMarketStatus();
+    if (!status) return;
+    let bar = document.getElementById('marketStatusBar');
+    if (!bar){
+      bar = document.createElement('div');
+      bar.id = 'marketStatusBar';
+      bar.className = 'market-status-bar';
+      document.body.insertBefore(bar, document.body.firstChild);
+    }
+    const session = status.session || 'closed';
+    let tone = 'closed'; // 默认灰色
+    if (session === 'morning' || session === 'afternoon') tone = 'trading';
+    else if (session === 'pre_open' || session === 'lunch' || session === 'after_close') tone = 'paused';
+    bar.className = 'market-status-bar tone-' + tone;
+    bar.innerHTML = (status.message || '') + ' · ' + (status.weekday || '');
+  }
+
+  // ---- B. 术语 tooltip ----
+  let _glossaryCache = null;
+  let _glossaryLoading = null;
+
+  async function loadGlossary(){
+    if (_glossaryCache) return _glossaryCache;
+    if (_glossaryLoading) return _glossaryLoading;
+    _glossaryLoading = (async () => {
+      try{
+        const r = await fetch(API_BASE + '/glossary', {signal: AbortSignal.timeout(5000)});
+        if (r.ok){
+          const d = await r.json();
+          _glossaryCache = d.glossary || {};
+          // 建反向索引：别名/name 都能查
+          const alt = {};
+          for (const [k, v] of Object.entries(_glossaryCache)){
+            alt[k.toUpperCase()] = v;
+            if (v.name) alt[v.name] = v;
+          }
+          Object.assign(_glossaryCache, alt);
+          return _glossaryCache;
+        }
+      }catch(e){}
+      _glossaryCache = {};
+      return _glossaryCache;
+    })();
+    return _glossaryLoading;
+  }
+
+  // 需要自动加解释的术语关键词列表（跟 glossary.py 对齐）
+  const _TERM_PATTERNS = [
+    /\bPE(-TTM)?\b/gi,
+    /\bPB\b/gi,
+    /\bPEG\b/gi,
+    /\bROE\b/gi,
+    /\bRSI\b/gi,
+    /\bMACD\b/gi,
+    /\bHHI\b/gi,
+    /\bCVaR\b/gi,
+    /\bBeta\b/gi,
+    /\bSHIBOR\b/gi,
+    /\bDCF\b/gi,
+    /\bEV\b/gi,
+    /(夏普比率|Sortino|索提诺)/g,
+    /(估值百分位|配置偏离度|恐贪指数|股债性价比|美林时钟)/g,
+    /(最大回撤|止盈止损|再平衡|定投|北向资金|两融|布林带|量比|凯利)/g,
+  ];
+
+  // 给容器内的文本自动加 tooltip 下划线
+  async function enhanceTerms(root){
+    if (!root) return;
+    await loadGlossary();
+    if (!_glossaryCache || Object.keys(_glossaryCache).length === 0) return;
+
+    // 只处理还没被处理过的容器
+    if (root.dataset && root.dataset.termsEnhanced === '1') return;
+    if (root.dataset) root.dataset.termsEnhanced = '1';
+
+    // 遍历所有文本节点
+    const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT, {
+      acceptNode: function(node){
+        const p = node.parentElement;
+        if (!p) return NodeFilter.FILTER_REJECT;
+        // 跳过 script/style/input/textarea/已包装的 term-tip
+        const tag = p.tagName;
+        if (['SCRIPT','STYLE','INPUT','TEXTAREA','BUTTON'].includes(tag)) return NodeFilter.FILTER_REJECT;
+        if (p.closest && p.closest('.term-tip')) return NodeFilter.FILTER_REJECT;
+        if (!node.nodeValue || node.nodeValue.length < 2) return NodeFilter.FILTER_REJECT;
+        return NodeFilter.FILTER_ACCEPT;
+      }
+    });
+
+    const textNodes = [];
+    let n;
+    while ((n = walker.nextNode())) textNodes.push(n);
+
+    textNodes.forEach(tn => {
+      const text = tn.nodeValue;
+      let hasMatch = false;
+      for (const pat of _TERM_PATTERNS){
+        pat.lastIndex = 0;
+        if (pat.test(text)){ hasMatch = true; break; }
+      }
+      if (!hasMatch) return;
+
+      // 构建替换后的 HTML
+      let html = text;
+      for (const pat of _TERM_PATTERNS){
+        html = html.replace(pat, (m) => {
+          const key = m.toUpperCase();
+          const entry = _glossaryCache[key] || _glossaryCache[m];
+          if (!entry) return m;
+          const plain = (entry.plain || '').replace(/"/g, '&quot;');
+          const nm = (entry.name || m).replace(/"/g, '&quot;');
+          return '<span class="term-tip" data-term="' + m + '" title="' + nm + '：' + plain + '">' + m + '</span>';
+        });
+      }
+      if (html !== text){
+        const span = document.createElement('span');
+        span.innerHTML = html;
+        tn.parentNode.replaceChild(span, tn);
+      }
+    });
+  }
+
+  // ---- C. 挂到页面生命周期 ----
+
+  // 初始化：横幅 + 加载 glossary
+  function init(){
+    renderMarketBanner();
+    loadGlossary();
+    // 每 5 分钟刷一次横幅（跨越交易时段）
+    setInterval(renderMarketBanner, 300000);
+  }
+
+  // MutationObserver 自动给新渲染的内容加术语 tooltip
+  function startAutoEnhance(){
+    const app = document.getElementById('app');
+    if (!app) return;
+    const obs = new MutationObserver((mutations) => {
+      // 避免抖动：延迟批处理
+      if (window._termEnhanceTimer) clearTimeout(window._termEnhanceTimer);
+      window._termEnhanceTimer = setTimeout(() => {
+        enhanceTerms(app);
+      }, 300);
+    });
+    obs.observe(app, {childList: true, subtree: true, characterData: false});
+    // 首次也跑一遍
+    setTimeout(() => enhanceTerms(app), 500);
+  }
+
+  // 启动
+  if (document.readyState === 'loading'){
+    document.addEventListener('DOMContentLoaded', function(){ init(); startAutoEnhance(); });
+  } else {
+    init();
+    startAutoEnhance();
+  }
+
+  // 暴露给外部手动调用
+  window._v72 = { enhanceTerms: enhanceTerms, fetchMarketStatus: fetchMarketStatus, loadGlossary: loadGlossary };
+})();

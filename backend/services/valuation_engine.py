@@ -246,10 +246,12 @@ def enrich(ctx):
 # ============================================================
 
 # 默认参数（V8 可调）
-DCF_DISCOUNT_RATE = 0.10      # 折现率 10%
-DCF_TERMINAL_GROWTH = 0.03    # 永续增长率 3%
-DCF_PROJECTION_YEARS = 5      # 预测期 5 年
-DCF_MARGIN_OF_SAFETY = 0.30   # 安全边际 30%
+# FIX 2026-04-19 V7.2: 统一从 config.DCF_DEFAULTS 读取（Single Source of Truth）
+from config import DCF_DEFAULTS
+DCF_DISCOUNT_RATE    = DCF_DEFAULTS["discount_rate"]      # 折现率 10%
+DCF_TERMINAL_GROWTH  = DCF_DEFAULTS["terminal_growth"]    # 永续增长率 3%
+DCF_PROJECTION_YEARS = DCF_DEFAULTS["projection_years"]   # 预测期 5 年
+DCF_MARGIN_OF_SAFETY = DCF_DEFAULTS["margin_of_safety"]   # 安全边际 30%
 
 
 def dcf_valuation(code: str) -> dict:
@@ -297,7 +299,7 @@ def dcf_valuation(code: str) -> dict:
         fcf_per_share = float(ocfps)
 
         # 2. 获取盈利增速（从一致预期）
-        growth_rate = 0.08  # 默认 8%
+        growth_rate = DCF_DEFAULTS["default_growth"]  # 默认 8%
         try:
             from services.earnings_forecast import get_consensus_eps
             fc = get_consensus_eps(code)
@@ -305,7 +307,9 @@ def dcf_valuation(code: str) -> dict:
                 eps_now = fin.get("eps")
                 eps_forecast = fc.get("eps_avg")
                 if eps_now and eps_forecast and float(eps_now) > 0:
-                    growth_rate = max(0.02, min(0.30, float(eps_forecast) / float(eps_now) - 1))
+                    growth_rate = max(DCF_DEFAULTS["growth_min"],
+                                      min(DCF_DEFAULTS["growth_max"],
+                                          float(eps_forecast) / float(eps_now) - 1))
         except Exception:
             pass
 

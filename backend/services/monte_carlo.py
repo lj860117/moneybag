@@ -94,8 +94,8 @@ def _simulate_path(
     std: float,
     days: int,
     initial: float = 10000,
-    stop_loss: float = -0.08,
-    take_profit: float = 0.20,
+    stop_loss: float = None,
+    take_profit: float = None,
     apply_discipline: bool = True,
 ) -> dict:
     """模拟一条价格路径
@@ -110,6 +110,12 @@ def _simulate_path(
             "days_held": int,
         }
     """
+    # FIX 2026-04-19 V7.2: 默认参数从 config 读取
+    from config import MONTE_CARLO_DEFAULTS
+    if stop_loss is None:   stop_loss = MONTE_CARLO_DEFAULTS["stop_loss"]
+    if take_profit is None: take_profit = MONTE_CARLO_DEFAULTS["take_profit"]
+    _profit_realize = MONTE_CARLO_DEFAULTS["profit_realize"]
+
     value = initial
     peak = initial
     max_dd = 0
@@ -149,7 +155,7 @@ def _simulate_path(
                 took_profit = True
                 # 锁定一半利润
                 profit = value - initial
-                value = initial + profit * 0.5
+                value = initial + profit * _profit_realize
                 peak = value  # 重置峰值
 
     return_pct = (value - initial) / initial
@@ -169,8 +175,8 @@ def monte_carlo_single(
     horizon_days: int = 250,
     initial_investment: float = 10000,
     apply_discipline: bool = True,
-    stop_loss: float = -0.08,
-    take_profit: float = 0.20,
+    stop_loss: float = None,
+    take_profit: float = None,
 ) -> dict:
     """单只股票蒙特卡洛模拟
     

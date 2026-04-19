@@ -73,18 +73,20 @@ def screen_funds(
                 continue
 
             # 多维评分（含风险调整）
+            # FIX 2026-04-19 V7.2: 权重从 config.FUND_SCORE_WEIGHTS 读取
+            from config import FUND_SCORE_WEIGHTS as _FW
             score = 0
             # 近1年收益占 30%
-            score += min(max(r1y, -50), 100) * 0.30
+            score += min(max(r1y, -50), 100) * _FW["r1y"]
             # 近3年年化收益占 20%
             if r3y is not None:
-                score += min(max(r3y / 3, -30), 50) * 0.20
+                score += min(max(r3y / 3, -30), 50) * _FW["r3y"]
             # 近6月占 15%（短期动量）
             if r6m is not None:
-                score += min(max(r6m, -30), 50) * 0.15
+                score += min(max(r6m, -30), 50) * _FW["r6m"]
             # 近3月占 10%
             if r3m is not None:
-                score += min(max(r3m, -20), 30) * 0.10
+                score += min(max(r3m, -20), 30) * _FW["r3m"]
 
             # 稳定性加分（收益率一致性）15%
             periods = [x for x in [r3m, r6m, r1y] if x is not None]

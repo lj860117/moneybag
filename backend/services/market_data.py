@@ -132,7 +132,11 @@ def get_fear_greed_index() -> dict:
                 result["dimensions"]["volume"] = {"value": 1.0, "score": 50, "label": "量能(无数据)"}
 
             # 加权综合
-            composite = dim1_score * 0.4 + dim2_score * 0.3 + dim3_score * 0.3
+            # FIX 2026-04-19 V7.2: 权重从 config.FGI_DIM_WEIGHTS 读取
+            from config import FGI_DIM_WEIGHTS
+            composite = (dim1_score * FGI_DIM_WEIGHTS["momentum"] +
+                         dim2_score * FGI_DIM_WEIGHTS["volatility"] +
+                         dim3_score * FGI_DIM_WEIGHTS["volume"])
             result["score"] = round(composite, 1)
 
             if composite >= 75:

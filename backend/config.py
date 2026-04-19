@@ -140,3 +140,119 @@ DEEPSEEK_PRICING = {
     "input_cache_miss":   2.03,   # 缓存未命中
     "output":             3.04,   # 输出
 }
+
+# ============================================================
+# V7.2 硬编码治理（2026-04-19）
+# 把散落在业务代码里的魔法数字集中到这里，方便调参
+# 业务行为完全不变，只是把引用从 hardcoded 改为 from config import XXX
+# ============================================================
+
+# ---- DCF 估值引擎默认参数 ----
+DCF_DEFAULTS = {
+    "discount_rate":     0.10,   # 折现率（WACC 近似）
+    "terminal_growth":   0.03,   # 永续增长率（通胀+GDP 长期均值）
+    "projection_years":  5,      # 预测期
+    "margin_of_safety":  0.30,   # 安全边际（巴菲特经典 30%）
+    "default_growth":    0.08,   # 拿不到一致预期时的默认增速
+    "growth_min":        0.02,   # 增速下限
+    "growth_max":        0.30,   # 增速上限
+    "fair_range_upper":  1.2,    # 合理区间 = 内在价值 × 1.2
+}
+
+# ---- 回测 / 组合优化 ----
+BACKTEST_DEFAULTS = {
+    "risk_free_annual":    0.018,     # 年化无风险利率 1.8%（国债 10Y 近似）
+    "risk_free_monthly":   0.0015,    # 月化无风险利率（FIX F1）
+    "tracking_error_min":  0.01,      # 跟踪误差最小阈值
+    "downside_std_min":    0.01,      # 下行标准差最小阈值（防除零）
+}
+
+PORTFOLIO_OPTIMIZER_DEFAULTS = {
+    "risk_free":           0.02,      # 组合优化无风险利率
+    "max_weight":          0.20,      # 单资产最大权重
+    "cvar_alpha":          0.05,      # CVaR 尾部概率 5%
+}
+
+# ---- Pipeline 门控 / EV ----
+PIPELINE_GATE = {
+    "confidence_threshold": 0.7,      # 置信度门槛（>0.7 直出，否则 LLM 仲裁）
+    "divergence_threshold": 0.3,      # 分歧度门槛（<0.3 直出）
+    "winrate_min":          0.3,      # 胜率映射下限
+    "winrate_max":          0.9,      # 胜率映射上限
+    "trading_cost":         0.0023,   # 交易成本 0.23%（佣金+印花+滑点）
+    "expected_gain_factor": 0.8,      # 预期盈利 = 波动率 × 该系数
+    "expected_loss_factor": 0.5,      # 预期亏损 = 波动率 × 该系数（ATR 止损）
+}
+
+# ---- 蒙特卡洛模拟 ----
+MONTE_CARLO_DEFAULTS = {
+    "stop_loss":       -0.08,         # 止损 -8%
+    "take_profit":      0.20,         # 止盈 +20%
+    "profit_realize":   0.5,          # 止盈时兑现 50% 利润
+}
+
+# ---- 回撤 / 相关性阈值 ----
+DRAWDOWN_ALERT = {
+    "severe_pct":       20.0,         # 严重回撤 >20%
+    "moderate_pct":     10.0,         # 中度回撤 >10%
+}
+CORRELATION_DEFAULTS = {
+    "all_equity":       0.75,         # 全股票组合相关系数
+    "stock_bond_gold":  0.35,         # 股债金组合相关系数
+    "with_hedge":       0.45,         # 含避险资产
+    "mixed":            0.50,         # 其他默认
+}
+
+# ---- 止盈止损（按风险类型）----
+TAKE_PROFIT_STOP_LOSS = {
+    "保守型": {"target_pct": 15, "stop_loss_pct":  -8, "partial_pct": 10},
+    "稳健型": {"target_pct": 20, "stop_loss_pct": -10, "partial_pct": 15},
+    "平衡型": {"target_pct": 30, "stop_loss_pct": -15, "partial_pct": 20},
+    "进取型": {"target_pct": 50, "stop_loss_pct": -20, "partial_pct": 30},
+    "激进型": {"target_pct": 80, "stop_loss_pct": -25, "partial_pct": 40},
+}
+
+# ---- 恐贪指数 3 维权重 ----
+FGI_DIM_WEIGHTS = {
+    "momentum":    0.4,   # 20 日动量
+    "volatility":  0.3,   # 波动率
+    "volume":      0.3,   # 量能偏离
+}
+
+# ---- 基金筛选时间权重 ----
+FUND_SCORE_WEIGHTS = {
+    "r1y":  0.30,   # 近 1 年占 30%
+    "r3y":  0.20,   # 近 3 年年化占 20%
+    "r6m":  0.15,   # 近 6 月占 15%
+    "r3m":  0.10,   # 近 3 月占 10%
+}
+
+# ---- 配置动态调整步长（基于估值+恐贪）----
+ALLOCATION_ADJUST = {
+    "valuation_extreme_high": {"s": -0.10, "b":  0.05, "c":  0.05},  # 估值 >85
+    "valuation_high":         {"s": -0.05, "b":  0.03, "c":  0.02},  # 估值 >70
+    "valuation_extreme_low":  {"s":  0.10, "b": -0.05, "c": -0.05},  # 估值 <15
+    "valuation_low":          {"s":  0.05, "b": -0.03, "c": -0.02},  # 估值 <30
+    "fgi_extreme_greed":      {"s": -0.05, "c":  0.05},              # 恐贪 >80
+    "fgi_extreme_fear":       {"s":  0.05, "c": -0.05},              # 恐贪 <20
+    "cash_floor":             0.15,   # 塔勒布铁律：现金永远 >= 15%
+    "stock_min":              0.05,   # 股票最低占比
+    "stock_max":              0.90,   # 股票最高占比
+    "bond_max":               0.80,   # 债券最高占比
+}
+
+# ---- RL 仓位分档阈值 ----
+RL_POSITION_BUCKETS = {
+    "empty":      0.05,   # 空仓
+    "light":      0.30,   # 轻仓
+    "half":       0.60,   # 半仓
+    "heavy":      0.85,   # 重仓
+    # >0.85 → 满仓
+}
+
+# ---- 现金管理默认参数（缺支出数据时的假设）----
+CASH_MGMT_DEFAULTS = {
+    "emergency_ratio":    0.3,    # 无支出数据时，应急金占现金 30%
+    "bank_rate_current":  0.002,  # 银行活期 0.2%
+    "inflation_rate":     0.01,   # 通胀假设 1%
+}

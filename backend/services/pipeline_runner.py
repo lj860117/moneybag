@@ -151,9 +151,13 @@ def step_confidence_gate(ctx: DecisionContext) -> DecisionContext:
             ctx.divergence = 0.0
 
     # 门控决策
-    if ctx.confidence_score >= 0.7 and ctx.divergence < 0.3:
+    # FIX 2026-04-19 V7.2: 阈值从 config 读
+    from config import PIPELINE_GATE
+    _conf_thr = PIPELINE_GATE["confidence_threshold"]
+    _div_thr  = PIPELINE_GATE["divergence_threshold"]
+    if ctx.confidence_score >= _conf_thr and ctx.divergence < _div_thr:
         ctx.gate_decision = "direct_output"
-        ctx.gate_reason = f"一致分{ctx.confidence_score:.2f}≥0.7 且 分歧{ctx.divergence:.2f}<0.3"
+        ctx.gate_reason = f"一致分{ctx.confidence_score:.2f}≥{_conf_thr} 且 分歧{ctx.divergence:.2f}<{_div_thr}"
     else:
         ctx.gate_decision = "llm_arbitration"
         ctx.gate_reason = f"一致分{ctx.confidence_score:.2f} 或 分歧{ctx.divergence:.2f} 未达标"
@@ -303,17 +307,20 @@ def step_payoff_ev(ctx: DecisionContext) -> DecisionContext:
     cost = 0.23%（佣金+印花+滑点）
     E ≤ 0 → 拦截不出手
     """
-    TRADING_COST = 0.0023  # 0.23%
-    
+    # FIX 2026-04-19 V7.2: 常量从 config 读
+    from config import PIPELINE_GATE
+    TRADING_COST = PIPELINE_GATE["trading_cost"]  # 0.0023
+
     # 从门控结果推算胜率和赔率
     confidence = ctx.confidence_score or 0.5
-    winrate = max(0.3, min(0.9, confidence))  # 门控分→胜率（30%-90%）
+    winrate = max(PIPELINE_GATE["winrate_min"],
+                  min(PIPELINE_GATE["winrate_max"], confidence))  # 30%-90%
     lossrate = 1 - winrate
-    
+
     # 预期收益/亏损（简化：用 Regime 参数估算）
     regime_vol = ctx.regime_params.get("volatility_20d", 20) / 100 if ctx.regime_params else 0.2
-    expected_gain = regime_vol * 0.8  # 预期盈利 = 波动率 × 0.8
-    expected_loss = regime_vol * 0.5  # 预期亏损 = 波动率 × 0.5（ATR止损）
+    expected_gain = regime_vol * PIPELINE_GATE["expected_gain_factor"]  # 0.8
+    expected_loss = regime_vol * PIPELINE_GATE["expected_loss_factor"]  # 0.5 (ATR止损)
     
     # EV 公式
     ev = (winrate * (expected_gain - TRADING_COST)) - (lossrate * (expected_loss + TRADING_COST))

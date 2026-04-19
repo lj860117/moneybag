@@ -21,6 +21,8 @@ from config import (
     RISK_SINGLE_STOCK_MAX, RISK_SINGLE_FUND_MAX, RISK_INDUSTRY_MAX,
     RISK_TAKE_PROFIT, RISK_MAX_DRAWDOWN_LIMIT, RISK_REBALANCE_THRESHOLD,
     ALLOCATION_PROFILES, VALUATION_HIGH,
+    # FIX 2026-04-19 V7.2
+    DRAWDOWN_ALERT, CORRELATION_DEFAULTS,
 )
 from services.portfolio_calc import calc_holdings_from_transactions
 from services.data_layer import get_fund_nav
@@ -174,13 +176,13 @@ def calc_risk_metrics(transactions: list) -> dict:
             drawdown = (peak - current_market) / peak * 100
             if drawdown > 0:
                 result["drawdown"]["current"] = round(drawdown, 2)
-                if drawdown > 20:
+                if drawdown > DRAWDOWN_ALERT["severe_pct"]:
                     result["drawdown"]["level"] = "严重回撤"
                     result["alerts"].append({
                         "type": "drawdown", "severity": "danger",
-                        "message": f"🔴 当前回撤{drawdown:.1f}%，超过20%警戒线！检查持仓基本面是否变化"
+                        "message": f"🔴 当前回撤{drawdown:.1f}%，超过{DRAWDOWN_ALERT['severe_pct']:.0f}%警戒线！检查持仓基本面是否变化"
                     })
-                elif drawdown > 10:
+                elif drawdown > DRAWDOWN_ALERT["moderate_pct"]:
                     result["drawdown"]["level"] = "中度回撤"
                     result["alerts"].append({
                         "type": "drawdown", "severity": "warning",
@@ -202,20 +204,20 @@ def calc_risk_metrics(transactions: list) -> dict:
     has_hedge = bond_n > 0 or gold_n > 0
 
     if equity_n >= 2 and not has_hedge:
-        result["correlation"]["avg"] = 0.75
+        result["correlation"]["avg"] = CORRELATION_DEFAULTS["all_equity"]
         result["correlation"]["detail"] = f"持仓以权益类为主（股票/权益基金{equity_n}只），相关性较高，缺少避险资产对冲"
         result["alerts"].append({
             "type": "correlation", "severity": "info",
             "message": "💡 持仓权益资产占比高，建议配置债券/黄金降低组合波动"
         })
     elif bond_n > 0 and gold_n > 0:
-        result["correlation"]["avg"] = 0.35
+        result["correlation"]["avg"] = CORRELATION_DEFAULTS["stock_bond_gold"]
         result["correlation"]["detail"] = f"股债金组合（权益{equity_n}/债券{bond_n}/黄金{gold_n}），相关性适中，对冲效果良好"
     elif has_hedge:
-        result["correlation"]["avg"] = 0.45
+        result["correlation"]["avg"] = CORRELATION_DEFAULTS["with_hedge"]
         result["correlation"]["detail"] = f"含避险资产（债券{bond_n}/黄金{gold_n}），相关性中等偏低"
     else:
-        result["correlation"]["avg"] = 0.5
+        result["correlation"]["avg"] = CORRELATION_DEFAULTS["mixed"]
         result["correlation"]["detail"] = "资产类型未完全识别，相关性估算中等"
 
     return result
