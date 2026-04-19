@@ -346,3 +346,137 @@ class TestPendingApprovalLoop:
         assert mem.get_pending_insights(uid) == []
         # ironies 不应新增
         assert all("测试拒绝" not in i.get("text", "") for i in mem.get_ironies(uid))
+
+
+# =============================================================
+# V7.5 分层归档测试
+# =============================================================
+
+class TestArchival:
+    """decisions 热/冷分层 + 月度摘要"""
+
+    def test_archive_old_decisions_moves_correctly(self, mem):
+        """archive_old_decisions: 40 天前的应被移到冷区"""
+        from datetime import datetime, timedelta
+        uid = "test_arch_01"
+
+        # 加 5 条新的 + 3 条老的（手动改时间）
+        for i in range(5):
+            mem.add_decision(uid, {"action": "NEW", "summary": f"新 #{i}"})
+
+        # 直接操作文件模拟老数据
+        import json
+        hot_f = mem._user_memory_dir(uid) / "decisions.json"
+        all_d = json.loads(hot_f.read_text(encoding="utf-8"))
+        old_time = (datetime.now() - timedelta(days=40)).isoformat()
+        for i in range(3):
+            all_d.insert(0, {
+                "id": f"d_old_{i}",
+                "action": "OLD",
+                "summary": f"老 #{i}",
+                "time": old_time,
+                "result_tracked": False,
+            })
+        hot_f.write_text(json.dumps(all_d, ensure_ascii=False), encoding="utf-8")
+
+        # 归档
+        result = mem.archive_old_decisions(uid, days=30)
+        assert result["moved"] == 3, f"应移走 3 条，实际 {result['moved']}"
+        assert result["hot_remaining"] == 5
+        assert result["cold_total"] == 3
+
+        # 热区只剩新的
+        hot = mem.get_decisions(uid, limit=100)
+        assert all("新" in d.get("summary", "") for d in hot)
+
+        # 冷区有老的
+        cold = mem.get_archived_decisions(uid)
+        assert len(cold) == 3
+        assert all("老" in d.get("summary", "") for d in cold)
+
+    def test_archive_idempotent(self, mem):
+        """归档应幂等：再跑一次不会重复搬"""
+        from datetime import datetime, timedelta
+        import json
+        uid = "test_arch_02"
+        # 造一条老数据
+        mem.add_decision(uid, {"action": "OLD", "summary": "老数据"})
+        hot_f = mem._user_memory_dir(uid) / "decisions.json"
+        data = json.loads(hot_f.read_text(encoding="utf-8"))
+        data[0]["time"] = (datetime.now() - timedelta(days=60)).isoformat()
+        hot_f.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
+
+        r1 = mem.archive_old_decisions(uid)
+        r2 = mem.archive_old_decisions(uid)
+        assert r1["moved"] == 1
+        assert r2["moved"] == 0, "幂等性失败：第二次不该再移"
+        assert mem.get_archived_decisions(uid)[0]["summary"] == "老数据"
+
+    def test_summarize_archive_month_stat_fallback(self, mem):
+        """无 LLM 环境应降级到纯统计摘要"""
+        from datetime import datetime
+        import json
+        uid = "test_arch_03"
+
+        # 直接造冷区数据，跳过 LLM
+        cold_f = mem._user_memory_dir(uid) / "decisions_archive.json"
+        cold = [
+            {"id": "d1", "action": "BUY", "summary": "茅台", "time": "2026-03-05T10:00:00",
+             "result_tracked": True, "result": {"win": True}},
+            {"id": "d2", "action": "SELL", "summary": "平安", "time": "2026-03-20T10:00:00",
+             "result_tracked": True, "result": {"win": False}},
+            {"id": "d3", "action": "HOLD", "summary": "观望", "time": "2026-03-25T10:00:00"},
+        ]
+        cold_f.write_text(json.dumps(cold, ensure_ascii=False), encoding="utf-8")
+
+        # LLM 不存在就降级（真环境是 try/except 捕获）
+        r = mem.summarize_archive_month(uid, "2026-03")
+        assert r["ok"] is True
+        assert r["month"] == "2026-03"
+        assert r["total"] == 3
+        assert r["with_result"] == 2
+        # win_rate = 1/2 = 0.5
+        assert r["win_rate"] == 0.5
+        # summary 字段必有（LLM 失败会写降级文本）
+        assert r["summary"]
+
+        # 幂等：再跑一次应 skipped
+        r2 = mem.summarize_archive_month(uid, "2026-03")
+        assert r2.get("skipped") is True, "同月二次摘要必须幂等跳过"
+
+    def test_archive_summary_appears_in_memory_summary(self, mem):
+        """月度摘要应自动出现在 build_memory_summary 里"""
+        import json
+        uid = "test_arch_04"
+        # 手写一条月度摘要
+        summ_f = mem._user_memory_dir(uid) / "archive_summary.json"
+        summ_f.write_text(json.dumps([{
+            "month": "2026-03",
+            "total": 12,
+            "win_rate": 0.67,
+            "summary": "3 月以消费白酒为主，胜率 67%，坚持定投有效",
+        }], ensure_ascii=False), encoding="utf-8")
+
+        s = mem.build_memory_summary(uid)
+        assert "2026-03" in s
+        assert "3 月以消费白酒" in s
+
+    def test_track_result_works_on_cold_decisions(self, mem):
+        """已归档的决策也能补记结果（V7.5 新特性）"""
+        import json
+        uid = "test_arch_05"
+        # 直接造冷区
+        cold_f = mem._user_memory_dir(uid) / "decisions_archive.json"
+        cold_f.write_text(json.dumps([{
+            "id": "d_cold_1",
+            "action": "BUY", "summary": "老决策",
+            "time": "2026-02-01T10:00:00",
+            "result_tracked": False,
+        }], ensure_ascii=False), encoding="utf-8")
+
+        ok = mem.track_decision_result(uid, "d_cold_1", {"win": True, "pnl": 1000})
+        assert ok is True
+
+        cold = mem.get_archived_decisions(uid)
+        assert cold[0]["result_tracked"] is True
+        assert cold[0]["result"]["win"] is True

@@ -96,17 +96,49 @@ def save_preferences(user_id: str, prefs: dict) -> dict:
 
 # ============================================================
 # 2. 决策日志（自动记录每次 AI 分析结果）
+#
+# 2026-04-19 V7.5：升级为 热/冷 分层
+#   - decisions.json         （热）：近 30 天原文，进 summary
+#   - decisions_archive.json （冷）：30+ 天前原文，保留可追溯，不进 summary
+#   - archive_summary.json   （月摘要）：LLM 按月总结，少量字符注入 summary
+#
+# 老代码零改动：get_decisions/add_decision 语义不变，上限仍是 _MAX_DECISIONS
 # ============================================================
 
-_MAX_DECISIONS = 100  # 最多保留 100 条
+_MAX_DECISIONS = 100              # 热区上限（保留防洪）
+_ARCHIVE_DAYS = 30                # 超过多少天算冷数据
+_MAX_ARCHIVE_SUMMARIES = 24       # 月摘要最多保留 24 个月
 
 
 def get_decisions(user_id: str, limit: int = 20) -> list:
-    """读取决策日志（最近 N 条）"""
+    """读取决策日志（最近 N 条热区）— 行为与旧版一致"""
     f = _user_memory_dir(user_id) / "decisions.json"
     if f.exists():
         all_d = json.loads(f.read_text(encoding="utf-8"))
         return all_d[-limit:]
+    return []
+
+
+def get_archived_decisions(user_id: str, limit: int = 500) -> list:
+    """读取归档的冷决策（供追溯/回看，不进 LLM summary）"""
+    f = _user_memory_dir(user_id) / "decisions_archive.json"
+    if f.exists():
+        try:
+            data = json.loads(f.read_text(encoding="utf-8"))
+            return data[-limit:]
+        except Exception:
+            return []
+    return []
+
+
+def get_archive_summaries(user_id: str) -> list:
+    """读取按月归档的 LLM 摘要（注入 summary 的核心数据）"""
+    f = _user_memory_dir(user_id) / "archive_summary.json"
+    if f.exists():
+        try:
+            return json.loads(f.read_text(encoding="utf-8"))
+        except Exception:
+            return []
     return []
 
 
@@ -133,19 +165,160 @@ def add_decision(user_id: str, decision: dict) -> dict:
     return decision
 
 
+def archive_old_decisions(user_id: str, days: int = None) -> dict:
+    """把超过 days 天的决策从热区移到冷区归档。
+
+    返回 {moved: int, hot_remaining: int, cold_total: int}
+    这是纯数据迁移，不调 LLM；LLM 摘要由 summarize_archive_month 单独做
+    """
+    if days is None:
+        days = _ARCHIVE_DAYS
+    hot_f = _user_memory_dir(user_id) / "decisions.json"
+    cold_f = _user_memory_dir(user_id) / "decisions_archive.json"
+    if not hot_f.exists():
+        return {"moved": 0, "hot_remaining": 0, "cold_total": 0}
+
+    try:
+        hot = json.loads(hot_f.read_text(encoding="utf-8"))
+    except Exception:
+        hot = []
+
+    cold = []
+    if cold_f.exists():
+        try:
+            cold = json.loads(cold_f.read_text(encoding="utf-8"))
+        except Exception:
+            cold = []
+
+    # 切分：time 字段早于 cutoff 的移走
+    cutoff = datetime.now().timestamp() - days * 86400
+    keep, move = [], []
+    for d in hot:
+        ts_str = d.get("time", "")
+        try:
+            ts = datetime.fromisoformat(ts_str).timestamp() if ts_str else 0
+        except ValueError:
+            ts = 0
+        if ts and ts < cutoff:
+            move.append(d)
+        else:
+            keep.append(d)
+
+    if move:
+        cold.extend(move)
+        cold_f.write_text(json.dumps(cold, ensure_ascii=False, indent=2), encoding="utf-8")
+        hot_f.write_text(json.dumps(keep, ensure_ascii=False, indent=2), encoding="utf-8")
+
+    return {
+        "moved": len(move),
+        "hot_remaining": len(keep),
+        "cold_total": len(cold),
+    }
+
+
+def summarize_archive_month(user_id: str, year_month: str) -> dict:
+    """对冷区指定月份（"2026-03"）的决策做 LLM 摘要，写入 archive_summary.json。
+
+    幂等：同月已摘要过则跳过（除非 force=True，目前不提供，避免 token 浪费）
+    返回 {ok, month, total, win_rate, summary} 或 {ok:False, reason}
+    """
+    cold = get_archived_decisions(user_id, limit=10000)
+    if not cold:
+        return {"ok": False, "reason": "no_archive"}
+
+    # 筛出该月的决策
+    month_decisions = []
+    for d in cold:
+        ts = d.get("time", "")
+        if ts.startswith(year_month):
+            month_decisions.append(d)
+
+    if not month_decisions:
+        return {"ok": False, "reason": "no_data_in_month"}
+
+    # 幂等：已存在则跳过
+    existing = get_archive_summaries(user_id)
+    for s in existing:
+        if s.get("month") == year_month:
+            return {"ok": True, "month": year_month, "skipped": True}
+
+    # 统计胜率（用 result 字段，可能没有）
+    with_result = [d for d in month_decisions if d.get("result_tracked")]
+    wins = sum(1 for d in with_result if (d.get("result") or {}).get("win"))
+    win_rate = (wins / len(with_result)) if with_result else None
+
+    # 构造 LLM 输入：每条决策摘一行
+    briefs = []
+    for d in month_decisions[:80]:  # 最多 80 条，足够月度摘要
+        action = d.get("action", "")
+        summ = (d.get("summary") or "")[:60]
+        briefs.append(f"{d.get('time','')[:10]} {action}：{summ}")
+
+    system = (
+        "你是决策复盘助手。下面是用户某个月的交易/分析决策流水，"
+        "请用 80 字以内总结：主要仓位动作、教训、值得坚持的做法。"
+        "不要列表，用一句话叙述，口吻像投资顾问做季度回顾。"
+    )
+    prompt = f"月份：{year_month}，共 {len(month_decisions)} 条决策\n\n" + "\n".join(briefs)
+
+    summary_text = ""
+    try:
+        from services.llm_gateway import LLMGateway
+        result = LLMGateway.instance().call_sync(
+            prompt=prompt, system=system,
+            model_tier="llm_light",
+            user_id=user_id, module="archive_summary",
+            max_tokens=200,
+        )
+        summary_text = (result.get("content") or "").strip()
+    except Exception as e:
+        print(f"[ARCHIVE] LLM 摘要失败 {user_id}/{year_month}: {e}")
+        # 降级：不调 LLM 也给一个纯统计摘要
+        summary_text = f"{len(month_decisions)} 次决策"
+        if win_rate is not None:
+            summary_text += f"，胜率 {win_rate * 100:.0f}%"
+
+    record = {
+        "month": year_month,
+        "total": len(month_decisions),
+        "with_result": len(with_result),
+        "win_rate": win_rate,
+        "summary": summary_text[:300],
+        "created_at": datetime.now().isoformat(),
+    }
+
+    existing.append(record)
+    # 按月份排序保留最近 24 个
+    existing.sort(key=lambda x: x.get("month", ""))
+    if len(existing) > _MAX_ARCHIVE_SUMMARIES:
+        existing = existing[-_MAX_ARCHIVE_SUMMARIES:]
+
+    f = _user_memory_dir(user_id) / "archive_summary.json"
+    f.write_text(json.dumps(existing, ensure_ascii=False, indent=2), encoding="utf-8")
+
+    return {"ok": True, **record}
+
+
 def track_decision_result(user_id: str, decision_id: str, result: dict) -> bool:
-    """追踪决策结果（事后验证建议是否正确）"""
-    f = _user_memory_dir(user_id) / "decisions.json"
-    if not f.exists():
-        return False
-    all_d = json.loads(f.read_text(encoding="utf-8"))
-    for d in all_d:
-        if d.get("id") == decision_id:
-            d["result"] = result
-            d["result_tracked"] = True
-            d["result_time"] = datetime.now().isoformat()
-            f.write_text(json.dumps(all_d, ensure_ascii=False, indent=2), encoding="utf-8")
-            return True
+    """追踪决策结果（事后验证建议是否正确）
+
+    V7.5：同时查热区和冷区，让 30 天后也能补上结果
+    """
+    for fname in ("decisions.json", "decisions_archive.json"):
+        f = _user_memory_dir(user_id) / fname
+        if not f.exists():
+            continue
+        try:
+            all_d = json.loads(f.read_text(encoding="utf-8"))
+        except Exception:
+            continue
+        for d in all_d:
+            if d.get("id") == decision_id:
+                d["result"] = result
+                d["result_tracked"] = True
+                d["result_time"] = datetime.now().isoformat()
+                f.write_text(json.dumps(all_d, ensure_ascii=False, indent=2), encoding="utf-8")
+                return True
     return False
 
 
@@ -392,6 +565,23 @@ def build_memory_summary(user_id: str) -> str:
                 d_bits.append(f"{t}{action}：{summary}")
         if d_bits:
             lines.append("最近的几次分析：" + "；".join(d_bits) + "。")
+
+    # ===== 历史归档摘要（V7.5 分层压缩）=====
+    # 把近 3 个月的月度摘要融进背景，帮 AI 了解长期轨迹
+    try:
+        archive_sums = get_archive_summaries(user_id)
+        if archive_sums:
+            recent_months = archive_sums[-3:]  # 只取最近 3 个月，避免 summary 膨胀
+            arch_bits = []
+            for s in recent_months:
+                month = s.get("month", "")
+                summ = (s.get("summary") or "").strip()
+                if summ:
+                    arch_bits.append(f"{month}：{summ}")
+            if arch_bits:
+                lines.append("再早一些的交易轨迹：" + " / ".join(arch_bits))
+    except Exception as e:
+        print(f"[MEMORY] archive summary 注入失败: {e}")
 
     # ===== 自定义预警规则（简短列出，这些是规则性的，保留）=====
     rules = get_rules(user_id)
