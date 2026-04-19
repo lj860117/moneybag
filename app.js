@@ -393,11 +393,28 @@ o.innerHTML=`<div class="modal-sheet" onclick="event.stopPropagation()"><div cla
 <div class="modal-subtitle">Profile: ${_profileName} (${pid.slice(0,8)})</div>
 <div class="manual-form" style="background:transparent;padding:0;margin-top:16px">
 ${statusText}
+<div id="llmBudgetCard" style="background:rgba(99,102,241,.08);border:1px solid rgba(99,102,241,.2);border-radius:8px;padding:10px 12px;margin-bottom:12px;font-size:12px;color:var(--text2)">💰 AI 用量加载中...</div>
 <div class="form-row"><div class="form-label">企业微信账号 (用于个人推送)</div>
 <input class="form-input" type="text" id="wxworkUidInput" placeholder="如 LeiJiang" value="${wxId}">
 <div style="font-size:11px;color:var(--text2);margin-top:4px">填写你的企微账号（在企微通讯录→个人信息→账号）</div></div>
 <button class="form-submit" id="wxSaveBtn" onclick="saveProfileSettings()">💾 保存</button>
-</div></div>`;document.body.appendChild(o)}
+</div></div>`;document.body.appendChild(o);
+// V7.7.5: 异步加载 LLM 用量到 Profile 设置
+loadLLMBudgetCard();}
+
+async function loadLLMBudgetCard(){
+  const el=document.getElementById('llmBudgetCard');if(!el)return;
+  try{
+    const r=await fetch(API_BASE+'/health',{signal:AbortSignal.timeout(3000)});
+    if(!r.ok){el.innerHTML='💰 AI 用量：加载失败';return}
+    const d=await r.json();const u=d.llm_usage||{};
+    const cost=u.today_cost_rmb||0;const budget=u.daily_budget_rmb||3;
+    const pct=u.usage_pct||0;const calls=u.today_calls||0;
+    const emoji=u.status==='critical'?'🔴':u.status==='warning'?'🟡':'🟢';
+    const color=u.status==='critical'?'var(--red)':u.status==='warning'?'#F59E0B':'#10B981';
+    el.innerHTML=`<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:4px"><span>${emoji} 今日 AI 用量</span><span style="color:${color};font-weight:700">¥${cost.toFixed(3)} / ¥${budget}</span></div><div style="font-size:11px;color:var(--text2)">已调用 ${calls} 次 · 用量 ${pct}%</div>`;
+  }catch(e){el.innerHTML='💰 AI 用量：网络失败'}
+}
 
 function clearLocalCache(){
 if(!confirm('确定清除本地缓存？\\n（不会删除服务器数据，只清浏览器缓存）'))return;
