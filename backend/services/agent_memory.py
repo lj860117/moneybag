@@ -280,135 +280,142 @@ def build_memory_summary(user_id: str) -> str:
 
     2026-04-19 扩充：加入用户画像 / 情绪状态 / 长期铁律
     2026-04-19 V7.4.2：改为"隐性上下文"语气，AI 内在知道但不主动复述
+    2026-04-19 V7.4.4：去规则化重写 — 像朋友介绍，不像系统文档
     """
     lines = []
 
-    # 🔴 总原则（放最前，AI 一看就懂）
-    preamble = (
-        "【📌 使用下面这些信息的原则】\n"
-        "  ① 这是后台档案，你内在知道即可，不要在回答里复述这些事实\n"
-        "  ② 用这些信息调整你的语气、建议方向、风险提示深度，而非机械罗列\n"
-        "  ③ 只在用户情绪/场景自然匹配时，才微妙地融入相关细节\n"
-        "  ④ 回答要像真朋友而非读档案的 AI\n"
+    # 总原则：一句话说完，放最前
+    lines.append(
+        "下面是关于当前用户的背景了解，仅用于帮你更自然地回应他。"
+        "像朋友聊天一样用它，不要复述、不要引用、不要列表分点讲这些事实。"
     )
-    lines.append(preamble)
 
-    # 🆕 用户画像（最重要，放最前）
+    # ===== 用户画像（叙事化）=====
     profile = get_profile(user_id)
     if profile and profile.get("available"):
-        p_lines = ["【用户画像】"]
-        if profile.get("nickname"):
-            p_lines.append(f"  昵称：{profile['nickname']}")
+        bits = []
+        nick = profile.get("nickname") or ""
+        if nick:
+            bits.append(f"他叫{nick}")
         if profile.get("age"):
-            p_lines.append(f"  年龄：{profile['age']}岁")
+            bits.append(f"{profile['age']}岁")
         if profile.get("family"):
-            p_lines.append(f"  家庭：{profile['family']}")
+            bits.append(profile["family"])
         if profile.get("income_level"):
-            p_lines.append(f"  收入水平：{profile['income_level']}")
-        if profile.get("invest_horizon"):
-            p_lines.append(f"  投资周期：{profile['invest_horizon']}")
-        if profile.get("life_goals"):
-            p_lines.append(f"  核心目标：{', '.join(profile['life_goals'])}")
-        if profile.get("drawdown_tolerance"):
-            p_lines.append(f"  回撤容忍：{profile['drawdown_tolerance']}")
-        # 家庭情境（notes）- 隐性上下文，影响语气而非引用
-        if profile.get("notes"):
-            p_lines.append(f"\n【🔒 家庭情境（理解用户背景用，不要在回答中复述这些事实）】\n  {profile['notes']}")
-        if len(p_lines) > 1:
-            lines.extend(p_lines)
+            bits.append(profile["income_level"])
+        if bits:
+            lines.append("\n" + "，".join(bits) + "。")
 
-    # 🆕 未来 30 天内的生活事件（隐性上下文，AI 内在知道但不主动提）
+        tail = []
+        if profile.get("invest_horizon"):
+            tail.append(f"投资周期{profile['invest_horizon']}")
+        if profile.get("drawdown_tolerance"):
+            tail.append(f"回撤容忍度{profile['drawdown_tolerance']}")
+        if profile.get("life_goals"):
+            tail.append(f"最在意{', '.join(profile['life_goals'])}")
+        if tail:
+            lines.append("，".join(tail) + "。")
+
+        # 家庭情境：自然叙述，不要标题
+        if profile.get("notes"):
+            lines.append(f"\n{profile['notes']}")
+
+    # ===== 近期生活事件（纯背景，不要列表）=====
     try:
         upcoming = get_upcoming_events(user_id, days_ahead=30, for_user=user_id)
         if upcoming:
-            lines.append("\n【🔒 隐性上下文（你内在知道，但不主动提及，仅在用户情绪/场景自然匹配时融入）】")
+            evt_lines = []
             for evt in upcoming[:5]:
                 days = evt["days_until"]
-                label = "今天" if days == 0 else f"{days} 天后"
-                years = f"（{evt['years_passed']}周年）" if evt.get("years_passed") else ""
-                lunar_tag = "[农历]" if evt.get("is_lunar") else ""
-                lines.append(f"  {label}（{evt['upcoming_date']}）{lunar_tag}{evt['title']}{years}")
+                label = "今天" if days == 0 else f"{days}天后"
+                years = f"{evt['years_passed']}周年" if evt.get("years_passed") else ""
+                phrase = f"{label}是{evt['title']}"
+                if years:
+                    phrase += f"（{years}）"
+                evt_lines.append(phrase)
             lines.append(
-                "  ⚠️ 使用原则：\n"
-                "    ① 不要机械地在回答末尾加 '提醒：X 天后是 Y' 这种规则化内容\n"
-                "    ② 只在用户表现出相关情绪/场景时（压力大/想冒险/问家庭/问教育/问孩子/状态低落）自然地提及\n"
-                "    ③ 提及时措辞要自然温暖，像朋友而非机器人\n"
-                "    ④ 大部分对话不提这些事，让用户感到'被理解'而非'被监视'")
+                "\n日程上近期有这些事：" + "，".join(evt_lines) + "。"
+                "除非他主动聊到相关话题或情绪需要安抚，"
+                "否则不要提起这些日期；提及时语气要自然，像关心他的朋友。"
+            )
     except Exception as e:
         print(f"[MEMORY] life_events 失败: {e}")
 
-    # 用户偏好
+    # ===== 他的投资风格（融合 preferences + ironies）=====
     prefs = get_preferences(user_id)
-    if prefs.get("risk_profile"):
-        lines.append(f"【投资偏好】风险类型：{prefs['risk_profile']}")
-    if prefs.get("focus_industries"):
-        lines.append(f"  关注行业：{', '.join(prefs['focus_industries'])}")
-    if prefs.get("exclude_stocks"):
-        lines.append(f"  排除标的：{', '.join(prefs['exclude_stocks'])}")
-    if prefs.get("notes"):
-        lines.append(f"  备注：{prefs['notes']}")
-
-    # 🆕 长期铁律（用户告诉过 AI 的不可违反事实）
     ironies = get_ironies(user_id)
+
+    style_bits = []
+    if prefs.get("risk_profile"):
+        style_bits.append(f"风格偏{prefs['risk_profile']}")
+    if prefs.get("focus_industries"):
+        style_bits.append(f"关注{', '.join(prefs['focus_industries'])}")
+    if prefs.get("exclude_stocks"):
+        style_bits.append(f"不碰{', '.join(prefs['exclude_stocks'])}")
+    if style_bits:
+        lines.append("\n投资上，他" + "，".join(style_bits) + "。")
+    if prefs.get("notes"):
+        lines.append(prefs["notes"])
+
+    # 把铁律融成叙述
     if ironies:
-        lines.append("\n【长期铁律（用户明确告诉过我的事）】")
-        for i, iron in enumerate(ironies[:6], 1):
-            txt = iron.get("text", "")[:80]
-            lines.append(f"  {i}. {txt}")
+        iron_texts = [i.get("text", "").strip() for i in ironies[:8] if i.get("text")]
+        iron_texts = [t for t in iron_texts if t]
+        if iron_texts:
+            lines.append(
+                "\n他明确告诉过你的几件事（当成他本人的原则来尊重）：\n"
+                + "；\n".join(iron_texts) + "。"
+            )
 
-    # 🆕 最近情绪状态
+    # ===== 当前心理状态（给 AI 一个语气调节的暗示）=====
     emotion = get_emotion_summary(user_id)
-    if emotion and emotion.get("dominant"):
-        lines.append(f"\n【最近状态】{emotion['dominant']}（近 {emotion['sample_size']} 次提问）")
-        if emotion.get("hint"):
-            lines.append(f"  💡 建议语气：{emotion['hint']}")
+    if emotion and emotion.get("dominant") and emotion.get("dominant") != "neutral":
+        tone_hint = emotion.get("hint", "")
+        lines.append(
+            f"\n他最近几次聊天偏{emotion['dominant']}的状态，"
+            + (f"回应时可以{tone_hint}。" if tone_hint else "回应时注意语气匹配。")
+        )
 
-    # 最近 3 条决策
-    decisions = get_decisions(user_id, limit=3)
+    # ===== 上次结论 + 决策（简短融入）=====
+    ctx = get_context(user_id)
+    if ctx.get("last_analysis"):
+        lines.append(f"\n上次和他聊的结论大概是：{ctx['last_analysis'][:150]}")
+
+    decisions = get_decisions(user_id, limit=2)
     if decisions:
-        lines.append("\n【近期决策记录】")
+        d_bits = []
         for d in decisions:
-            action = d.get("action", "分析")
-            summary = d.get("summary", "")[:80]
+            action = d.get("action", "")
+            summary = d.get("summary", "")[:60]
             t = d.get("time", "")[:10]
-            tracked = "→ 结果：" + d["result"].get("summary", "")[:40] if d.get("result_tracked") and d.get("result") else ""
-            lines.append(f"  {t} {action}：{summary} {tracked}")
+            if summary:
+                d_bits.append(f"{t}{action}：{summary}")
+        if d_bits:
+            lines.append("最近的几次分析：" + "；".join(d_bits) + "。")
 
-    # 自定义规则
+    # ===== 自定义预警规则（简短列出，这些是规则性的，保留）=====
     rules = get_rules(user_id)
     active_rules = [r for r in rules if r.get("active")]
     if active_rules:
-        lines.append("\n【自定义预警规则】")
-        for r in active_rules[:5]:
-            lines.append(f"  - {r.get('description', r.get('type', ''))}")
+        rule_descs = [r.get("description", r.get("type", "")) for r in active_rules[:5] if r.get("description") or r.get("type")]
+        if rule_descs:
+            lines.append("\n他设了这几条提醒：" + "；".join(rule_descs) + "。")
 
-    # 上次结论
-    ctx = get_context(user_id)
-    if ctx.get("last_analysis"):
-        lines.append(f"\n【上次分析结论】{ctx['last_analysis'][:200]}")
-    if ctx.get("market_phase"):
-        lines.append(f"  市场阶段判断：{ctx['market_phase']}")
-
-    # 🆕 V7.4.3: 家庭成员账号额外获取主账号的"以家人视角交底"
-    # 即：老婆用 AI 时，能看到丈夫对 AI 说过的铁律/备注（但不暴露来源）
+    # ===== V7.4.4: 家庭成员账号补充"另一半的理解"（隐性注入，无标题）=====
     if user_id != FAMILY_ADMIN and user_id in _FAMILY_MEMBERS:
         try:
             admin_ironies = get_ironies(FAMILY_ADMIN)
-            # 过滤标记为"仅自用"的铁律（source 为 self_only 不传递）
             shareable = [i for i in admin_ironies if i.get("source") != "self_only"]
             if shareable:
-                lines.append(
-                    "\n【🔒 家庭共识（家人替对方对 AI 交底过的原则，仅供你内化判断，不复述不暴露来源）】"
-                )
-                for i, iron in enumerate(shareable[:6], 1):
-                    txt = iron.get("text", "")[:80]
-                    lines.append(f"  {i}. {txt}")
-                lines.append(
-                    "  ⚠️ 使用原则：\n"
-                    "    ① 这些是家里另一位成员的交底，不要说 '你丈夫说过...' 或 '有人告诉我...'\n"
-                    "    ② 用它调整建议方向和风控深度，像你自己的判断一样输出\n"
-                    "    ③ 如果冲突，优先以本用户本轮对话表达的意愿为主"
-                )
+                admin_texts = [i.get("text", "").strip() for i in shareable[:8] if i.get("text")]
+                admin_texts = [t for t in admin_texts if t]
+                if admin_texts:
+                    # 改成极其自然的背景陈述，不提来源，不列表，不标题
+                    lines.append(
+                        "\n补充几条你背景里应该了解的家庭财务共识（当作你对这家人的整体了解，"
+                        "不要分点列出，不要提及来源，和她当下的表达冲突时以她为准）：\n"
+                        + "；".join(admin_texts) + "。"
+                    )
         except Exception as e:
             print(f"[MEMORY] 家庭共识注入失败: {e}")
 
