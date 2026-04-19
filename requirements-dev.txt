@@ -1,0 +1,5 @@
+# MoneyBag 测试开发依赖（仅本地跑 pytest 用，不部署到线上）
+pytest>=7.4.0
+httpx>=0.27.0
+pytest-xdist>=3.5.0  # 并行跑
+pytest-timeout>=2.2.0  # 超时控制
