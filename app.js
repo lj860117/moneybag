@@ -4791,3 +4791,188 @@ el.innerHTML=html}catch(e){el.innerHTML='<div style="padding:20px;color:var(--be
     showTermPopup: showTermPopup
   };
 })();
+
+/* ============================================================
+   V7.3 用户画像 + 铁律（2026-04-19）
+   触发方式：点击顶部 profileHeader 的用户名
+   ============================================================ */
+(function() {
+  function _uid() {
+    try { return (window.getProfileId && window.getProfileId()) || localStorage.getItem('moneybag_profile_name') || 'default'; } catch(e) { return 'default'; }
+  }
+
+  async function openProfileEditor() {
+    const uid = _uid();
+    // 拉现有画像 + 铁律
+    let profile = {}, ironies = [];
+    try {
+      const [r1, r2] = await Promise.all([
+        fetch(window.API_BASE + '/agent/profile/' + encodeURIComponent(uid)).then(r => r.json()),
+        fetch(window.API_BASE + '/agent/ironies/' + encodeURIComponent(uid)).then(r => r.json())
+      ]);
+      profile = r1 || {};
+      ironies = (r2 && r2.ironies) || [];
+    } catch(e) { console.warn('load profile failed', e); }
+
+    const existing = document.getElementById('profileEditorModal');
+    if (existing) existing.remove();
+
+    const modal = document.createElement('div');
+    modal.id = 'profileEditorModal';
+    modal.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.75);z-index:10000;display:flex;align-items:flex-start;justify-content:center;overflow-y:auto;padding:20px 0';
+
+    const familyOpts = ['单身', '已婚无娃', '已婚有娃-1个', '已婚有娃-2+个', '空巢/退休'];
+    const incomeOpts = ['月薪1万以下', '月薪1-3万', '月薪3-5万', '月薪5万以上'];
+    const horizonOpts = ['短期<1年', '中期1-3年', '长期3-10年', '养老10年+'];
+    const toleranceOpts = ['-5%就难受', '-10%可接受', '-20%也能扛', '深度回撤无所谓'];
+    const goalOpts = ['买房', '养老', '育儿教育', '改善生活', '财务自由'];
+
+    const mkSelect = (name, opts, current) => {
+      const opt = opts.map(o => `<option value="${o}" ${current===o?'selected':''}>${o}</option>`).join('');
+      return `<select id="pf_${name}" style="width:100%;box-sizing:border-box;padding:10px;border-radius:8px;border:1px solid var(--bg3,#334155);background:var(--bg,#0f172a);color:var(--text,#f1f5f9);font-size:14px"><option value="">—未设置—</option>${opt}</select>`;
+    };
+    const mkGoalCheckbox = (current) => {
+      const cur = current || [];
+      return goalOpts.map(g =>
+        `<label style="display:inline-flex;align-items:center;margin:4px 8px 4px 0;font-size:13px;cursor:pointer"><input type="checkbox" class="pf_goal" value="${g}" ${cur.includes(g)?'checked':''} style="margin-right:4px">${g}</label>`
+      ).join('');
+    };
+
+    const ironiesList = ironies.length
+      ? ironies.map(i => `<div style="display:flex;align-items:flex-start;gap:8px;padding:8px;background:var(--bg2,#1e293b);border-radius:6px;margin-bottom:6px">
+          <div style="flex:1;font-size:13px;color:var(--text,#f1f5f9);line-height:1.5">${i.text.replace(/</g,'&lt;')}</div>
+          <button onclick="window._removeIrony('${i.id}')" style="background:none;border:none;color:#ef4444;cursor:pointer;font-size:14px">×</button>
+        </div>`).join('')
+      : '<div style="color:var(--text2,#94a3b8);font-size:12px;padding:8px">还没有铁律。告诉 AI 你的原则（如"不买医药"、"每月至少定投 3000"）会让它更懂你</div>';
+
+    modal.innerHTML = `
+      <div style="background:var(--bg2,#1e293b);padding:20px;border-radius:12px;max-width:500px;width:90%;max-height:calc(100vh - 40px);overflow-y:auto;position:relative">
+        <button onclick="document.getElementById('profileEditorModal').remove()" style="position:absolute;top:12px;right:12px;background:none;border:none;color:var(--text2,#94a3b8);font-size:20px;cursor:pointer">×</button>
+        <h3 style="margin:0 0 4px;color:var(--accent,#F59E0B)">🧑 我的画像</h3>
+        <p style="color:var(--text2,#94a3b8);font-size:12px;margin:0 0 16px">填写越完整，AI 理解你越准</p>
+
+        <div style="margin-bottom:12px"><label style="font-size:13px;color:var(--text2,#94a3b8);display:block;margin-bottom:4px">昵称</label>
+          <input id="pf_nickname" type="text" value="${(profile.nickname||'').replace(/"/g,'&quot;')}" placeholder="怎么称呼你" style="width:100%;box-sizing:border-box;padding:10px;border-radius:8px;border:1px solid var(--bg3,#334155);background:var(--bg,#0f172a);color:var(--text,#f1f5f9);font-size:14px"></div>
+
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:12px">
+          <div><label style="font-size:13px;color:var(--text2,#94a3b8);display:block;margin-bottom:4px">年龄</label>
+            <input id="pf_age" type="number" value="${profile.age||''}" placeholder="如 32" min="16" max="99" style="width:100%;box-sizing:border-box;padding:10px;border-radius:8px;border:1px solid var(--bg3,#334155);background:var(--bg,#0f172a);color:var(--text,#f1f5f9);font-size:14px"></div>
+          <div><label style="font-size:13px;color:var(--text2,#94a3b8);display:block;margin-bottom:4px">家庭</label>
+            ${mkSelect('family', familyOpts, profile.family)}</div>
+        </div>
+
+        <div style="margin-bottom:12px"><label style="font-size:13px;color:var(--text2,#94a3b8);display:block;margin-bottom:4px">收入水平</label>
+          ${mkSelect('income_level', incomeOpts, profile.income_level)}</div>
+
+        <div style="margin-bottom:12px"><label style="font-size:13px;color:var(--text2,#94a3b8);display:block;margin-bottom:4px">投资周期</label>
+          ${mkSelect('invest_horizon', horizonOpts, profile.invest_horizon)}</div>
+
+        <div style="margin-bottom:12px"><label style="font-size:13px;color:var(--text2,#94a3b8);display:block;margin-bottom:4px">回撤容忍</label>
+          ${mkSelect('drawdown_tolerance', toleranceOpts, profile.drawdown_tolerance)}</div>
+
+        <div style="margin-bottom:12px"><label style="font-size:13px;color:var(--text2,#94a3b8);display:block;margin-bottom:4px">核心目标（可多选）</label>
+          <div style="padding:6px;background:var(--bg,#0f172a);border-radius:8px">${mkGoalCheckbox(profile.life_goals)}</div></div>
+
+        <div style="margin-bottom:16px"><label style="font-size:13px;color:var(--text2,#94a3b8);display:block;margin-bottom:4px">补充说明（可选）</label>
+          <textarea id="pf_notes" rows="2" placeholder="任何想让 AI 知道的信息" style="width:100%;box-sizing:border-box;padding:10px;border-radius:8px;border:1px solid var(--bg3,#334155);background:var(--bg,#0f172a);color:var(--text,#f1f5f9);font-size:14px;resize:vertical;font-family:inherit">${(profile.notes||'').replace(/</g,'&lt;')}</textarea></div>
+
+        <div style="border-top:1px solid var(--bg3,#334155);padding-top:14px;margin-bottom:12px">
+          <h4 style="margin:0 0 6px;font-size:14px;color:var(--accent,#F59E0B)">🔒 长期铁律</h4>
+          <p style="font-size:12px;color:var(--text2,#94a3b8);margin:0 0 10px">告诉 AI 哪些原则不可违反，比如"别推荐医药"、"每月定投 5000"</p>
+          <div id="ironiesList" style="margin-bottom:8px">${ironiesList}</div>
+          <div style="display:flex;gap:6px">
+            <input id="newIronyInput" type="text" placeholder="输入一条铁律..." style="flex:1;padding:8px;border-radius:6px;border:1px solid var(--bg3,#334155);background:var(--bg,#0f172a);color:var(--text,#f1f5f9);font-size:13px">
+            <button onclick="window._addIrony()" style="padding:8px 12px;background:var(--accent,#F59E0B);color:#000;border:none;border-radius:6px;cursor:pointer;font-size:13px;font-weight:600">添加</button>
+          </div>
+        </div>
+
+        <button onclick="window._saveProfile()" style="width:100%;padding:12px;border-radius:8px;border:none;background:var(--accent,#F59E0B);color:#000;font-size:15px;font-weight:700;cursor:pointer">💾 保存画像</button>
+      </div>`;
+
+    document.body.appendChild(modal);
+  }
+
+  window._saveProfile = async function() {
+    const uid = _uid();
+    const body = {
+      userId: uid,
+      nickname: (document.getElementById('pf_nickname')||{}).value || '',
+      age: parseInt((document.getElementById('pf_age')||{}).value) || null,
+      family: (document.getElementById('pf_family')||{}).value || '',
+      income_level: (document.getElementById('pf_income_level')||{}).value || '',
+      invest_horizon: (document.getElementById('pf_invest_horizon')||{}).value || '',
+      drawdown_tolerance: (document.getElementById('pf_drawdown_tolerance')||{}).value || '',
+      life_goals: Array.from(document.querySelectorAll('.pf_goal:checked')).map(e => e.value),
+      notes: (document.getElementById('pf_notes')||{}).value || '',
+    };
+    try {
+      const r = await fetch(window.API_BASE + '/agent/profile', {
+        method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify(body)
+      });
+      if (r.ok) {
+        const el = document.getElementById('profileEditorModal');
+        if (el) el.remove();
+        if (window.showTermPopup) {
+          // 借用已有的 popup 做 toast
+          alert('✅ 画像已保存，AI 会立刻开始用它');
+        } else {
+          alert('✅ 画像已保存');
+        }
+      } else {
+        alert('❌ 保存失败：' + r.status);
+      }
+    } catch(e) {
+      alert('❌ 保存失败：' + e.message);
+    }
+  };
+
+  window._addIrony = async function() {
+    const uid = _uid();
+    const input = document.getElementById('newIronyInput');
+    if (!input) return;
+    const text = input.value.trim();
+    if (!text) return;
+    try {
+      const r = await fetch(window.API_BASE + '/agent/ironies', {
+        method: 'POST', headers: {'Content-Type':'application/json'},
+        body: JSON.stringify({userId: uid, text, source: 'manual'})
+      });
+      if (r.ok) {
+        input.value = '';
+        openProfileEditor(); // 重开以刷新列表
+      }
+    } catch(e) { alert('添加失败: ' + e.message); }
+  };
+
+  window._removeIrony = async function(iron_id) {
+    const uid = _uid();
+    if (!confirm('确定删除这条铁律？')) return;
+    try {
+      const r = await fetch(window.API_BASE + '/agent/ironies/' + encodeURIComponent(uid) + '/' + encodeURIComponent(iron_id), {method:'DELETE'});
+      if (r.ok) openProfileEditor();
+    } catch(e) { alert('删除失败: ' + e.message); }
+  };
+
+  // 暴露给全局 + 给 profileHeader 绑定点击
+  window.openProfileEditor = openProfileEditor;
+
+  // 等 profileHeader 渲染后挂载点击事件
+  const attachClick = () => {
+    const hdr = document.getElementById('profileHeader');
+    if (!hdr) return setTimeout(attachClick, 500);
+    // 防止重复绑定
+    if (hdr.dataset._profileEditorBound) return;
+    hdr.dataset._profileEditorBound = '1';
+    hdr.style.cursor = 'pointer';
+    hdr.title = '点击编辑我的画像';
+    hdr.addEventListener('click', (e) => {
+      // 只在点击用户名区域（左半边）时触发，避免干扰其他点击
+      const rect = hdr.getBoundingClientRect();
+      if (e.clientX - rect.left < rect.width * 0.6) {
+        openProfileEditor();
+      }
+    });
+    console.log('[V7.3] profileHeader 点击已绑定 → 我的画像');
+  };
+  setTimeout(attachClick, 800);
+})();

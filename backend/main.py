@@ -2124,7 +2124,9 @@ async def chat_analysis(req: ChatRequest):
     # 多用户记忆注入（B1修复：get_memory_summary→build_memory_summary）
     if req.userId:
         try:
-            from services.agent_memory import build_memory_summary
+            from services.agent_memory import build_memory_summary, record_emotion
+            # 2026-04-19 M6: 先记录本次情绪，再 build（这样当前情绪会影响下次的 summary）
+            record_emotion(req.userId, user_msg)
             mem = build_memory_summary(req.userId)
             if mem:
                 portfolio_ctx += f"\n\n## 用户记忆\n{mem}"
@@ -2227,7 +2229,9 @@ async def chat_analysis_stream(req: ChatRequest):
     # 多用户记忆注入
     if req.userId:
         try:
-            from services.agent_memory import build_memory_summary
+            from services.agent_memory import build_memory_summary, record_emotion
+            # 2026-04-19 M6: 同步记录情绪
+            record_emotion(req.userId, user_msg)
             mem = build_memory_summary(req.userId)
             if mem:
                 portfolio_ctx += f"\n\n## 用户记忆\n{mem}"
@@ -3476,14 +3480,20 @@ def create_backup():
 from services.agent_memory import (
     get_preferences, save_preferences, get_decisions, add_decision,
     get_rules, add_rule, remove_rule, get_context, build_memory_summary,
+    # 2026-04-19 新增：画像/情绪/铁律
+    get_profile, save_profile, get_emotion_summary, record_emotion,
+    get_ironies, add_irony, remove_irony,
 )
 from services.agent_engine import run_analysis_cycle, save_signal_file
 
 @app.get("/api/agent/memory/{user_id}")
 def get_agent_memory(user_id: str):
-    """获取用户记忆摘要"""
+    """获取用户记忆摘要（含画像/情绪/铁律）"""
     return {
         "preferences": get_preferences(user_id),
+        "profile": get_profile(user_id),
+        "emotion": get_emotion_summary(user_id),
+        "ironies": get_ironies(user_id),
         "decisions": get_decisions(user_id, limit=10),
         "rules": get_rules(user_id),
         "context": get_context(user_id),
@@ -3510,6 +3520,52 @@ def add_agent_rule(req: dict):
 def delete_agent_rule(user_id: str, rule_id: str):
     """删除自定义规则"""
     return {"ok": remove_rule(user_id, rule_id)}
+
+# ========== 2026-04-19 新增：画像 / 铁律 / 情绪 ==========
+
+@app.get("/api/agent/profile/{user_id}")
+def api_get_profile(user_id: str):
+    """读用户画像"""
+    return get_profile(user_id)
+
+
+@app.post("/api/agent/profile")
+def api_save_profile(req: dict):
+    """保存用户画像（增量合并）"""
+    user_id = req.pop("userId", "")
+    if not user_id:
+        raise HTTPException(400, "userId required")
+    return save_profile(user_id, req)
+
+
+@app.get("/api/agent/ironies/{user_id}")
+def api_get_ironies(user_id: str):
+    """读用户铁律列表"""
+    return {"ironies": get_ironies(user_id)}
+
+
+@app.post("/api/agent/ironies")
+def api_add_irony(req: dict):
+    """添加铁律（user 告诉过 AI 的不可违反事实）"""
+    user_id = req.get("userId", "")
+    text = req.get("text", "").strip()
+    source = req.get("source", "manual")
+    if not user_id or not text:
+        raise HTTPException(400, "userId and text required")
+    return add_irony(user_id, text, source=source)
+
+
+@app.delete("/api/agent/ironies/{user_id}/{iron_id}")
+def api_remove_irony(user_id: str, iron_id: str):
+    """删除铁律"""
+    return {"ok": remove_irony(user_id, iron_id)}
+
+
+@app.get("/api/agent/emotion/{user_id}")
+def api_get_emotion(user_id: str):
+    """读用户情绪摘要"""
+    return get_emotion_summary(user_id) or {"dominant": None, "sample_size": 0}
+
 
 @app.post("/api/agent/analyze")
 async def agent_analyze(req: dict):

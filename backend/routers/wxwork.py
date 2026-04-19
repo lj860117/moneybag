@@ -123,7 +123,9 @@ async def callback_receive(
             # 注入用户记忆（B1修复：get_memory_summary→build_memory_summary）
             if user_id:
                 try:
-                    from services.agent_memory import build_memory_summary
+                    from services.agent_memory import build_memory_summary, record_emotion
+                    # 2026-04-19 M6: 记录本次情绪
+                    record_emotion(user_id, content)
                     mem = build_memory_summary(user_id)
                     if mem:
                         portfolio_ctx += f"\n\n## 用户记忆\n{mem}"
