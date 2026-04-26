@@ -6,7 +6,7 @@
 ---
 
 ## 当前阶段
-M1 W3 — 统一缓存层（✅ 全部完成，47 处散装缓存 → infra/cache.MemoryCache）
+M1 W3 — 统一缓存层 + infra/data_source 五分法（✅ 全部完成）
 
 ## 已完成
 - [x] 2026-04-25: 四层目录树（api/ use_cases/ domain/ infra/）
@@ -64,6 +64,17 @@ M1 W3 — 统一缓存层（✅ 全部完成，47 处散装缓存 → infra/cach
   - 修复 fund_screen.py 跨模块共享 _fund_rank_cache→改为独立 _fund_screen_cache
   - 28 个 M1 骨架测试全绿 ✅
   - `grep -rn 'cache\s*=\s*{}' backend/services/` 输出为空 ✅（不变式 #4 达成）
+- [x] 2026-04-26: **M1 W3 infra/data_source 五分法完成：消除不变式 #6 违反（数据源越界）**
+  - 创建 6 个五分法 bucket 包：market/ fundamental/ macro/ alt/ synthetic/ providers/
+  - 创建 fallback.py 占位（M1 W4 实现三级降级链）
+  - market/ 实现 search_funds()：基金搜索，委托 fund_monitor._load_fund_names() + 降级 fund_rank
+  - alt/ 实现 get_stock_news()：个股新闻，委托 news_data.get_stock_news_by_code()
+  - infra/data_source/__init__.py 门面导出 get_stock_news + search_funds
+  - 修复 api/chat.py：akshare.stock_news_em 直调 → infra.data_source.get_stock_news
+  - 修复 api/news.py：akshare.fund_name_em 直调 → infra.data_source.search_funds（含降级逻辑迁移）
+  - 新增 9 个测试（6 bucket importable + facade exports + fallback module + AST 不变式 #6 检查）
+  - `grep -rn 'import akshare' backend/api/` 输出为空 ✅（不变式 #6 api 层达成）
+  - 37 个 M1 骨架测试全绿 ✅
 
 ## 进行中
 - 无
@@ -72,9 +83,9 @@ M1 W3 — 统一缓存层（✅ 全部完成，47 处散装缓存 → infra/cach
 - 无
 
 ## 下次会话计划
-- M1 W3: infra/data_source 五分法 — 数据源按 market/fundamental/macro/alt 分桶
 - M1 W4: 配 import-linter + mypy CI（方案 C 落地）
 - M1 W4: main.py 行数上限 linter（CI 红线 200 行）
+- M1 W4: infra/data_source/providers/ 实现（Tushare/AKShare/baostock 适配 + 三级降级链）
 
 ---
 
@@ -170,4 +181,23 @@ M1 W3 — 统一缓存层（✅ 全部完成，47 处散装缓存 → infra/cach
   - 🟢 确认无影响：所有缓存 key 和 TTL 保持不变
   - 🟢 确认无影响：API URL 路径不变，前端零改动
   - 🟡 建议评估：services/llm_gateway.py 内部磁盘缓存持久化逻辑（用了 MemoryCache._data 内部结构）
+  - 🟡 建议评估：api/chat.py httpx 直调（不变式 3 违反，待 W4 修复）
+
+**会话 7**（M1 W3 下半 — infra/data_source 五分法）
+- 任务：创建 infra/data_source 五分法分桶接口，消除不变式 #6 违反（api 层数据源越界）
+- 产出：
+  - 8 个新文件：6 个 bucket 包（market/fundamental/macro/alt/synthetic/providers）+ fallback.py + 更新 __init__.py
+  - market/search_funds()：基金搜索，委托 fund_monitor + 降级 fund_rank，完整逻辑从 api/news.py 迁入
+  - alt/get_stock_news()：个股新闻，委托 news_data.get_stock_news_by_code()
+  - 修复 api/chat.py（line 176）：akshare.stock_news_em 直调 → infra.data_source.get_stock_news
+  - 修复 api/news.py（line 149）：akshare.fund_name_em 直调 → infra.data_source.search_funds
+  - 新增 9 个测试（37 总数）：bucket importable ×6 + facade exports + fallback module + AST 不变式 #6 检查
+  - api 层 akshare/tushare 直调：2 → 0（不变式 #6 api 层达成）
+  - 37/37 骨架测试全绿
+- 状态：✅ 完成
+- 影响面：
+  - 🟢 确认无影响：tests/test_skeleton_m1.py 37/37 通过
+  - 🟢 确认无影响：API URL 路径不变，前端零改动
+  - 🟢 确认无影响：数据返回格式不变（chat 新闻注入格式 / fund search 返回结构）
+  - 🟡 建议评估：services/ 层仍有 30+ 文件直调 akshare（绞杀者模式，M1 W4 scope）
   - 🟡 建议评估：api/chat.py httpx 直调（不变式 3 违反，待 W4 修复）
