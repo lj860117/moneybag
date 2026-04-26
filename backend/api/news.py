@@ -144,42 +144,13 @@ def search_fund(q: str = ""):
     if cached is not None:
         return {"results": cached}
 
-    results = []
+    # 基金搜索 — via infra/data_source (Invariant #6)
     try:
-        import akshare as ak
-        df = ak.fund_name_em()
-        if df is not None and len(df) > 0:
-            code_col = [c for c in df.columns if "代码" in c or "code" in c.lower()]
-            name_col = [c for c in df.columns if "名称" in c or "简称" in c or "name" in c.lower()]
-            type_col = [c for c in df.columns if "类型" in c or "type" in c.lower()]
-
-            if code_col and name_col:
-                cc, nc = code_col[0], name_col[0]
-                tc = type_col[0] if type_col else None
-                mask = df[cc].astype(str).str.contains(q) | df[nc].astype(str).str.contains(q, case=False)
-                matched = df[mask].head(20)
-                for _, row in matched.iterrows():
-                    results.append({
-                        "code": str(row[cc]),
-                        "name": str(row[nc]),
-                        "type": str(row[tc]) if tc else "",
-                    })
+        from infra.data_source import search_funds
+        results = search_funds(q, limit=20)
     except Exception as e:
         print(f"[FUND_SEARCH] {e}")
-        # 降级：用本地缓存搜
-        try:
-            from services.data_layer import _load_fund_rank_data
-            rank_data = _load_fund_rank_data()
-            if rank_data:
-                for item in rank_data:
-                    code = item.get("code", "")
-                    name = item.get("name", "")
-                    if q in code or q.lower() in name.lower():
-                        results.append({"code": code, "name": name, "type": item.get("type", "")})
-                    if len(results) >= 20:
-                        break
-        except Exception:
-            pass
+        results = []
 
     if results:
         nav_cache.set(cache_key, results, ttl=86400)

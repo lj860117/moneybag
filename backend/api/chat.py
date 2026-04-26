@@ -172,16 +172,13 @@ async def chat_analysis_stream(req: ChatRequest):
         fund_name, fund_code = _extract_fund_name(user_msg)
 
         if stock_code:
-            # 个股新闻
-            import akshare as ak
-            df = ak.stock_news_em(symbol=stock_code)
-            if df is not None and len(df) > 0:
-                title_col = [c for c in df.columns if "标题" in c or "title" in c.lower() or "新闻" in c]
-                if title_col:
-                    titles = df[title_col[0]].head(8).tolist()
-                    news_text = "\n".join([f"- {t}" for t in titles])
-                    market_ctx += f"\n\n## {stock_name}({stock_code})最新新闻\n{news_text}"
-                    print(f"[CHAT] 注入 {stock_name} 个股新闻 {len(titles)} 条")
+            # 个股新闻 — via infra/data_source (Invariant #6)
+            from infra.data_source import get_stock_news
+            news = get_stock_news(stock_code, limit=8)
+            if news:
+                news_text = "\n".join([f"- {n['title']}" for n in news])
+                market_ctx += f"\n\n## {stock_name}({stock_code})最新新闻\n{news_text}"
+                print(f"[CHAT] 注入 {stock_name} 个股新闻 {len(news)} 条")
         elif fund_code and fund_code != "余额宝":
             # 基金新闻
             from services.data_layer import get_fund_news
