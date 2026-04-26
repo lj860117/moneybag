@@ -39,7 +39,7 @@ _AGENT_ID = os.getenv("WXWORK_AGENT_ID", "")
 _USER_ID = os.getenv("WXWORK_USER_ID", "@all")
 
 # access_token 缓存（2 小时有效）
-_token_cache = {"token": "", "expires": 0}
+_token_cache = {}  # {"wxwork_token": {"data": {"token": str, "expires": int}, "ts": float}}
 
 
 def is_configured() -> bool:

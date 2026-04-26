@@ -19,16 +19,18 @@ MODULE_META = {
 import time
 from datetime import datetime, timedelta
 from config import NEWS_CACHE_TTL
+from infra.cache import MemoryCache
 
-_news_cache = {}
+_news_cache = MemoryCache(default_ttl=NEWS_CACHE_TTL)
 
 
 def get_fund_news(code: str, limit: int = 3) -> list:
     """获取基金/市场相关新闻"""
     cache_key = f"news_{code}"
     now = time.time()
-    if cache_key in _news_cache and now - _news_cache[cache_key]["ts"] < NEWS_CACHE_TTL:
-        return _news_cache[cache_key]["data"]
+    cached = _news_cache.get(cache_key)
+    if cached is not None:
+        return cached
 
     # 基金代码到关键词映射
     keyword_map = {
@@ -83,7 +85,7 @@ def get_fund_news(code: str, limit: int = 3) -> list:
     if not news_list:
         news_list = [{"title": f"{keyword}市场动态获取中...", "time": "", "source": "系统"}]
 
-    _news_cache[cache_key] = {"data": news_list, "ts": now}
+    _news_cache.set(cache_key, news_list)
     return news_list
 
 
@@ -91,8 +93,9 @@ def get_market_news(limit: int = 30) -> list:
     """获取综合市场新闻（优先 A 股相关，过滤无用信息）"""
     cache_key = "market_news_all"
     now = time.time()
-    if cache_key in _news_cache and now - _news_cache[cache_key]["ts"] < NEWS_CACHE_TTL:
-        return _news_cache[cache_key]["data"]
+    cached = _news_cache.get(cache_key)
+    if cached is not None:
+        return cached
 
     # 标题中包含这些词的直接排除
     EXCLUDE_KEYWORDS = ["荷兰", "伦敦股市", "日经", "纽约股市", "法兰克福", "巴黎股市"]
@@ -156,7 +159,7 @@ def get_market_news(limit: int = 30) -> list:
     if not all_news:
         all_news = [{"title": "市场资讯加载中...", "time": "", "source": "系统"}]
 
-    _news_cache[cache_key] = {"data": all_news, "ts": now}
+    _news_cache.set(cache_key, all_news)
     return all_news
 
 
@@ -168,8 +171,9 @@ def get_policy_news(limit: int = 20) -> list:
     """获取政策经济新闻（政府经济政策 + 中美贸易/外交）"""
     cache_key = "policy_news"
     now = time.time()
-    if cache_key in _news_cache and now - _news_cache[cache_key]["ts"] < NEWS_CACHE_TTL:
-        return _news_cache[cache_key]["data"]
+    cached = _news_cache.get(cache_key)
+    if cached is not None:
+        return cached
 
     POLICY_KEYWORDS = ["政策", "央行", "国务院", "财政", "降准", "降息", "LPR",
                        "关税", "贸易", "制裁", "外交", "中美", "特朗普", "拜登",
@@ -237,7 +241,7 @@ def get_policy_news(limit: int = 20) -> list:
         all_news = [{"title": "政策资讯加载中...", "time": "", "source": "系统", "category": "policy"}]
 
     print(f"[POLICY_NEWS] Got {len(all_news)} items")
-    _news_cache[cache_key] = {"data": all_news, "ts": now}
+    _news_cache.set(cache_key, all_news)
     return all_news
 
 
@@ -343,15 +347,16 @@ def analyze_news_impact(news_list: list) -> list:
 # 个股/基金新闻统一接口（v3.0 新增，供各模块复用）
 # ============================================================
 
-_stock_news_cache = {}  # {code: {"news": [...], "ts": float}}
+_stock_news_cache = MemoryCache(default_ttl=NEWS_CACHE_TTL)  # {code: {"data": [...], "ts": float}}
 _STOCK_NEWS_TTL = 900  # 15 分钟缓存
 
 def get_stock_news_by_code(code: str, limit: int = 8) -> list:
     """拉取个股新闻（AKShare stock_news_em），15 分钟缓存"""
     import time
     now = time.time()
-    if code in _stock_news_cache and now - _stock_news_cache[code]["ts"] < _STOCK_NEWS_TTL:
-        return _stock_news_cache[code]["news"][:limit]
+    cached = _stock_news_cache.get(code)
+    if cached is not None:
+        return cached[:limit]
 
     try:
         import akshare as ak
@@ -369,7 +374,7 @@ def get_stock_news_by_code(code: str, limit: int = 8) -> list:
                     if source_col:
                         item["source"] = str(row[source_col[0]])
                     news.append(item)
-                _stock_news_cache[code] = {"news": news, "ts": now}
+                _stock_news_cache.set(code, news)
                 return news
     except Exception as e:
         print(f"[NEWS] stock_news {code}: {e}")

@@ -165,15 +165,16 @@ def _get_dynamic_weights() -> dict:
 
 
 # ---- 舆情因子真正接入 ----
-_sentiment_cache = {"score": None, "ts": 0}
+_sentiment_cache = {}  # {"all_sentiment": {"data": score, "ts": float}}
 _SENTIMENT_CACHE_TTL = 1800  # 30 分钟
 
 
 def _get_sentiment_score() -> float:
     """获取全市场舆情得分，映射到 [0, 100]"""
+    cache_key = "all_sentiment"
     now = time.time()
-    if _sentiment_cache["score"] is not None and now - _sentiment_cache["ts"] < _SENTIMENT_CACHE_TTL:
-        return _sentiment_cache["score"]
+    if cache_key in _sentiment_cache and now - _sentiment_cache[cache_key]["ts"] < _SENTIMENT_CACHE_TTL:
+        return _sentiment_cache[cache_key]["data"]
 
     try:
         from services.factor_data import get_news_sentiment_score
@@ -182,8 +183,7 @@ def _get_sentiment_score() -> float:
             raw = result.get("score", 0)  # -100 ~ +100
             # 映射到 0~100：-100→0, 0→50, +100→100
             mapped = max(0, min(100, 50 + raw * 0.5))
-            _sentiment_cache["score"] = mapped
-            _sentiment_cache["ts"] = now
+            _sentiment_cache[cache_key] = {"data": mapped, "ts": now}
             print(f"[SENTIMENT_FACTOR] raw={raw}, mapped={mapped:.0f}")
             return mapped
     except Exception as e:
@@ -758,7 +758,7 @@ def screen_stocks(top_n: int = 50) -> dict:
 
 
 # ---- V4 底座：enrich() 适配层 ----
-_enrich_cache = {}  # {"data": result, "ts": time}
+_enrich_cache = {}  # {"stock_screen_top20": {"data": result, "ts": time}}
 _ENRICH_CACHE_TTL = 1800  # 30分钟缓存（选股结果不需要实时）
 
 def enrich(ctx):
@@ -767,13 +767,13 @@ def enrich(ctx):
     try:
         # 30分钟缓存，避免每次 steward.ask 都跑 40 秒选股
         now = _time.time()
-        if _enrich_cache and now - _enrich_cache.get("ts", 0) < _ENRICH_CACHE_TTL:
-            result = _enrich_cache["data"]
+        cache_key = "stock_screen_top20"
+        if cache_key in _enrich_cache and now - _enrich_cache[cache_key].get("ts", 0) < _ENRICH_CACHE_TTL:
+            result = _enrich_cache[cache_key]["data"]
             print("[STOCK_SCREEN] enrich using cache")
         else:
             result = screen_stocks(20)
-            _enrich_cache["data"] = result
-            _enrich_cache["ts"] = now
+            _enrich_cache[cache_key] = {"data": result, "ts": now}
         stocks = result.get("stocks", [])
         regime = result.get("regime", "")
         if stocks:

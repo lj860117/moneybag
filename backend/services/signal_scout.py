@@ -36,6 +36,7 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from concurrent.futures import ThreadPoolExecutor
 from config import DATA_DIR
+from infra.cache import MemoryCache
 
 # ---- 信号类型定义 ----
 SIGNAL_TYPES = {
@@ -52,7 +53,7 @@ SIGNAL_TYPES = {
 }
 
 # ---- 缓存 ----
-_signal_cache = {}
+_signal_cache = MemoryCache(default_ttl=_SIGNAL_CACHE_TTL)
 _SIGNAL_CACHE_TTL = 1800  # 30 分钟
 
 # ---- 休市日历 ----
@@ -88,8 +89,9 @@ def collect() -> list:
     """
     cache_key = "all_signals"
     now = time.time()
-    if cache_key in _signal_cache and now - _signal_cache[cache_key]["ts"] < _SIGNAL_CACHE_TTL:
-        return _signal_cache[cache_key]["data"]
+    cached = _signal_cache.get(cache_key)
+        if cached is not None:
+            return cached
 
     signals = []
 
@@ -390,7 +392,7 @@ def deliver(user_id: str, signals: list = None) -> dict:
 # 4. enrich(ctx) — Pipeline 适配层
 # ============================================================
 
-_enrich_cache = {}  # {user_id: {"data": matched, "ts": time}}
+_enrich_cache = MemoryCache(default_ttl=_ENRICH_CACHE_TTL)  # {user_id: {"data": matched, "ts": time}}
 _ENRICH_CACHE_TTL = 900  # 15分钟
 
 def enrich(ctx):
@@ -409,7 +411,7 @@ def enrich(ctx):
         print("[SIGNAL_SCOUT] enrich using cache")
     else:
         matched = match(user_id)
-        _enrich_cache[user_id] = {"data": matched, "ts": now}
+        _enrich_cache.set(user_id, matched)
     ctx.modules_results["signal_scout"] = {
         "available": True,
         "total_collected": len(collect()),

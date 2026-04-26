@@ -19,8 +19,9 @@ import time
 from datetime import datetime
 from typing import Optional
 from config import NAV_CACHE_TTL
+from infra.cache import MemoryCache
 
-_nav_cache = {}
+_nav_cache = MemoryCache(default_ttl=NAV_CACHE_TTL)
 
 def _looks_like_stock_code(code: str) -> bool:
     """简易判断：A股股票代码（6位数字，首位 6/0/3），基金通常 0/1/5 开头但长度不同"""
@@ -35,8 +36,9 @@ def get_fund_nav(code: str) -> dict:
     cache_key = code
     now = time.time()
 
-    if cache_key in _nav_cache and now - _nav_cache[cache_key]["ts"] < NAV_CACHE_TTL:
-        return _nav_cache[cache_key]["data"]
+    cached = _nav_cache.get(cache_key)
+    if cached is not None:
+        return cached
 
     # FIX 2026-04-19: 股票代码直接返回空，避免 akshare 去查基金净值导致 SyntaxError 噪音日志
     if _looks_like_stock_code(code):
@@ -59,7 +61,7 @@ def get_fund_nav(code: str) -> dict:
                 "change": str(change),
                 "source": "akshare",
             }
-            _nav_cache[cache_key] = {"data": result, "ts": now}
+            _nav_cache.set(cache_key, result)
             return result
     except Exception as e:
         print(f"[NAV] AKShare failed to fetch {code}: {e}")
@@ -85,7 +87,7 @@ def get_fund_nav(code: str) -> dict:
                     "source": "tushare",
                 }
                 print(f"[NAV] Tushare 降级成功 {code}: nav={result['nav']}")
-                _nav_cache[cache_key] = {"data": result, "ts": now}
+                _nav_cache.set(cache_key, result)
                 return result
     except Exception as e:
         print(f"[NAV] Tushare 降级也失败 {code}: {e}")
@@ -333,14 +335,15 @@ def _get_nav_on_date(code: str, date_str: str) -> Optional[float]:
     now = time.time()
 
     # 使用缓存的历史数据
-    if cache_key in _nav_cache and now - _nav_cache[cache_key]["ts"] < NAV_CACHE_TTL:
-        df = _nav_cache[cache_key]["data"]
+    cached = _nav_cache.get(cache_key)
+    if cached is not None:
+        df = cached
     else:
         try:
             import akshare as ak
             df = ak.fund_open_fund_info_em(symbol=code, indicator="单位净值走势")
             if df is not None and len(df) > 0:
-                _nav_cache[cache_key] = {"data": df, "ts": now}
+                _nav_cache.set(cache_key, df)
             else:
                 return None
         except Exception as e:

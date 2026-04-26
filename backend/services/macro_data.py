@@ -18,16 +18,17 @@ MODULE_META = {
 import time
 from datetime import datetime, timedelta
 from config import MACRO_CACHE_TTL, FACTOR_CACHE_TTL
+from infra.cache import MemoryCache
 
-_macro_cache = {}
+_macro_cache = MemoryCache(default_ttl=MACRO_CACHE_TTL)
 
 
 def get_macro_calendar() -> list:
     """获取近期宏观经济事件（CPI/PMI/M2/PPI）"""
     cache_key = "macro_cal"
-    now = time.time()
-    if cache_key in _macro_cache and now - _macro_cache[cache_key]["ts"] < MACRO_CACHE_TTL:
-        return _macro_cache[cache_key]["data"]
+    cached = _macro_cache.get(cache_key)
+    if cached is not None:
+        return cached
 
     events = []
     try:
@@ -154,7 +155,7 @@ def get_macro_calendar() -> list:
     else:
         print(f"[MACRO] Total {len(events)} indicators loaded")
 
-    _macro_cache[cache_key] = {"data": events, "ts": now}
+    _macro_cache.set(cache_key, events)
     return events
 
 
@@ -163,7 +164,7 @@ def get_macro_calendar() -> list:
 # ============================================================
 
 # --- 缓存 ---
-factor_cache = {}
+factor_cache = MemoryCache(default_ttl=FACTOR_CACHE_TTL)
 
 
 

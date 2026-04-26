@@ -35,11 +35,11 @@ _DATA_DIR = Path(os.environ.get("DATA_DIR", Path(__file__).parent.parent / "data
 _MONITOR_DIR = _DATA_DIR / "monitor"
 
 # ---- 缓存 ----
-_est_cache = {"data": None, "ts": 0}
+_est_cache = {}  # {"fund_estimate": {"data": estimate, "ts": float}}
 _EST_TTL = 300  # 估值全量缓存 5 分钟
 _nav_cache = {}
 _NAV_TTL = 3600  # 净值历史缓存 1 小时
-_name_cache = {"data": None, "ts": 0}
+_name_cache = {}  # {"fund_name": {"data": name, "ts": float}}
 _NAME_TTL = 86400  # 名称表缓存 24 小时
 
 

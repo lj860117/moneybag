@@ -13,8 +13,9 @@ import httpx
 from datetime import datetime, date
 from pathlib import Path
 from config import DATA_DIR, LLM_API_URL, LLM_API_KEY
+from infra.cache import MemoryCache
 
-_decision_cache = {}
+_decision_cache = MemoryCache(default_ttl=_DECISION_CACHE_TTL)
 _DECISION_CACHE_TTL = 1800  # 30 分钟
 
 
@@ -30,9 +31,9 @@ def generate_decisions(user_id: str) -> dict:
     }
     """
     cache_key = f"decision_{user_id}"
-    now = time.time()
-    if cache_key in _decision_cache and now - _decision_cache[cache_key]["ts"] < _DECISION_CACHE_TTL:
-        return _decision_cache[cache_key]["data"]
+    cached = _decision_cache.get(cache_key)
+    if cached is not None:
+        return cached
 
     print(f"[DECISION] 开始为 {user_id} 生成买卖决策...")
 
@@ -51,7 +52,7 @@ def generate_decisions(user_id: str) -> dict:
     _save_decision_log(user_id, decisions, context)
 
     decisions["generated_at"] = datetime.now().isoformat()
-    _decision_cache[cache_key] = {"data": decisions, "ts": now}
+    _decision_cache.set(cache_key, decisions)
 
     print(f"[DECISION] 完成: {len(decisions.get('decisions', []))} 条操作建议")
     return decisions

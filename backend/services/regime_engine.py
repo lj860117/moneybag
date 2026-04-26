@@ -29,7 +29,7 @@ MODULE_META = {
 
 
 # ---- 缓存（Regime 30 分钟更新一次足够）----
-_regime_cache = {"result": None, "ts": 0}
+_regime_cache = {}  # {"regime_analysis": {"data": result, "ts": float}}
 _REGIME_TTL = 1800  # 30 min
 
 
