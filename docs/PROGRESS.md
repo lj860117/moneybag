@@ -6,7 +6,7 @@
 ---
 
 ## 当前阶段
-M1 W2 — 拆 main.py（第二批完成）
+M1 W2 — 拆 main.py（✅ 全部完成，4044 → 112 行）
 
 ## 已完成
 - [x] 2026-04-25: 四层目录树（api/ use_cases/ domain/ infra/）
@@ -41,25 +41,33 @@ M1 W2 — 拆 main.py（第二批完成）
   - 路由总数保持 199 不变（main.py 57 + P1 routers 64 + P2 routers 78）
   - 28 个 M1 骨架测试全绿 ✅
   - 零路由重复，零路由遗漏
+- [x] 2026-04-26: **第三批拆分完成（最终批）：55 个路由 → 6 个 Router 文件**
+  - api/chat.py（3 路由，277 行）— /chat（非流式）、/chat/stream（SSE 流式）、/models
+  - api/dashboard.py（6 路由，215 行）— /dashboard（三级降级）、/nav/all、/nav/{code}、/market-status、/glossary、/health
+  - api/agent.py（18 路由，271 行）— Agent 记忆/画像/铁律/情绪/生活事件/待审/分析/信号
+  - api/steward.py（7 路由，79 行）— 管家 ask/briefing/review、regime、llm-usage、weekly-report
+  - api/enhance.py（5 路由，72 行）— AI 点评（股票/基金）、存款建议、资产诊断、今日关注
+  - api/misc.py（16 路由，184 行）— 决策日志、备份、信号侦察兵、判断追踪、盈利预测、估值、推荐、敞口
+  - main.py: 1071 → 112 行（减少 959 行，**累计从 4044 减少 3932 行，降幅 97%**）
+  - 路由总数保持 199 不变（main.py 2 + P1 64 + P2 78 + P3 55 = 199）
+  - 28 个 M1 骨架测试全绿 ✅
+  - 零路由重复，零路由遗漏
 
 ## 进行中
-- [ ] M1 W2 — 拆 main.py（4044 行 → <150 行）
+- [x] M1 W2 — 拆 main.py（4044 行 → 112 行）✅ 全部完成
   - [x] 分析路由依赖（199 路由，按 35 组前缀分类，P1/P2/P3 三级）
   - [x] 第一批拆分：64 个路由 → 10 个 Router 文件 ✅
   - [x] 第二批拆分：78 个路由 → 5 个 Router 文件 + shared_helpers ✅
-  - [ ] 第三批拆分：P3 高耦合路由（chat/stream/dashboard/agent/steward 等 57 个路由）
+  - [x] 第三批拆分：55 个路由 → 6 个 Router 文件 ✅（最终批，main.py 112 行）
 
 ## 阻塞项
 - 无
 
 ## 下次会话计划
-- 执行第三批拆分：P3 高耦合路由
-- 拆 chat + chat/stream → api/chat.py（需要 shared_helpers 支持）
-- 拆 dashboard → api/dashboard.py（复杂异步，需仔细处理）
-- 拆 agent/* → api/agent.py（~20 路由，依赖 agent_memory + agent_engine）
-- 拆 steward/regime/llm-usage/weekly-report → api/steward.py
-- 拆剩余小路由（earnings/valuation/dcf/recommend/decisions/exposure 等）
-- 目标：main.py 剩 <150 行（只留 FastAPI 初始化 + 中间件 + include_router）
+- M1 W3: 统一缓存层 — 把 46 处 `_cache = {}` 迁移到 infra/cache
+- M1 W3: infra/data_source 五分法 — 数据源按 market/fundamental/macro/alt 分桶
+- M1 W4: 配 import-linter + mypy CI（方案 C 落地）
+- M1 W4: main.py 行数上限 linter（CI 红线 200 行）
 
 ---
 
@@ -118,3 +126,22 @@ M1 W2 — 拆 main.py（第二批完成）
   - 🟢 确认无影响：tests/test_skeleton_m1.py 28/28 通过
   - 🟡 建议评估：services/ 中的 import 链（本次仅移动路由层，不动 service 层）
   - 🟡 建议评估：api/portfolio.py 568 行略超 400 行限制（21 个路由均属同一业务域，可接受）
+
+**会话 5**（M1 W2 第三批拆分 — 最终批）
+- 任务：提取 P3 高耦合路由 → 6 个 api/*.py Router 文件
+- 产出：
+  - api/chat.py（3 路由，277 行）— /chat + /chat/stream（SSE 流式）+ /models，最高耦合度：httpx 直调 + agent_memory + steward + shared_helpers
+  - api/dashboard.py（6 路由，215 行）— /dashboard（三级降级异步）+ /nav + /market-status + /glossary + /health
+  - api/agent.py（18 路由，271 行）— Agent 完整 CRUD：记忆/画像/铁律/情绪/生活事件/待审/分析/信号
+  - api/steward.py（7 路由，79 行）— 管家 Pipeline + regime + llm-usage + weekly-report
+  - api/enhance.py（5 路由，72 行）— DeepSeek 智能增强：AI 点评/存款建议/资产诊断/今日关注
+  - api/misc.py（16 路由，184 行）— 决策日志/备份/信号侦察兵/判断追踪/盈利预测/估值/推荐/敞口/基金份额
+  - main.py: 1071 → 112 行（-959 行，**累计 4044 → 112 行，降幅 97%**）
+  - 路由总数 199 保持不变（main.py 2 + P1 64 + P2 78 + P3 55），零重复零遗漏
+  - 28 个 M1 骨架测试全绿
+- 状态：✅ 完成
+- 影响面：
+  - 🟢 确认无影响：所有 URL 路径不变，前端零改动
+  - 🟢 确认无影响：tests/test_skeleton_m1.py 28/28 通过
+  - 🟡 建议评估：services/ 中的 import 链（本次仅移动路由层，不动 service 层）
+  - 🟡 建议评估：api/chat.py 277 行含 httpx 直调（不变式 3 违反，M1 W3 迁到 infra/llm/gateway 时修复）
