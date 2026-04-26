@@ -30,8 +30,9 @@ import json
 import math
 import traceback
 from datetime import datetime, timedelta
+from infra.cache import MemoryCache
 
-_global_cache = {}
+_global_cache = MemoryCache(default_ttl=3600)
 _GLOBAL_TTL = 3600  # 1 小时缓存
 
 

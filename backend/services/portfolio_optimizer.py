@@ -40,7 +40,7 @@ import numpy as np
 from scipy import optimize
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
-_opt_cache = {}
+_opt_cache = MemoryCache(default_ttl=_OPT_CACHE_TTL)
 _OPT_CACHE_TTL = 3600
 
 
@@ -96,6 +96,7 @@ def _annual_stats(returns_matrix):
 
 # FIX 2026-04-19 V7.2: 统一从 config 读取默认参数
 from config import PORTFOLIO_OPTIMIZER_DEFAULTS as _OPT_DEFAULTS
+from infra.cache import MemoryCache
 _RF_DEFAULT         = _OPT_DEFAULTS["risk_free"]
 _MAX_WEIGHT_DEFAULT = _OPT_DEFAULTS["max_weight"]
 _CVAR_ALPHA_DEFAULT = _OPT_DEFAULTS["cvar_alpha"]

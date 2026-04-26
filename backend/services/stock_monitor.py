@@ -28,6 +28,7 @@ MODULE_META = {
 }
 
 from config import (
+from infra.cache import MemoryCache
     STOCK_SINGLE_MAX, STOCK_MIN_COUNT, STOCK_INDUSTRY_MAX,
     STOCK_STOP_LOSS, STOCK_TAKE_PROFIT, STOCK_CONCENTRATION_WARN,
 )
@@ -36,7 +37,7 @@ from config import (
 _DATA_DIR = Path(os.environ.get("DATA_DIR", Path(__file__).parent.parent / "data"))
 
 # ---- 缓存 ----
-_monitor_cache = {}
+_monitor_cache = MemoryCache(default_ttl=3600)
 _MONITOR_TTL = 600  # 10 分钟
 
 

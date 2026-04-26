@@ -31,15 +31,16 @@ MODULE_META = {
     "priority": 2,
 }
 
-_stock_cache = {}
+_stock_cache = MemoryCache(default_ttl=3600)
 
 # ---- 30 因子权重配置（默认值，可被 AI 覆盖）----
 # FIX 2026-04-19 F4: 权重统一从 config.STOCK_SCREEN_WEIGHTS 读取（Single Source of Truth）
 # 原来本地写了一份 quality=0.18，与 config.py 的 0.15 不一致
 from config import STOCK_SCREEN_WEIGHTS as DEFAULT_DIM_WEIGHTS
+from infra.cache import MemoryCache
 
 # ---- DeepSeek 动态权重调整 ----
-_weight_cache = {}
+_weight_cache = MemoryCache(default_ttl=_WEIGHT_CACHE_TTL)
 _WEIGHT_CACHE_TTL = 3600  # 1 小时
 
 
@@ -165,7 +166,7 @@ def _get_dynamic_weights() -> dict:
 
 
 # ---- 舆情因子真正接入 ----
-_sentiment_cache = {}  # {"all_sentiment": {"data": score, "ts": float}}
+_sentiment_cache = MemoryCache(default_ttl=_SENTIMENT_CACHE_TTL)  # {"all_sentiment": {"data": score, "ts": float}}
 _SENTIMENT_CACHE_TTL = 1800  # 30 分钟
 
 
@@ -193,7 +194,7 @@ def _get_sentiment_score() -> float:
 
 
 # ---- LLM 因子生成器加分 ----
-_llm_bonus_cache = {}
+_llm_bonus_cache = MemoryCache(default_ttl=_LLM_BONUS_CACHE_TTL)
 _LLM_BONUS_CACHE_TTL = 7200  # 2 小时
 
 
@@ -758,7 +759,7 @@ def screen_stocks(top_n: int = 50) -> dict:
 
 
 # ---- V4 底座：enrich() 适配层 ----
-_enrich_cache = {}  # {"stock_screen_top20": {"data": result, "ts": time}}
+_enrich_cache = MemoryCache(default_ttl=_ENRICH_CACHE_TTL)  # {"stock_screen_top20": {"data": result, "ts": time}}
 _ENRICH_CACHE_TTL = 1800  # 30分钟缓存（选股结果不需要实时）
 
 def enrich(ctx):

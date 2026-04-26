@@ -33,8 +33,9 @@ import traceback
 import numpy as np
 import re
 from config import LLM_API_URL, LLM_API_KEY, LLM_MODEL
+from infra.cache import MemoryCache
 
-_llm_factor_cache = {}
+_llm_factor_cache = MemoryCache(default_ttl=3600)
 _LLM_CACHE_TTL = 86400  # 24 小时
 
 

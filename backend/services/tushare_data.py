@@ -22,6 +22,7 @@ import os
 import time
 import json
 import urllib.request
+from infra.cache import MemoryCache
 
 def _get_token() -> str:
     """实时读取 Token（避免 import 时缓存空值）"""
@@ -35,7 +36,7 @@ def is_configured() -> bool:
 _TUSHARE_URL = "http://api.tushare.pro"
 
 # 缓存
-_ts_cache = {}
+_ts_cache = MemoryCache(default_ttl=_TS_CACHE_TTL)
 _TS_CACHE_TTL = 3600  # 1 小时
 
 

@@ -39,7 +39,7 @@ _AGENT_ID = os.getenv("WXWORK_AGENT_ID", "")
 _USER_ID = os.getenv("WXWORK_USER_ID", "@all")
 
 # access_token 缓存（2 小时有效）
-_token_cache = {}  # {"wxwork_token": {"data": {"token": str, "expires": int}, "ts": float}}
+_token_cache = MemoryCache(default_ttl=_TOKEN_CACHE_TTL)  # {"wxwork_token": {"data": {"token": str, "expires": int}, "ts": float}}
 
 
 def is_configured() -> bool:
@@ -162,6 +162,7 @@ import base64
 import struct
 import socket
 from Crypto.Cipher import AES
+from infra.cache import MemoryCache
 
 _CALLBACK_TOKEN = os.getenv("WXWORK_CALLBACK_TOKEN", "moneybag2026")
 _CALLBACK_AES_KEY = os.getenv("WXWORK_CALLBACK_AES_KEY", "")

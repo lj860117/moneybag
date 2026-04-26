@@ -14,6 +14,7 @@
 """
 import time
 from datetime import datetime
+from infra.cache import MemoryCache
 
 MODULE_META = {
     "name": "regime_engine",
@@ -29,7 +30,7 @@ MODULE_META = {
 
 
 # ---- 缓存（Regime 30 分钟更新一次足够）----
-_regime_cache = {}  # {"regime_analysis": {"data": result, "ts": float}}
+_regime_cache = MemoryCache(default_ttl=_REGIME_TTL)  # {"regime_analysis": {"data": result, "ts": float}}
 _REGIME_TTL = 1800  # 30 min
 
 

@@ -24,9 +24,10 @@ import time
 import json
 import traceback
 from datetime import datetime
+from infra.cache import MemoryCache
 
 # ---- 缓存 ----
-_policy_cache = {}
+_policy_cache = MemoryCache(default_ttl=3600)
 _STRUCT_TTL = 86400   # 结构化数据缓存 24 小时（月度更新）
 _NEWS_TTL = 1800      # 政策新闻缓存 30 分钟
 _ANALYSIS_TTL = 3600  # DeepSeek 分析缓存 1 小时

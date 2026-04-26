@@ -19,8 +19,9 @@ MODULE_META = {
 import time
 import traceback
 from config import MACRO_CACHE_TTL, FACTOR_CACHE_TTL
+from infra.cache import MemoryCache
 
-_ext_macro_cache = {}
+_ext_macro_cache = MemoryCache(default_ttl=3600)
 
 
 def get_m1_data() -> dict:

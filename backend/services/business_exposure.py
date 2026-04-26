@@ -22,8 +22,9 @@ MODULE_META = {
 
 import time
 from datetime import datetime
+from infra.cache import MemoryCache
 
-_exposure_cache = {}
+_exposure_cache = MemoryCache(default_ttl=_EXPOSURE_CACHE_TTL)
 _EXPOSURE_CACHE_TTL = 86400  # 24小时
 
 # 地缘→出口区域脆弱性映射

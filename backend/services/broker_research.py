@@ -21,8 +21,9 @@ import time
 import json
 import re
 from datetime import datetime, timedelta
+from infra.cache import MemoryCache
 
-_broker_cache = {}
+_broker_cache = MemoryCache(default_ttl=_BROKER_CACHE_TTL)
 _BROKER_CACHE_TTL = 3600  # 1小时缓存（研报更新频率低）
 
 

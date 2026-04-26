@@ -16,6 +16,7 @@ from pathlib import Path
 from datetime import datetime
 from typing import Optional
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from infra.cache import MemoryCache
 
 # ---- V4 底座：MODULE_META ----
 MODULE_META = {
@@ -35,11 +36,11 @@ _DATA_DIR = Path(os.environ.get("DATA_DIR", Path(__file__).parent.parent / "data
 _MONITOR_DIR = _DATA_DIR / "monitor"
 
 # ---- 缓存 ----
-_est_cache = {}  # {"fund_estimate": {"data": estimate, "ts": float}}
+_est_cache = MemoryCache(default_ttl=3600)  # {"fund_estimate": {"data": estimate, "ts": float}}
 _EST_TTL = 300  # 估值全量缓存 5 分钟
-_nav_cache = {}
+_nav_cache = MemoryCache(default_ttl=3600)
 _NAV_TTL = 3600  # 净值历史缓存 1 小时
-_name_cache = {}  # {"fund_name": {"data": name, "ts": float}}
+_name_cache = MemoryCache(default_ttl=3600)  # {"fund_name": {"data": name, "ts": float}}
 _NAME_TTL = 86400  # 名称表缓存 24 小时
 
 

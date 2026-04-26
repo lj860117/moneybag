@@ -38,8 +38,9 @@ import traceback
 import json
 import numpy as np
 from pathlib import Path
+from infra.cache import MemoryCache
 
-_rl_cache = {}
+_rl_cache = MemoryCache(default_ttl=_RL_CACHE_TTL)
 _RL_CACHE_TTL = 3600
 
 

@@ -18,8 +18,9 @@ MODULE_META = {
 import time
 from datetime import datetime
 from config import FUND_RANK_CACHE_TTL
+from infra.cache import MemoryCache
 
-_fund_rank_cache = {}
+_fund_rank_cache = MemoryCache(default_ttl=3600)
 
 def _load_fund_rank_data() -> dict:
     """加载基金排行数据（含各周期收益率），24小时缓存"""

@@ -18,7 +18,7 @@ MODULE_META = {
 
 import time
 
-_val_cache = {}
+_val_cache = MemoryCache(default_ttl=_VAL_CACHE_TTL)
 _VAL_CACHE_TTL = 3600  # 1小时
 
 
@@ -248,6 +248,7 @@ def enrich(ctx):
 # 默认参数（V8 可调）
 # FIX 2026-04-19 V7.2: 统一从 config.DCF_DEFAULTS 读取（Single Source of Truth）
 from config import DCF_DEFAULTS
+from infra.cache import MemoryCache
 DCF_DISCOUNT_RATE    = DCF_DEFAULTS["discount_rate"]      # 折现率 10%
 DCF_TERMINAL_GROWTH  = DCF_DEFAULTS["terminal_growth"]    # 永续增长率 3%
 DCF_PROJECTION_YEARS = DCF_DEFAULTS["projection_years"]   # 预测期 5 年

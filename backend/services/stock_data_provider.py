@@ -27,9 +27,10 @@ import time
 import traceback
 import concurrent.futures
 from config import STOCK_CACHE_TTL
+from infra.cache import MemoryCache
 
 # 数据层缓存（所有消费方共享同一份数据）
-_provider_cache = {}
+_provider_cache = MemoryCache(default_ttl=3600)
 _CACHE_KEY = "stock_all_data"
 
 

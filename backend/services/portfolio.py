@@ -28,9 +28,10 @@ MODULE_META = {
 from config import ALLOCATION_PROFILES, VALUATION_HIGH, VALUATION_LOW, RISK_REBALANCE_THRESHOLD
 from services.portfolio_calc import calc_holdings_from_transactions
 from services.data_layer import get_fund_nav, get_valuation_percentile, get_fear_greed_index
+from infra.cache import MemoryCache
 
 # ---- AI 动态选基缓存 ----
-_ai_fund_cache = {}
+_ai_fund_cache = MemoryCache(default_ttl=_AI_FUND_CACHE_TTL)
 _AI_FUND_CACHE_TTL = 3600  # 1 小时
 
 # 颜色池（用于饼图）

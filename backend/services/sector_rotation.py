@@ -10,6 +10,7 @@ V6 Phase 3: 同花顺行业板块数据 + 资金流排名 + 轮动信号
 
 import time
 from datetime import datetime
+from infra.cache import MemoryCache
 
 # ---- MODULE_META ----
 MODULE_META = {
@@ -27,7 +28,7 @@ MODULE_META = {
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 # 缓存
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-_sector_cache = {}
+_sector_cache = MemoryCache(default_ttl=3600)
 _CACHE_TTL = 1800  # 30 分钟
 
 

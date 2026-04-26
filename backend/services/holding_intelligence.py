@@ -7,6 +7,7 @@ import time
 import traceback
 from datetime import datetime
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from infra.cache import MemoryCache
 
 # ---- V4 底座：MODULE_META ----
 MODULE_META = {
@@ -21,7 +22,7 @@ MODULE_META = {
     "priority": 2,
 }
 
-_intel_cache = {}
+_intel_cache = MemoryCache(default_ttl=3600)
 _CACHE_TTL = 600  # 10 分钟
 
 

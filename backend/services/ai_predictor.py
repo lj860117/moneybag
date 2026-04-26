@@ -25,6 +25,7 @@ import traceback
 import numpy as np
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from config import STOCK_CACHE_TTL
+from infra.cache import MemoryCache
 
 # ---- V4 底座：MODULE_META ----
 MODULE_META = {
@@ -39,7 +40,7 @@ MODULE_META = {
     "priority": 3,
 }
 
-_pred_cache = {}
+_pred_cache = MemoryCache(default_ttl=_PRED_CACHE_TTL)
 _PRED_CACHE_TTL = 3600  # 1 小时
 
 

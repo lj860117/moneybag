@@ -32,12 +32,13 @@ from services.data_layer import (
 from services.signal import calc_smart_dca
 
 from fastapi.responses import FileResponse
+from infra.cache import MemoryCache
 
 
 # ========================================================
 # 市场上下文缓存
 # ========================================================
-_market_ctx_cache = {}  # {"market_context": {"data": text, "ts": float}}
+_market_ctx_cache = MemoryCache(default_ttl=_MARKET_CTX_CACHE_TTL)  # {"market_context": {"data": text, "ts": float}}
 _MARKET_CTX_TTL = 300  # 5 分钟缓存
 
 

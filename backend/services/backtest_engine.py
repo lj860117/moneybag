@@ -27,8 +27,9 @@ import time
 import math
 import traceback
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from infra.cache import MemoryCache
 
-_bt_cache = {}
+_bt_cache = MemoryCache(default_ttl=3600)
 
 
 def _get_stock_hist(code: str, period: str = "daily", days: int = 750) -> list:

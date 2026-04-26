@@ -20,8 +20,9 @@ import time
 import traceback
 import numpy as np
 from config import STOCK_CACHE_TTL
+from infra.cache import MemoryCache
 
-_ml_cache = {}
+_ml_cache = MemoryCache(default_ttl=3600)
 
 
 def ml_stock_screen(top_n: int = 30) -> dict:

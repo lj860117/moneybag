@@ -23,8 +23,9 @@ MODULE_META = {
 import time
 import traceback
 from datetime import datetime, timedelta
+from infra.cache import MemoryCache
 
-_factor_cache = {}
+_factor_cache = MemoryCache(default_ttl=3600)
 
 
 def get_commodity_prices() -> dict:

@@ -24,8 +24,9 @@ import time
 import json
 from datetime import datetime
 from config import DATA_DIR
+from infra.cache import MemoryCache
 
-_rec_cache = {}
+_rec_cache = MemoryCache(default_ttl=_REC_CACHE_TTL)
 _REC_CACHE_TTL = 3600  # 1小时
 
 # 5 维权重（可配置，V8 复盘可调）

@@ -24,8 +24,9 @@ import time
 import math
 import traceback
 from datetime import datetime
+from infra.cache import MemoryCache
 
-_v8_cache = {}
+_v8_cache = MemoryCache(default_ttl=3600)
 _V8_TTL = 86400  # 宏观数据月度更新，缓存 24h
 _V8_DAILY_TTL = 3600  # 龙虎榜/增减持缓存 1h
 
