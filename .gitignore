@@ -6,7 +6,10 @@ __pycache__/
 
 # ---- QA/Local 开发产物（不入库）----
 backend/data/
+data/
 .workbuddy-handoff/
+.workbuddy/
+.codebuddy/
 backend/scripts/seed_qa_*.py
 
 # ---- 测试诊断产物（本地分析，不入库）----
