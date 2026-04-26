@@ -24,6 +24,8 @@ import tempfile
 from pathlib import Path
 from typing import Dict, List, Optional
 
+_JsonDict = Dict[str, object]
+
 
 class FileStore:
     """File-based persistence satisfying domain.protocols.StoreProtocol.
@@ -44,7 +46,7 @@ class FileStore:
 
     # ---- StoreProtocol methods ----
 
-    def read(self, collection: str, key: str) -> Optional[Dict]:
+    def read(self, collection: str, key: str) -> Optional[_JsonDict]:
         """Read JSON document with corruption recovery."""
         path = self._path(collection, key)
         backup = path.with_suffix(".json.bak")
@@ -63,7 +65,7 @@ class FileStore:
 
         return None
 
-    def write(self, collection: str, key: str, data: Dict) -> None:
+    def write(self, collection: str, key: str, data: _JsonDict) -> None:
         """Atomic write with backup rotation."""
         path = self._path(collection, key)
 
@@ -118,17 +120,18 @@ class FileStore:
         return coll_dir / "{}.json".format(safe_key)
 
     @staticmethod
-    def _safe_read(path: Path) -> Optional[Dict]:
+    def _safe_read(path: Path) -> Optional[_JsonDict]:
         """Read JSON, return None on any error."""
         if not path.exists():
             return None
         try:
-            return json.loads(path.read_text(encoding="utf-8"))
+            result: _JsonDict = json.loads(path.read_text(encoding="utf-8"))
+            return result
         except (json.JSONDecodeError, UnicodeDecodeError, OSError):
             return None
 
     @staticmethod
-    def _atomic_write(filepath: Path, data: Dict) -> None:
+    def _atomic_write(filepath: Path, data: _JsonDict) -> None:
         """Atomic JSON write: tempfile + fsync + os.replace.
 
         Same algorithm as services/persistence.py:atomic_write_json() (line 68-91).

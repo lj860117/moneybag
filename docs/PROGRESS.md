@@ -6,7 +6,7 @@
 ---
 
 ## 当前阶段
-M1 W3 — 统一缓存层 + infra/data_source 五分法（✅ 全部完成）
+M1 W4 — 方案 C 落地（mypy strict + CI + main.py linter + provider stubs）（✅ 全部完成）
 
 ## 已完成
 - [x] 2026-04-25: 四层目录树（api/ use_cases/ domain/ infra/）
@@ -75,6 +75,26 @@ M1 W3 — 统一缓存层 + infra/data_source 五分法（✅ 全部完成）
   - 新增 9 个测试（6 bucket importable + facade exports + fallback module + AST 不变式 #6 检查）
   - `grep -rn 'import akshare' backend/api/` 输出为空 ✅（不变式 #6 api 层达成）
   - 37 个 M1 骨架测试全绿 ✅
+- [x] 2026-04-26: **M1 W4 mypy strict 配置 + CI 集成（方案 C 落地）**
+  - 创建 pyproject.toml：mypy strict 配置，覆盖 domain/ infra/ use_cases/
+  - domain/ infra/ use_cases/ 启用 disallow_untyped_defs + disallow_any_generics + strict_equality 等
+  - 老代码（services/ api/）ignore_errors = true（绞杀者过渡）
+  - 第三方库（akshare/tushare/baostock/fastapi 等）ignore_missing_imports
+  - 修复 19 处类型注解问题（Dict → Dict[str, object]、dict → dict[str, _Entry] 等）
+  - mypy 通过 17 个源文件，0 错误 ✅
+  - requirements-dev.txt 增加 mypy>=1.8.0
+  - CI 新增 mypy-strict job（方案 C 硬约束）
+- [x] 2026-04-26: **M1 W4 main.py 行数上限 linter（不变式 #8）**
+  - 创建 scripts/lint_main_py.py：红线 200 行，超过 = exit 1
+  - CI 新增 lint-main-py job
+  - 当前 main.py 112 行，通过 ✅
+- [x] 2026-04-26: **M1 W4 infra/data_source/providers/ 三级适配器 stub**
+  - TushareProvider：market + fundamental（需 TUSHARE_TOKEN）
+  - AkshareProvider：macro + alt（爬虫式，可能断裂）
+  - BaostockProvider：market 末级降级（免费，最稳定）
+  - 三个 stub 均实现 DataSourceProtocol 接口（fetch/is_available/provider_name）
+  - providers/__init__.py 重导出三个 Provider
+  - 新增 11 个测试（48 总数），48/48 全绿 ✅
 
 ## 进行中
 - 无
@@ -83,9 +103,10 @@ M1 W3 — 统一缓存层 + infra/data_source 五分法（✅ 全部完成）
 - 无
 
 ## 下次会话计划
-- M1 W4: 配 import-linter + mypy CI（方案 C 落地）
-- M1 W4: main.py 行数上限 linter（CI 红线 200 行）
-- M1 W4: infra/data_source/providers/ 实现（Tushare/AKShare/baostock 适配 + 三级降级链）
+- M2 准备: provider stubs 填充实际实现（Tushare/AKShare/baostock 各 metric dispatch）
+- M2 准备: fallback.py 三级降级链实现（串联三个 Provider）
+- M2 W1: 家庭画像问卷 + 资产负债表 MVP（读 06 + 03）
+- 持续: services/ 层 akshare 直调逐步迁入 infra/data_source（绞杀者模式）
 
 ---
 
@@ -201,3 +222,22 @@ M1 W3 — 统一缓存层 + infra/data_source 五分法（✅ 全部完成）
   - 🟢 确认无影响：数据返回格式不变（chat 新闻注入格式 / fund search 返回结构）
   - 🟡 建议评估：services/ 层仍有 30+ 文件直调 akshare（绞杀者模式，M1 W4 scope）
   - 🟡 建议评估：api/chat.py httpx 直调（不变式 3 违反，待 W4 修复）
+
+**会话 8**（M1 W4 方案 C 落地）
+- 任务：mypy strict 配置 + CI 集成 + main.py 行数 linter + provider adapter stubs
+- 产出：
+  - pyproject.toml（mypy strict 配置：domain/ infra/ use_cases/ 严格模式，services/ api/ 宽松模式）
+  - 修复 19 处类型注解（7 文件：protocols/cache/store/llm_client/data_source + models + memory_cache + file_store + gateway）
+  - mypy 17 源文件通过，0 错误
+  - scripts/lint_main_py.py（不变式 #8 红线 200 行）
+  - CI 新增 2 个 job（mypy-strict + lint-main-py），现有 4 个 job
+  - 3 个 provider adapter stubs（TushareProvider / AkshareProvider / BaostockProvider）
+  - 新增 11 个测试（37 → 48），48/48 全绿
+  - requirements-dev.txt 增加 mypy>=1.8.0
+- 状态：✅ 完成
+- 影响面：
+  - 🟢 确认无影响：tests/test_skeleton_m1.py 48/48 通过
+  - 🟢 确认无影响：API URL 路径不变，前端零改动
+  - 🟢 确认无影响：类型注解改动不影响运行时行为（from __future__ annotations 延迟求值）
+  - 🟡 建议评估：services/ 层仍有 30+ 文件直调 akshare（绞杀者模式继续）
+  - 🟡 建议评估：api/chat.py httpx 直调（不变式 3 违反，待 M2 修复）

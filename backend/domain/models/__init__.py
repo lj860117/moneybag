@@ -12,6 +12,7 @@ Design doc: docs/design/12-framework-refactor.md
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Any
 
 
 @dataclass(frozen=True)
@@ -47,7 +48,7 @@ class LLMResponse:
     fallback: bool = False
     error: str = ""
 
-    def to_dict(self) -> dict:
+    def to_dict(self) -> dict[str, object]:
         """Backward-compat: old code expects dict.
 
         Avoids changing 50+ call sites at once during strangler-fig migration.
@@ -65,7 +66,7 @@ class LLMResponse:
         }
 
     @classmethod
-    def from_dict(cls, d: dict) -> "LLMResponse":
+    def from_dict(cls, d: dict[str, Any]) -> "LLMResponse":
         """Construct from legacy gateway dict. Ignores unknown keys."""
         return cls(
             content=d.get("content", ""),

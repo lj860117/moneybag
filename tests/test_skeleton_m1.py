@@ -284,3 +284,174 @@ def test_domain_has_no_infra_imports():
     # These modules should have loaded without touching infra/
     # (llm_client.py imports LLMResponse from domain.models, which is fine)
     assert "infra" not in sys.modules.get("domain.models", object).__name__
+
+
+# ---- 8. Five-bucket data source structure ----
+
+BUCKET_PACKAGES = [
+    "infra.data_source.market",
+    "infra.data_source.fundamental",
+    "infra.data_source.macro",
+    "infra.data_source.alt",
+    "infra.data_source.synthetic",
+    "infra.data_source.providers",
+]
+
+
+@pytest.mark.parametrize("pkg", BUCKET_PACKAGES)
+def test_data_source_bucket_importable(pkg):
+    """Every five-bucket package should import without error."""
+    mod = importlib.import_module(pkg)
+    assert mod is not None
+
+
+def test_data_source_facade_exports():
+    """infra.data_source facade re-exports key functions."""
+    from infra.data_source import get_stock_news, search_funds
+    assert callable(get_stock_news)
+    assert callable(search_funds)
+
+
+def test_data_source_fallback_module_exists():
+    """fallback.py exists and is importable."""
+    mod = importlib.import_module("infra.data_source.fallback")
+    assert mod is not None
+
+
+# ---- 9. Invariant #6: api/ layer has zero akshare/tushare imports ----
+
+def test_api_layer_no_direct_data_provider_imports():
+    """api/ layer must not import akshare or tushare directly.
+
+    This is the key invariant for M1 W3: all external data access
+    goes through infra/data_source, never direct provider imports.
+    """
+    import ast
+    api_dir = Path(__file__).resolve().parent.parent / "backend" / "api"
+    BANNED = {"akshare", "tushare", "baostock", "yfinance"}
+    violations = []
+    for py_file in sorted(api_dir.glob("*.py")):
+        source = py_file.read_text(encoding="utf-8")
+        try:
+            tree = ast.parse(source)
+        except SyntaxError:
+            continue
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Import):
+                for alias in node.names:
+                    if alias.name.split(".")[0] in BANNED:
+                        violations.append(
+                            f"{py_file.name}:{node.lineno} "
+                            f"imports {alias.name}"
+                        )
+            elif isinstance(node, ast.ImportFrom):
+                if node.module and node.module.split(".")[0] in BANNED:
+                    violations.append(
+                        f"{py_file.name}:{node.lineno} "
+                        f"imports from {node.module}"
+                    )
+    assert violations == [], (
+        f"API layer direct data-provider imports "
+        f"(Invariant #6 violation): {violations}"
+    )
+
+
+# ---- 10. M1 W4: Provider adapter stubs ----
+
+PROVIDER_MODULES = [
+    "infra.data_source.providers",
+    "infra.data_source.providers.tushare_provider",
+    "infra.data_source.providers.akshare_provider",
+    "infra.data_source.providers.baostock_provider",
+]
+
+
+@pytest.mark.parametrize("module_name", PROVIDER_MODULES)
+def test_provider_modules_importable(module_name):
+    """Each provider adapter stub must be importable."""
+    mod = importlib.import_module(module_name)
+    assert mod is not None
+
+
+def test_providers_init_exports():
+    """providers/__init__.py re-exports all 3 provider classes."""
+    from infra.data_source.providers import (
+        AkshareProvider,
+        TushareProvider,
+        BaostockProvider,
+    )
+    assert AkshareProvider is not None
+    assert TushareProvider is not None
+    assert BaostockProvider is not None
+
+
+def test_provider_stubs_satisfy_protocol():
+    """Each provider stub has the required DataSourceProtocol methods."""
+    from infra.data_source.providers import (
+        AkshareProvider,
+        TushareProvider,
+        BaostockProvider,
+    )
+    for cls in (AkshareProvider, TushareProvider, BaostockProvider):
+        instance = cls()
+        assert hasattr(instance, "fetch")
+        assert hasattr(instance, "is_available")
+        assert hasattr(instance, "provider_name")
+        assert isinstance(instance.provider_name, str)
+
+
+def test_provider_stub_fetch_returns_none():
+    """Stub providers return None for all fetch calls (not yet implemented)."""
+    from infra.data_source.providers import (
+        AkshareProvider,
+        TushareProvider,
+        BaostockProvider,
+    )
+    for cls in (AkshareProvider, TushareProvider, BaostockProvider):
+        instance = cls()
+        # Stubs return None because actual libraries may not be installed
+        result = instance.fetch("nonexistent_metric")
+        assert result is None
+
+
+# ---- 11. M1 W4: mypy config exists ----
+
+def test_pyproject_toml_has_mypy_config():
+    """pyproject.toml must exist and contain mypy strict config."""
+    toml_path = Path(__file__).resolve().parent.parent / "pyproject.toml"
+    assert toml_path.exists(), "pyproject.toml missing"
+    content = toml_path.read_text(encoding="utf-8")
+    assert "[tool.mypy]" in content, "Missing [tool.mypy] section"
+    assert "disallow_untyped_defs = true" in content, "Missing strict flag"
+
+
+# ---- 12. M1 W4: main.py line count linter ----
+
+def test_lint_main_py_script_exists():
+    """scripts/lint_main_py.py must exist."""
+    script = Path(__file__).resolve().parent.parent / "scripts" / "lint_main_py.py"
+    assert script.exists(), "scripts/lint_main_py.py missing"
+
+
+def test_main_py_under_200_lines():
+    """Invariant #8: main.py must stay under 200 lines."""
+    main_py = Path(__file__).resolve().parent.parent / "backend" / "main.py"
+    assert main_py.exists(), "backend/main.py missing"
+    line_count = len(main_py.read_text(encoding="utf-8").splitlines())
+    assert line_count < 200, (
+        f"main.py has {line_count} lines (limit: 200). "
+        f"Invariant #8 violation — extract routes to api/*.py"
+    )
+
+
+# ---- 13. M1 W4: CI workflow has all required jobs ----
+
+def test_ci_yml_has_required_jobs():
+    """CI workflow must include mypy, lint-main-py, import-linter, and smoke-tests."""
+    ci_path = Path(__file__).resolve().parent.parent / ".github" / "workflows" / "ci.yml"
+    assert ci_path.exists(), "CI workflow missing"
+    content = ci_path.read_text(encoding="utf-8")
+    assert "mypy-strict" in content, "CI missing mypy-strict job"
+    assert "lint-main-py" in content, "CI missing lint-main-py job"
+    assert "lint-architecture" in content, "CI missing lint-architecture job"
+    assert "smoke-tests" in content, "CI missing smoke-tests job"

@@ -1,0 +1,63 @@
+# MoneyBag — project configuration
+# =================================
+# M1 W4: mypy strict 配置（方案 C 落地）
+
+[tool.mypy]
+python_version = "3.11"
+warn_return_any = true
+warn_unused_configs = true
+warn_redundant_casts = true
+warn_unused_ignores = true
+show_error_codes = true
+explicit_package_bases = true
+mypy_path = "backend"
+
+# ---- 新架构层：strict 模式（方案 C 硬约束）----
+# domain/  infra/  use_cases/  必须通过 strict 检查
+# 老代码（services/ api/ main.py）暂不强制，绞杀者模式逐步迁移
+
+[[tool.mypy.overrides]]
+module = [
+    "domain.*",
+    "infra.cache.*",
+    "infra.store.*",
+    "infra.llm.*",
+    "infra.data_source",
+    "use_cases.*",
+]
+disallow_untyped_defs = true
+disallow_any_generics = true
+check_untyped_defs = true
+warn_unreachable = true
+strict_equality = true
+no_implicit_optional = true
+
+# ---- 老代码：宽松模式（绞杀者过渡）----
+[[tool.mypy.overrides]]
+module = [
+    "services.*",
+    "api.*",
+]
+ignore_errors = true
+
+# ---- 第三方库：忽略缺失 stub ----
+[[tool.mypy.overrides]]
+module = [
+    "akshare",
+    "akshare.*",
+    "tushare",
+    "tushare.*",
+    "baostock",
+    "baostock.*",
+    "fastapi",
+    "fastapi.*",
+    "uvicorn",
+    "uvicorn.*",
+    "pydantic",
+    "pydantic.*",
+    "httpx",
+    "httpx.*",
+    "PIL",
+    "PIL.*",
+]
+ignore_missing_imports = true

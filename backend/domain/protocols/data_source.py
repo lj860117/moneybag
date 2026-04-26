@@ -36,7 +36,7 @@ class DataSourceProtocol(Protocol):
     The infra layer composes them into a fallback chain.
     """
 
-    def fetch(self, metric: str, **params: Any) -> Union[Dict, List, None]:
+    def fetch(self, metric: str, **params: Any) -> Union[Dict[str, Any], List[Any], None]:
         """Fetch a data metric.
 
         Args:

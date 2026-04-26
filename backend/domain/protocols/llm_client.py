@@ -49,7 +49,7 @@ class LLMClientProtocol(Protocol):
         """
         ...
 
-    def get_usage(self, user_id: str = ...) -> Dict:
+    def get_usage(self, user_id: str = ...) -> Dict[str, object]:
         """Return usage stats.
 
         If user_id is given, filter to that user.

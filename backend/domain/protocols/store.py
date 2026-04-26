@@ -29,7 +29,7 @@ class StoreProtocol(Protocol):
     All methods are synchronous (the app is sync-first today).
     """
 
-    def read(self, collection: str, key: str) -> Optional[Dict]:
+    def read(self, collection: str, key: str) -> Optional[Dict[str, object]]:
         """Read a JSON document. Returns None if not found.
 
         Implementations MUST handle corruption gracefully
@@ -37,7 +37,7 @@ class StoreProtocol(Protocol):
         """
         ...
 
-    def write(self, collection: str, key: str, data: Dict) -> None:
+    def write(self, collection: str, key: str, data: Dict[str, object]) -> None:
         """Write a JSON document atomically.
 
         Implementations MUST guarantee atomic writes (tmp + rename pattern)

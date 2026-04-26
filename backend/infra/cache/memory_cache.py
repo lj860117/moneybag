@@ -52,7 +52,7 @@ class MemoryCache:
     __slots__ = ("_data", "_lock", "_default_ttl")
 
     def __init__(self, *, default_ttl: int = _DEFAULT_TTL) -> None:
-        self._data: dict = {}
+        self._data: dict[str, _Entry] = {}
         self._lock = threading.Lock()
         self._default_ttl = default_ttl
 
@@ -112,7 +112,7 @@ class MemoryCache:
 
     # ---- Extras (not in Protocol, but useful for monitoring) ----
 
-    def keys(self) -> list:
+    def keys(self) -> list[str]:
         """Return list of non-expired keys (snapshot)."""
         now = time.time()
         with self._lock:

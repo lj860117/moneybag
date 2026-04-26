@@ -22,6 +22,40 @@ jobs:
         run: |
           cd backend && lint-imports
 
+  mypy-strict:
+    name: mypy strict (new architecture)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install dependencies
+        run: |
+          pip install -r requirements-dev.txt
+      - name: Run mypy on domain/ infra/ use_cases/
+        run: |
+          cd backend && python -m mypy \
+            domain/ \
+            infra/cache/ \
+            infra/store/ \
+            infra/llm/ \
+            infra/data_source/__init__.py \
+            use_cases/ \
+            --config-file ../pyproject.toml
+
+  lint-main-py:
+    name: main.py < 200 lines
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Check main.py line count
+        run: |
+          python scripts/lint_main_py.py
+
   smoke-tests:
     name: Smoke Tests
     runs-on: ubuntu-latest

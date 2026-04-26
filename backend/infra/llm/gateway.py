@@ -17,7 +17,7 @@ Invariant #3: All LLM calls through infra/llm/gateway.
 """
 from __future__ import annotations
 
-from typing import Dict
+from typing import Any, Dict
 
 from domain.models import LLMResponse
 
@@ -42,28 +42,30 @@ class LLMClient:
     ) -> LLMResponse:
         """Delegate to LLMGateway.call_sync(), return typed LLMResponse."""
         gw = self._gateway()
-        raw = gw.call_sync(
+        raw: dict[str, Any] = gw.call_sync(
             prompt,
             system=system,
             model_tier=model_tier,
             user_id=user_id,
             module=module,
             max_tokens=max_tokens,
-        )  # type: dict
+        )
         return LLMResponse.from_dict(raw)
 
-    def get_usage(self, user_id: str = "") -> Dict:
+    def get_usage(self, user_id: str = "") -> Dict[str, object]:
         """Delegate to LLMGateway usage tracking."""
         gw = self._gateway()
-        return gw.get_usage(user_id)
+        result: Dict[str, object] = gw.get_usage(user_id)
+        return result
 
     def get_daily_remaining(self) -> int:
         """Return remaining daily LLM calls."""
         gw = self._gateway()
-        return gw.get_daily_remaining()
+        remaining: int = gw.get_daily_remaining()
+        return remaining
 
     @staticmethod
-    def _gateway():
+    def _gateway() -> Any:
         """Lazy import to avoid circular deps and load-order issues."""
         from services.llm_gateway import LLMGateway  # noqa: delay import
         return LLMGateway.instance()
