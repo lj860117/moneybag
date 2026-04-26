@@ -83,3 +83,17 @@ class LLMResponse:
             fallback=d.get("fallback", False),
             error=d.get("error", ""),
         )
+
+from domain.models.allocation import AllocationTarget, AllocationState, DeviationAnalysis
+
+__all__ = [
+    "LLMResponse",
+    "FamilyProfile",
+    "Member",
+    "SubAccount",
+    "BalanceSheet",
+    "BalanceSheetItem",
+    "AllocationTarget",
+    "AllocationState",
+    "DeviationAnalysis",
+]

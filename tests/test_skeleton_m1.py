@@ -1286,3 +1286,334 @@ def test_update_category_items_use_case(tmp_path):
     assert len(updated.cash_deposits) == 2  # updated
     assert len(updated.investments) == 1  # unchanged
     assert updated.investments[0].name == "基金"  # unchanged
+
+
+# ============================================================
+# M2 W4: Asset Allocation Framework Tests (24 new tests)
+# ============================================================
+
+def test_allocation_defaults_importable():
+    """AllocationDefaults should be importable from domain/rule_engine/."""
+    from domain.rule_engine.defaults import AllocationDefaults, RiskDefaults, ScoringDefaults, RebalanceDefaults, StaleDataDefaults
+    assert AllocationDefaults is not None
+    assert RiskDefaults is not None
+    assert ScoringDefaults is not None
+    assert RebalanceDefaults is not None
+    assert StaleDataDefaults is not None
+
+
+def test_allocation_matrix_lookup():
+    """AllocationDefaults.MATRIX should have 12 entries (3 risk × 4 family_stage)."""
+    from domain.rule_engine.defaults import AllocationDefaults
+    assert len(AllocationDefaults.MATRIX) == 12
+    # Check one entry
+    value = AllocationDefaults.MATRIX.get(("balanced", "single"))
+    assert value == (50, 30, 15, 5)
+    # Verify all tuples sum to 100
+    for (risk, stage), (s, b, c, g) in AllocationDefaults.MATRIX.items():
+        assert s + b + c + g == 100, f"{risk} {stage} does not sum to 100"
+
+
+def test_deviation_thresholds():
+    """AllocationDefaults deviation thresholds should be in order: mild < moderate < high."""
+    from domain.rule_engine.defaults import AllocationDefaults
+    assert AllocationDefaults.DEVIATION_MILD < AllocationDefaults.DEVIATION_MODERATE
+    assert AllocationDefaults.DEVIATION_MODERATE < AllocationDefaults.DEVIATION_HIGH
+    assert AllocationDefaults.DEVIATION_MILD_MIN > 0
+    assert AllocationDefaults.DEVIATION_HIGH_MAX > AllocationDefaults.DEVIATION_HIGH
+
+
+def test_allocation_models_frozen():
+    """AllocationTarget and AllocationState should be frozen dataclasses."""
+    from domain.models.allocation import AllocationTarget, AllocationState
+    target = AllocationTarget(50, 30, 15, 5)
+    try:
+        target.stock_pct = 60  # type: ignore
+        assert False, "Should not be able to modify frozen dataclass"
+    except (AttributeError, TypeError):
+        pass  # Expected
+
+
+def test_allocation_target_total_pct():
+    """AllocationTarget.total_pct should sum all allocations."""
+    from domain.models.allocation import AllocationTarget
+    target = AllocationTarget(50, 30, 15, 5)
+    assert target.total_pct == 100
+    target2 = AllocationTarget(40, 35, 20, 5)
+    assert target2.total_pct == 100
+
+
+def test_allocation_to_dict_and_from_dict():
+    """AllocationTarget should round-trip through to_dict/from_dict."""
+    from domain.models.allocation import AllocationTarget
+    original = AllocationTarget(50, 30, 15, 5, reason="test")
+    d = original.to_dict()
+    restored = AllocationTarget.from_dict(d)
+    assert restored.stock_pct == original.stock_pct
+    assert restored.bond_pct == original.bond_pct
+    assert restored.cash_pct == original.cash_pct
+    assert restored.gold_pct == original.gold_pct
+    assert restored.reason == original.reason
+
+
+def test_deviation_analysis_frozen():
+    """DeviationAnalysis should be frozen."""
+    from domain.models.allocation import AllocationTarget, AllocationState, DeviationAnalysis
+    target = AllocationTarget(50, 30, 15, 5)
+    current = AllocationState(45, 35, 15, 5)
+    analysis = DeviationAnalysis(
+        target=target,
+        current=current,
+        stock_deviation=-5,
+        bond_deviation=5,
+        cash_deviation=0,
+        gold_deviation=0,
+        max_deviation=5,
+    )
+    try:
+        analysis.stock_deviation = -3  # type: ignore
+        assert False, "Should not be able to modify frozen dataclass"
+    except (AttributeError, TypeError):
+        pass  # Expected
+
+
+def test_compute_target_allocation_base_matrix():
+    """compute_target_allocation should use the base matrix correctly."""
+    from domain.services.allocation_service import compute_target_allocation
+    from domain.models.family import FamilyProfile, Member
+    
+    # Create a balanced family with a 35-year-old member
+    profile = FamilyProfile(
+        family_id="test",
+        members=(Member(member_id="self", role="主申请人", age=35, income=100000, is_decision_maker=True),),
+        sub_accounts=(),
+        risk_preference="balanced",
+        family_stage="single",
+        monthly_income=8000,
+        monthly_expense=5000,
+        investable_assets=500000,
+        monthly_surplus=3000,
+    )
+    
+    target = compute_target_allocation(profile)
+    # Base: (50, 30, 15, 5); age adjustment: 50 - (35-30)*0.5 = 47.5
+    assert 47 <= target.stock_pct <= 48
+    assert target.bond_pct == 30
+    assert target.cash_pct == 15
+    assert target.gold_pct == 5
+
+
+def test_compute_target_allocation_age_adjustment():
+    """Age adjustment should reduce stock allocation linearly from age 30."""
+    from domain.services.allocation_service import compute_target_allocation
+    from domain.models.family import FamilyProfile, Member
+    
+    # Age 30: no adjustment
+    profile_30 = FamilyProfile(
+        family_id="test",
+        members=(Member(member_id="self", role="主申请人", age=30, income=100000, is_decision_maker=True),),
+        sub_accounts=(),
+        risk_preference="balanced",
+        family_stage="single",
+        monthly_income=8000,
+        monthly_expense=5000,
+        investable_assets=500000,
+        monthly_surplus=3000,
+    )
+    target_30 = compute_target_allocation(profile_30)
+    assert target_30.stock_pct == 50
+    
+    # Age 40: -5% adjustment (10 years × 0.5%)
+    profile_40 = FamilyProfile(
+        family_id="test",
+        members=(Member(member_id="self", role="主申请人", age=40, income=100000, is_decision_maker=True),),
+        sub_accounts=(),
+        risk_preference="balanced",
+        family_stage="single",
+        monthly_income=8000,
+        monthly_expense=5000,
+        investable_assets=500000,
+        monthly_surplus=3000,
+    )
+    target_40 = compute_target_allocation(profile_40)
+    assert target_40.stock_pct == 45
+
+
+def test_compute_target_allocation_enforces_conservative_minimum():
+    """Age adjustment should not go below conservative row."""
+    from domain.services.allocation_service import compute_target_allocation
+    from domain.models.family import FamilyProfile, Member
+    
+    # Very old person with aggressive preference
+    profile = FamilyProfile(
+        family_id="test",
+        members=(Member(member_id="self", role="主申请人", age=70, income=100000, is_decision_maker=True),),
+        sub_accounts=(),
+        risk_preference="aggressive",
+        family_stage="single",
+        monthly_income=8000,
+        monthly_expense=5000,
+        investable_assets=500000,
+        monthly_surplus=3000,
+    )
+    
+    target = compute_target_allocation(profile)
+    # Base: (70, 15, 10, 5); age adjustment: 70 - 20 = 50
+    # But conservative single is (30, 50, 15, 5), so floor at 30
+    assert target.stock_pct >= 30
+
+
+def test_analyze_deviation_normal():
+    """Deviation < 3% should classify as normal."""
+    from domain.models.allocation import AllocationTarget, AllocationState
+    from domain.services.allocation_service import analyze_deviation
+    
+    target = AllocationTarget(50, 30, 15, 5)
+    current = AllocationState(50.5, 30, 15, 4.5)  # Max deviation 0.5%
+    analysis = analyze_deviation(current, target)
+    assert analysis.severity == "normal"
+    assert "无需调整" in analysis.recommendation
+
+
+def test_analyze_deviation_mild():
+    """Deviation 3-7% should classify as mild."""
+    from domain.models.allocation import AllocationTarget, AllocationState
+    from domain.services.allocation_service import analyze_deviation
+    
+    target = AllocationTarget(50, 30, 15, 5)
+    current = AllocationState(55, 30, 10, 5)  # Deviation 5%
+    analysis = analyze_deviation(current, target)
+    assert analysis.severity == "mild"
+    assert "关注" in analysis.recommendation
+
+
+def test_analyze_deviation_moderate():
+    """Deviation 7-15% should classify as moderate."""
+    from domain.models.allocation import AllocationTarget, AllocationState
+    from domain.services.allocation_service import analyze_deviation
+    
+    target = AllocationTarget(50, 30, 15, 5)
+    current = AllocationState(60, 30, 5, 5)  # Deviation 10%
+    analysis = analyze_deviation(current, target)
+    assert analysis.severity == "moderate"
+    assert "再平衡" in analysis.recommendation
+
+
+def test_analyze_deviation_high():
+    """Deviation > 15% should classify as high."""
+    from domain.models.allocation import AllocationTarget, AllocationState
+    from domain.services.allocation_service import analyze_deviation
+    
+    target = AllocationTarget(50, 30, 15, 5)
+    current = AllocationState(70, 20, 5, 5)  # Deviation 20%
+    analysis = analyze_deviation(current, target)
+    assert analysis.severity == "high"
+    assert "立即" in analysis.recommendation
+
+
+def test_detect_rebalance_trigger_urgent():
+    """Deviation > 15% should trigger urgent rebalance."""
+    from domain.models.allocation import AllocationTarget, AllocationState, DeviationAnalysis
+    from domain.services.allocation_service import detect_rebalance_trigger, analyze_deviation
+    
+    target = AllocationTarget(50, 30, 15, 5)
+    current = AllocationState(70, 20, 5, 5)
+    analysis = analyze_deviation(current, target)
+    
+    should_rebalance, reason = detect_rebalance_trigger(analysis, 0)
+    assert should_rebalance is True
+    assert "立即" in reason
+
+
+def test_detect_rebalance_trigger_time_based():
+    """Moderate deviation + 6+ months should trigger rebalance."""
+    from domain.models.allocation import AllocationTarget, AllocationState
+    from domain.services.allocation_service import detect_rebalance_trigger, analyze_deviation
+    
+    target = AllocationTarget(50, 30, 15, 5)
+    current = AllocationState(60, 30, 5, 5)  # 10% deviation
+    analysis = analyze_deviation(current, target)
+    
+    # 90 days = moderate deviation threshold not reached
+    should_rebalance_90, _ = detect_rebalance_trigger(analysis, 90)
+    assert should_rebalance_90 is False
+    
+    # 180 days = execute interval reached
+    should_rebalance_180, reason = detect_rebalance_trigger(analysis, 180)
+    assert should_rebalance_180 is True
+    assert "180" in reason or "执行再平衡" in reason
+
+
+def test_validate_allocation_valid():
+    """Valid allocation should pass validation."""
+    from domain.models.allocation import AllocationTarget
+    from domain.services.allocation_service import validate_allocation
+    
+    target = AllocationTarget(50, 30, 15, 5)
+    errors = validate_allocation(target)
+    assert errors == []
+
+
+def test_validate_allocation_invalid_total():
+    """Allocation not summing to ~100 should fail."""
+    from domain.models.allocation import AllocationTarget
+    from domain.services.allocation_service import validate_allocation
+    
+    target = AllocationTarget(30, 30, 30, 30)  # Sum = 120
+    errors = validate_allocation(target)
+    assert len(errors) > 0
+    assert "Total allocation" in errors[0]
+
+
+def test_allocation_models_in_domain_init():
+    """Allocation models should be exported from domain.models.__init__."""
+    from domain.models import AllocationTarget, AllocationState, DeviationAnalysis
+    assert AllocationTarget is not None
+    assert AllocationState is not None
+    assert DeviationAnalysis is not None
+
+
+def test_rule_engine_defaults_in_init():
+    """Rule engine defaults should be exported from domain.rule_engine.__init__."""
+    from domain.rule_engine import AllocationDefaults, RiskDefaults, ScoringDefaults, RebalanceDefaults, StaleDataDefaults
+    assert AllocationDefaults is not None
+    assert RiskDefaults is not None
+    assert ScoringDefaults is not None
+    assert RebalanceDefaults is not None
+    assert StaleDataDefaults is not None
+
+
+def test_allocation_service_functions_importable():
+    """Allocation service functions should be importable."""
+    from domain.services.allocation_service import (
+        compute_target_allocation,
+        analyze_deviation,
+        detect_rebalance_trigger,
+        validate_allocation,
+    )
+    assert callable(compute_target_allocation)
+    assert callable(analyze_deviation)
+    assert callable(detect_rebalance_trigger)
+    assert callable(validate_allocation)
+
+
+def test_allocation_use_case_functions_importable():
+    """Allocation use case functions should be importable."""
+    from use_cases.manage_allocation import (
+        compute_allocation_target,
+        analyze_allocation_deviation,
+        check_rebalance_need,
+        save_allocation_override,
+    )
+    assert callable(compute_allocation_target)
+    assert callable(analyze_allocation_deviation)
+    assert callable(check_rebalance_need)
+    assert callable(save_allocation_override)
+
+
+def test_allocation_api_router_importable():
+    """Allocation API router should be importable."""
+    from api.allocation import router
+    assert router is not None
+    # Verify it's a FastAPI router
+    assert hasattr(router, "routes")
