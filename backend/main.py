@@ -626,93 +626,8 @@ async def get_market_dashboard():
 
 # ---- V4.5 API: 新因子单独接口 ----
 
-@app.get("/api/factors/northbound")
-def get_northbound_api():
-    """北向资金数据"""
-    return get_northbound_flow()
-
-@app.get("/api/factors/margin")
-def get_margin_api():
-    """融资融券数据"""
-    return get_margin_trading()
-
-@app.get("/api/factors/treasury")
-def get_treasury_api():
-    """国债收益率 / 股债性价比"""
-    return get_treasury_yield()
-
-@app.get("/api/factors/shibor")
-def get_shibor_api():
-    """SHIBOR 银行间利率"""
-    return get_shibor()
-
-@app.get("/api/factors/dividend")
-def get_dividend_api():
-    """股息率数据"""
-    return get_dividend_yield()
-
-@app.get("/api/factors/sentiment")
-def get_sentiment_api():
-    """LLM 新闻情绪评分"""
-    return get_news_sentiment_score()
 
 
-# ---- Phase 2: 扩展宏观数据 API（量化文档核心数据维度补齐）----
-from services.macro_extended import (
-    get_m1_data, get_social_financing, get_lpr_rate,
-    get_market_activity, get_merrill_lynch_clock,
-)
-
-@app.get("/api/macro/m1")
-def macro_m1():
-    """M1 货币供应量 + M1-M2 剪刀差"""
-    return get_m1_data()
-
-@app.get("/api/macro/social-financing")
-def macro_shrzgm():
-    """社会融资规模"""
-    return get_social_financing()
-
-@app.get("/api/macro/lpr")
-def macro_lpr():
-    """LPR 贷款市场报价利率"""
-    return get_lpr_rate()
-
-@app.get("/api/market/activity")
-def market_activity():
-    """市场涨跌家数/赚钱效应"""
-    return get_market_activity()
-
-@app.get("/api/macro/clock")
-def merrill_clock():
-    """美林时钟经济周期判断"""
-    return get_merrill_lynch_clock()
-
-@app.get("/api/macro/extended")
-def macro_extended_all():
-    """一次性获取所有扩展宏观数据"""
-    return {
-        "m1": get_m1_data(),
-        "social_financing": get_social_financing(),
-        "lpr": get_lpr_rate(),
-        "activity": get_market_activity(),
-        "clock": get_merrill_lynch_clock(),
-    }
-
-
-# ---- 国内政策数据 API ----
-from services.policy_data import (
-    get_real_estate_data, get_house_price_index,
-    get_policy_news_by_topic, get_all_policy_topics,
-    analyze_policy_impact_ds,
-)
-
-# ---- 市场微观因子 API ----
-from services.market_factors import (
-    get_commodity_prices, get_stock_unlock_schedule,
-    get_etf_fund_flow, get_all_market_factors,
-    check_holding_unlock,
-)
 
 # ---- 持仓关联智能 API ----
 from services.holding_intelligence import (
@@ -746,59 +661,7 @@ def get_single_holding_intel(code: str):
         pass
     return result
 
-@app.get("/api/policy/real-estate")
-def policy_real_estate():
-    """房地产开发投资/销售数据"""
-    return get_real_estate_data()
 
-@app.get("/api/policy/house-price")
-def policy_house_price():
-    """70城新房价格指数"""
-    return get_house_price_index()
-
-@app.get("/api/policy/news")
-def policy_news_by_topic(topic: str = "房地产", limit: int = 5):
-    """按主题获取政策新闻"""
-    return get_policy_news_by_topic(topic, limit)
-
-@app.get("/api/policy/all-topics")
-def policy_all_topics():
-    """一次性获取全部主题政策新闻"""
-    return get_all_policy_topics()
-
-@app.get("/api/policy/impact")
-def policy_impact():
-    """DeepSeek 分析政策→A股影响"""
-    return analyze_policy_impact_ds()
-
-
-# ---- 市场微观因子 API ----
-
-@app.get("/api/market-factors/commodities")
-def commodities_api():
-    """大宗商品期货（黄金/铜）"""
-    return get_commodity_prices()
-
-@app.get("/api/market-factors/unlock")
-def unlock_api():
-    """限售股解禁计划"""
-    return get_stock_unlock_schedule()
-
-@app.get("/api/market-factors/etf-flow")
-def etf_flow_api():
-    """ETF 资金流向"""
-    return get_etf_fund_flow()
-
-@app.get("/api/market-factors/all")
-def market_factors_all():
-    """全部市场微观因子（非交易日加友好提示）"""
-    result = get_all_market_factors()
-    # 非交易日友好提示
-    sr = result.get("sector_rotation", result) if isinstance(result, dict) else {}
-    if not sr.get("available") and datetime.now().weekday() >= 5:
-        if isinstance(result, dict):
-            result["_weekend_note"] = "📅 非交易日，行业/大宗数据暂无更新，将在下个交易日自动恢复"
-    return result
 
 
 # ---- 持仓关联智能 API ----
@@ -809,48 +672,8 @@ def holding_intel_api(userId: str = "default"):
     return scan_all_holding_intelligence(userId)
 
 
-# ---- V8 扩展宏观因子 API ----
-from services.macro_v8 import (
-    get_gdp, get_industrial_value_added, get_consumer_goods_retail,
-    get_fixed_asset_investment, get_lhb_summary, get_management_holdings,
-    get_all_v8_macro,
-)
-
-@app.get("/api/macro/v8")
-def macro_v8_all():
-    """V8 全部扩展宏观因子（GDP/工业增加值/社零/固投/龙虎榜/管理层增减持）"""
-    return get_all_v8_macro()
-
-@app.get("/api/macro/gdp")
-def macro_gdp():
-    return get_gdp()
-
-@app.get("/api/macro/lhb")
-def macro_lhb():
-    """龙虎榜（机构+游资动向）"""
-    return get_lhb_summary()
-
-
-@app.get("/api/factors/all")
-def get_all_factors():
-    """一次性获取全部新因子数据"""
-    return {
-        "northbound": get_northbound_flow(),
-        "margin": get_margin_trading(),
-        "treasury": get_treasury_yield(),
-        "shibor": get_shibor(),
-        "dividend": get_dividend_yield(),
-        "sentiment": get_news_sentiment_score(),
-        "mainFlow": get_main_money_flow(),
-        "updatedAt": datetime.now().isoformat(),
-    }
 
 # ---- V5.5 API: 数据缺口补齐 ----
-
-@app.get("/api/factors/main-flow")
-def get_main_flow_api():
-    """主力资金流向（今日全市场主力净流入TOP5/流出TOP5）"""
-    return get_main_money_flow()
 
 @app.get("/api/stock/financials/{code}")
 def get_stock_fin(code: str):
@@ -964,107 +787,6 @@ def api_backtest_portfolio(req: dict):
     return backtest_portfolio(holdings, years)
 
 
-# ---- Phase 4: LightGBM ML 选股 ----
-from services.ml_stock_screen import ml_stock_screen
-
-@app.get("/api/stock-screen/ml")
-def get_ml_stock_screen(top_n: int = 30):
-    """LightGBM 多因子选股：ML增强版"""
-    return ml_stock_screen(top_n)
-
-
-# ---- Phase 5: 因子 IC 检验 ----
-from services.factor_ic import compute_factor_ic, compute_ic_decay
-
-@app.get("/api/factor-ic")
-def api_factor_ic(forward_days: int = 20, pool_size: int = 200):
-    """因子 IC 检验：验证30因子中哪些真正预测未来收益"""
-    return compute_factor_ic(forward_days=forward_days, pool_size=pool_size)
-
-@app.get("/api/factor-ic/decay")
-def api_factor_ic_decay(pool_size: int = 150):
-    """IC 衰减曲线：因子在不同预测周期下的效果"""
-    return compute_ic_decay(pool_size=pool_size)
-
-
-# ---- Phase 6: 蒙特卡洛模拟 ----
-from services.monte_carlo import monte_carlo_single, monte_carlo_portfolio, monte_carlo_compare
-
-@app.get("/api/monte-carlo/{code}")
-def api_monte_carlo_single(
-    code: str,
-    simulations: int = 5000,
-    horizon_days: int = 250,
-    initial: float = 10000,
-    discipline: bool = True,
-):
-    """单只股票蒙特卡洛模拟：概率分布预测"""
-    return monte_carlo_single(
-        code=code, simulations=simulations, horizon_days=horizon_days,
-        initial_investment=initial, apply_discipline=discipline,
-    )
-
-@app.post("/api/monte-carlo/portfolio")
-def api_monte_carlo_portfolio(req: dict):
-    """组合蒙特卡洛模拟"""
-    holdings = req.get("holdings", [])
-    simulations = req.get("simulations", 3000)
-    horizon_days = req.get("horizon_days", 250)
-    initial = req.get("initial", 100000)
-    discipline = req.get("discipline", True)
-    return monte_carlo_portfolio(
-        holdings=holdings, simulations=simulations,
-        horizon_days=horizon_days, initial_investment=initial,
-        apply_discipline=discipline,
-    )
-
-@app.get("/api/monte-carlo/compare/{code}")
-def api_monte_carlo_compare(code: str, simulations: int = 3000, horizon_days: int = 250):
-    """纪律 vs 无纪律蒙特卡洛对比"""
-    return monte_carlo_compare(code=code, simulations=simulations, horizon_days=horizon_days)
-
-
-# ---- 全球市场 API ----
-from services.global_market import (
-    get_us_indices, get_forex_data, get_fed_rate,
-    get_global_pe, get_global_snapshot,
-    analyze_global_impact_on_a_shares, get_decision_data_pack,
-)
-
-@app.get("/api/global/indices")
-def global_indices():
-    """美股三大指数（道琼斯/标普/纳斯达克）"""
-    return get_us_indices()
-
-@app.get("/api/global/forex")
-def global_forex():
-    """外汇数据（美元/人民币）"""
-    return get_forex_data()
-
-@app.get("/api/global/fed-rate")
-def global_fed_rate():
-    """美联储利率"""
-    return get_fed_rate()
-
-@app.get("/api/global/pe")
-def global_pe():
-    """全球 PE 估值对比"""
-    return get_global_pe()
-
-@app.get("/api/global/snapshot")
-def global_snapshot():
-    """全球市场综合快照"""
-    return get_global_snapshot()
-
-@app.get("/api/global/impact")
-def global_impact():
-    """DeepSeek 分析全球→A股影响"""
-    return analyze_global_impact_on_a_shares()
-
-@app.get("/api/decision-data")
-def decision_data(userId: str = "default"):
-    """全量决策数据包（供 Claude 决策用）"""
-    return get_decision_data_pack(userId)
 
 
 # ---- 股票持仓盯盘 API ----
@@ -1076,6 +798,28 @@ from services.stock_monitor import (
 # ---- 多用户 Profile 管理（独立 router）----
 from routers.profiles import router as profiles_router, _load_profiles, _save_profiles
 app.include_router(profiles_router)
+
+# ---- M1 W2: 第一批拆分 Router（10 文件，~60 路由）----
+from api.factors import router as factors_router
+from api.macro import router as macro_router
+from api.global_market import router as global_market_router
+from api.policy import router as policy_router
+from api.market_factors import router as market_factors_router
+from api.alt_data import router as alt_data_router
+from api.quant import router as quant_router
+from api.broker import router as broker_router
+from api.analysis import router as analysis_router
+from api.scenario import router as scenario_router
+app.include_router(factors_router)
+app.include_router(macro_router)
+app.include_router(global_market_router)
+app.include_router(policy_router)
+app.include_router(market_factors_router)
+app.include_router(alt_data_router)
+app.include_router(quant_router)
+app.include_router(broker_router)
+app.include_router(analysis_router)
+app.include_router(scenario_router)
 
 
 # ---- 资产总览 API ----
@@ -2488,6 +2232,7 @@ def _build_market_context() -> str:
 
     # 大宗商品 + 限售解禁 + ETF 资金流
     try:
+        from services.market_factors import get_commodity_prices, get_etf_fund_flow
         comm = get_commodity_prices()
         if comm.get("available"):
             parts = []
@@ -3779,200 +3524,9 @@ def api_judgment_calibrate(req: dict = {}):
     return jt_calibrate(uid)
 
 
-# ============================================================
-# 六大量化引擎 API（对标幻方量化）
-# ============================================================
-
-# ---- P1: AI 预测引擎 ----
-@app.get("/api/ai-predict/{code}")
-def api_ai_predict(code: str, days: int = 5):
-    """AI 预测单只股票未来 N 天涨跌"""
-    from services.ai_predictor import predict_stock
-    return predict_stock(code, forward_days=days)
-
-@app.get("/api/ai-predict/portfolio/{user_id}")
-def api_ai_predict_portfolio(user_id: str, days: int = 5):
-    """AI 预测用户持仓组合"""
-    from services.ai_predictor import predict_portfolio
-    return predict_portfolio(user_id, forward_days=days)
-
-@app.post("/api/ai-predict/batch")
-def api_ai_predict_batch(request: Request):
-    """批量预测多只股票"""
-    import asyncio
-    body = asyncio.get_event_loop().run_until_complete(request.json())
-    codes = body.get("codes", [])
-    days = body.get("days", 5)
-    from services.ai_predictor import batch_predict
-    return batch_predict(codes, forward_days=days)
-
-# ---- P2: 遗传编程因子挖掘 ----
-@app.get("/api/genetic-factor/{code}")
-def api_genetic_factor(code: str, generations: int = 30, top_k: int = 10):
-    """对单只股票运行遗传因子挖掘"""
-    from services.genetic_factor import evolve_factors
-    return evolve_factors(code=code, generations=generations, top_k=top_k)
-
-# ---- P3: 组合优化器 ----
-@app.get("/api/portfolio-optimize/{user_id}")
-def api_portfolio_optimize(user_id: str, method: str = "all", max_weight: float = 0.20):
-    """组合优化：5种方法对比"""
-    from services.portfolio_optimizer import optimize_portfolio
-    return optimize_portfolio(user_id, method=method, max_weight=max_weight)
-
-# ---- P4: 另类数据仪表盘 ----
-@app.get("/api/alt-data/dashboard")
-def api_alt_data_dashboard():
-    """另类数据综合仪表盘"""
-    from services.alt_data import get_alt_data_dashboard
-    return get_alt_data_dashboard()
-
-@app.get("/api/alt-data/northbound")
-def api_alt_northbound():
-    """北向资金详情"""
-    from services.alt_data import get_northbound_flow_detail
-    return get_northbound_flow_detail()
-
-@app.get("/api/alt-data/margin")
-def api_alt_margin():
-    """融资融券详情"""
-    from services.alt_data import get_margin_detail
-    return get_margin_detail()
-
-@app.get("/api/alt-data/dragon-tiger")
-def api_alt_dragon_tiger():
-    """龙虎榜"""
-    from services.alt_data import get_dragon_tiger
-    return get_dragon_tiger()
-
-@app.get("/api/alt-data/block-trade")
-def api_alt_block_trade():
-    """大宗交易"""
-    from services.alt_data import get_block_trade
-    return get_block_trade()
-
-@app.get("/api/alt-data/sector-flow")
-def api_alt_sector_flow():
-    """行业资金流"""
-    from services.alt_data import get_sector_flow
-    return get_sector_flow()
-
-# ---- P5: 强化学习仓位建议 ----
-@app.get("/api/rl-position/{code}")
-def api_rl_position(code: str):
-    """RL 仓位建议（单只股票）"""
-    from services.rl_position import get_rl_recommendation
-    return get_rl_recommendation(code)
-
-@app.get("/api/rl-position/portfolio/{user_id}")
-def api_rl_portfolio(user_id: str):
-    """RL 仓位建议（全部持仓）"""
-    from services.rl_position import get_rl_portfolio_advice
-    return get_rl_portfolio_advice(user_id)
-
-# ---- P6: LLM 因子生成 ----
-@app.get("/api/llm-factor/{code}")
-def api_llm_factor(code: str, count: int = 5, iterations: int = 2):
-    """LLM 驱动的 Alpha 因子生成"""
-    from services.llm_factor_gen import generate_alpha_factors
-    return generate_alpha_factors(code=code, count=count, iterations=iterations)
 
 
-# ---- V6 Phase 4: 券商研报 ----
-@app.get("/api/broker/consensus")
-def api_broker_consensus():
-    """机构研报共识（多空比例+热门行业+关键风险）"""
-    from services.broker_research import get_broker_consensus
-    return get_broker_consensus()
 
-@app.get("/api/broker/latest")
-def api_broker_latest(limit: int = 20):
-    """最新研报列表"""
-    from services.broker_research import get_latest_reports
-    return {"reports": get_latest_reports(limit=limit)}
-
-@app.get("/api/broker/stock/{code}")
-def api_broker_stock(code: str, limit: int = 5):
-    """个股研报查询"""
-    from services.broker_research import get_stock_reports
-    return {"reports": get_stock_reports(code=code, limit=limit)}
-
-# ---- V6 Phase 4: 情景分析 ----
-@app.get("/api/scenarios")
-def api_scenarios_list():
-    """列出所有预设情景"""
-    from services.scenario_engine import list_scenarios
-    return {"scenarios": list_scenarios()}
-
-@app.get("/api/scenario/{scenario_id}")
-def api_scenario_analyze(scenario_id: str, userId: str = ""):
-    """预设情景分析（优先凌晨预计算缓存）"""
-    try:
-        from services.precomputed_cache import get_precomputed
-        cached = get_precomputed(f"scenario_{scenario_id}")
-        if cached:
-            cached["from_cache"] = True
-            return cached
-    except Exception:
-        pass
-    from services.scenario_engine import analyze_scenario
-    return analyze_scenario(scenario_id=scenario_id, user_id=userId)
-
-@app.post("/api/scenario/custom")
-def api_scenario_custom(req: dict = {}):
-    """自定义情景分析"""
-    from services.scenario_engine import analyze_scenario
-    text = req.get("text", "")
-    user_id = req.get("userId", "")
-    if not text:
-        return {"error": "需要 text 参数描述假设情景"}
-    return analyze_scenario(custom_text=text, user_id=user_id)
-
-# ---- V6 Phase 5: 分析历史 ----
-@app.get("/api/analysis/history")
-def api_analysis_history(userId: str = "", source: str = "", type: str = "", days: int = 30):
-    """查询分析历史列表"""
-    from services.analysis_history import get_analysis_history
-    records = get_analysis_history(userId or "default", source=source, analysis_type=type, days=days)
-    return {"records": records, "total": len(records)}
-
-@app.get("/api/analysis/latest")
-def api_analysis_latest(userId: str = ""):
-    """各来源最新分析（对比视图）"""
-    from services.analysis_history import get_latest_by_source
-    return get_latest_by_source(userId or "default")
-
-@app.get("/api/analysis/detail/{record_id}")
-def api_analysis_detail(record_id: str, userId: str = ""):
-    """获取单条分析完整内容"""
-    from services.analysis_history import get_analysis_detail
-    return get_analysis_detail(userId or "default", record_id)
-
-@app.post("/api/analysis/compare")
-def api_analysis_compare(req: dict = {}):
-    """多源对比（获取各来源最新+可选强制刷新DS）"""
-    user_id = req.get("userId", "default")
-    from services.analysis_history import get_latest_by_source
-    return get_latest_by_source(user_id)
-
-@app.post("/api/analysis/external")
-def api_analysis_external(req: dict = {}):
-    """接收外部分析（Claude/WorkBuddy 自动推送入口）"""
-    from services.analysis_history import save_analysis
-    uid = req.get("userId", "default")
-    text = req.get("analysis", "")
-    if not text:
-        return {"ok": False, "error": "analysis 不能为空"}
-    return save_analysis(
-        user_id=uid,
-        source=req.get("source", "claude"),
-        source_label=req.get("sourceLabel", "Claude"),
-        analysis_type=req.get("type", "full"),
-        analysis_text=text,
-        direction=req.get("direction", "unknown"),
-        confidence=int(req.get("confidence", 0)),
-        metadata=req.get("metadata"),
-    )
 
 # ---- V6.5: 盈利预测 + 估值 ----
 @app.get("/api/earnings/{code}")
