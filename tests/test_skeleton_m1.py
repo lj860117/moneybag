@@ -455,3 +455,834 @@ def test_ci_yml_has_required_jobs():
     assert "lint-main-py" in content, "CI missing lint-main-py job"
     assert "lint-architecture" in content, "CI missing lint-architecture job"
     assert "smoke-tests" in content, "CI missing smoke-tests job"
+
+
+# ---- 14. M2 W1: Agent Memory split into 3 targets ----
+
+def test_user_preference_service_importable():
+    """domain.services.user_preference_service must be importable."""
+    mod = importlib.import_module("domain.services.user_preference_service")
+    assert mod is not None
+
+
+def test_decision_archive_importable():
+    """domain.rule_engine.decision_archive must be importable."""
+    mod = importlib.import_module("domain.rule_engine.decision_archive")
+    assert mod is not None
+
+
+def test_user_preference_service_exports():
+    """user_preference_service must export all preference/profile/irony/emotion/event functions."""
+    from domain.services.user_preference_service import (
+        get_preferences, save_preferences,
+        get_profile, save_profile,
+        get_ironies, add_irony, remove_irony,
+        tag_emotion, record_emotion, get_emotion_summary,
+        get_life_events, save_life_events, add_life_event, remove_life_event,
+        get_upcoming_events,
+        get_pending_insights, add_pending_insight, approve_insight, reject_insight,
+    )
+    # Smoke: all are callable
+    for fn in (get_preferences, save_preferences, get_profile, save_profile,
+               get_ironies, add_irony, remove_irony, tag_emotion, record_emotion,
+               get_emotion_summary, get_life_events, save_life_events,
+               add_life_event, remove_life_event, get_upcoming_events,
+               get_pending_insights, add_pending_insight, approve_insight, reject_insight):
+        assert callable(fn), f"{fn} is not callable"
+
+
+def test_decision_archive_exports():
+    """decision_archive must export all decision/rule/context/extract functions."""
+    from domain.rule_engine.decision_archive import (
+        get_decisions, get_archived_decisions, get_archive_summaries,
+        add_decision, archive_old_decisions, summarize_archive_month,
+        track_decision_result,
+        get_rules, add_rule, remove_rule, check_rules,
+        get_context, save_context,
+        add_to_extract_queue, get_extract_queue, clear_extract_queue,
+        auto_extract_insight, batch_extract_for_user,
+    )
+    for fn in (get_decisions, get_archived_decisions, get_archive_summaries,
+               add_decision, archive_old_decisions, summarize_archive_month,
+               track_decision_result, get_rules, add_rule, remove_rule,
+               check_rules, get_context, save_context, add_to_extract_queue,
+               get_extract_queue, clear_extract_queue, auto_extract_insight,
+               batch_extract_for_user):
+        assert callable(fn), f"{fn} is not callable"
+
+
+def test_agent_memory_shim_reexports():
+    """services.agent_memory shim must re-export all functions from new modules."""
+    from services.agent_memory import (
+        get_preferences, save_preferences,
+        get_profile, save_profile,
+        get_ironies, add_irony, remove_irony,
+        record_emotion, get_emotion_summary,
+        get_life_events, add_life_event, remove_life_event, get_upcoming_events,
+        get_pending_insights, approve_insight, reject_insight,
+        get_decisions, add_decision, get_rules, add_rule, remove_rule, check_rules,
+        get_context, save_context,
+        auto_extract_insight, batch_extract_for_user,
+        build_memory_summary,
+    )
+    # All re-exports must be callable
+    for fn in (get_preferences, save_preferences, get_profile, save_profile,
+               get_ironies, add_irony, remove_irony, record_emotion,
+               get_emotion_summary, get_life_events, add_life_event,
+               remove_life_event, get_upcoming_events, get_pending_insights,
+               approve_insight, reject_insight, get_decisions, add_decision,
+               get_rules, add_rule, remove_rule, check_rules, get_context,
+               save_context, auto_extract_insight, batch_extract_for_user,
+               build_memory_summary):
+        assert callable(fn), f"{fn} is not callable"
+
+
+def test_build_memory_summary_returns_empty():
+    """build_memory_summary is deprecated — must return empty string."""
+    from services.agent_memory import build_memory_summary
+    result = build_memory_summary("test_user_stub")
+    assert result == "", f"Expected empty string, got: {result!r}"
+
+
+def test_agent_memory_shim_source_matches_new_modules():
+    """Verify shim re-exports point to the actual new module functions (not stale copies)."""
+    from services.agent_memory import get_preferences as shim_gp
+    from domain.services.user_preference_service import get_preferences as new_gp
+    assert shim_gp is new_gp, "shim get_preferences is not the same object as new module's"
+
+    from services.agent_memory import get_decisions as shim_gd
+    from domain.rule_engine.decision_archive import get_decisions as new_gd
+    assert shim_gd is new_gd, "shim get_decisions is not the same object as new module's"
+
+    from services.agent_memory import check_rules as shim_cr
+    from domain.rule_engine.decision_archive import check_rules as new_cr
+    assert shim_cr is new_cr, "shim check_rules is not the same object as new module's"
+
+
+# ---- 15. M2 W2: Family Profile domain model ----
+
+def test_family_model_importable():
+    """domain.models.family must be importable."""
+    mod = importlib.import_module("domain.models.family")
+    assert mod is not None
+
+
+def test_family_model_exports():
+    """domain.models must export FamilyProfile, Member, SubAccount."""
+    from domain.models import FamilyProfile, Member, SubAccount
+    assert FamilyProfile is not None
+    assert Member is not None
+    assert SubAccount is not None
+
+
+def test_family_profile_frozen():
+    """FamilyProfile must be a frozen dataclass."""
+    from domain.models.family import FamilyProfile
+    p = FamilyProfile(family_id="test")
+    with pytest.raises(AttributeError):
+        p.family_id = "mutated"  # type: ignore[misc]
+
+
+def test_family_profile_round_trip():
+    """FamilyProfile.to_dict() -> from_dict() must round-trip cleanly."""
+    from domain.models.family import FamilyProfile, Member, SubAccount
+    original = FamilyProfile(
+        family_id="test-family",
+        members=(
+            Member(member_id="self", role="主申请人", age=38, income=25000, is_decision_maker=True),
+            Member(member_id="spouse", role="配偶", age=36, income=18000),
+        ),
+        sub_accounts=(
+            SubAccount(
+                account_id="main",
+                purpose="家庭主账户",
+                target_allocation=(("bond_pct", 30), ("cash_pct", 15), ("gold_pct", 5), ("stock_pct", 50)),
+            ),
+        ),
+        risk_preference="balanced",
+        family_stage="with_children",
+        monthly_income=43000,
+        monthly_expense=20000,
+        emergency_months=6.0,
+        has_critical_illness=True,
+        critical_illness_coverage=500000,
+        created_at="2026-04-26T00:00:00",
+        updated_at="2026-04-26T00:00:00",
+    )
+    d = original.to_dict()
+    restored = FamilyProfile.from_dict(d)
+
+    assert restored.family_id == original.family_id
+    assert len(restored.members) == 2
+    assert restored.members[0].member_id == "self"
+    assert restored.members[0].is_decision_maker is True
+    assert restored.members[1].age == 36
+    assert len(restored.sub_accounts) == 1
+    assert restored.sub_accounts[0].account_id == "main"
+    assert restored.risk_preference == "balanced"
+    assert restored.family_stage == "with_children"
+    assert restored.monthly_income == 43000
+    assert restored.emergency_months == 6.0
+    assert restored.has_critical_illness is True
+    assert isinstance(d, dict)
+
+
+def test_member_defaults():
+    """Member should have sane defaults."""
+    from domain.models.family import Member
+    m = Member(member_id="test")
+    assert m.role == ""
+    assert m.age == 0
+    assert m.income == 0.0
+    assert m.is_decision_maker is False
+
+
+def test_sub_account_defaults():
+    """SubAccount should have sane defaults."""
+    from domain.models.family import SubAccount
+    s = SubAccount(account_id="test")
+    assert s.purpose == ""
+    assert s.target_allocation == ()
+    assert s.horizon_years == 0
+    assert s.is_independent is False
+
+
+def test_family_profile_computed_properties():
+    """FamilyProfile computed properties (total_debt, insurance_count, primary_member)."""
+    from domain.models.family import FamilyProfile, Member
+    p = FamilyProfile(
+        family_id="test",
+        members=(
+            Member(member_id="a", is_decision_maker=False),
+            Member(member_id="b", is_decision_maker=True),
+        ),
+        mortgage_remaining=1000000,
+        car_loan=50000,
+        consumer_loan=10000,
+        credit_card_debt=5000,
+        has_critical_illness=True,
+        has_life_insurance=True,
+        has_medical_insurance=False,
+        has_accident_insurance=True,
+    )
+    assert p.total_debt == 1065000
+    assert p.insurance_count == 3
+    assert p.primary_member is not None
+    assert p.primary_member.member_id == "b"
+
+
+# ---- 16. M2 W2: FamilyProfileProtocol ----
+
+def test_family_profile_protocol_importable():
+    """domain.protocols.family_profile must be importable."""
+    mod = importlib.import_module("domain.protocols.family_profile")
+    assert mod is not None
+
+
+def test_family_profile_protocol_runtime_checkable():
+    """FamilyProfileProtocol must be @runtime_checkable."""
+    from domain.protocols import FamilyProfileProtocol
+    assert not isinstance("not_a_store", FamilyProfileProtocol)
+
+
+def test_family_profile_store_satisfies_protocol():
+    """FamilyProfileStore must satisfy FamilyProfileProtocol (isinstance check)."""
+    from domain.protocols import FamilyProfileProtocol
+    from infra.store import FamilyProfileStore
+    from infra.store.file_store import FileStore
+    store = FamilyProfileStore(store=FileStore(base_dir="/tmp/moneybag_test_fp_proto"))
+    assert isinstance(store, FamilyProfileProtocol)
+
+
+# ---- 17. M2 W2: FamilyProfileStore CRUD ----
+
+def test_family_profile_store_crud(tmp_path):
+    """FamilyProfileStore CRUD operations with temp directory."""
+    from infra.store.file_store import FileStore
+    from infra.store.family_profile_store import FamilyProfileStore
+
+    fs = FileStore(base_dir=str(tmp_path))
+    store = FamilyProfileStore(store=fs)
+
+    # Miss
+    assert store.load("nonexistent") is None
+    assert not store.exists("nonexistent")
+    assert store.list_families() == []
+
+    # Save + Load
+    data = {"family_id": "test", "risk_preference": "balanced", "members": []}
+    store.save("test", data)
+    assert store.exists("test")
+    loaded = store.load("test")
+    assert loaded is not None
+    assert loaded["family_id"] == "test"
+    assert len(store.list_families()) == 1
+
+    # Overwrite
+    data2 = {**data, "risk_preference": "aggressive"}
+    store.save("test", data2)
+    loaded2 = store.load("test")
+    assert loaded2 is not None
+    assert loaded2["risk_preference"] == "aggressive"
+
+
+# ---- 18. M2 W2: Family Profile Service ----
+
+def test_family_profile_service_build():
+    """build_profile_from_questionnaire should construct a valid FamilyProfile."""
+    from domain.services.family_profile_service import build_profile_from_questionnaire
+
+    answers = {
+        "age": 38,
+        "monthly_income": 25000,
+        "monthly_expense": 15000,
+        "investable_assets": 500000,
+        "risk_preference": "balanced",
+        "mortgage_remaining": 800000,
+        "has_critical_illness": True,
+        "critical_illness_coverage": 500000,
+        "emergency_months": 6.0,
+        "investment_horizon_years": 15,
+        "max_drawdown_tolerance": -0.20,
+        "primary_goal": "education",
+        "members": [
+            {"member_id": "self", "role": "主申请人", "age": 38, "income": 25000, "is_decision_maker": True},
+            {"member_id": "child1", "role": "子女", "age": 6},
+        ],
+    }
+    profile = build_profile_from_questionnaire("test-family", answers)
+
+    assert profile.family_id == "test-family"
+    assert profile.risk_preference == "balanced"
+    assert profile.family_stage == "with_children"  # auto-derived (has child member)
+    assert profile.monthly_income == 25000
+    assert profile.mortgage_remaining == 800000
+    assert profile.has_critical_illness is True
+    assert len(profile.members) == 2
+    assert profile.members[0].is_decision_maker is True
+    assert profile.primary_goal == "education"
+    assert profile.created_at != ""
+    assert profile.updated_at != ""
+
+
+def test_family_profile_service_validate():
+    """validate_profile should catch missing required fields."""
+    from domain.models.family import FamilyProfile
+    from domain.services.family_profile_service import validate_profile
+
+    # Valid profile
+    from domain.models.family import Member
+    valid = FamilyProfile(
+        family_id="test",
+        members=(Member(member_id="self", is_decision_maker=True),),
+    )
+    assert validate_profile(valid) == []
+
+    # Missing family_id
+    invalid_no_id = FamilyProfile(family_id="", members=(Member(member_id="self", is_decision_maker=True),))
+    errors = validate_profile(invalid_no_id)
+    assert any("family_id" in e for e in errors)
+
+    # No members
+    invalid_no_members = FamilyProfile(family_id="test", members=())
+    errors = validate_profile(invalid_no_members)
+    assert any("member" in e.lower() for e in errors)
+
+
+def test_derive_family_stage():
+    """derive_family_stage should return correct stages."""
+    from domain.services.family_profile_service import derive_family_stage
+
+    assert derive_family_stage(age=60, has_mortgage=False, has_children=True, years_to_retire=3) == "near_retirement"
+    assert derive_family_stage(age=35, has_mortgage=True, has_children=True, years_to_retire=30) == "with_children"
+    assert derive_family_stage(age=30, has_mortgage=True, has_children=False, years_to_retire=35) == "married_mortgage"
+    assert derive_family_stage(age=25, has_mortgage=False, has_children=False, years_to_retire=40) == "single"
+
+
+# ---- 19. M2 W2: Use Case ----
+
+def test_submit_questionnaire_use_case(tmp_path):
+    """End-to-end: submit questionnaire -> persist -> reload."""
+    from infra.store.file_store import FileStore
+    from infra.store.family_profile_store import FamilyProfileStore
+    from use_cases.submit_family_questionnaire import submit_questionnaire, get_family_profile
+
+    store = FamilyProfileStore(store=FileStore(base_dir=str(tmp_path)))
+
+    answers = {
+        "age": 38,
+        "monthly_income": 25000,
+        "monthly_expense": 15000,
+        "investable_assets": 500000,
+        "risk_preference": "balanced",
+        "emergency_months": 6.0,
+        "members": [
+            {"member_id": "self", "role": "主申请人", "age": 38, "income": 25000, "is_decision_maker": True},
+        ],
+    }
+
+    # Submit
+    profile, errors = submit_questionnaire("test-family", answers, store)
+    assert errors == [], f"Unexpected errors: {errors}"
+    assert profile.family_id == "test-family"
+    assert profile.monthly_income == 25000
+
+    # Reload
+    loaded = get_family_profile("test-family", store)
+    assert loaded is not None
+    assert loaded.family_id == "test-family"
+    assert loaded.monthly_income == 25000
+    assert len(loaded.members) == 1
+    assert loaded.members[0].is_decision_maker is True
+
+    # Update (second submit merges with existing)
+    answers2 = {**answers, "monthly_income": 30000}
+    profile2, errors2 = submit_questionnaire("test-family", answers2, store)
+    assert errors2 == []
+    assert profile2.monthly_income == 30000
+    assert profile2.created_at == profile.created_at  # preserved from first submit
+
+
+# ==============================================================================
+# M2 W3: Balance Sheet domain model + service + protocol + store + use case
+# ==============================================================================
+
+# ---- 20. BalanceSheet model importable ----
+
+def test_balance_sheet_model_importable():
+    """domain.models.balance_sheet must be importable."""
+    mod = importlib.import_module("domain.models.balance_sheet")
+    assert mod is not None
+
+
+def test_balance_sheet_model_exports():
+    """domain.models must export BalanceSheet and BalanceSheetItem."""
+    from domain.models import BalanceSheet, BalanceSheetItem
+    assert BalanceSheet is not None
+    assert BalanceSheetItem is not None
+
+
+# ---- 21. BalanceSheetItem basics ----
+
+def test_balance_sheet_item_frozen():
+    """BalanceSheetItem must be a frozen dataclass."""
+    from domain.models.balance_sheet import BalanceSheetItem
+    item = BalanceSheetItem(name="test", category="cash_deposits")
+    with pytest.raises(AttributeError):
+        item.name = "mutated"  # type: ignore[misc]
+
+
+def test_balance_sheet_item_defaults():
+    """BalanceSheetItem should have sane defaults."""
+    from domain.models.balance_sheet import BalanceSheetItem
+    item = BalanceSheetItem(name="test", category="cash_deposits")
+    assert item.value == 0.0
+    assert item.currency == "CNY"
+    assert item.last_updated == ""
+    assert item.data_source == "manual"
+
+
+def test_balance_sheet_item_round_trip():
+    """BalanceSheetItem.to_dict() -> from_dict() must round-trip."""
+    from domain.models.balance_sheet import BalanceSheetItem
+    original = BalanceSheetItem(
+        name="工商银行活期",
+        category="cash_deposits",
+        value=100000.0,
+        currency="CNY",
+        last_updated="2026-04-20T10:00:00",
+        data_source="manual",
+    )
+    d = original.to_dict()
+    restored = BalanceSheetItem.from_dict(d)
+    assert restored.name == original.name
+    assert restored.category == original.category
+    assert restored.value == original.value
+    assert restored.currency == original.currency
+    assert restored.last_updated == original.last_updated
+    assert restored.data_source == original.data_source
+
+
+# ---- 22. Staleness detection ----
+
+def test_balance_sheet_item_is_stale_when_old():
+    """Item with last_updated > 30 days ago is stale."""
+    from datetime import datetime, timedelta
+    from domain.models.balance_sheet import BalanceSheetItem
+
+    now = datetime(2026, 4, 26, 12, 0, 0)
+    old_date = (now - timedelta(days=31)).isoformat()
+
+    item = BalanceSheetItem(name="test", category="cash_deposits", last_updated=old_date)
+    assert item.is_stale(now=now) is True
+
+
+def test_balance_sheet_item_is_fresh_when_recent():
+    """Item with last_updated within 30 days is NOT stale."""
+    from datetime import datetime, timedelta
+    from domain.models.balance_sheet import BalanceSheetItem
+
+    now = datetime(2026, 4, 26, 12, 0, 0)
+    recent_date = (now - timedelta(days=5)).isoformat()
+
+    item = BalanceSheetItem(name="test", category="cash_deposits", last_updated=recent_date)
+    assert item.is_stale(now=now) is False
+
+
+def test_balance_sheet_item_stale_when_empty_date():
+    """Item with empty last_updated is always stale."""
+    from domain.models.balance_sheet import BalanceSheetItem
+    item = BalanceSheetItem(name="test", category="cash_deposits", last_updated="")
+    assert item.is_stale() is True
+
+
+def test_balance_sheet_item_stale_when_bad_date():
+    """Item with unparseable last_updated is stale."""
+    from domain.models.balance_sheet import BalanceSheetItem
+    item = BalanceSheetItem(name="test", category="cash_deposits", last_updated="not-a-date")
+    assert item.is_stale() is True
+
+
+# ---- 23. BalanceSheet frozen + basics ----
+
+def test_balance_sheet_frozen():
+    """BalanceSheet must be a frozen dataclass."""
+    from domain.models.balance_sheet import BalanceSheet
+    bs = BalanceSheet(family_id="test")
+    with pytest.raises(AttributeError):
+        bs.family_id = "mutated"  # type: ignore[misc]
+
+
+def test_balance_sheet_round_trip():
+    """BalanceSheet.to_dict() -> from_dict() must round-trip."""
+    from domain.models.balance_sheet import BalanceSheet, BalanceSheetItem
+    original = BalanceSheet(
+        family_id="test-family",
+        cash_deposits=(
+            BalanceSheetItem(name="工行活期", category="cash_deposits", value=100000, last_updated="2026-04-20T10:00:00"),
+            BalanceSheetItem(name="余额宝", category="cash_deposits", value=50000, last_updated="2026-04-22T10:00:00"),
+        ),
+        investments=(
+            BalanceSheetItem(name="沪深300ETF", category="investments", value=200000, last_updated="2026-04-25T10:00:00"),
+        ),
+        real_estate=(
+            BalanceSheetItem(name="自住房", category="real_estate", value=3000000, last_updated="2026-01-01T00:00:00"),
+        ),
+        liabilities=(
+            BalanceSheetItem(name="房贷", category="liabilities", value=1500000, last_updated="2026-04-01T00:00:00"),
+        ),
+        created_at="2026-04-20T10:00:00",
+        updated_at="2026-04-26T10:00:00",
+    )
+    d = original.to_dict()
+    restored = BalanceSheet.from_dict(d)
+
+    assert restored.family_id == original.family_id
+    assert len(restored.cash_deposits) == 2
+    assert len(restored.investments) == 1
+    assert len(restored.real_estate) == 1
+    assert len(restored.liabilities) == 1
+    assert restored.cash_deposits[0].name == "工行活期"
+    assert restored.investments[0].value == 200000
+    assert restored.created_at == original.created_at
+    assert isinstance(d, dict)
+
+
+# ---- 24. BalanceSheet computed properties ----
+
+def test_balance_sheet_computed_properties():
+    """BalanceSheet total_assets, total_liabilities, net_worth."""
+    from domain.models.balance_sheet import BalanceSheet, BalanceSheetItem
+    bs = BalanceSheet(
+        family_id="test",
+        cash_deposits=(
+            BalanceSheetItem(name="活期", category="cash_deposits", value=100000),
+        ),
+        investments=(
+            BalanceSheetItem(name="基金", category="investments", value=200000),
+        ),
+        real_estate=(
+            BalanceSheetItem(name="房子", category="real_estate", value=3000000),
+        ),
+        liabilities=(
+            BalanceSheetItem(name="房贷", category="liabilities", value=1500000),
+        ),
+    )
+    assert bs.total_assets == 3300000  # 100k + 200k + 3000k
+    assert bs.total_liabilities == 1500000
+    assert bs.net_worth == 1800000  # 3300k - 1500k
+
+
+def test_balance_sheet_staleness_report():
+    """BalanceSheet.staleness_report returns per-category staleness."""
+    from datetime import datetime, timedelta
+    from domain.models.balance_sheet import BalanceSheet, BalanceSheetItem
+
+    now = datetime(2026, 4, 26, 12, 0, 0)
+    fresh = (now - timedelta(days=5)).isoformat()
+    stale = (now - timedelta(days=45)).isoformat()
+
+    bs = BalanceSheet(
+        family_id="test",
+        cash_deposits=(
+            BalanceSheetItem(name="活期", category="cash_deposits", value=100000, last_updated=fresh),
+        ),
+        investments=(
+            BalanceSheetItem(name="基金", category="investments", value=200000, last_updated=stale),
+        ),
+        real_estate=(
+            BalanceSheetItem(name="房子", category="real_estate", value=3000000, last_updated=fresh),
+        ),
+        liabilities=(
+            BalanceSheetItem(name="房贷", category="liabilities", value=1500000, last_updated=stale),
+        ),
+    )
+    report = bs.staleness_report(now=now)
+
+    assert report["cash_deposits"]["stale_count"] == 0
+    assert report["cash_deposits"]["is_category_stale"] is False
+    assert report["investments"]["stale_count"] == 1
+    assert report["investments"]["is_category_stale"] is True
+    assert report["liabilities"]["stale_count"] == 1
+
+
+# ---- 25. BalanceSheet service ----
+
+def test_balance_sheet_service_build():
+    """build_balance_sheet should construct a valid BalanceSheet."""
+    from domain.services.balance_sheet_service import build_balance_sheet
+
+    items_data = {
+        "cash_deposits": [{"name": "活期", "value": 100000, "last_updated": "2026-04-20T10:00:00"}],
+        "investments": [{"name": "基金", "value": 200000, "last_updated": "2026-04-25T10:00:00"}],
+        "real_estate": [{"name": "自住房", "value": 3000000, "last_updated": "2026-01-01T00:00:00"}],
+        "liabilities": [{"name": "房贷", "value": 1500000, "last_updated": "2026-04-01T00:00:00"}],
+    }
+    sheet = build_balance_sheet("test-family", items_data)
+
+    assert sheet.family_id == "test-family"
+    assert len(sheet.cash_deposits) == 1
+    assert sheet.cash_deposits[0].name == "活期"
+    assert sheet.cash_deposits[0].category == "cash_deposits"
+    assert sheet.total_assets == 3300000
+    assert sheet.created_at != ""
+    assert sheet.updated_at != ""
+
+
+def test_balance_sheet_service_validate_valid():
+    """validate_balance_sheet on a valid sheet returns no errors."""
+    from domain.services.balance_sheet_service import build_balance_sheet, validate_balance_sheet
+
+    items_data = {
+        "cash_deposits": [{"name": "活期", "value": 100000, "last_updated": "2026-04-20T10:00:00"}],
+        "investments": [{"name": "基金", "value": 200000, "last_updated": "2026-04-25T10:00:00"}],
+        "real_estate": [{"name": "房子", "value": 3000000, "last_updated": "2026-01-01T00:00:00"}],
+        "liabilities": [{"name": "房贷", "value": 1500000, "last_updated": "2026-04-01T00:00:00"}],
+    }
+    sheet = build_balance_sheet("test-family", items_data)
+    errors = validate_balance_sheet(sheet)
+    assert errors == [], f"Unexpected errors: {errors}"
+
+
+def test_balance_sheet_service_validate_missing_category():
+    """validate_balance_sheet should catch missing Tier 1 categories."""
+    from domain.models.balance_sheet import BalanceSheet, BalanceSheetItem
+    from domain.services.balance_sheet_service import validate_balance_sheet
+
+    # Missing investments and liabilities
+    sheet = BalanceSheet(
+        family_id="test",
+        cash_deposits=(BalanceSheetItem(name="活期", category="cash_deposits", value=100000, last_updated="2026-04-20"),),
+        real_estate=(BalanceSheetItem(name="房子", category="real_estate", value=3000000, last_updated="2026-01-01"),),
+    )
+    errors = validate_balance_sheet(sheet)
+    assert any("investments" in e for e in errors)
+    assert any("liabilities" in e for e in errors)
+
+
+def test_balance_sheet_service_detect_stale():
+    """detect_stale_items should find items older than 30 days."""
+    from datetime import datetime, timedelta
+    from domain.services.balance_sheet_service import build_balance_sheet, detect_stale_items
+
+    now = datetime(2026, 4, 26, 12, 0, 0)
+    fresh = (now - timedelta(days=5)).isoformat()
+    stale = (now - timedelta(days=45)).isoformat()
+
+    items_data = {
+        "cash_deposits": [{"name": "活期", "value": 100000, "last_updated": fresh}],
+        "investments": [{"name": "基金", "value": 200000, "last_updated": stale}],
+        "real_estate": [{"name": "房子", "value": 3000000, "last_updated": fresh}],
+        "liabilities": [{"name": "房贷", "value": 1500000, "last_updated": stale}],
+    }
+    sheet = build_balance_sheet("test-family", items_data)
+    stale_report = detect_stale_items(sheet, now=now)
+
+    assert len(stale_report) == 2
+    stale_names = {item["name"] for item in stale_report}
+    assert "基金" in stale_names
+    assert "房贷" in stale_names
+    assert "活期" not in stale_names
+
+
+def test_balance_sheet_service_compute_summary():
+    """compute_summary should return complete summary with staleness."""
+    from domain.services.balance_sheet_service import build_balance_sheet, compute_summary
+
+    items_data = {
+        "cash_deposits": [{"name": "活期", "value": 100000, "last_updated": "2026-04-20T10:00:00"}],
+        "investments": [{"name": "基金", "value": 200000, "last_updated": "2026-04-25T10:00:00"}],
+        "real_estate": [{"name": "房子", "value": 3000000, "last_updated": "2026-01-01T00:00:00"}],
+        "liabilities": [{"name": "房贷", "value": 1500000, "last_updated": "2026-04-01T00:00:00"}],
+    }
+    sheet = build_balance_sheet("test-family", items_data)
+    summary = compute_summary(sheet)
+
+    assert summary["family_id"] == "test-family"
+    assert summary["total_assets"] == 3300000
+    assert summary["total_liabilities"] == 1500000
+    assert summary["net_worth"] == 1800000
+    assert summary["item_count"] == 4
+    assert "staleness_report" in summary
+    assert "category_totals" in summary
+
+
+# ---- 26. BalanceSheetProtocol ----
+
+def test_balance_sheet_protocol_importable():
+    """domain.protocols.balance_sheet must be importable."""
+    mod = importlib.import_module("domain.protocols.balance_sheet")
+    assert mod is not None
+
+
+def test_balance_sheet_protocol_runtime_checkable():
+    """BalanceSheetProtocol must be @runtime_checkable."""
+    from domain.protocols import BalanceSheetProtocol
+    assert not isinstance("not_a_store", BalanceSheetProtocol)
+
+
+def test_balance_sheet_store_satisfies_protocol():
+    """BalanceSheetStore must satisfy BalanceSheetProtocol (isinstance check)."""
+    from domain.protocols import BalanceSheetProtocol
+    from infra.store import BalanceSheetStore
+    from infra.store.file_store import FileStore
+    store = BalanceSheetStore(store=FileStore(base_dir="/tmp/moneybag_test_bs_proto"))
+    assert isinstance(store, BalanceSheetProtocol)
+
+
+# ---- 27. BalanceSheetStore CRUD ----
+
+def test_balance_sheet_store_crud(tmp_path):
+    """BalanceSheetStore CRUD operations with temp directory."""
+    from infra.store.file_store import FileStore
+    from infra.store.balance_sheet_store import BalanceSheetStore
+
+    fs = FileStore(base_dir=str(tmp_path))
+    store = BalanceSheetStore(store=fs)
+
+    # Miss
+    assert store.load("nonexistent") is None
+    assert not store.exists("nonexistent")
+    assert store.list_families() == []
+
+    # Save + Load
+    data = {
+        "family_id": "test",
+        "cash_deposits": [{"name": "活期", "value": 100000}],
+        "investments": [],
+        "real_estate": [],
+        "liabilities": [],
+    }
+    store.save("test", data)
+    assert store.exists("test")
+    loaded = store.load("test")
+    assert loaded is not None
+    assert loaded["family_id"] == "test"
+    assert len(store.list_families()) == 1
+
+    # Overwrite
+    data2 = {**data, "cash_deposits": [{"name": "活期", "value": 200000}]}
+    store.save("test", data2)
+    loaded2 = store.load("test")
+    assert loaded2 is not None
+    assert loaded2["cash_deposits"][0]["value"] == 200000
+
+
+# ---- 28. Balance Sheet Use Case ----
+
+def test_submit_balance_sheet_use_case(tmp_path):
+    """End-to-end: submit balance sheet -> persist -> reload."""
+    from infra.store.file_store import FileStore
+    from infra.store.balance_sheet_store import BalanceSheetStore
+    from use_cases.manage_balance_sheet import (
+        submit_balance_sheet,
+        get_balance_sheet,
+        get_balance_sheet_summary,
+    )
+
+    store = BalanceSheetStore(store=FileStore(base_dir=str(tmp_path)))
+
+    items_data = {
+        "cash_deposits": [{"name": "活期", "value": 100000, "last_updated": "2026-04-20T10:00:00"}],
+        "investments": [{"name": "基金", "value": 200000, "last_updated": "2026-04-25T10:00:00"}],
+        "real_estate": [{"name": "自住房", "value": 3000000, "last_updated": "2026-01-01T00:00:00"}],
+        "liabilities": [{"name": "房贷", "value": 1500000, "last_updated": "2026-04-01T00:00:00"}],
+    }
+
+    # Submit
+    sheet, errors = submit_balance_sheet("test-family", items_data, store)
+    assert errors == [], f"Unexpected errors: {errors}"
+    assert sheet.family_id == "test-family"
+    assert sheet.total_assets == 3300000
+    assert sheet.net_worth == 1800000
+
+    # Reload
+    loaded = get_balance_sheet("test-family", store)
+    assert loaded is not None
+    assert loaded.family_id == "test-family"
+    assert len(loaded.cash_deposits) == 1
+    assert loaded.cash_deposits[0].name == "活期"
+
+    # Summary
+    summary = get_balance_sheet_summary("test-family", store)
+    assert summary is not None
+    assert summary["total_assets"] == 3300000
+    assert summary["net_worth"] == 1800000
+
+    # Update (second submit preserves created_at)
+    items_data2 = {**items_data, "cash_deposits": [{"name": "活期", "value": 150000, "last_updated": "2026-04-26T10:00:00"}]}
+    sheet2, errors2 = submit_balance_sheet("test-family", items_data2, store)
+    assert errors2 == []
+    assert sheet2.cash_deposits[0].value == 150000
+    assert sheet2.created_at == sheet.created_at  # preserved from first submit
+
+
+def test_update_category_items_use_case(tmp_path):
+    """update_category_items should replace one category while keeping others."""
+    from infra.store.file_store import FileStore
+    from infra.store.balance_sheet_store import BalanceSheetStore
+    from use_cases.manage_balance_sheet import submit_balance_sheet, update_category_items
+
+    store = BalanceSheetStore(store=FileStore(base_dir=str(tmp_path)))
+
+    # First submit a full balance sheet
+    items_data = {
+        "cash_deposits": [{"name": "活期", "value": 100000, "last_updated": "2026-04-20T10:00:00"}],
+        "investments": [{"name": "基金", "value": 200000, "last_updated": "2026-04-25T10:00:00"}],
+        "real_estate": [{"name": "自住房", "value": 3000000, "last_updated": "2026-01-01T00:00:00"}],
+        "liabilities": [{"name": "房贷", "value": 1500000, "last_updated": "2026-04-01T00:00:00"}],
+    }
+    sheet, errors = submit_balance_sheet("test-family", items_data, store)
+    assert errors == []
+
+    # Update just cash_deposits
+    new_cash = [
+        {"name": "活期", "value": 150000, "last_updated": "2026-04-26T10:00:00"},
+        {"name": "余额宝", "value": 50000, "last_updated": "2026-04-26T10:00:00"},
+    ]
+    updated, update_errors = update_category_items("test-family", "cash_deposits", new_cash, store)
+    assert update_errors == []
+    assert updated is not None
+    assert len(updated.cash_deposits) == 2  # updated
+    assert len(updated.investments) == 1  # unchanged
+    assert updated.investments[0].name == "基金"  # unchanged

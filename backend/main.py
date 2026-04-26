@@ -89,6 +89,14 @@ app.include_router(steward_router)
 app.include_router(enhance_router)
 app.include_router(misc_router)
 
+# ---- M2 W2: 家庭画像问卷（6 路由）----
+from api.family_profile import router as family_profile_router
+app.include_router(family_profile_router)
+
+# ---- M2 W3: 家庭资产负债表 MVP（4 路由）----
+from api.balance_sheet import router as balance_sheet_router
+app.include_router(balance_sheet_router)
+
 # ---- 静态文件服务（部署时前后端一体）----
 FRONTEND_DIR = Path(__file__).resolve().parent.parent  # moneybag/
 

@@ -6,6 +6,7 @@ All models are either @dataclass (for internal use) or Pydantic BaseModel
 
 Current contents:
   - LLMResponse: structured return type for all LLM calls
+  - FamilyProfile / Member / SubAccount: family questionnaire (M2 W2)
 
 Design doc: docs/design/12-framework-refactor.md
 """
@@ -13,6 +14,9 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from typing import Any
+
+from domain.models.family import FamilyProfile, Member, SubAccount
+from domain.models.balance_sheet import BalanceSheet, BalanceSheetItem
 
 
 @dataclass(frozen=True)
