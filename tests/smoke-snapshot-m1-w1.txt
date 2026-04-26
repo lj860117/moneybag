@@ -1,0 +1,37 @@
+============================= test session starts ==============================
+platform darwin -- Python 3.9.6, pytest-8.4.2, pluggy-1.6.0 -- /Library/Developer/CommandLineTools/usr/bin/python3
+cachedir: .pytest_cache
+rootdir: /Users/leijiang/WorkBuddy/moneybag-for-claudecode
+plugins: anyio-4.12.1
+collecting ... collected 28 items
+
+tests/test_skeleton_m1.py::test_package_importable[domain] PASSED        [  3%]
+tests/test_skeleton_m1.py::test_package_importable[domain.models] PASSED [  7%]
+tests/test_skeleton_m1.py::test_package_importable[domain.protocols] PASSED [ 10%]
+tests/test_skeleton_m1.py::test_package_importable[domain.services] PASSED [ 14%]
+tests/test_skeleton_m1.py::test_package_importable[domain.rule_engine] PASSED [ 17%]
+tests/test_skeleton_m1.py::test_package_importable[infra] PASSED         [ 21%]
+tests/test_skeleton_m1.py::test_package_importable[infra.cache] PASSED   [ 25%]
+tests/test_skeleton_m1.py::test_package_importable[infra.store] PASSED   [ 28%]
+tests/test_skeleton_m1.py::test_package_importable[infra.llm] PASSED     [ 32%]
+tests/test_skeleton_m1.py::test_package_importable[infra.data_source] PASSED [ 35%]
+tests/test_skeleton_m1.py::test_package_importable[infra.knowledge] PASSED [ 39%]
+tests/test_skeleton_m1.py::test_package_importable[infra.events] PASSED  [ 42%]
+tests/test_skeleton_m1.py::test_package_importable[infra.config] PASSED  [ 46%]
+tests/test_skeleton_m1.py::test_package_importable[api] PASSED           [ 50%]
+tests/test_skeleton_m1.py::test_package_importable[use_cases] PASSED     [ 53%]
+tests/test_skeleton_m1.py::test_protocols_are_runtime_checkable PASSED   [ 57%]
+tests/test_skeleton_m1.py::test_memory_cache_satisfies_protocol PASSED   [ 60%]
+tests/test_skeleton_m1.py::test_file_store_satisfies_protocol PASSED     [ 64%]
+tests/test_skeleton_m1.py::test_llm_response_round_trip PASSED           [ 67%]
+tests/test_skeleton_m1.py::test_llm_response_from_legacy_dict PASSED     [ 71%]
+tests/test_skeleton_m1.py::test_llm_response_is_frozen PASSED            [ 75%]
+tests/test_skeleton_m1.py::test_memory_cache_crud PASSED                 [ 78%]
+tests/test_skeleton_m1.py::test_memory_cache_ttl_expiry PASSED           [ 82%]
+tests/test_skeleton_m1.py::test_memory_cache_stores_complex_types PASSED [ 85%]
+tests/test_skeleton_m1.py::test_file_store_crud PASSED                   [ 89%]
+tests/test_skeleton_m1.py::test_file_store_backup_recovery PASSED        [ 92%]
+tests/test_skeleton_m1.py::test_file_store_multiple_collections PASSED   [ 96%]
+tests/test_skeleton_m1.py::test_domain_has_no_infra_imports PASSED       [100%]
+
+============================== 28 passed in 1.14s ==============================

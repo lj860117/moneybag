@@ -1,0 +1,54 @@
+[importlinter]
+root_packages =
+    backend
+
+# ---- 四层架构依赖规则 ----
+# 设计文档：docs/design/12-framework-refactor.md §四
+# 核心原则：上层可导下层；下层不可导上层
+
+[importlinter:contract:four-layer-architecture]
+name = Four-layer architecture (api > use_cases > domain > infra)
+type = layers
+containers = backend
+layers =
+    api
+    use_cases
+    domain
+    infra
+
+# domain 内部不能互 import（services <-> rule_engine 禁止循环）
+[importlinter:contract:domain-independence]
+name = Domain layer internal independence
+type = independence
+modules =
+    backend.domain.services
+    backend.domain.rule_engine
+
+# infra 只能依赖 domain.protocols，不能依赖 domain.services / domain.rule_engine
+[importlinter:contract:infra-only-protocols]
+name = Infra only depends on domain.protocols
+type = forbidden
+source_modules =
+    backend.infra.cache
+    backend.infra.store
+    backend.infra.llm
+    backend.infra.data_source
+    backend.infra.knowledge
+    backend.infra.events
+    backend.infra.config
+forbidden_modules =
+    backend.domain.services
+    backend.domain.rule_engine
+    backend.domain.models
+
+# 遗留代码宽容：services/ 下旧代码允许跨层导入，M2 起逐步收紧
+[importlinter:contract:legacy-services-exempt]
+name = Legacy services exempt until M2
+type = layers
+containers = backend
+layers =
+    services
+    api
+    use_cases
+    domain
+    infra
