@@ -6,7 +6,7 @@
 ---
 
 ## 当前阶段
-M2 W3 — 家庭资产负债表 MVP（✅ 完成）
+M2 W4 — 资产配置框架 + 再平衡提醒（✅ 完成）
 
 ## 已完成
 - [x] 2026-04-25: 四层目录树（api/ use_cases/ domain/ infra/）
@@ -124,6 +124,18 @@ M2 W3 — 家庭资产负债表 MVP（✅ 完成）
   - 更新 3 个 __init__.py 导出（domain/models + domain/protocols + infra/store）
   - 新增 24 个测试（70 → 94），94/94 全绿 ✅
   - 新文件 domain 层零 infra import ✅（不变式 #9 + #10 达成）
+- [x] 2026-04-26: **M2 W4 资产配置框架 + 再平衡提醒完成：配比矩阵 + 偏离度规则 + 再平衡触发 + /api/family/allocation 路由**
+  - domain/rule_engine/defaults.py（~117 行）— AllocationDefaults 12 格配比矩阵（保守/平衡/进取 × 4 家庭阶段）、年龄微调参数、偏离度三档阈值（3/7/15%）及 hard limits、RiskDefaults（集中度/止损阈值）、ScoringDefaults（5 维评分）、RebalanceDefaults（季度检查/半年执行/紧急偏离）、StaleDataDefaults（过期天数）
+  - domain/models/allocation.py（~175 行）— AllocationTarget / AllocationState / DeviationAnalysis frozen dataclass，含 to_dict/from_dict 往返、total_pct 计算属性、severity 四档分类（normal/mild/moderate/high）
+  - domain/services/allocation_service.py（~220 行）— compute_target_allocation()（矩阵查找+年龄微调+保守档下限）、analyze_deviation()（四档偏离度分类+中文建议文案）、detect_rebalance_trigger()（紧急>15%/时间型≥7%+180天）、validate_allocation()（百分比范围+总和校验）
+  - use_cases/manage_allocation.py（~150 行）— compute_allocation_target / analyze_allocation_deviation / check_rebalance_need / save_allocation_override
+  - api/allocation.py（~216 行，4 路由）— POST /api/family/{id}/allocation/target + POST /analyze + GET /rebalance-check + PUT /target-override，含 Pydantic schema 校验
+  - main.py 注册 allocation_router（120 → 124 行，仍远低于 200 行上限）
+  - 更新 2 个 __init__.py 导出（domain/models + domain/rule_engine）
+  - 修复偏离度文案格式 bug（%.1% → %.1f%，百分比点位正确显示）
+  - 新增 23 个测试（94 → 117），117/117 全绿 ✅
+  - 新文件 domain 层零 infra import ✅（不变式 #9 + #10 达成）
+  - allocation_service.py 全部纯函数，无 I/O 无副作用
 
 ## 进行中
 - 无
@@ -132,7 +144,7 @@ M2 W3 — 家庭资产负债表 MVP（✅ 完成）
 - 无
 
 ## 下次会话计划
-- M2 W4: 资产配置框架 + 再平衡提醒（基于矩阵）— 读 03 + 06
+- M3 W1: 7 点决策清单（事前/事后双模式）— 读 07 + 03
 - 持续: services/ 层 akshare 直调逐步迁入 infra/data_source（绞杀者模式）
 - 持续: 调用方逐步直接 import 新模块（替代 shim 重导出）后删除 services/agent_memory.py
 
@@ -330,3 +342,26 @@ M2 W3 — 家庭资产负债表 MVP（✅ 完成）
   - 🟡 建议评估：M2 W4 规则引擎将消费 BalanceSheet 字段（cash_deposits / liabilities / staleness）作为应急金/资产配比规则输入
   - 🟡 建议评估：07 决策清单第 1 条（应急金 ≥ 6 个月）将从 BalanceSheet.cash_deposits 取值
   - 🟡 建议评估：05 凌晨工厂 A 层实时事实计算将从 BalanceSheet 取总资产/净值
+
+**会话 12**（M2 W4 资产配置框架 + 再平衡提醒）
+- 任务：资产配置框架 — 配比矩阵 / 偏离度计算 / 再平衡触发 / allocation API
+- 产出：
+  - domain/rule_engine/defaults.py（~117 行）— AllocationDefaults 12 格矩阵 + 偏离度三档阈值 + RiskDefaults + ScoringDefaults + RebalanceDefaults + StaleDataDefaults
+  - domain/models/allocation.py（~175 行）— AllocationTarget / AllocationState / DeviationAnalysis frozen dataclass
+  - domain/services/allocation_service.py（~220 行）— compute_target_allocation + analyze_deviation + detect_rebalance_trigger + validate_allocation（全部纯函数）
+  - use_cases/manage_allocation.py（~150 行）— compute_allocation_target + analyze_allocation_deviation + check_rebalance_need + save_allocation_override
+  - api/allocation.py（~216 行，4 路由）— /allocation/target + /analyze + /rebalance-check + /target-override
+  - main.py 124 行（+4 行 include_router，仍远低于 200 行上限）
+  - 更新 2 个 __init__.py 导出
+  - 修复偏离度文案格式 bug（%.1% → %.1f%）
+  - 新增 23 个测试（94 → 117），117/117 全绿
+- 状态：✅ 完成
+- 影响面：
+  - 🟢 确认无影响：tests/test_skeleton_m1.py 117/117 通过（原 94 + 新 23）
+  - 🟢 确认无影响：原有 209 路由 URL 路径不变，前端零改动
+  - 🟢 确认无影响：domain 层零 infra import，不变式 #9/#10 保持
+  - 🟢 确认无影响：allocation_service.py 纯函数无副作用，不影响任何现有服务
+  - 🔴 必须同步评估：无（本次为全新模块，消费 W2/W3 的 FamilyProfile + BalanceSheet，无下游消费方）
+  - 🟡 建议评估：M3 W1 七点清单第 7 条（配比偏离 >10%）将直接消费 allocation_service.analyze_deviation()
+  - 🟡 建议评估：07 决策清单第 3 条（集中度 >25%/40%）将消费 RiskDefaults 阈值
+  - 🟡 建议评估：05 凌晨工厂 night_worker_pipeline 将调用 compute_target_allocation + analyze_deviation 出报告

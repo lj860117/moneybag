@@ -6,7 +6,7 @@
 
 ---
 
-## 当前阶段：M2 W3 — 家庭资产负债表 MVP（✅ 完成）
+## 当前阶段：M2 W4 — 资产配置框架 + 再平衡提醒（✅ 完成）
 
 ### 绞杀者模式 5 步进度
 
@@ -28,9 +28,10 @@
 domain/
 ├── __init__.py
 ├── models/
-│   ├── __init__.py          # LLMResponse + FamilyProfile/Member/SubAccount + BalanceSheet/BalanceSheetItem
+│   ├── __init__.py          # LLMResponse + FamilyProfile/Member/SubAccount + BalanceSheet/BalanceSheetItem + AllocationTarget/AllocationState/DeviationAnalysis
 │   ├── family.py            # M2 W2: FamilyProfile / Member / SubAccount frozen dataclass
-│   └── balance_sheet.py     # M2 W3: BalanceSheet / BalanceSheetItem frozen dataclass + 过期检测
+│   ├── balance_sheet.py     # M2 W3: BalanceSheet / BalanceSheetItem frozen dataclass + 过期检测
+│   └── allocation.py        # M2 W4: AllocationTarget / AllocationState / DeviationAnalysis frozen dataclass
 ├── protocols/
 │   ├── __init__.py          # 重导出 6 Protocol
 │   ├── cache.py             # CacheProtocol
@@ -43,9 +44,11 @@ domain/
 │   ├── __init__.py          # 占位（不变式 #9：禁止互 import）
 │   ├── user_preference_service.py  # M2 W1: 偏好/画像/铁律/情绪/生活事件/待审洞察
 │   ├── family_profile_service.py   # M2 W2: 问卷解析/校验/推导
-│   └── balance_sheet_service.py    # M2 W3: 资产负债表构建/校验/过期检测/汇总
+│   ├── balance_sheet_service.py    # M2 W3: 资产负债表构建/校验/过期检测/汇总
+│   └── allocation_service.py       # M2 W4: 配比计算/偏离度分析/再平衡触发（纯函数）
 └── rule_engine/
-    ├── __init__.py          # 占位
+    ├── __init__.py          # AllocationDefaults/RiskDefaults/ScoringDefaults/RebalanceDefaults/StaleDataDefaults
+    ├── defaults.py          # ⭐ M2 W4: 所有硬阈值常量集中管理（配比矩阵/偏离度/风险/评分/再平衡/过期）
     └── decision_archive.py  # M2 W1: 决策档案/规则/上下文/自动提取
 ```
 
@@ -115,11 +118,12 @@ api/
 └── misc.py                  # 16 路由 — 决策日志/备份/信号侦察兵/判断追踪/盈利预测/估值/推荐/敞口
 ```
 
-### M2 W2-W3 新增 API
+### M2 W2-W3-W4 新增 API
 ```
 api/
 ├── family_profile.py        # 6 路由 — 问卷提交/画像读取/成员CRUD/子账户CRUD
-└── balance_sheet.py         # 4 路由 — 资产负债表提交/读取/摘要/分类更新
+├── balance_sheet.py         # 4 路由 — 资产负债表提交/读取/摘要/分类更新
+└── allocation.py            # 4 路由 — 配比目标/偏离度分析/再平衡检查/用户覆盖
 ```
 
 ### use_cases/ — 用例层（M2 W2 首个用例落地）
@@ -128,7 +132,8 @@ api/
 use_cases/
 ├── __init__.py              # 占位
 ├── submit_family_questionnaire.py  # M2 W2: 问卷提交编排（首个 use_case）
-└── manage_balance_sheet.py         # M2 W3: 资产负债表 CRUD 编排
+├── manage_balance_sheet.py         # M2 W3: 资产负债表 CRUD 编排
+└── manage_allocation.py            # M2 W4: 配比目标计算/偏离度分析/再平衡检查编排
 ```
 
 ### 测试
@@ -143,7 +148,7 @@ tests/
 ├── test_data_honesty.py
 ├── test_memory_e2e.py
 ├── test_red_team.py
-├── test_skeleton_m1.py      # 94 条冒烟测试（全绿）
+├── test_skeleton_m1.py      # 117 条冒烟测试（全绿）
 └── test_trading_calendar.py
 ```
 
@@ -168,7 +173,7 @@ tests/
 2. **LLMClient 通过 lazy import 代理到 services/llm_gateway.py** — 老 gateway 520 行代码不动，新代码 import `infra.llm.LLMClient`。M2 时 gateway 实现搬到 infra/。
 3. **`_cache = {}` 已清零** — M1 W3 完成：47 处散装缓存全部迁移到 `infra.cache.MemoryCache`，api 层和 services 层 dict 式读写已归零。⚠️ services/llm_gateway.py 内部磁盘缓存持久化逻辑仍直接访问 `MemoryCache._data`（已知技术债）。
 4. **api 层 akshare/tushare 直调已清零** — M1 W3 完成：`api/` 目录内 `import akshare` 归 0。⚠️ services/ 层仍有 30+ 文件直调 akshare（绞杀者模式，M1 W4 scope）。
-5. **main.py 120 行** — 已达成 97% 降幅（4044 → 120），剩余 2 个路由为根路径健康检查。CI 红线 200 行已配置（scripts/lint_main_py.py + ci.yml lint-main-py job）。
+5. **main.py 124 行** — 已达成 97% 降幅（4044 → 124），剩余 2 个路由为根路径健康检查。CI 红线 200 行已配置（scripts/lint_main_py.py + ci.yml lint-main-py job）。
 6. **agent_memory.py 已拆分为 re-export shim** — M2 W1 完成：1277 行实现迁移到 domain/services/user_preference_service.py + domain/rule_engine/decision_archive.py。shim 仅 ~95 行重导出。build_memory_summary() 降级为 stub（返回空串）。9+ 处调用方零改动。
 
 ---
@@ -198,6 +203,7 @@ tests/
 | 2026-04-26 | M2 W1 Agent Memory 拆三处：user_preference_service.py + decision_archive.py + shim + build_memory_summary stub + 7 新测试（55 总数全绿） | — |
 | 2026-04-26 | M2 W2 家庭画像问卷：FamilyProfile model + FamilyProfileProtocol + FamilyProfileStore + family_profile_service + submit_family_questionnaire use_case + api/family_profile.py（6 路由）+ 15 新测试（70 总数全绿） | — |
 | 2026-04-26 | M2 W3 家庭资产负债表 MVP：BalanceSheet/BalanceSheetItem model + BalanceSheetProtocol + BalanceSheetStore + balance_sheet_service（过期检测 30 天阈值）+ manage_balance_sheet use_case + api/balance_sheet.py（4 路由）+ 24 新测试（94 总数全绿）| — |
+| 2026-04-26 | M2 W4 资产配置框架：AllocationDefaults 12 格矩阵 + AllocationTarget/AllocationState/DeviationAnalysis model + allocation_service 纯函数（矩阵查找/年龄微调/偏离度四档/再平衡触发）+ manage_allocation use_case + api/allocation.py（4 路由）+ 23 新测试（117 总数全绿）| — |
 
 ---
 
@@ -237,6 +243,6 @@ tests/
 | **W1** | Agent Memory 拆三处：LLM 记忆删 / 偏好迁 / 决策档案迁 | ✅ user_preference_service.py + decision_archive.py + shim + 55/55 测试 |
 | **W2** | 家庭画像问卷（含成员/子账户维度）| ✅ FamilyProfile model + FamilyProfileProtocol + FamilyProfileStore + family_profile_service + submit_family_questionnaire use_case + api/family_profile.py（6 路由）+ 15 新测试（70 总数全绿）|
 | **W3** | 家庭资产负债表 MVP（Tier 1 四类必填 + 过期标识）| ✅ BalanceSheet model + BalanceSheetProtocol + BalanceSheetStore + balance_sheet_service + manage_balance_sheet use_case + api/balance_sheet.py（4 路由）+ 24 新测试（94 总数全绿）|
-| **W4** | 资产配置框架 + 再平衡提醒（基于矩阵）| 配比矩阵 + 偏离度规则 + 再平衡 cron |
+| **W4** | 资产配置框架 + 再平衡提醒（基于矩阵）| ✅ AllocationDefaults 12 格矩阵 + AllocationTarget/AllocationState/DeviationAnalysis model + allocation_service（纯函数）+ manage_allocation use_case + api/allocation.py（4 路由）+ 23 新测试（117 总数全绿）|
 
 **M2 结束验收标准**：用户填完问卷 → 规则引擎出体检报告 → 看到偏离度提醒。**没有 LLM 也有核心价值。**

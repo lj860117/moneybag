@@ -141,10 +141,10 @@ def analyze_deviation(
         recommendation = "配置略有偏离，可以关注"
     elif max_dev < AllocationDefaults.DEVIATION_HIGH:
         severity = "moderate"
-        recommendation = f"配置偏离目标{max_dev:.1%}，建议考虑再平衡"
+        recommendation = f"配置偏离目标{max_dev:.1f}%，建议考虑再平衡"
     else:
         severity = "high"
-        recommendation = f"配置严重偏离目标{max_dev:.1%}，建议立即再平衡"
+        recommendation = f"配置严重偏离目标{max_dev:.1f}%，建议立即再平衡"
 
     return DeviationAnalysis(
         target=target,
@@ -177,11 +177,11 @@ def detect_rebalance_trigger(
         tuple: (should_rebalance: bool, reason: str)
     """
     if analysis.max_deviation >= RebalanceDefaults.URGENT_DEVIATION:
-        return True, f"严重偏离({analysis.max_deviation:.1%})，立即再平衡"
+        return True, f"严重偏离({analysis.max_deviation:.1f}%)，立即再平衡"
 
     if (analysis.max_deviation >= AllocationDefaults.DEVIATION_MODERATE and
             days_since_last_rebalance >= RebalanceDefaults.EXECUTE_INTERVAL_DAYS):
-        return True, f"中度偏离({analysis.max_deviation:.1%})且距上次再平衡已{days_since_last_rebalance}天，执行再平衡"
+        return True, f"中度偏离({analysis.max_deviation:.1f}%)且距上次再平衡已{days_since_last_rebalance}天，执行再平衡"
 
     return False, "暂无需再平衡"
 
