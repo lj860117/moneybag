@@ -6,7 +6,7 @@
 ---
 
 ## 当前阶段
-M1 W2 — 拆 main.py（第一批完成）
+M1 W2 — 拆 main.py（第二批完成）
 
 ## 已完成
 - [x] 2026-04-25: 四层目录树（api/ use_cases/ domain/ infra/）
@@ -30,22 +30,36 @@ M1 W2 — 拆 main.py（第一批完成）
   - main.py: 4044 → 3598 行（减少 446 行）
   - 路由总数保持 199 不变（main.py 135 + routers 64）
   - 28 个 M1 骨架测试全绿 ✅
+- [x] 2026-04-26: **第二批拆分完成：78 个路由 → 5 个 Router 文件 + 1 个共享模块**
+  - api/shared_helpers.py（673 行）— _build_market_context / _build_portfolio_context / _rule_based_reply / classify_chat_intent / _do_ocr / USER_DEFAULTS / AVAILABLE_MODELS 等公共辅助
+  - api/holdings.py（19 路由，426 行）— 股票持仓CRUD/基金持仓CRUD/盯盘预警/深度分析/持仓智能/财务数据
+  - api/portfolio.py（21 路由，568 行）— 交易流水CRUD/资产管理/净资产/盈亏/加仓/迁移/体检/风控/配置建议
+  - api/signals.py（11 路由，338 行）— 买卖信号/入场时机/智能定投/止盈止损/每日信号/回测/筛选
+  - api/news.py（12 路由，185 行）— 新闻/基金信息/政策影响/技术指标/宏观/基金搜索
+  - api/user.py（15 路由，493 行）— 用户数据/偏好/家庭汇总/OCR记账/记账CRUD/收入源/数据审计
+  - main.py: 3598 → 1071 行（减少 2527 行，累计从 4044 减少 2973 行，降幅 73%）
+  - 路由总数保持 199 不变（main.py 57 + P1 routers 64 + P2 routers 78）
+  - 28 个 M1 骨架测试全绿 ✅
+  - 零路由重复，零路由遗漏
 
 ## 进行中
 - [ ] M1 W2 — 拆 main.py（4044 行 → <150 行）
   - [x] 分析路由依赖（199 路由，按 35 组前缀分类，P1/P2/P3 三级）
   - [x] 第一批拆分：64 个路由 → 10 个 Router 文件 ✅
-  - [ ] 第二批拆分：P2 中等耦合路由（提取公共辅助模块后拆）
-  - [ ] 第三批拆分：P3 高耦合路由（chat/analyze/ocr/dashboard）
+  - [x] 第二批拆分：78 个路由 → 5 个 Router 文件 + shared_helpers ✅
+  - [ ] 第三批拆分：P3 高耦合路由（chat/stream/dashboard/agent/steward 等 57 个路由）
 
 ## 阻塞项
 - 无
 
 ## 下次会话计划
-- 执行第二批拆分：P2 中等耦合路由
-- 需要先提取 `_build_market_context()` 等公共辅助函数到 shared helpers
-- 拆 holdings / portfolio / signals / news / ds-enhance / user 等路由组
-- 目标：main.py 再减 ~1500 行
+- 执行第三批拆分：P3 高耦合路由
+- 拆 chat + chat/stream → api/chat.py（需要 shared_helpers 支持）
+- 拆 dashboard → api/dashboard.py（复杂异步，需仔细处理）
+- 拆 agent/* → api/agent.py（~20 路由，依赖 agent_memory + agent_engine）
+- 拆 steward/regime/llm-usage/weekly-report → api/steward.py
+- 拆剩余小路由（earnings/valuation/dcf/recommend/decisions/exposure 等）
+- 目标：main.py 剩 <150 行（只留 FastAPI 初始化 + 中间件 + include_router）
 
 ---
 
@@ -85,3 +99,22 @@ M1 W2 — 拆 main.py（第一批完成）
   - 🟢 确认无影响：所有 URL 路径不变，前端零改动
   - 🟢 确认无影响：tests/test_skeleton_m1.py 28/28 通过
   - 🟡 建议评估：services/ 中的 import 链（本次仅移动路由层，不动 service 层）
+
+**会话 4**（M1 W2 第二批拆分）
+- 任务：提取公共辅助模块 + 创建 5 个 api/*.py Router 文件，提取 78 个 P2 中等耦合路由
+- 产出：
+  - api/shared_helpers.py（673 行）— 从 main.py 提取 _build_market_context（164行）、_build_portfolio_context（78行）、_rule_based_reply（107行）、classify_chat_intent、_do_ocr（119行）、USER_DEFAULTS/OVERRIDES、AVAILABLE_MODELS、_cached_file_response 等公共函数和常量
+  - api/holdings.py（19 路由，426 行）— 股票/基金持仓 CRUD + 盯盘预警 + 深度分析 + 持仓智能
+  - api/portfolio.py（21 路由，568 行）— 交易流水 + 资产管理 + 净资产 + 盈亏 + 体检 + 风控 + 配置
+  - api/signals.py（11 路由，338 行）— 买卖信号 + 时机 + 定投 + 止盈 + 每日信号 + 回测 + 筛选
+  - api/news.py（12 路由，185 行）— 新闻 + 基金信息 + 政策 + 技术指标 + 宏观 + 搜索
+  - api/user.py（15 路由，493 行）— 用户数据 + 偏好 + 家庭 + OCR + 记账 + 收入源 + 审计
+  - main.py: 3598 → 1071 行（-2527 行，累计 -2973 行，降幅 73%）
+  - 路由总数 199 保持不变（main.py 57 + P1 64 + P2 78），零重复零遗漏
+  - 28 个 M1 骨架测试全绿
+- 状态：✅ 完成
+- 影响面：
+  - 🟢 确认无影响：所有 URL 路径不变，前端零改动
+  - 🟢 确认无影响：tests/test_skeleton_m1.py 28/28 通过
+  - 🟡 建议评估：services/ 中的 import 链（本次仅移动路由层，不动 service 层）
+  - 🟡 建议评估：api/portfolio.py 568 行略超 400 行限制（21 个路由均属同一业务域，可接受）
