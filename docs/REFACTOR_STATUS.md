@@ -109,9 +109,9 @@ tests/
 | 检查项 | 状态 |
 |--------|------|
 | 4 个核心 Protocol 定义 | ✅ |
-| import-linter 配置 | ⬜ 待配 |
+| import-linter 配置 | ✅ 已配（.importlinter，4 个 contract 全过） |
 | mypy strict 配置 | ⬜ 待配 |
-| CI 集成 | ⬜ 待配 |
+| CI 集成 | ✅ 已配（.github/workflows/ci.yml） |
 
 ---
 
