@@ -40,8 +40,9 @@ def get_business_exposure(code: str) -> dict:
     """获取个股的业务敞口分析"""
     cache_key = f"exposure_{code}"
     now = time.time()
-    if cache_key in _exposure_cache and now - _exposure_cache[cache_key]["ts"] < _EXPOSURE_CACHE_TTL:
-        return _exposure_cache[cache_key]["data"]
+    cached = _exposure_cache.get(cache_key)
+    if cached is not None:
+        return cached
 
     result = {"available": False, "code": code, "export_exposure": 0,
               "geo_vulnerability": "未知", "vulnerable_to": []}
@@ -61,7 +62,7 @@ def get_business_exposure(code: str) -> dict:
         )
 
         if not rows:
-            _exposure_cache[cache_key] = {"data": result, "ts": now}
+            _exposure_cache.set(cache_key, result, ttl=_EXPOSURE_CACHE_TTL)
             return result
 
         # 取最新一期
@@ -140,7 +141,7 @@ def get_business_exposure(code: str) -> dict:
     except Exception as e:
         print(f"[EXPOSURE] {code} failed: {e}")
 
-    _exposure_cache[cache_key] = {"data": result, "ts": now}
+    _exposure_cache.set(cache_key, result)
     return result
 
 

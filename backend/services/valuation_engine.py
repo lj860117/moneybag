@@ -39,8 +39,9 @@ def assess_valuation(code: str) -> dict:
     """
     cache_key = f"val_{code}"
     now = time.time()
-    if cache_key in _val_cache and now - _val_cache[cache_key]["ts"] < _VAL_CACHE_TTL:
-        return _val_cache[cache_key]["data"]
+    cached = _val_cache.get(cache_key)
+    if cached is not None:
+        return cached
 
     result = {
         "available": False, "code": code,
@@ -200,7 +201,7 @@ def assess_valuation(code: str) -> dict:
     except Exception as e:
         print(f"[VALUATION] {code} failed: {e}")
 
-    _val_cache[cache_key] = {"data": result, "ts": now}
+    _val_cache.set(cache_key, result)
     return result
 
 
@@ -276,8 +277,9 @@ def dcf_valuation(code: str) -> dict:
     """
     cache_key = f"dcf_{code}"
     now = time.time()
-    if cache_key in _val_cache and now - _val_cache[cache_key]["ts"] < _VAL_CACHE_TTL:
-        return _val_cache[cache_key]["data"]
+    cached = _val_cache.get(cache_key)
+    if cached is not None:
+        return cached
 
     result = {"available": False, "code": code, "method": "DCF"}
 
@@ -294,7 +296,7 @@ def dcf_valuation(code: str) -> dict:
         ocfps = fin.get("cash_flow_per_share")
         if not ocfps or float(ocfps) <= 0:
             result["error"] = "无有效现金流数据"
-            _val_cache[cache_key] = {"data": result, "ts": now}
+            _val_cache.set(cache_key, result, ttl=_VAL_CACHE_TTL)
             return result
 
         fcf_per_share = float(ocfps)
@@ -383,5 +385,5 @@ def dcf_valuation(code: str) -> dict:
         print(f"[DCF] {code} failed: {e}")
         result["error"] = str(e)
 
-    _val_cache[cache_key] = {"data": result, "ts": now}
+    _val_cache.set(cache_key, result)
     return result

@@ -224,8 +224,9 @@ def compute_factor_ic(
     """
     cache_key = f"ic_{forward_days}_{pool_size}"
     now = time.time()
-    if cache_key in _ic_cache and now - _ic_cache[cache_key]["ts"] < _IC_CACHE_TTL:
-        return _ic_cache[cache_key]["data"]
+    cached = _ic_cache.get(cache_key)
+    if cached is not None:
+        return cached
 
     print(f"[IC] Starting IC test: forward={forward_days}d, pool={pool_size}")
     t0 = time.time()
@@ -406,7 +407,7 @@ def compute_factor_ic(
         "ineffective_factors": ineffective,
     }
 
-    _ic_cache[cache_key] = {"data": result, "ts": time.time()}
+    _ic_cache.set(cache_key, result)
     return result
 
 
@@ -417,8 +418,9 @@ def compute_ic_decay(pool_size: int = 150) -> dict:
     """
     cache_key = f"ic_decay_{pool_size}"
     now = time.time()
-    if cache_key in _ic_cache and now - _ic_cache[cache_key]["ts"] < _IC_CACHE_TTL:
-        return _ic_cache[cache_key]["data"]
+    cached = _ic_cache.get(cache_key)
+    if cached is not None:
+        return cached
 
     periods = [5, 10, 20, 60]
     decay = {}
@@ -465,5 +467,5 @@ def compute_ic_decay(pool_size: int = 150) -> dict:
         "pool_size": pool_size,
     }
 
-    _ic_cache[cache_key] = {"data": result, "ts": time.time()}
+    _ic_cache.set(cache_key, result)
     return result

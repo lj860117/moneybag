@@ -51,8 +51,9 @@ def _safe_val(v):
 def get_gdp() -> dict:
     cache_key = "gdp"
     now = time.time()
-    if cache_key in _v8_cache and now - _v8_cache[cache_key]["ts"] < _V8_TTL:
-        return _v8_cache[cache_key]["data"]
+    cached = _v8_cache.get(cache_key)
+    if cached is not None:
+        return cached
 
     result = {"available": False}
     try:
@@ -75,7 +76,7 @@ def get_gdp() -> dict:
     except Exception as e:
         print(f"[GDP] FAIL: {e}")
 
-    _v8_cache[cache_key] = {"data": result, "ts": now}
+    _v8_cache.set(cache_key, result, ttl=_V8_TTL)
     return result
 
 
@@ -86,8 +87,9 @@ def get_gdp() -> dict:
 def get_industrial_value_added() -> dict:
     cache_key = "gyzjz"
     now = time.time()
-    if cache_key in _v8_cache and now - _v8_cache[cache_key]["ts"] < _V8_TTL:
-        return _v8_cache[cache_key]["data"]
+    cached = _v8_cache.get(cache_key)
+    if cached is not None:
+        return cached
 
     result = {"available": False}
     try:
@@ -108,7 +110,7 @@ def get_industrial_value_added() -> dict:
     except Exception as e:
         print(f"[GYZJZ] FAIL: {e}")
 
-    _v8_cache[cache_key] = {"data": result, "ts": now}
+    _v8_cache.set(cache_key, result, ttl=_V8_TTL)
     return result
 
 
@@ -119,8 +121,9 @@ def get_industrial_value_added() -> dict:
 def get_consumer_goods_retail() -> dict:
     cache_key = "retail"
     now = time.time()
-    if cache_key in _v8_cache and now - _v8_cache[cache_key]["ts"] < _V8_TTL:
-        return _v8_cache[cache_key]["data"]
+    cached = _v8_cache.get(cache_key)
+    if cached is not None:
+        return cached
 
     result = {"available": False}
     try:
@@ -141,7 +144,7 @@ def get_consumer_goods_retail() -> dict:
     except Exception as e:
         print(f"[RETAIL] FAIL: {e}")
 
-    _v8_cache[cache_key] = {"data": result, "ts": now}
+    _v8_cache.set(cache_key, result, ttl=_V8_TTL)
     return result
 
 
@@ -152,8 +155,9 @@ def get_consumer_goods_retail() -> dict:
 def get_fixed_asset_investment() -> dict:
     cache_key = "fai"
     now = time.time()
-    if cache_key in _v8_cache and now - _v8_cache[cache_key]["ts"] < _V8_TTL:
-        return _v8_cache[cache_key]["data"]
+    cached = _v8_cache.get(cache_key)
+    if cached is not None:
+        return cached
 
     result = {"available": False}
     try:
@@ -174,7 +178,7 @@ def get_fixed_asset_investment() -> dict:
     except Exception as e:
         print(f"[FAI] FAIL: {e}")
 
-    _v8_cache[cache_key] = {"data": result, "ts": now}
+    _v8_cache.set(cache_key, result, ttl=_V8_TTL)
     return result
 
 
@@ -185,8 +189,9 @@ def get_fixed_asset_investment() -> dict:
 def get_lhb_summary() -> dict:
     cache_key = "lhb"
     now = time.time()
-    if cache_key in _v8_cache and now - _v8_cache[cache_key]["ts"] < _V8_DAILY_TTL:
-        return _v8_cache[cache_key]["data"]
+    cached = _v8_cache.get(cache_key)
+    if cached is not None:
+        return cached
 
     result = {"available": False, "items": []}
     try:
@@ -212,7 +217,7 @@ def get_lhb_summary() -> dict:
     except Exception as e:
         print(f"[LHB] FAIL: {e}")
 
-    _v8_cache[cache_key] = {"data": result, "ts": now}
+    _v8_cache.set(cache_key, result, ttl=_V8_DAILY_TTL)
     return result
 
 
@@ -223,8 +228,9 @@ def get_lhb_summary() -> dict:
 def get_management_holdings() -> dict:
     cache_key = "mgmt_hold"
     now = time.time()
-    if cache_key in _v8_cache and now - _v8_cache[cache_key]["ts"] < _V8_DAILY_TTL:
-        return _v8_cache[cache_key]["data"]
+    cached = _v8_cache.get(cache_key)
+    if cached is not None:
+        return cached
 
     result = {"available": False, "items": []}
     try:
@@ -247,7 +253,7 @@ def get_management_holdings() -> dict:
     except Exception as e:
         print(f"[MGMT] FAIL: {e}")
 
-    _v8_cache[cache_key] = {"data": result, "ts": now}
+    _v8_cache.set(cache_key, result, ttl=_V8_DAILY_TTL)
     return result
 
 

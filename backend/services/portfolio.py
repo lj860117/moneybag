@@ -45,8 +45,9 @@ def _ai_pick_funds(risk_profile: str, val_pct: float, fgi: float) -> list:
     """
     cache_key = f"ai_fund_{risk_profile}_{int(val_pct)}_{int(fgi)}"
     now = time.time()
-    if cache_key in _ai_fund_cache and now - _ai_fund_cache[cache_key]["ts"] < _AI_FUND_CACHE_TTL:
-        return _ai_fund_cache[cache_key]["data"]
+    cached = _ai_fund_cache.get(cache_key)
+    if cached is not None:
+        return cached
 
     try:
         from services.fund_screen import screen_funds
@@ -169,7 +170,7 @@ def _ai_pick_funds(risk_profile: str, val_pct: float, fgi: float) -> list:
         })
 
         print(f"[AI_FUND] Picked {len(result)} funds for {risk_profile}")
-        _ai_fund_cache[cache_key] = {"data": result, "ts": now}
+        _ai_fund_cache.set(cache_key, result)
         return result
 
     except Exception as e:

@@ -16,21 +16,19 @@
 import time
 import pandas as pd
 from services.tushare_data import is_configured, get_daily_price
+from infra.cache import MemoryCache
 
 
-_price_cache: dict = {}
+_price_cache = MemoryCache(default_ttl=300)
 _CACHE_TTL = 300  # 5 分钟
 
 
 def _cache_get(key: str):
-    v = _price_cache.get(key)
-    if v and time.time() - v["ts"] < _CACHE_TTL:
-        return v["df"]
-    return None
+    return _price_cache.get(key)
 
 
 def _cache_put(key: str, df):
-    _price_cache[key] = {"df": df, "ts": time.time()}
+    _price_cache.set(key, df, ttl=_CACHE_TTL)
 
 
 def _from_tushare(code: str, days: int) -> pd.DataFrame:

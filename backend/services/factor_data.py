@@ -25,8 +25,9 @@ from datetime import datetime, timedelta
 from config import FACTOR_CACHE_TTL, LLM_API_URL, LLM_API_KEY, LLM_MODEL
 # FIX 2026-04-19: 补 import，解决 [TREASURY] Failed: name 'get_valuation_percentile' is not defined
 from services.market_data import get_valuation_percentile
+from infra.cache import MemoryCache
 
-factor_cache = {}
+factor_cache = MemoryCache(default_ttl=FACTOR_CACHE_TTL)
 
 def get_northbound_flow() -> dict:
     """获取北向资金（沪股通+深股通）净流入数据
@@ -36,9 +37,9 @@ def get_northbound_flow() -> dict:
     - AKShare: stock_hsgt_hist_em 在 2024-08-16 后全 NaN，仅作为历史回看降级
     """
     cache_key = "northbound"
-    now = time.time()
-    if cache_key in factor_cache and now - factor_cache[cache_key]["ts"] < FACTOR_CACHE_TTL:
-        return factor_cache[cache_key]["data"]
+    cached = factor_cache.get(cache_key)
+    if cached is not None:
+        return cached
 
     result = {"net_flow_today": 0, "net_flow_5d": 0, "net_flow_20d": 0, "trend": "中性", "available": False,
               "source": "none"}
@@ -51,7 +52,7 @@ def get_northbound_flow() -> dict:
             if ts_data.get("available"):
                 result.update(ts_data)
                 print(f"[NORTH] Tushare OK: today={result['net_flow_today']}亿, 5d={result['net_flow_5d']}亿")
-                factor_cache[cache_key] = {"data": result, "ts": now}
+                factor_cache.set(cache_key, result)
                 return result
             else:
                 print("[NORTH] Tushare 返回但 available=False，降级到 AKShare")
@@ -106,7 +107,7 @@ def get_northbound_flow() -> dict:
     except Exception as e:
         print(f"[NORTH] AKShare also failed: {e}")
 
-    factor_cache[cache_key] = {"data": result, "ts": now}
+    factor_cache.set(cache_key, result)
     return result
 
 
@@ -116,9 +117,9 @@ def get_margin_trading() -> dict:
     V6 Phase 4 架构：Tushare margin（主，沪+深+北全市场） → AKShare（降级，仅上交所）
     """
     cache_key = "margin"
-    now = time.time()
-    if cache_key in factor_cache and now - factor_cache[cache_key]["ts"] < FACTOR_CACHE_TTL:
-        return factor_cache[cache_key]["data"]
+    cached = factor_cache.get(cache_key)
+    if cached is not None:
+        return cached
 
     result = {"margin_balance": 0, "margin_change_5d": 0, "trend": "中性", "available": False}
 
@@ -137,7 +138,7 @@ def get_margin_trading() -> dict:
                 result["source"] = "tushare"
                 result["data_date"] = ts_data.get("data_date", "")
                 print(f"[MARGIN] Tushare OK: balance={result['margin_balance']}亿, trend={result['trend']}")
-                factor_cache[cache_key] = {"data": result, "ts": now}
+                factor_cache.set(cache_key, result)
                 return result
             else:
                 print("[MARGIN] Tushare 返回但 available=False，降级到 AKShare")
@@ -172,16 +173,16 @@ def get_margin_trading() -> dict:
     except Exception as e:
         print(f"[MARGIN] AKShare also failed: {e}")
 
-    factor_cache[cache_key] = {"data": result, "ts": now}
+    factor_cache.set(cache_key, result)
     return result
 
 
 def get_treasury_yield() -> dict:
     """获取国债收益率（10年期）— 无风险利率 / 股债性价比"""
     cache_key = "treasury"
-    now = time.time()
-    if cache_key in factor_cache and now - factor_cache[cache_key]["ts"] < FACTOR_CACHE_TTL:
-        return factor_cache[cache_key]["data"]
+    cached = factor_cache.get(cache_key)
+    if cached is not None:
+        return cached
 
     result = {"yield_10y": 0, "yield_change": 0, "equity_premium": "", "available": False}
     try:
@@ -215,7 +216,7 @@ def get_treasury_yield() -> dict:
     except Exception as e:
         print(f"[TREASURY] Failed: {e}")
 
-    factor_cache[cache_key] = {"data": result, "ts": now}
+    factor_cache.set(cache_key, result)
     return result
 
 
@@ -225,9 +226,9 @@ def get_shibor() -> dict:
     V6 Phase 3b 架构：Tushare shibor（主） → AKShare rate_interbank（降级）
     """
     cache_key = "shibor"
-    now = time.time()
-    if cache_key in factor_cache and now - factor_cache[cache_key]["ts"] < FACTOR_CACHE_TTL:
-        return factor_cache[cache_key]["data"]
+    cached = factor_cache.get(cache_key)
+    if cached is not None:
+        return cached
 
     result = {"overnight": 0, "one_week": 0, "trend": "中性", "available": False}
 
@@ -245,7 +246,7 @@ def get_shibor() -> dict:
                 result["source"] = "tushare"
                 result["data_date"] = ts_data.get("data_date", "")
                 print(f"[SHIBOR] Tushare OK: ON={result['overnight']}%, trend={result['trend']}")
-                factor_cache[cache_key] = {"data": result, "ts": now}
+                factor_cache.set(cache_key, result)
                 return result
             else:
                 print("[SHIBOR] Tushare 返回但 available=False，降级到 AKShare")
@@ -278,16 +279,16 @@ def get_shibor() -> dict:
     except Exception as e:
         print(f"[SHIBOR] AKShare also failed: {e}")
 
-    factor_cache[cache_key] = {"data": result, "ts": now}
+    factor_cache.set(cache_key, result)
     return result
 
 
 def get_dividend_yield() -> dict:
     """获取沪深300股息率 — 价值因子"""
     cache_key = "dividend"
-    now = time.time()
-    if cache_key in factor_cache and now - factor_cache[cache_key]["ts"] < FACTOR_CACHE_TTL:
-        return factor_cache[cache_key]["data"]
+    cached = factor_cache.get(cache_key)
+    if cached is not None:
+        return cached
 
     result = {"dividend_yield": 0, "level": "中性", "available": False}
     try:
@@ -347,7 +348,7 @@ def get_dividend_yield() -> dict:
     except Exception as e:
         print(f"[DIVIDEND] Failed: {e}")
 
-    factor_cache[cache_key] = {"data": result, "ts": now}
+    factor_cache.set(cache_key, result)
     return result
 
 def get_news_sentiment_score() -> dict:
@@ -355,10 +356,10 @@ def get_news_sentiment_score() -> dict:
     借鉴幻方量化的新闻情绪因子，用LLM替代BERT实现零训练成本
     """
     cache_key = "sentiment"
-    now = time.time()
     # 情绪分数缓存 30 分钟（新闻更新频率）
-    if cache_key in factor_cache and now - factor_cache[cache_key]["ts"] < 1800:
-        return factor_cache[cache_key]["data"]
+    cached = factor_cache.get(cache_key)
+    if cached is not None:
+        return cached
 
     result = {"score": 0, "level": "中性", "headlines": [], "available": False}
 
@@ -371,7 +372,7 @@ def get_news_sentiment_score() -> dict:
         valid = [n for n in all_news if "加载中" not in n.get("title", "")]
 
         if not valid:
-            factor_cache[cache_key] = {"data": result, "ts": now}
+            factor_cache.set(cache_key, result, ttl=1800)
             return result
 
         headlines = [n["title"] for n in valid[:10]]
@@ -454,7 +455,7 @@ def get_news_sentiment_score() -> dict:
     except Exception as e:
         print(f"[SENTIMENT] Fatal: {e}")
 
-    factor_cache[cache_key] = {"data": result, "ts": now}
+    factor_cache.set(cache_key, result, ttl=1800)
     return result
 
 
@@ -470,9 +471,9 @@ def get_news_sentiment_score() -> dict:
 def get_main_money_flow() -> dict:
     """获取主力资金流向（沪深300成分股的主力净流入）"""
     cache_key = "main_flow"
-    now = time.time()
-    if cache_key in factor_cache and now - factor_cache[cache_key]["ts"] < FACTOR_CACHE_TTL:
-        return factor_cache[cache_key]["data"]
+    cached = factor_cache.get(cache_key)
+    if cached is not None:
+        return cached
 
     result = {"net_flow": 0, "top_inflow": [], "top_outflow": [], "available": False}
     try:
@@ -494,16 +495,16 @@ def get_main_money_flow() -> dict:
     except Exception as e:
         print(f"[MAIN_FLOW] Failed: {e}")
 
-    factor_cache[cache_key] = {"data": result, "ts": now}
+    factor_cache.set(cache_key, result)
     return result
 
 
 def get_stock_financials(code: str) -> dict:
     """获取个股核心财务数据 — 优先 Tushare Pro → 降级 AKShare"""
     cache_key = f"fin_{code}"
-    now = time.time()
-    if cache_key in factor_cache and now - factor_cache[cache_key]["ts"] < 86400:  # 24h 缓存
-        return factor_cache[cache_key]["data"]
+    cached = factor_cache.get(cache_key)
+    if cached is not None:
+        return cached
 
     result = {
         "code": code, "roe": None, "eps": None, "revenue_growth": None,
@@ -529,7 +530,7 @@ def get_stock_financials(code: str) -> dict:
                 result["available"] = True
                 result["source"] = "tushare"
                 print(f"[FIN] {code} Tushare OK: ROE={result['roe']}, GM={result['gross_margin']}")
-                factor_cache[cache_key] = {"data": result, "ts": now}
+                factor_cache.set(cache_key, result, ttl=86400)
                 return result
     except Exception as e:
         print(f"[FIN] {code} Tushare failed, fallback AKShare: {e}")
@@ -564,16 +565,16 @@ def get_stock_financials(code: str) -> dict:
     except Exception as e:
         print(f"[FIN] {code} AKShare also failed: {e}")
 
-    factor_cache[cache_key] = {"data": result, "ts": now}
+    factor_cache.set(cache_key, result, ttl=86400)
     return result
 
 
 def get_fund_holding_detail(code: str) -> dict:
     """获取基金持仓明细（前10大重仓股）"""
     cache_key = f"holding_{code}"
-    now = time.time()
-    if cache_key in factor_cache and now - factor_cache[cache_key]["ts"] < 86400:
-        return factor_cache[cache_key]["data"]
+    cached = factor_cache.get(cache_key)
+    if cached is not None:
+        return cached
 
     result = {"code": code, "holdings": [], "update_date": "", "available": False}
     try:
@@ -600,7 +601,7 @@ def get_fund_holding_detail(code: str) -> dict:
     except Exception as e:
         print(f"[HOLDING] {code} Failed: {e}")
 
-    factor_cache[cache_key] = {"data": result, "ts": now}
+    factor_cache.set(cache_key, result, ttl=86400)
     return result
 
 
@@ -618,9 +619,9 @@ def get_northbound_holdings() -> dict:
     这是比净流入更好的北向资金指标——直接看"外资重仓哪些行业"。
     """
     cache_key = "northbound_holdings"
-    now = time.time()
-    if cache_key in factor_cache and now - factor_cache[cache_key]["ts"] < 3600:
-        return factor_cache[cache_key]["data"]
+    cached = factor_cache.get(cache_key)
+    if cached is not None:
+        return cached
 
     result = {"available": False, "sectors": [], "total_stocks": 0, "total_market_value": 0}
     try:
@@ -629,7 +630,7 @@ def get_northbound_holdings() -> dict:
 
         if df is None or len(df) < 100:
             result["error"] = "北向持股数据不足"
-            factor_cache[cache_key] = {"data": result, "ts": now}
+            factor_cache.set(cache_key, result, ttl=3600)
             return result
 
         # 找关键列
@@ -638,7 +639,7 @@ def get_northbound_holdings() -> dict:
 
         if not sector_col:
             result["error"] = f"列名中无板块字段: {list(df.columns)}"
-            factor_cache[cache_key] = {"data": result, "ts": now}
+            factor_cache.set(cache_key, result, ttl=3600)
             return result
 
         # 按行业聚合
@@ -687,7 +688,7 @@ def get_northbound_holdings() -> dict:
         print(f"[NORTH] get_northbound_holdings failed: {e}")
         result["error"] = str(e)
 
-    factor_cache[cache_key] = {"data": result, "ts": now}
+    factor_cache.set(cache_key, result, ttl=3600)
     return result
 
 

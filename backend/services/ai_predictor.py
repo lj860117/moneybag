@@ -438,8 +438,9 @@ def predict_stock(code: str, forward_days: int = 5) -> dict:
     """
     cache_key = f"pred_{code}_{forward_days}"
     now = time.time()
-    if cache_key in _pred_cache and now - _pred_cache[cache_key]["ts"] < _PRED_CACHE_TTL:
-        return _pred_cache[cache_key]["data"]
+    cached = _pred_cache.get(cache_key)
+    if cached is not None:
+        return cached
 
     try:
         prices, volumes = _get_price_volume(code)
@@ -463,7 +464,7 @@ def predict_stock(code: str, forward_days: int = 5) -> dict:
         result["data_points"] = len(prices)
         result["generated_at"] = time.strftime("%Y-%m-%d %H:%M:%S")
 
-        _pred_cache[cache_key] = {"data": result, "ts": now}
+        _pred_cache.set(cache_key, result, ttl=_PRED_CACHE_TTL)
         return result
 
     except Exception as e:
@@ -478,8 +479,9 @@ def predict_portfolio(user_id: str, forward_days: int = 5) -> dict:
     """
     cache_key = f"pred_portfolio_{user_id}_{forward_days}"
     now = time.time()
-    if cache_key in _pred_cache and now - _pred_cache[cache_key]["ts"] < _PRED_CACHE_TTL:
-        return _pred_cache[cache_key]["data"]
+    cached = _pred_cache.get(cache_key)
+    if cached is not None:
+        return cached
 
     try:
         from services.stock_monitor import get_stock_holdings
@@ -532,7 +534,7 @@ def predict_portfolio(user_id: str, forward_days: int = 5) -> dict:
             "generated_at": time.strftime("%Y-%m-%d %H:%M:%S"),
         }
 
-        _pred_cache[cache_key] = {"data": portfolio_result, "ts": now}
+        _pred_cache.set(cache_key, portfolio_result)
         return portfolio_result
 
     except Exception as e:

@@ -30,8 +30,9 @@ def get_stock_news(code: str, limit: int = 5) -> list:
     """获取个股相关新闻"""
     cache_key = f"snews_{code}"
     now = time.time()
-    if cache_key in _intel_cache and now - _intel_cache[cache_key]["ts"] < _CACHE_TTL:
-        return _intel_cache[cache_key]["data"]
+    cached = _intel_cache.get(cache_key)
+    if cached is not None:
+        return cached
 
     result = []
     try:
@@ -57,7 +58,7 @@ def get_stock_news(code: str, limit: int = 5) -> list:
     except Exception as e:
         print(f"[STOCK_NEWS] {code} fail: {e}")
 
-    _intel_cache[cache_key] = {"data": result, "ts": now}
+    _intel_cache.set(cache_key, result, ttl=_CACHE_TTL)
     return result
 
 
@@ -65,8 +66,9 @@ def get_stock_fund_flow(code: str) -> dict:
     """获取个股主力资金流向"""
     cache_key = f"sflow_{code}"
     now = time.time()
-    if cache_key in _intel_cache and now - _intel_cache[cache_key]["ts"] < _CACHE_TTL:
-        return _intel_cache[cache_key]["data"]
+    cached = _intel_cache.get(cache_key)
+    if cached is not None:
+        return cached
 
     result = {"available": False}
     try:
@@ -87,16 +89,16 @@ def get_stock_fund_flow(code: str) -> dict:
     except Exception as e:
         print(f"[FUND_FLOW] {code} fail: {e}")
 
-    _intel_cache[cache_key] = {"data": result, "ts": now}
+    _intel_cache.set(cache_key, result, ttl=_CACHE_TTL)
     return result
 
 
 def get_stock_industry(code: str) -> str:
     """获取个股所属行业"""
     cache_key = f"sindustry_{code}"
-    now = time.time()
-    if cache_key in _intel_cache and now - _intel_cache[cache_key]["ts"] < 86400:  # 24h
-        return _intel_cache[cache_key]["data"]
+    cached = _intel_cache.get(cache_key)
+    if cached is not None:
+        return cached
 
     industry = "未知"
     try:
@@ -113,7 +115,7 @@ def get_stock_industry(code: str) -> str:
     except Exception as e:
         print(f"[INDUSTRY] {code} fail: {e}")
 
-    _intel_cache[cache_key] = {"data": industry, "ts": now}
+    _intel_cache.set(cache_key, industry, ttl=86400)
     return industry
 
 
@@ -123,8 +125,9 @@ def get_industry_news(industry: str, limit: int = 3) -> list:
         return []
     cache_key = f"indnews_{industry}"
     now = time.time()
-    if cache_key in _intel_cache and now - _intel_cache[cache_key]["ts"] < _CACHE_TTL:
-        return _intel_cache[cache_key]["data"]
+    cached = _intel_cache.get(cache_key)
+    if cached is not None:
+        return cached
 
     result = []
     try:
@@ -139,7 +142,7 @@ def get_industry_news(industry: str, limit: int = 3) -> list:
     except Exception:
         pass
 
-    _intel_cache[cache_key] = {"data": result, "ts": now}
+    _intel_cache.set(cache_key, result, ttl=_CACHE_TTL)
     return result
 
 
@@ -189,8 +192,9 @@ def scan_all_holding_intelligence(user_id: str = "default") -> dict:
     """
     cache_key = f"intel_all_{user_id}"
     now = time.time()
-    if cache_key in _intel_cache and now - _intel_cache[cache_key]["ts"] < _CACHE_TTL:
-        return _intel_cache[cache_key]["data"]
+    cached = _intel_cache.get(cache_key)
+    if cached is not None:
+        return cached
 
     result = {
         "holdings": [],
@@ -208,7 +212,7 @@ def scan_all_holding_intelligence(user_id: str = "default") -> dict:
 
     if not holdings:
         result["summary"] = "暂无股票持仓"
-        _intel_cache[cache_key] = {"data": result, "ts": now}
+        _intel_cache.set(cache_key, result, ttl=_CACHE_TTL)
         return result
 
     # 并发扫描（最多 5 个线程）
@@ -238,7 +242,7 @@ def scan_all_holding_intelligence(user_id: str = "default") -> dict:
     alert_count = len(result["all_alerts"])
     result["summary"] = f"扫描 {len(result['holdings'])} 只持仓，发现 {alert_count} 条关联信号"
 
-    _intel_cache[cache_key] = {"data": result, "ts": now}
+    _intel_cache.set(cache_key, result)
     return result
 
 

@@ -120,7 +120,7 @@ def collect() -> list:
             seen.add(key)
             unique.append(s)
 
-    _signal_cache[cache_key] = {"data": unique, "ts": now}
+    _signal_cache.set(cache_key, unique)
     return unique
 
 

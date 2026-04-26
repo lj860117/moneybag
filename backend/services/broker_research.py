@@ -44,8 +44,9 @@ def get_latest_reports(limit: int = 30) -> list:
     """
     cache_key = "latest_reports"
     now = time.time()
-    if cache_key in _broker_cache and now - _broker_cache[cache_key]["ts"] < _BROKER_CACHE_TTL:
-        return _broker_cache[cache_key]["data"]
+    cached = _broker_cache.get(cache_key)
+    if cached is not None:
+        return cached
 
     reports = []
 
@@ -88,7 +89,7 @@ def get_latest_reports(limit: int = 30) -> list:
         except Exception as e:
             print(f"[BROKER] AKShare 研报标题 failed: {e}")
 
-    _broker_cache[cache_key] = {"data": reports, "ts": now}
+    _broker_cache.set(cache_key, reports)
     return reports
 
 
@@ -130,8 +131,9 @@ def get_broker_consensus() -> dict:
     """
     cache_key = "consensus"
     now = time.time()
-    if cache_key in _broker_cache and now - _broker_cache[cache_key]["ts"] < _BROKER_CACHE_TTL:
-        return _broker_cache[cache_key]["data"]
+    cached = _broker_cache.get(cache_key)
+    if cached is not None:
+        return cached
 
     result = {
         "consensus": "中性",
@@ -147,7 +149,7 @@ def get_broker_consensus() -> dict:
 
     reports = get_latest_reports(limit=30)
     if not reports:
-        _broker_cache[cache_key] = {"data": result, "ts": now}
+        _broker_cache.set(cache_key, result, ttl=_BROKER_CACHE_TTL)
         return result
 
     result["total_reports"] = len(reports)
@@ -232,7 +234,7 @@ def get_broker_consensus() -> dict:
           f"多:{bullish}/空:{bearish}/中:{neutral}, "
           f"行业TOP={[s['name'] for s in result['hot_sectors'][:3]]}")
 
-    _broker_cache[cache_key] = {"data": result, "ts": now}
+    _broker_cache.set(cache_key, result)
     return result
 
 
@@ -244,8 +246,9 @@ def get_stock_reports(code: str, limit: int = 5) -> list:
     """获取个股的最新研报"""
     cache_key = f"stock_reports_{code}"
     now = time.time()
-    if cache_key in _broker_cache and now - _broker_cache[cache_key]["ts"] < _BROKER_CACHE_TTL:
-        return _broker_cache[cache_key]["data"]
+    cached = _broker_cache.get(cache_key)
+    if cached is not None:
+        return cached
 
     reports = []
     try:
@@ -263,7 +266,7 @@ def get_stock_reports(code: str, limit: int = 5) -> list:
     except Exception as e:
         print(f"[BROKER] get_stock_reports({code}) failed: {e}")
 
-    _broker_cache[cache_key] = {"data": reports, "ts": now}
+    _broker_cache.set(cache_key, reports, ttl=_BROKER_CACHE_TTL)
     return reports
 
 

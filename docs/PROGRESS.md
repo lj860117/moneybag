@@ -6,7 +6,7 @@
 ---
 
 ## 当前阶段
-M1 W2 — 拆 main.py（✅ 全部完成，4044 → 112 行）
+M1 W3 — 统一缓存层（✅ 全部完成，47 处散装缓存 → infra/cache.MemoryCache）
 
 ## 已完成
 - [x] 2026-04-25: 四层目录树（api/ use_cases/ domain/ infra/）
@@ -52,19 +52,26 @@ M1 W2 — 拆 main.py（✅ 全部完成，4044 → 112 行）
   - 路由总数保持 199 不变（main.py 2 + P1 64 + P2 78 + P3 55 = 199）
   - 28 个 M1 骨架测试全绿 ✅
   - 零路由重复，零路由遗漏
+- [x] 2026-04-26: **M1 W3 统一缓存层完成：47 处散装缓存 → infra/cache.MemoryCache**
+  - MemoryCache 增加 put()（set 别名）、expire()、keys() 方法
+  - CacheProtocol 同步增加 put() 和 expire() 接口
+  - 迁移范围：38 个 services/*.py + 3 个 api/*.py（shared_helpers/signals/news）+ 1 个 services/llm_gateway.py（实例属性）
+  - 散装 `_cache = {}` 定义：47 → 0（含追加发现的 stock_price_provider / technical / fund_screen）
+  - dict 式读写模式（`cache[key] = {"data": ..., "ts": ...}`）：~200+ 处 → 0
+  - 修复 stock_screen.py 4 处 TTL 常量前向引用 bug
+  - 修复 stock_screen.py MemoryCache.items() 迭代→改为 .keys() + .get()
+  - 修复 technical.py 跨模块共享 _nav_cache→改为独立 _tech_cache
+  - 修复 fund_screen.py 跨模块共享 _fund_rank_cache→改为独立 _fund_screen_cache
+  - 28 个 M1 骨架测试全绿 ✅
+  - `grep -rn 'cache\s*=\s*{}' backend/services/` 输出为空 ✅（不变式 #4 达成）
 
 ## 进行中
-- [x] M1 W2 — 拆 main.py（4044 行 → 112 行）✅ 全部完成
-  - [x] 分析路由依赖（199 路由，按 35 组前缀分类，P1/P2/P3 三级）
-  - [x] 第一批拆分：64 个路由 → 10 个 Router 文件 ✅
-  - [x] 第二批拆分：78 个路由 → 5 个 Router 文件 + shared_helpers ✅
-  - [x] 第三批拆分：55 个路由 → 6 个 Router 文件 ✅（最终批，main.py 112 行）
+- 无
 
 ## 阻塞项
 - 无
 
 ## 下次会话计划
-- M1 W3: 统一缓存层 — 把 46 处 `_cache = {}` 迁移到 infra/cache
 - M1 W3: infra/data_source 五分法 — 数据源按 market/fundamental/macro/alt 分桶
 - M1 W4: 配 import-linter + mypy CI（方案 C 落地）
 - M1 W4: main.py 行数上限 linter（CI 红线 200 行）
@@ -145,3 +152,22 @@ M1 W2 — 拆 main.py（✅ 全部完成，4044 → 112 行）
   - 🟢 确认无影响：tests/test_skeleton_m1.py 28/28 通过
   - 🟡 建议评估：services/ 中的 import 链（本次仅移动路由层，不动 service 层）
   - 🟡 建议评估：api/chat.py 277 行含 httpx 直调（不变式 3 违反，M1 W3 迁到 infra/llm/gateway 时修复）
+
+### 2026-04-26
+**会话 6**（M1 W3 统一缓存层）
+- 任务：把代码中所有 `_cache = {}` 迁移到 infra/cache.MemoryCache
+- 产出：
+  - MemoryCache 增加 put()、expire()、keys() 方法；CacheProtocol 同步更新
+  - 迁移 47 处散装缓存定义 → 0 处（覆盖 38 个 services/*.py + 3 个 api/*.py + 1 个 llm_gateway 实例属性）
+  - 重写 ~200+ 处 dict 式读写模式为 .get()/.set() API
+  - 修复 stock_screen.py 4 处 TTL 常量前向引用 bug
+  - 修复 3 处跨模块缓存共享问题（technical.py / fund_screen.py / stock_screen.py 迭代）
+  - 修复 api 层（signals.py / news.py / shared_helpers.py）残留 dict 式访问
+  - 28/28 骨架测试全绿
+- 状态：✅ 完成
+- 影响面：
+  - 🟢 确认无影响：tests/test_skeleton_m1.py 28/28 通过
+  - 🟢 确认无影响：所有缓存 key 和 TTL 保持不变
+  - 🟢 确认无影响：API URL 路径不变，前端零改动
+  - 🟡 建议评估：services/llm_gateway.py 内部磁盘缓存持久化逻辑（用了 MemoryCache._data 内部结构）
+  - 🟡 建议评估：api/chat.py httpx 直调（不变式 3 违反，待 W4 修复）

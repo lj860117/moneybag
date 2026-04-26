@@ -38,8 +38,9 @@ def ml_stock_screen(top_n: int = 30) -> dict:
     """
     cache_key = f"ml_screen_{top_n}"
     now = time.time()
-    if cache_key in _ml_cache and now - _ml_cache[cache_key]["ts"] < STOCK_CACHE_TTL:
-        return _ml_cache[cache_key]["data"]
+    cached = _ml_cache.get(cache_key)
+    if cached is not None:
+        return cached
 
     try:
         import lightgbm as lgb
@@ -185,7 +186,7 @@ def ml_stock_screen(top_n: int = 30) -> dict:
             "note": "LightGBM 模型自动学习非线性特征关系，比规则打分更准确",
         }
 
-        _ml_cache[cache_key] = {"data": result, "ts": now}
+        _ml_cache.set(cache_key, result)
         print(f"[ML_SCREEN] TOP {top_n} selected from {len(scored)} candidates")
         return result
 

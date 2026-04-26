@@ -45,6 +45,14 @@ class CacheProtocol(Protocol):
         """Remove all entries. Use sparingly -- mainly for tests."""
         ...
 
+    def put(self, key: str, value: Any, *, ttl: int = ...) -> None:
+        """Alias for ``set`` -- provided for readability."""
+        ...
+
+    def expire(self, key: str, ttl: int) -> bool:
+        """Reset TTL on an existing key. Return False if key missing/expired."""
+        ...
+
     def has(self, key: str) -> bool:
         """Check existence without retrieving value. Respects TTL."""
         ...

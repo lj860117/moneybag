@@ -93,11 +93,33 @@ class MemoryCache:
         with self._lock:
             self._data.clear()
 
+    def put(self, key: str, value: Any, *, ttl: int = 0) -> None:
+        """Alias for ``set`` -- provided for readability."""
+        self.set(key, value, ttl=ttl)
+
+    def expire(self, key: str, ttl: int) -> bool:
+        """Reset TTL on an existing key.  Return False if missing/expired."""
+        with self._lock:
+            entry = self._data.get(key)
+            if entry is None or entry.expires_at < time.time():
+                return False
+            entry.expires_at = time.time() + ttl
+            return True
+
     def has(self, key: str) -> bool:
         """Check existence without returning value."""
         return self.get(key) is not None
 
     # ---- Extras (not in Protocol, but useful for monitoring) ----
+
+    def keys(self) -> list:
+        """Return list of non-expired keys (snapshot)."""
+        now = time.time()
+        with self._lock:
+            expired = [k for k, v in self._data.items() if v.expires_at < now]
+            for k in expired:
+                del self._data[k]
+            return list(self._data.keys())
 
     def size(self) -> int:
         """Number of non-expired entries."""

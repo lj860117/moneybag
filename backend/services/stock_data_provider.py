@@ -30,7 +30,7 @@ from config import STOCK_CACHE_TTL
 from infra.cache import MemoryCache
 
 # 数据层缓存（所有消费方共享同一份数据）
-_provider_cache = MemoryCache(default_ttl=3600)
+_provider_cache = MemoryCache(default_ttl=STOCK_CACHE_TTL)
 _CACHE_KEY = "stock_all_data"
 
 
@@ -64,23 +64,21 @@ def get_stock_data() -> dict:
         "elapsed": 13.2,
     }
     """
-    now = time.time()
-    if _CACHE_KEY in _provider_cache:
-        cached = _provider_cache[_CACHE_KEY]
-        if now - cached["ts"] < STOCK_CACHE_TTL:
-            return {**cached["data"], "source": "cache"}
+    cached = _provider_cache.get(_CACHE_KEY)
+    if cached is not None:
+        return {**cached, "source": "cache"}
 
     # 尝试源 1：东方财富（字段最全，但经常反爬）
     result = _try_em_source()
     if result and len(result["stocks"]) > 100:
-        _provider_cache[_CACHE_KEY] = {"data": result, "ts": now}
+        _provider_cache.set(_CACHE_KEY, result)
         return result
 
     # 降级源 2：新浪基础行情 + 雪球并发补充 PE/PB
     print("[DATA_PROVIDER] 东方财富不可用，降级到新浪+雪球")
     result = _try_sina_xq_source()
     if result and len(result["stocks"]) > 100:
-        _provider_cache[_CACHE_KEY] = {"data": result, "ts": now}
+        _provider_cache.set(_CACHE_KEY, result)
         return result
 
     # 所有源都失败

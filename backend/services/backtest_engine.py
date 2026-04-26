@@ -36,8 +36,9 @@ def _get_stock_hist(code: str, period: str = "daily", days: int = 750) -> list:
     """获取个股历史日K线（收盘价序列），多源降级"""
     cache_key = f"hist_{code}_{days}"
     now = time.time()
-    if cache_key in _bt_cache and now - _bt_cache[cache_key]["ts"] < 86400:
-        return _bt_cache[cache_key]["data"]
+    cached = _bt_cache.get(cache_key)
+    if cached is not None:
+        return cached
 
     prices = []
     try:
@@ -98,7 +99,7 @@ def _get_stock_hist(code: str, period: str = "daily", days: int = 750) -> list:
     except Exception as e:
         print(f"[BACKTEST] hist {code}: {e}")
 
-    _bt_cache[cache_key] = {"data": prices, "ts": time.time()}
+    _bt_cache.set(cache_key, prices)
     return prices
 
 
@@ -106,8 +107,9 @@ def _get_fund_hist(code: str, days: int = 750) -> list:
     """获取基金历史净值序列"""
     cache_key = f"fund_hist_{code}_{days}"
     now = time.time()
-    if cache_key in _bt_cache and now - _bt_cache[cache_key]["ts"] < 86400:
-        return _bt_cache[cache_key]["data"]
+    cached = _bt_cache.get(cache_key)
+    if cached is not None:
+        return cached
 
     prices = []
     try:
@@ -127,7 +129,7 @@ def _get_fund_hist(code: str, days: int = 750) -> list:
     except Exception as e:
         print(f"[BACKTEST] fund_hist {code}: {e}")
 
-    _bt_cache[cache_key] = {"data": prices, "ts": time.time()}
+    _bt_cache.set(cache_key, prices, ttl=86400)
     return prices
 
 

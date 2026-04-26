@@ -382,8 +382,9 @@ def evolve_factors(
     """
     cache_key = f"gf_{code}_{generations}"
     now = time.time()
-    if cache_key in _gf_cache and now - _gf_cache[cache_key]["ts"] < _GF_CACHE_TTL:
-        return _gf_cache[cache_key]["data"]
+    cached = _gf_cache.get(cache_key)
+    if cached is not None:
+        return cached
 
     try:
         data, fwd_ret = _prepare_data(code)
@@ -498,7 +499,7 @@ def evolve_factors(
             "generated_at": time.strftime("%Y-%m-%d %H:%M:%S"),
         }
 
-        _gf_cache[cache_key] = {"data": result, "ts": now}
+        _gf_cache.set(cache_key, result)
         return result
 
     except Exception as e:

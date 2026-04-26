@@ -15,6 +15,7 @@ import json
 import hashlib
 from datetime import datetime, date
 from pathlib import Path
+from infra.cache import MemoryCache
 
 # ---- 配置 ----
 LLM_API_KEY = os.environ.get("LLM_API_KEY", "")
@@ -57,7 +58,7 @@ class LLMGateway:
         return cls._instance
 
     def __init__(self):
-        self._cache = {}           # {cache_key: {result, ts}}
+        self._cache = MemoryCache(default_ttl=CACHE_TTL)  # LLM response cache
         self._usage = {}           # {user_id: {module: {calls, tokens, cost}}}
         self._daily_count = 0
         self._daily_date = date.today()
@@ -77,8 +78,10 @@ class LLMGateway:
                 now = time.time()
                 restored = 0
                 for k, v in raw.items():
-                    if now - v.get("ts", 0) < CACHE_TTL:
-                        self._cache[k] = v
+                    ts = v.get("ts", 0)
+                    remaining_ttl = CACHE_TTL - (now - ts)
+                    if remaining_ttl > 0:
+                        self._cache.set(k, v["result"], ttl=int(remaining_ttl))
                         restored += 1
                 if restored:
                     print(f"[LLM_GATEWAY] 💾 从磁盘恢复 {restored} 条缓存")
@@ -90,9 +93,13 @@ class LLMGateway:
         try:
             import tempfile
             self.CACHE_FILE.parent.mkdir(parents=True, exist_ok=True)
-            # 只持久化未过期的条目
+            # 只持久化未过期的条目（访问 MemoryCache 内部 _data）
             now = time.time()
-            valid = {k: v for k, v in self._cache.items() if now - v.get("ts", 0) < CACHE_TTL}
+            valid = {}
+            with self._cache._lock:
+                for k, entry in self._cache._data.items():
+                    if entry.expires_at > now:
+                        valid[k] = {"result": entry.value, "ts": now}
             # 原子写：tmp + rename
             fd, tmp_path = tempfile.mkstemp(dir=str(self.CACHE_FILE.parent), suffix=".tmp")
             with os.fdopen(fd, "w", encoding="utf-8") as f:
@@ -240,23 +247,13 @@ class LLMGateway:
         return hashlib.md5(raw.encode()).hexdigest()
 
     def _get_cache(self, key: str):
-        if key in self._cache:
-            entry = self._cache[key]
-            if time.time() - entry["ts"] < CACHE_TTL:
-                return entry["result"]
-            else:
-                del self._cache[key]
-        return None
+        return self._cache.get(key)
 
     def _set_cache(self, key: str, result: dict):
-        self._cache[key] = {"result": result, "ts": time.time()}
+        self._cache.set(key, result)
         # 清理过期缓存（超过 200 条时）
-        if len(self._cache) > 200:
-            now = time.time()
-            self._cache = {
-                k: v for k, v in self._cache.items()
-                if now - v["ts"] < CACHE_TTL
-            }
+        if self._cache.size() > 200:
+            pass  # MemoryCache.size() already prunes expired entries
         # 每 5 次新缓存写一次磁盘（Phase 0 持久化）
         self._cache_dirty += 1
         if self._cache_dirty >= 5:

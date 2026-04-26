@@ -32,8 +32,9 @@ def get_commodity_prices() -> dict:
     """获取大宗商品期货价格（黄金/铜）"""
     cache_key = "commodities"
     now = time.time()
-    if cache_key in _factor_cache and now - _factor_cache[cache_key]["ts"] < 3600:
-        return _factor_cache[cache_key]["data"]
+    cached = _factor_cache.get(cache_key)
+    if cached is not None:
+        return cached
 
     result = {"gold": None, "copper": None, "available": False}
     try:
@@ -74,7 +75,7 @@ def get_commodity_prices() -> dict:
     except Exception as e:
         print(f"[COMMODITY] Failed: {e}")
 
-    _factor_cache[cache_key] = {"data": result, "ts": now}
+    _factor_cache.set(cache_key, result)
     return result
 
 
@@ -82,8 +83,9 @@ def get_stock_unlock_schedule() -> dict:
     """获取近期限售股解禁计划"""
     cache_key = "unlock"
     now = time.time()
-    if cache_key in _factor_cache and now - _factor_cache[cache_key]["ts"] < 3600:
-        return _factor_cache[cache_key]["data"]
+    cached = _factor_cache.get(cache_key)
+    if cached is not None:
+        return cached
 
     result = {"items": [], "total_value": 0, "available": False}
     try:
@@ -149,7 +151,7 @@ def get_stock_unlock_schedule() -> dict:
         print(f"[UNLOCK] Failed: {e}")
         traceback.print_exc()
 
-    _factor_cache[cache_key] = {"data": result, "ts": now}
+    _factor_cache.set(cache_key, result)
     return result
 
 
@@ -197,8 +199,9 @@ def get_etf_fund_flow() -> dict:
     """
     cache_key = "etf_flow"
     now = time.time()
-    if cache_key in _factor_cache and now - _factor_cache[cache_key]["ts"] < 3600:
-        return _factor_cache[cache_key]["data"]
+    cached = _factor_cache.get(cache_key)
+    if cached is not None:
+        return cached
 
     result = {"top_inflow": [], "top_outflow": [], "total_etf": 0, "available": False}
     try:
@@ -285,7 +288,7 @@ def get_etf_fund_flow() -> dict:
         print(f"[ETF_FLOW] Failed: {e}")
         traceback.print_exc()
 
-    _factor_cache[cache_key] = {"data": result, "ts": now}
+    _factor_cache.set(cache_key, result)
     return result
 
 
@@ -366,8 +369,9 @@ def get_crude_oil_price() -> dict:
     """
     cache_key = "crude_oil"
     now = time.time()
-    if cache_key in _factor_cache and now - _factor_cache[cache_key]["ts"] < 3600:
-        return _factor_cache[cache_key]["data"]
+    cached = _factor_cache.get(cache_key)
+    if cached is not None:
+        return cached
 
     # 国内原油期货 SC0（上海国际能源交易中心）
     sc = _fetch_futures_price("SC0", "原油SC", "元/桶")
@@ -423,7 +427,7 @@ def get_crude_oil_price() -> dict:
     }
 
     print(f"[COMMODITY] 原油: SC={sc.get('price', 'N/A')}, Brent≈{brent_price}, alert={alert_level}")
-    _factor_cache[cache_key] = {"data": result, "ts": now}
+    _factor_cache.set(cache_key, result)
     return result
 
 
@@ -439,8 +443,9 @@ def get_industrial_metals() -> dict:
     """
     cache_key = "industrial_metals"
     now = time.time()
-    if cache_key in _factor_cache and now - _factor_cache[cache_key]["ts"] < 3600:
-        return _factor_cache[cache_key]["data"]
+    cached = _factor_cache.get(cache_key)
+    if cached is not None:
+        return cached
 
     iron = _fetch_futures_price("I0", "铁矿石", "元/吨")
     rebar = _fetch_futures_price("RB0", "螺纹钢", "元/吨")
@@ -452,7 +457,7 @@ def get_industrial_metals() -> dict:
     }
 
     print(f"[COMMODITY] 工业金属: 铁矿石={iron.get('price', 'N/A')}, 螺纹钢={rebar.get('price', 'N/A')}")
-    _factor_cache[cache_key] = {"data": result, "ts": now}
+    _factor_cache.set(cache_key, result, ttl=3600)
     return result
 
 

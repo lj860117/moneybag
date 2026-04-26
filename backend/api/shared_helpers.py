@@ -38,16 +38,17 @@ from infra.cache import MemoryCache
 # ========================================================
 # 市场上下文缓存
 # ========================================================
-_market_ctx_cache = MemoryCache(default_ttl=_MARKET_CTX_CACHE_TTL)  # {"market_context": {"data": text, "ts": float}}
 _MARKET_CTX_TTL = 300  # 5 分钟缓存
+_market_ctx_cache = MemoryCache(default_ttl=_MARKET_CTX_TTL)
 
 
 def _build_market_context() -> str:
     """构建市场数据上下文（含恐惧贪婪、技术指标、新闻），5分钟缓存"""
     now = time.time()
     cache_key = "market_context"
-    if cache_key in _market_ctx_cache and (now - _market_ctx_cache[cache_key]["ts"]) < _MARKET_CTX_TTL:
-        return _market_ctx_cache[cache_key]["data"]
+    cached = _market_ctx_cache.get(cache_key)
+    if cached is not None:
+        return cached
     lines = []
     try:
         fgi_data = get_fear_greed_index()
@@ -204,8 +205,7 @@ def _build_market_context() -> str:
         pass
 
     result = "\n".join(lines) if lines else "暂无市场数据"
-    cache_key = "market_context"
-    _market_ctx_cache[cache_key] = {"data": result, "ts": time.time()}
+    _market_ctx_cache.set("market_context", result, ttl=_MARKET_CTX_TTL)
     return result
 
 

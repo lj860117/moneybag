@@ -49,9 +49,9 @@ def is_configured() -> bool:
 
 def _get_token() -> str:
     """获取/刷新 access_token"""
-    now = time.time()
-    if _token_cache["token"] and now < _token_cache["expires"]:
-        return _token_cache["token"]
+    cached = _token_cache.get("token")
+    if cached is not None:
+        return cached
 
     if not is_configured():
         return ""
@@ -63,8 +63,7 @@ def _get_token() -> str:
             data = resp.json()
             if data.get("errcode") == 0:
                 token = data["access_token"]
-                _token_cache["token"] = token
-                _token_cache["expires"] = now + 7000  # 提前 200 秒刷新
+                _token_cache.set("token", token, ttl=7000)  # 提前 200 秒刷新
                 return token
             else:
                 print(f"[WXWORK] Token error: {data}")

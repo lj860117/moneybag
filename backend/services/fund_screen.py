@@ -18,8 +18,11 @@ MODULE_META = {
 }
 import time
 from config import FUND_RANK_CACHE_TTL
-from services.fund_rank import _load_fund_rank_data, _fund_rank_cache
+from infra.cache import MemoryCache
+from services.fund_rank import _load_fund_rank_data
 from services.utils import find_col as _find_col, safe_float as _safe_float, parse_fee as _parse_fee
+
+_fund_screen_cache = MemoryCache(default_ttl=FUND_RANK_CACHE_TTL)
 
 
 def screen_funds(
@@ -35,8 +38,9 @@ def screen_funds(
     """
     cache_key = f"fund_screen_{fund_type}_{sort_by}_{top_n}"
     now = time.time()
-    if cache_key in _fund_rank_cache and now - _fund_rank_cache[cache_key]["ts"] < FUND_RANK_CACHE_TTL:
-        return _fund_rank_cache[cache_key]["data"]
+    cached = _fund_screen_cache.get(cache_key)
+    if cached is not None:
+        return cached
 
     rank_data = _load_fund_rank_data()
     if not rank_data:
@@ -140,6 +144,6 @@ def screen_funds(
         "filter": fund_type,
         "sort": sort_by,
     }
-    _fund_rank_cache[cache_key] = {"data": result, "ts": time.time()}
+    _fund_screen_cache.set(cache_key, result, ttl=FUND_RANK_CACHE_TTL)
     return result
 

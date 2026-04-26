@@ -202,8 +202,9 @@ def monte_carlo_single(
     """
     cache_key = f"mc_{code}_{simulations}_{horizon_days}_{apply_discipline}"
     now = time.time()
-    if cache_key in _mc_cache and now - _mc_cache[cache_key]["ts"] < _MC_CACHE_TTL:
-        return _mc_cache[cache_key]["data"]
+    cached = _mc_cache.get(cache_key)
+    if cached is not None:
+        return cached
 
     print(f"[MC] Single: {code}, {simulations} sims, {horizon_days}d, discipline={apply_discipline}")
     t0 = time.time()
@@ -311,7 +312,7 @@ def monte_carlo_single(
         "elapsed_seconds": round(elapsed, 1),
     }
 
-    _mc_cache[cache_key] = {"data": result, "ts": time.time()}
+    _mc_cache.set(cache_key, result)
     print(f"[MC] Done: profit_prob={profit_probability}%, P50={result['percentiles']['P50']}%, {elapsed:.1f}s")
     return result
 
@@ -329,8 +330,9 @@ def monte_carlo_portfolio(
     """
     cache_key = f"mc_port_{'_'.join(h['code'] for h in holdings)}_{simulations}_{horizon_days}_{apply_discipline}"
     now = time.time()
-    if cache_key in _mc_cache and now - _mc_cache[cache_key]["ts"] < _MC_CACHE_TTL:
-        return _mc_cache[cache_key]["data"]
+    cached = _mc_cache.get(cache_key)
+    if cached is not None:
+        return cached
 
     print(f"[MC] Portfolio: {len(holdings)} holdings, {simulations} sims")
     t0 = time.time()
@@ -439,7 +441,7 @@ def monte_carlo_portfolio(
         "elapsed_seconds": round(elapsed, 1),
     }
 
-    _mc_cache[cache_key] = {"data": result, "ts": time.time()}
+    _mc_cache.set(cache_key, result)
     print(f"[MC] Portfolio done: profit_prob={profit_prob}%, P50={result['percentiles']['P50']}%, {elapsed:.1f}s")
     return result
 
@@ -455,8 +457,9 @@ def monte_carlo_compare(
     """
     cache_key = f"mc_cmp_{code}_{simulations}_{horizon_days}"
     now = time.time()
-    if cache_key in _mc_cache and now - _mc_cache[cache_key]["ts"] < _MC_CACHE_TTL:
-        return _mc_cache[cache_key]["data"]
+    cached = _mc_cache.get(cache_key)
+    if cached is not None:
+        return cached
 
     print(f"[MC_CMP] Comparing discipline vs no-discipline for {code}")
 
@@ -515,7 +518,7 @@ def monte_carlo_compare(
     else:
         result["conclusion"] = "在当前市场状态下，纪律规则对该股票影响有限，可能因为近期波动不大。"
 
-    _mc_cache[cache_key] = {"data": result, "ts": time.time()}
+    _mc_cache.set(cache_key, result)
     return result
 
 

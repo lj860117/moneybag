@@ -17,6 +17,7 @@ import json
 import traceback
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from config import STOCK_CACHE_TTL
+from infra.cache import MemoryCache
 
 # ---- V4 底座：MODULE_META ----
 MODULE_META = {
@@ -37,11 +38,10 @@ _stock_cache = MemoryCache(default_ttl=3600)
 # FIX 2026-04-19 F4: 权重统一从 config.STOCK_SCREEN_WEIGHTS 读取（Single Source of Truth）
 # 原来本地写了一份 quality=0.18，与 config.py 的 0.15 不一致
 from config import STOCK_SCREEN_WEIGHTS as DEFAULT_DIM_WEIGHTS
-from infra.cache import MemoryCache
 
 # ---- DeepSeek 动态权重调整 ----
-_weight_cache = MemoryCache(default_ttl=_WEIGHT_CACHE_TTL)
 _WEIGHT_CACHE_TTL = 3600  # 1 小时
+_weight_cache = MemoryCache(default_ttl=_WEIGHT_CACHE_TTL)
 
 
 def _get_dynamic_weights() -> dict:
@@ -51,8 +51,9 @@ def _get_dynamic_weights() -> dict:
     """
     cache_key = "dynamic_weights"
     now = time.time()
-    if cache_key in _weight_cache and now - _weight_cache[cache_key]["ts"] < _WEIGHT_CACHE_TTL:
-        return _weight_cache[cache_key]["data"]
+    cached = _weight_cache.get(cache_key)
+    if cached is not None:
+        return cached
 
     try:
         from config import LLM_API_URL, LLM_API_KEY, LLM_MODEL
@@ -157,7 +158,7 @@ def _get_dynamic_weights() -> dict:
         weights["_reason"] = reason
         print(f"[DYN_WEIGHT] regime={regime}, weights={weights}, reason={reason}")
 
-        _weight_cache[cache_key] = {"data": weights, "ts": now}
+        _weight_cache.set(cache_key, weights)
         return weights
 
     except Exception as e:
@@ -166,16 +167,17 @@ def _get_dynamic_weights() -> dict:
 
 
 # ---- 舆情因子真正接入 ----
-_sentiment_cache = MemoryCache(default_ttl=_SENTIMENT_CACHE_TTL)  # {"all_sentiment": {"data": score, "ts": float}}
 _SENTIMENT_CACHE_TTL = 1800  # 30 分钟
+_sentiment_cache = MemoryCache(default_ttl=_SENTIMENT_CACHE_TTL)
 
 
 def _get_sentiment_score() -> float:
     """获取全市场舆情得分，映射到 [0, 100]"""
     cache_key = "all_sentiment"
     now = time.time()
-    if cache_key in _sentiment_cache and now - _sentiment_cache[cache_key]["ts"] < _SENTIMENT_CACHE_TTL:
-        return _sentiment_cache[cache_key]["data"]
+    cached = _sentiment_cache.get(cache_key)
+    if cached is not None:
+        return cached
 
     try:
         from services.factor_data import get_news_sentiment_score
@@ -184,7 +186,7 @@ def _get_sentiment_score() -> float:
             raw = result.get("score", 0)  # -100 ~ +100
             # 映射到 0~100：-100→0, 0→50, +100→100
             mapped = max(0, min(100, 50 + raw * 0.5))
-            _sentiment_cache[cache_key] = {"data": mapped, "ts": now}
+            _sentiment_cache.set(cache_key, mapped, ttl=_SENTIMENT_CACHE_TTL)
             print(f"[SENTIMENT_FACTOR] raw={raw}, mapped={mapped:.0f}")
             return mapped
     except Exception as e:
@@ -194,8 +196,8 @@ def _get_sentiment_score() -> float:
 
 
 # ---- LLM 因子生成器加分 ----
-_llm_bonus_cache = MemoryCache(default_ttl=_LLM_BONUS_CACHE_TTL)
 _LLM_BONUS_CACHE_TTL = 7200  # 2 小时
+_llm_bonus_cache = MemoryCache(default_ttl=_LLM_BONUS_CACHE_TTL)
 
 
 def _get_llm_factor_bonus(code: str) -> float:
@@ -210,8 +212,9 @@ def _get_llm_factor_bonus(code: str) -> float:
     """
     cache_key = f"llm_bonus_{code}"
     now = time.time()
-    if cache_key in _llm_bonus_cache and now - _llm_bonus_cache[cache_key]["ts"] < _LLM_BONUS_CACHE_TTL:
-        return _llm_bonus_cache[cache_key]["data"]
+    cached = _llm_bonus_cache.get(cache_key)
+    if cached is not None:
+        return cached
 
     try:
         from services.llm_factor_gen import _llm_factor_cache
@@ -220,9 +223,11 @@ def _get_llm_factor_bonus(code: str) -> float:
         clean_code = code.replace("sh", "").replace("sz", "").replace("SH", "").replace("SZ", "")
         bonus = 0.0
 
-        for key, cached in _llm_factor_cache.items():
-            if clean_code in key and now - cached.get("ts", 0) < 86400:  # 24小时内
-                data = cached.get("data", {})
+        for key in _llm_factor_cache.keys():
+            if clean_code in key:
+                data = _llm_factor_cache.get(key)
+                if data is None:
+                    continue
                 effective = data.get("effective_factors", [])
                 summary = data.get("summary", {})
 
@@ -239,7 +244,7 @@ def _get_llm_factor_bonus(code: str) -> float:
                     print(f"[LLM_BONUS] {code}: {len(effective)} effective factors, best_ic={best_ic:.4f}, bonus={bonus}")
                 break
 
-        _llm_bonus_cache[cache_key] = {"data": bonus, "ts": now}
+        _llm_bonus_cache.set(cache_key, bonus, ttl=_LLM_BONUS_CACHE_TTL)
         return bonus
 
     except Exception:
@@ -545,8 +550,9 @@ def screen_stocks(top_n: int = 50) -> dict:
     """
     cache_key = f"stock_screen_v3_{top_n}"
     now = time.time()
-    if cache_key in _stock_cache and now - _stock_cache[cache_key]["ts"] < STOCK_CACHE_TTL:
-        return _stock_cache[cache_key]["data"]
+    cached = _stock_cache.get(cache_key)
+    if cached is not None:
+        return cached
 
     try:
         from services.stock_data_provider import get_stock_data
@@ -748,7 +754,7 @@ def screen_stocks(top_n: int = 50) -> dict:
             "weights": {k: round(v * 100, 1) for k, v in DIM_WEIGHTS.items()},
             "note": f"数据源: {source} | 财务数据: {fin_count}/{len(codes_50)} | 市场: {regime}",
         }
-        _stock_cache[cache_key] = {"data": result, "ts": time.time()}
+        _stock_cache.set(cache_key, result)
         print(f"[STOCK_SCREEN_V3] Final: {len(scored)} scored → TOP {len(top)} | regime={regime}")
         return result
 
@@ -759,22 +765,22 @@ def screen_stocks(top_n: int = 50) -> dict:
 
 
 # ---- V4 底座：enrich() 适配层 ----
-_enrich_cache = MemoryCache(default_ttl=_ENRICH_CACHE_TTL)  # {"stock_screen_top20": {"data": result, "ts": time}}
 _ENRICH_CACHE_TTL = 1800  # 30分钟缓存（选股结果不需要实时）
+_enrich_cache = MemoryCache(default_ttl=_ENRICH_CACHE_TTL)
 
 def enrich(ctx):
     """Pipeline 适配：跑选股 → 写回 ctx（市场整体强弱+推荐名单）"""
     import time as _time
     try:
         # 30分钟缓存，避免每次 steward.ask 都跑 40 秒选股
-        now = _time.time()
         cache_key = "stock_screen_top20"
-        if cache_key in _enrich_cache and now - _enrich_cache[cache_key].get("ts", 0) < _ENRICH_CACHE_TTL:
-            result = _enrich_cache[cache_key]["data"]
+        cached = _enrich_cache.get(cache_key)
+        if cached is not None:
+            result = cached
             print("[STOCK_SCREEN] enrich using cache")
         else:
             result = screen_stocks(20)
-            _enrich_cache[cache_key] = {"data": result, "ts": now}
+            _enrich_cache.set(cache_key, result)
         stocks = result.get("stocks", [])
         regime = result.get("regime", "")
         if stocks:

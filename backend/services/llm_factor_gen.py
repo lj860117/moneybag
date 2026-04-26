@@ -259,8 +259,9 @@ def generate_alpha_factors(
     """
     cache_key = f"llm_factor_{code}_{count}_{iterations}"
     now = time.time()
-    if cache_key in _llm_factor_cache and now - _llm_factor_cache[cache_key]["ts"] < _LLM_CACHE_TTL:
-        return _llm_factor_cache[cache_key]["data"]
+    cached = _llm_factor_cache.get(cache_key)
+    if cached is not None:
+        return cached
 
     if not LLM_API_KEY:
         return {"error": "LLM API Key 未配置"}
@@ -365,7 +366,7 @@ def generate_alpha_factors(
             "generated_at": time.strftime("%Y-%m-%d %H:%M:%S"),
         }
 
-        _llm_factor_cache[cache_key] = {"data": result, "ts": now}
+        _llm_factor_cache.set(cache_key, result)
         return result
 
     except Exception as e:

@@ -367,8 +367,9 @@ def analyze_scenario(scenario_id: str = "", custom_text: str = "", user_id: str 
     # 缓存检查
     cache_key = f"scenario_{scenario.get('id', 'custom')}_{user_id}"
     now = time.time()
-    if cache_key in _scenario_cache and now - _scenario_cache[cache_key]["ts"] < _SCENARIO_CACHE_TTL:
-        return _scenario_cache[cache_key]["data"]
+    cached = _scenario_cache.get(cache_key)
+    if cached is not None:
+        return cached
 
     print(f"[SCENARIO] 开始分析: {scenario['name']}")
 
@@ -425,7 +426,7 @@ def analyze_scenario(scenario_id: str = "", custom_text: str = "", user_id: str 
           f"概率={result['analysis']['probability']}, "
           f"模型={result['model']}")
 
-    _scenario_cache[cache_key] = {"data": result, "ts": now}
+    _scenario_cache.set(cache_key, result)
     return result
 
 

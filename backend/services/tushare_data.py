@@ -48,8 +48,9 @@ def _call_tushare(api_name: str, params: dict, fields: str = "") -> list:
 
     cache_key = f"{api_name}_{json.dumps(params, sort_keys=True)}_{fields}"
     now = time.time()
-    if cache_key in _ts_cache and now - _ts_cache[cache_key]["ts"] < _TS_CACHE_TTL:
-        return _ts_cache[cache_key]["data"]
+    cached = _ts_cache.get(cache_key)
+    if cached is not None:
+        return cached
 
     try:
         payload = json.dumps({
@@ -70,7 +71,7 @@ def _call_tushare(api_name: str, params: dict, fields: str = "") -> list:
             columns = resp["data"]["fields"]
             items = resp["data"]["items"]
             result = [dict(zip(columns, row)) for row in items]
-            _ts_cache[cache_key] = {"data": result, "ts": now}
+            _ts_cache.set(cache_key, result, ttl=_TS_CACHE_TTL)
             return result
         return []
     except Exception as e:
@@ -278,9 +279,9 @@ def get_dividend(code: str) -> list:
 def get_st_stocks() -> list:
     """获取当前所有 ST/*ST 股票列表"""
     cache_key = "st_stocks"
-    now = time.time()
-    if cache_key in _ts_cache and now - _ts_cache[cache_key]["ts"] < 86400:  # 24h缓存
-        return _ts_cache[cache_key]["data"]
+    cached = _ts_cache.get(cache_key)
+    if cached is not None:
+        return cached
 
     rows = _call_tushare(
         "namechange",
@@ -289,7 +290,7 @@ def get_st_stocks() -> list:
     )
     # 筛选当前仍为 ST 的
     st_list = [r for r in rows if r.get("name", "").startswith(("ST", "*ST")) and not r.get("end_date")]
-    _ts_cache[cache_key] = {"data": st_list, "ts": now}
+    _ts_cache.set(cache_key, st_list, ttl=86400)
     return st_list
 
 

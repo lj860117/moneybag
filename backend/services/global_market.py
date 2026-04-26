@@ -57,8 +57,9 @@ def get_us_indices() -> dict:
     """获取美股三大指数最新数据（道琼斯/标普500/纳斯达克）"""
     cache_key = "us_indices"
     now = time.time()
-    if cache_key in _global_cache and now - _global_cache[cache_key]["ts"] < _GLOBAL_TTL:
-        return _global_cache[cache_key]["data"]
+    cached = _global_cache.get(cache_key)
+    if cached is not None:
+        return cached
 
     result = {"dji": None, "spx": None, "ixic": None, "available": False}
 
@@ -93,7 +94,7 @@ def get_us_indices() -> dict:
     except Exception as e:
         print(f"[GLOBAL] US indices failed: {e}")
 
-    _global_cache[cache_key] = {"data": result, "ts": now}
+    _global_cache.set(cache_key, result, ttl=_GLOBAL_TTL)
     return result
 
 
@@ -105,8 +106,9 @@ def get_forex_data() -> dict:
     """获取主要外汇汇率（美元/人民币、欧元等）"""
     cache_key = "forex"
     now = time.time()
-    if cache_key in _global_cache and now - _global_cache[cache_key]["ts"] < _GLOBAL_TTL:
-        return _global_cache[cache_key]["data"]
+    cached = _global_cache.get(cache_key)
+    if cached is not None:
+        return cached
 
     result = {"usdcny": None, "dxy_proxy": None, "available": False}
 
@@ -139,7 +141,7 @@ def get_forex_data() -> dict:
     except Exception as e:
         print(f"[GLOBAL] Forex failed: {e}")
 
-    _global_cache[cache_key] = {"data": result, "ts": now}
+    _global_cache.set(cache_key, result, ttl=_GLOBAL_TTL)
     return result
 
 
@@ -151,8 +153,9 @@ def get_fed_rate() -> dict:
     """获取美联储联邦基金利率历史"""
     cache_key = "fed_rate"
     now = time.time()
-    if cache_key in _global_cache and now - _global_cache[cache_key]["ts"] < _GLOBAL_TTL:
-        return _global_cache[cache_key]["data"]
+    cached = _global_cache.get(cache_key)
+    if cached is not None:
+        return cached
 
     result = {"current_rate": None, "last_change": None, "trend": "hold", "available": False}
 
@@ -200,7 +203,7 @@ def get_fed_rate() -> dict:
     except Exception as e:
         print(f"[GLOBAL] Fed rate failed: {e}")
 
-    _global_cache[cache_key] = {"data": result, "ts": now}
+    _global_cache.set(cache_key, result)
     return result
 
 
@@ -212,8 +215,9 @@ def get_global_pe() -> dict:
     """获取中美 PE 对比"""
     cache_key = "global_pe"
     now = time.time()
-    if cache_key in _global_cache and now - _global_cache[cache_key]["ts"] < _GLOBAL_TTL:
-        return _global_cache[cache_key]["data"]
+    cached = _global_cache.get(cache_key)
+    if cached is not None:
+        return cached
 
     result = {"us_pe": None, "cn_pe": None, "spread": None, "available": False}
 
@@ -294,7 +298,7 @@ def get_global_pe() -> dict:
     except Exception as e:
         print(f"[GLOBAL] Global PE failed: {e}")
 
-    _global_cache[cache_key] = {"data": result, "ts": now}
+    _global_cache.set(cache_key, result)
     return result
 
 
@@ -305,9 +309,9 @@ def get_global_pe() -> dict:
 def get_global_snapshot() -> dict:
     """一次性获取全球市场综合快照"""
     cache_key = "global_snapshot"
-    now = time.time()
-    if cache_key in _global_cache and now - _global_cache[cache_key]["ts"] < 600:  # 10 分钟
-        return _global_cache[cache_key]["data"]
+    cached = _global_cache.get(cache_key)
+    if cached is not None:
+        return cached
 
     result = {
         "us_indices": get_us_indices(),
@@ -344,7 +348,7 @@ def get_global_snapshot() -> dict:
 
     result["summary"] = "\n".join(summary_lines)
 
-    _global_cache[cache_key] = {"data": result, "ts": now}
+    _global_cache.set(cache_key, result, ttl=600)
     return result
 
 
@@ -355,9 +359,9 @@ def get_global_snapshot() -> dict:
 def analyze_global_impact_on_a_shares() -> dict:
     """DeepSeek 分析全球市场对 A 股的影响"""
     cache_key = "global_impact"
-    now = time.time()
-    if cache_key in _global_cache and now - _global_cache[cache_key]["ts"] < 1800:  # 30 分钟
-        return _global_cache[cache_key]["data"]
+    cached = _global_cache.get(cache_key)
+    if cached is not None:
+        return cached
 
     snapshot = get_global_snapshot()
     result = {"analysis": "", "source": "none", "snapshot": snapshot}
@@ -366,7 +370,7 @@ def analyze_global_impact_on_a_shares() -> dict:
     if not api_key:
         result["analysis"] = snapshot.get("summary", "全球数据暂不可用")
         result["source"] = "data_only"
-        _global_cache[cache_key] = {"data": result, "ts": now}
+        _global_cache.set(cache_key, result, ttl=1800)
         return result
 
     prompt = f"""请分析以下全球市场数据对中国A股的影响，给出简洁的投资建议。
@@ -406,7 +410,7 @@ def analyze_global_impact_on_a_shares() -> dict:
         result["analysis"] = snapshot.get("summary", "分析暂不可用")
         result["source"] = "data_only"
 
-    _global_cache[cache_key] = {"data": result, "ts": now}
+    _global_cache.set(cache_key, result)
     return result
 
 

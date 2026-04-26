@@ -61,8 +61,9 @@ def get_northbound_flow_detail() -> dict:
     """北向资金实时流向 + 近期趋势"""
     cache_key = "nb_flow_detail"
     now = time.time()
-    if cache_key in _alt_cache and now - _alt_cache[cache_key]["ts"] < _ALT_CACHE_TTL:
-        return _alt_cache[cache_key]["data"]
+    cached = _alt_cache.get(cache_key)
+    if cached is not None:
+        return cached
 
     result = {"today": {}, "trend": [], "top_stocks": [], "signal": ""}
 
@@ -114,7 +115,7 @@ def get_northbound_flow_detail() -> dict:
         result["error"] = str(e)
 
     result = _clean_nan(result)
-    _alt_cache[cache_key] = {"data": result, "ts": now}
+    _alt_cache.set(cache_key, result)
     return result
 
 
@@ -126,8 +127,9 @@ def get_margin_detail() -> dict:
     """融资融券余额趋势 + 信号"""
     cache_key = "margin_detail"
     now = time.time()
-    if cache_key in _alt_cache and now - _alt_cache[cache_key]["ts"] < _ALT_CACHE_TTL:
-        return _alt_cache[cache_key]["data"]
+    cached = _alt_cache.get(cache_key)
+    if cached is not None:
+        return cached
 
     result = {"trend": [], "signal": "", "latest": {}}
 
@@ -162,7 +164,7 @@ def get_margin_detail() -> dict:
         result["error"] = str(e)
 
     result = _clean_nan(result)
-    _alt_cache[cache_key] = {"data": result, "ts": now}
+    _alt_cache.set(cache_key, result, ttl=_ALT_CACHE_TTL)
     return result
 
 
@@ -174,8 +176,9 @@ def get_dragon_tiger() -> dict:
     """龙虎榜数据 — 游资/机构买卖"""
     cache_key = "dragon_tiger"
     now = time.time()
-    if cache_key in _alt_cache and now - _alt_cache[cache_key]["ts"] < _ALT_CACHE_TTL:
-        return _alt_cache[cache_key]["data"]
+    cached = _alt_cache.get(cache_key)
+    if cached is not None:
+        return cached
 
     result = {"records": [], "inst_buy": [], "inst_sell": []}
 
@@ -204,7 +207,7 @@ def get_dragon_tiger() -> dict:
         result["error"] = str(e)
 
     result = _clean_nan(result)
-    _alt_cache[cache_key] = {"data": result, "ts": now}
+    _alt_cache.set(cache_key, result, ttl=_ALT_CACHE_TTL)
     return result
 
 
@@ -216,8 +219,9 @@ def get_block_trade() -> dict:
     """大宗交易数据"""
     cache_key = "block_trade"
     now = time.time()
-    if cache_key in _alt_cache and now - _alt_cache[cache_key]["ts"] < _ALT_CACHE_TTL:
-        return _alt_cache[cache_key]["data"]
+    cached = _alt_cache.get(cache_key)
+    if cached is not None:
+        return cached
 
     result = {"records": [], "premium_count": 0, "discount_count": 0}
 
@@ -243,7 +247,7 @@ def get_block_trade() -> dict:
         result["error"] = str(e)
 
     result = _clean_nan(result)
-    _alt_cache[cache_key] = {"data": result, "ts": now}
+    _alt_cache.set(cache_key, result, ttl=_ALT_CACHE_TTL)
     return result
 
 
@@ -255,8 +259,9 @@ def get_insider_trading() -> dict:
     """重要股东增减持"""
     cache_key = "insider_trading"
     now = time.time()
-    if cache_key in _alt_cache and now - _alt_cache[cache_key]["ts"] < _ALT_CACHE_TTL:
-        return _alt_cache[cache_key]["data"]
+    cached = _alt_cache.get(cache_key)
+    if cached is not None:
+        return cached
 
     result = {"increases": [], "decreases": [], "signal": ""}
 
@@ -290,7 +295,7 @@ def get_insider_trading() -> dict:
         result["error"] = str(e)
 
     result = _clean_nan(result)
-    _alt_cache[cache_key] = {"data": result, "ts": now}
+    _alt_cache.set(cache_key, result, ttl=_ALT_CACHE_TTL)
     return result
 
 
@@ -302,8 +307,9 @@ def get_sector_flow() -> dict:
     """行业板块资金流向"""
     cache_key = "sector_flow"
     now = time.time()
-    if cache_key in _alt_cache and now - _alt_cache[cache_key]["ts"] < _ALT_CACHE_TTL:
-        return _alt_cache[cache_key]["data"]
+    cached = _alt_cache.get(cache_key)
+    if cached is not None:
+        return cached
 
     result = {"inflow": [], "outflow": []}
 
@@ -331,7 +337,7 @@ def get_sector_flow() -> dict:
         result["error"] = str(e)
 
     result = _clean_nan(result)
-    _alt_cache[cache_key] = {"data": result, "ts": now}
+    _alt_cache.set(cache_key, result, ttl=_ALT_CACHE_TTL)
     return result
 
 
@@ -343,8 +349,9 @@ def get_alt_data_dashboard() -> dict:
     """另类数据综合仪表盘"""
     cache_key = "alt_dashboard"
     now = time.time()
-    if cache_key in _alt_cache and now - _alt_cache[cache_key]["ts"] < _ALT_CACHE_TTL:
-        return _alt_cache[cache_key]["data"]
+    cached = _alt_cache.get(cache_key)
+    if cached is not None:
+        return cached
 
     dashboard = {
         "northbound": {},
@@ -392,7 +399,7 @@ def get_alt_data_dashboard() -> dict:
     else:
         dashboard["overall_signal"] = "📊 综合中性，多空信号均衡"
 
-    _alt_cache[cache_key] = {"data": dashboard, "ts": now}
+    _alt_cache.set(cache_key, dashboard)
     return dashboard
 
 

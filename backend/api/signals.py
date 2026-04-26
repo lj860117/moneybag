@@ -274,10 +274,11 @@ def get_daily_signal_api():
         pass
     cache_key = "daily_signal"
     now = time.time()
-    if cache_key in macro_cache and now - macro_cache[cache_key]["ts"] < 1800:
-        return macro_cache[cache_key]["data"]
+    cached = macro_cache.get(cache_key)
+    if cached is not None:
+        return cached
     result = generate_daily_signal()
-    macro_cache[cache_key] = {"data": result, "ts": now}
+    macro_cache.set(cache_key, result, ttl=1800)
     return result
 
 
@@ -297,10 +298,11 @@ def get_backtest(strategy: str = "smart_dca", years: int = 3, monthly: float = 1
     """回测智能定投 vs 固定定投（沪深300历史数据）"""
     cache_key = f"bt_{strategy}_{years}_{monthly}"
     now = time.time()
-    if cache_key in macro_cache and now - macro_cache[cache_key]["ts"] < 7200:
-        return macro_cache[cache_key]["data"]
+    cached = macro_cache.get(cache_key)
+    if cached is not None:
+        return cached
     result = run_backtest(strategy, years, monthly)
-    macro_cache[cache_key] = {"data": result, "ts": now}
+    macro_cache.set(cache_key, result, ttl=7200)
     return result
 
 

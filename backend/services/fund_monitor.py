@@ -140,17 +140,16 @@ def _get_fund_name(code: str) -> str:
 
 def _load_fund_names():
     """加载基金名称表（缓存 24h）"""
-    now = time.time()
-    if _name_cache["data"] is not None and now - _name_cache["ts"] < _NAME_TTL:
-        return _name_cache["data"]
+    cached = _name_cache.get("data")
+    if cached is not None:
+        return cached
     try:
         import akshare as ak
         df = ak.fund_name_em()
-        _name_cache["data"] = df
-        _name_cache["ts"] = now
+        _name_cache.set("data", df, ttl=_NAME_TTL)
         return df
     except Exception:
-        return _name_cache.get("data")
+        return None
 
 
 # ============================================================
@@ -159,17 +158,16 @@ def _load_fund_names():
 
 def _load_estimation_all():
     """加载全市场基金估值（缓存 5min）"""
-    now = time.time()
-    if _est_cache["data"] is not None and now - _est_cache["ts"] < _EST_TTL:
-        return _est_cache["data"]
+    cached = _est_cache.get("data")
+    if cached is not None:
+        return cached
     try:
         import akshare as ak
         df = ak.fund_value_estimation_em()
-        _est_cache["data"] = df
-        _est_cache["ts"] = now
+        _est_cache.set("data", df, ttl=_EST_TTL)
         return df
     except Exception:
-        return _est_cache.get("data")
+        return None
 
 
 def get_fund_realtime(code: str) -> Optional[dict]:
@@ -225,8 +223,9 @@ def get_fund_nav_history(code: str, days: int = 60) -> list:
     """获取净值历史"""
     now = time.time()
     cache_key = f"{code}_{days}"
-    if cache_key in _nav_cache and now - _nav_cache[cache_key]["ts"] < _NAV_TTL:
-        return _nav_cache[cache_key]["data"]
+    cached = _nav_cache.get(cache_key)
+    if cached is not None:
+        return cached
 
     try:
         import akshare as ak
@@ -241,7 +240,7 @@ def get_fund_nav_history(code: str, days: int = 60) -> list:
                 "nav": _safe_float(row.get("单位净值")),
                 "rate": _safe_float(row.get("日增长率")),
             })
-        _nav_cache[cache_key] = {"data": result, "ts": now}
+        _nav_cache.set(cache_key, result, ttl=_NAV_TTL)
         return result
     except Exception as e:
         # 2026-04-19 A+: Tushare 降级
@@ -265,7 +264,7 @@ def get_fund_nav_history(code: str, days: int = 60) -> list:
                             "rate": rate if rate is not None else 0,
                         })
                     print(f"[FUND_MONITOR] {code} Tushare 降级: {len(result)} 天")
-                    _nav_cache[cache_key] = {"data": result, "ts": now}
+                    _nav_cache.set(cache_key, result)
                     return result
         except Exception as te:
             print(f"[FUND_MONITOR] {code} Tushare 也失败: {te}")

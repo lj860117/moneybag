@@ -49,8 +49,9 @@ def get_stock_forecast(code: str, limit: int = 30) -> dict:
     """
     cache_key = f"forecast_{code}"
     now = time.time()
-    if cache_key in _forecast_cache and now - _forecast_cache[cache_key]["ts"] < _FORECAST_CACHE_TTL:
-        return _forecast_cache[cache_key]["data"]
+    cached = _forecast_cache.get(cache_key)
+    if cached is not None:
+        return cached
 
     result = {"available": False, "code": code, "forecasts": [], "consensus": {}, "org_count": 0}
 
@@ -67,7 +68,7 @@ def get_stock_forecast(code: str, limit: int = 30) -> dict:
         )
 
         if not rows:
-            _forecast_cache[cache_key] = {"data": result, "ts": now}
+            _forecast_cache.set(cache_key, result, ttl=_FORECAST_CACHE_TTL)
             return result
 
         result["forecasts"] = rows
@@ -119,7 +120,7 @@ def get_stock_forecast(code: str, limit: int = 30) -> dict:
     except Exception as e:
         print(f"[EARNINGS] {code} failed: {e}")
 
-    _forecast_cache[cache_key] = {"data": result, "ts": now}
+    _forecast_cache.set(cache_key, result)
     return result
 
 

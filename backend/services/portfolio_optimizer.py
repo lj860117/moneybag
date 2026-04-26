@@ -273,8 +273,9 @@ def optimize_portfolio(user_id: str, method: str = "all", max_weight: float = _M
     """
     cache_key = f"opt_{user_id}_{method}_{max_weight}"
     now = time.time()
-    if cache_key in _opt_cache and now - _opt_cache[cache_key]["ts"] < _OPT_CACHE_TTL:
-        return _opt_cache[cache_key]["data"]
+    cached = _opt_cache.get(cache_key)
+    if cached is not None:
+        return cached
 
     try:
         from services.stock_monitor import load_stock_holdings
@@ -378,7 +379,7 @@ def optimize_portfolio(user_id: str, method: str = "all", max_weight: float = _M
             "generated_at": time.strftime("%Y-%m-%d %H:%M:%S"),
         }
 
-        _opt_cache[cache_key] = {"data": output, "ts": now}
+        _opt_cache.set(cache_key, output)
         return output
 
     except Exception as e:

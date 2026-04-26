@@ -123,8 +123,9 @@ def get_geopolitical_events(limit: int = 30) -> dict:
     """
     cache_key = "geo_events"
     now = time.time()
-    if cache_key in _geo_cache and now - _geo_cache[cache_key]["ts"] < _GEO_CACHE_TTL:
-        return _geo_cache[cache_key]["data"]
+    cached = _geo_cache.get(cache_key)
+    if cached is not None:
+        return cached
 
     events = []
     all_titles_seen = set()
@@ -174,7 +175,7 @@ def get_geopolitical_events(limit: int = 30) -> dict:
     }
 
     print(f"[GEO] 抓取 {len(events)} 条地缘事件, 风险={risk_level}, 最高severity={max_severity}")
-    _geo_cache[cache_key] = {"data": result, "ts": now}
+    _geo_cache.set(cache_key, result)
     return result
 
 

@@ -81,8 +81,9 @@ def get_news_impact_api():
     """分析最新新闻对持仓基金的影响（30分钟缓存）"""
     cache_key = "news_impact"
     now = time.time()
-    if cache_key in macro_cache and now - macro_cache[cache_key]["ts"] < 1800:
-        return macro_cache[cache_key]["data"]
+    cached = macro_cache.get(cache_key)
+    if cached is not None:
+        return cached
     policy_news = get_policy_news(15)
     market_news = get_market_news(10)
     all_news = policy_news + market_news
@@ -92,7 +93,7 @@ def get_news_impact_api():
         "total_news_analyzed": len(all_news),
         "timestamp": datetime.now().isoformat(),
     }
-    macro_cache[cache_key] = {"data": result, "ts": now}
+    macro_cache.set(cache_key, result, ttl=1800)
     return result
 
 
@@ -139,8 +140,9 @@ def search_fund(q: str = ""):
 
     cache_key = f"fund_search_{q}"
     now = time.time()
-    if cache_key in nav_cache and now - nav_cache[cache_key]["ts"] < 86400:
-        return {"results": nav_cache[cache_key]["data"]}
+    cached = nav_cache.get(cache_key)
+    if cached is not None:
+        return {"results": cached}
 
     results = []
     try:
@@ -180,6 +182,6 @@ def search_fund(q: str = ""):
             pass
 
     if results:
-        nav_cache[cache_key] = {"data": results, "ts": now}
+        nav_cache.set(cache_key, results, ttl=86400)
 
     return {"results": results}

@@ -99,8 +99,9 @@ def get_stock_recommendations(user_id: str = "", top_n: int = 10, pool: str = "h
 
     cache_key = f"rec_{user_id}_{pool}_{top_n}_{period}"
     now = time.time()
-    if cache_key in _rec_cache and now - _rec_cache[cache_key]["ts"] < _REC_CACHE_TTL:
-        return _rec_cache[cache_key]["data"]
+    cached = _rec_cache.get(cache_key)
+    if cached is not None:
+        return cached
 
     print(f"[RECOMMEND] 开始推荐: user={user_id}, pool={pool}, top={top_n}")
 
@@ -171,7 +172,7 @@ def get_stock_recommendations(user_id: str = "", top_n: int = 10, pool: str = "h
 
     print(f"[RECOMMEND] 完成: 候选{len(candidates)} → 评分{len(scored)} → 推荐{len(top)}")
 
-    _rec_cache[cache_key] = {"data": result, "ts": now}
+    _rec_cache.set(cache_key, result)
     return result
 
 
@@ -310,9 +311,9 @@ def _score_technical(stock: dict) -> int:
 
     # 检查缓存（1小时 TTL，避免重复拉 K 线）
     cache_key = f"tech_{code}"
-    now = time.time()
-    if cache_key in _rec_cache and now - _rec_cache[cache_key].get("ts", 0) < 3600:
-        return _rec_cache[cache_key].get("score", 50)
+    cached = _rec_cache.get(cache_key)
+    if cached is not None:
+        return cached
 
     try:
         import akshare as ak
@@ -386,7 +387,7 @@ def _score_technical(stock: dict) -> int:
                 score -= 10  # 跌破均线
 
         final_score = max(0, min(100, score))
-        _rec_cache[cache_key] = {"score": final_score, "ts": now}
+        _rec_cache.set(cache_key, final_score)
         return final_score
 
     except Exception as e:

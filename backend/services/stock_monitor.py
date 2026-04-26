@@ -235,8 +235,9 @@ def get_stock_realtime(code: str) -> dict:
     """获取单只股票实时行情（雪球数据源），非交易日/失败时降级到最近一个交易日日线"""
     cache_key = f"rt_{code}"
     now = time.time()
-    if cache_key in _monitor_cache and now - _monitor_cache[cache_key]["ts"] < 30:
-        return _monitor_cache[cache_key]["data"]
+    cached = _monitor_cache.get(cache_key)
+    if cached is not None:
+        return cached
 
     result = {
         "code": code, "name": "", "price": None, "change": None,
@@ -286,7 +287,7 @@ def get_stock_realtime(code: str) -> dict:
             result.update({k: v for k, v in fb.items() if v is not None})
             print(f"[MONITOR] {code} 降级到日线数据 ({result.get('data_date')})")
 
-    _monitor_cache[cache_key] = {"data": result, "ts": time.time()}
+    _monitor_cache.set(cache_key, result)
     return result
 
 
@@ -298,8 +299,9 @@ def calc_stock_indicators(code: str) -> dict:
     """计算单只股票的 RSI/MACD/均线/量价异动"""
     cache_key = f"ind_{code}"
     now = time.time()
-    if cache_key in _monitor_cache and now - _monitor_cache[cache_key]["ts"] < _MONITOR_TTL:
-        return _monitor_cache[cache_key]["data"]
+    cached = _monitor_cache.get(cache_key)
+    if cached is not None:
+        return cached
 
     result = {
         "rsi14": None, "macd_trend": None, "ma5": None, "ma20": None,
@@ -313,7 +315,7 @@ def calc_stock_indicators(code: str) -> dict:
                                 end_date=datetime.now().strftime("%Y%m%d"),
                                 adjust="qfq")
         if df is None or len(df) < 30:
-            _monitor_cache[cache_key] = {"data": result, "ts": now}
+            _monitor_cache.set(cache_key, result, ttl=_MONITOR_TTL)
             return result
 
         closes = [float(c) for c in df["收盘"].values]
@@ -365,7 +367,7 @@ def calc_stock_indicators(code: str) -> dict:
     except Exception as e:
         print(f"[MONITOR] {code} indicators fail: {e}")
 
-    _monitor_cache[cache_key] = {"data": result, "ts": now}
+    _monitor_cache.set(cache_key, result)
     return result
 
 

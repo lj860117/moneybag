@@ -16,8 +16,10 @@ MODULE_META = {
     "priority": 2,
 }
 import time
-from services.market_data import _nav_cache
+from infra.cache import MemoryCache
 from config import NAV_CACHE_TTL
+
+_tech_cache = MemoryCache(default_ttl=NAV_CACHE_TTL)
 
 
 def calc_rsi(prices: list, period: int = 14) -> float:
@@ -102,8 +104,9 @@ def get_technical_indicators(symbol: str = "sh000300") -> dict:
     """获取沪深300的技术指标（RSI/MACD/布林带）"""
     cache_key = f"tech_{symbol}"
     now = time.time()
-    if cache_key in _nav_cache and now - _nav_cache[cache_key]["ts"] < NAV_CACHE_TTL:
-        return _nav_cache[cache_key]["data"]
+    cached = _tech_cache.get(cache_key)
+    if cached is not None:
+        return cached
 
     try:
         import akshare as ak
@@ -116,7 +119,7 @@ def get_technical_indicators(symbol: str = "sh000300") -> dict:
                 "bollinger": calc_bollinger(closes),
                 "rsi_signal": "超买" if calc_rsi(closes) > 70 else "超卖" if calc_rsi(closes) < 30 else "中性",
             }
-            _nav_cache[cache_key] = {"data": result, "ts": now}
+            _tech_cache.set(cache_key, result, ttl=NAV_CACHE_TTL)
             return result
     except Exception as e:
         print(f"[TECH] Failed: {e}")

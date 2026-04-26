@@ -42,7 +42,7 @@ def _get_cached(key, ttl=_CACHE_TTL):
 
 def _set_cached(key, data):
     """写入缓存"""
-    _sector_cache[key] = {"data": data, "ts": time.time()}
+    _sector_cache.set(key, data)
 
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━

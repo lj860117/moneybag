@@ -48,8 +48,9 @@ def classify(force: bool = False) -> dict:
         }
     """
     now = time.time()
-    if not force and _regime_cache["result"] and (now - _regime_cache["ts"]) < _REGIME_TTL:
-        return _regime_cache["result"]
+    cached = _regime_cache.get("regime")
+    if not force and cached is not None:
+        return cached
     
     try:
         params = _get_market_params()
@@ -92,8 +93,7 @@ def classify(force: bool = False) -> dict:
             "timestamp": datetime.now().isoformat(),
         }
     
-    _regime_cache["result"] = result
-    _regime_cache["ts"] = time.time()
+    _regime_cache.set("regime", result, ttl=_REGIME_TTL)
     return result
 
 

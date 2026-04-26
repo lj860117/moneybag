@@ -321,8 +321,9 @@ def get_rl_recommendation(code: str) -> dict:
     """获取 RL 仓位建议"""
     cache_key = f"rl_rec_{code}"
     now = time.time()
-    if cache_key in _rl_cache and now - _rl_cache[cache_key]["ts"] < _RL_CACHE_TTL:
-        return _rl_cache[cache_key]["data"]
+    cached = _rl_cache.get(cache_key)
+    if cached is not None:
+        return cached
 
     try:
         # 训练
@@ -392,7 +393,7 @@ def get_rl_recommendation(code: str) -> dict:
             "generated_at": time.strftime("%Y-%m-%d %H:%M:%S"),
         }
 
-        _rl_cache[cache_key] = {"data": result, "ts": now}
+        _rl_cache.set(cache_key, result)
         return result
 
     except Exception as e:

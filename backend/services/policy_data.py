@@ -41,8 +41,9 @@ def get_real_estate_data() -> dict:
     """房地产开发投资/销售面积/新开工面积"""
     cache_key = "real_estate"
     now = time.time()
-    if cache_key in _policy_cache and now - _policy_cache[cache_key]["ts"] < _STRUCT_TTL:
-        return _policy_cache[cache_key]["data"]
+    cached = _policy_cache.get(cache_key)
+    if cached is not None:
+        return cached
 
     result = {"available": False, "data": [], "latest": {}}
     try:
@@ -74,7 +75,7 @@ def get_real_estate_data() -> dict:
         print(f"[POLICY] real_estate fail: {e}")
         result["error"] = str(e)
 
-    _policy_cache[cache_key] = {"data": result, "ts": now}
+    _policy_cache.set(cache_key, result, ttl=_STRUCT_TTL)
     return result
 
 
@@ -82,8 +83,9 @@ def get_house_price_index() -> dict:
     """70城新房价格指数"""
     cache_key = "house_price"
     now = time.time()
-    if cache_key in _policy_cache and now - _policy_cache[cache_key]["ts"] < _STRUCT_TTL:
-        return _policy_cache[cache_key]["data"]
+    cached = _policy_cache.get(cache_key)
+    if cached is not None:
+        return cached
 
     result = {"available": False, "data": [], "latest": {}}
     try:
@@ -114,7 +116,7 @@ def get_house_price_index() -> dict:
         print(f"[POLICY] house_price fail: {e}")
         result["error"] = str(e)
 
-    _policy_cache[cache_key] = {"data": result, "ts": now}
+    _policy_cache.set(cache_key, result, ttl=_STRUCT_TTL)
     return result
 
 
@@ -135,8 +137,9 @@ def get_policy_news_by_topic(topic: str = "房地产", limit: int = 5) -> dict:
     """按主题搜索政策新闻（东方财富数据源）"""
     cache_key = f"policy_news_{topic}"
     now = time.time()
-    if cache_key in _policy_cache and now - _policy_cache[cache_key]["ts"] < _NEWS_TTL:
-        return _policy_cache[cache_key]["data"]
+    cached = _policy_cache.get(cache_key)
+    if cached is not None:
+        return cached
 
     result = {"topic": topic, "news": [], "emoji": POLICY_TOPICS.get(topic, {}).get("emoji", "📋")}
     try:
@@ -160,7 +163,7 @@ def get_policy_news_by_topic(topic: str = "房地产", limit: int = 5) -> dict:
         print(f"[POLICY] news({topic}) fail: {e}")
         result["error"] = str(e)
 
-    _policy_cache[cache_key] = {"data": result, "ts": now}
+    _policy_cache.set(cache_key, result, ttl=_NEWS_TTL)
     return result
 
 
@@ -168,8 +171,9 @@ def get_all_policy_topics() -> dict:
     """一次性获取全部主题的政策新闻（key 用英文，与前端对齐）"""
     cache_key = "all_policy_topics"
     now = time.time()
-    if cache_key in _policy_cache and now - _policy_cache[cache_key]["ts"] < _NEWS_TTL:
-        return _policy_cache[cache_key]["data"]
+    cached = _policy_cache.get(cache_key)
+    if cached is not None:
+        return cached
 
     # 中文→英文 key 映射（前端 topicMap 用英文 key）
     KEY_MAP = {"房地产": "realestate", "公积金": "gongjijin", "科技": "tech", "经济": "economy", "房改": "fanggai"}
@@ -196,7 +200,7 @@ def get_all_policy_topics() -> dict:
                 print(f"[POLICY] topic {topic_cn} failed: {e}")
 
     result = {"topics": topics, "updatedAt": datetime.now().isoformat()}
-    _policy_cache[cache_key] = {"data": result, "ts": now}
+    _policy_cache.set(cache_key, result, ttl=_NEWS_TTL)
     return result
 
 
@@ -208,8 +212,9 @@ def analyze_policy_impact_ds() -> dict:
     """DeepSeek 分析国内政策对 A 股各板块的影响"""
     cache_key = "policy_impact_ds"
     now = time.time()
-    if cache_key in _policy_cache and now - _policy_cache[cache_key]["ts"] < _ANALYSIS_TTL:
-        return _policy_cache[cache_key]["data"]
+    cached = _policy_cache.get(cache_key)
+    if cached is not None:
+        return cached
 
     # 收集全部政策新闻
     all_news = get_all_policy_topics()
@@ -233,7 +238,7 @@ def analyze_policy_impact_ds() -> dict:
     api_key = os.environ.get("LLM_API_KEY")
     if not api_key:
         result = {"analysis": "\n".join(news_lines), "source": "data_only"}
-        _policy_cache[cache_key] = {"data": result, "ts": now}
+        _policy_cache.set(cache_key, result, ttl=_ANALYSIS_TTL)
         return result
 
     try:
@@ -265,13 +270,13 @@ def analyze_policy_impact_ds() -> dict:
                 data = resp.json()
                 analysis = data["choices"][0]["message"]["content"]
                 result = {"analysis": analysis, "source": "ai", "newsCount": len(news_lines)}
-                _policy_cache[cache_key] = {"data": result, "ts": now}
+                _policy_cache.set(cache_key, result)
                 return result
     except Exception as e:
         print(f"[POLICY] DeepSeek analysis fail: {e}")
 
     result = {"analysis": "\n".join(news_lines), "source": "data_only"}
-    _policy_cache[cache_key] = {"data": result, "ts": now}
+    _policy_cache.set(cache_key, result)
     return result
 
 

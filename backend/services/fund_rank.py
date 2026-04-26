@@ -26,8 +26,9 @@ def _load_fund_rank_data() -> dict:
     """加载基金排行数据（含各周期收益率），24小时缓存"""
     cache_key = "fund_rank_all"
     now = time.time()
-    if cache_key in _fund_rank_cache and now - _fund_rank_cache[cache_key]["ts"] < FUND_RANK_CACHE_TTL:
-        return _fund_rank_cache[cache_key]["data"]
+    cached = _fund_rank_cache.get(cache_key)
+    if cached is not None:
+        return cached
     try:
         import akshare as ak
         df = ak.fund_open_fund_rank_em(symbol="全部")
@@ -38,7 +39,7 @@ def _load_fund_rank_data() -> dict:
             for _, row in df.iterrows():
                 code = str(row[code_col]).strip()
                 data[code] = row
-            _fund_rank_cache[cache_key] = {"data": data, "ts": now}
+            _fund_rank_cache.set(cache_key, data, ttl=FUND_RANK_CACHE_TTL)
             print(f"[FUND_RANK] Loaded {len(data)} funds")
             return data
     except Exception as e:
@@ -51,8 +52,9 @@ def get_fund_dynamic_info(code: str) -> dict:
     """获取基金的动态收益率、排名等数据"""
     cache_key = f"fund_info_{code}"
     now = time.time()
-    if cache_key in _fund_rank_cache and now - _fund_rank_cache[cache_key]["ts"] < FUND_RANK_CACHE_TTL:
-        return _fund_rank_cache[cache_key]["data"]
+    cached = _fund_rank_cache.get(cache_key)
+    if cached is not None:
+        return cached
 
     rank_data = _load_fund_rank_data()
     row = rank_data.get(code)
@@ -97,7 +99,7 @@ def get_fund_dynamic_info(code: str) -> dict:
         "updatedAt": datetime.now().strftime("%Y-%m-%d"),
         "source": "东方财富天天基金",
     }
-    _fund_rank_cache[cache_key] = {"data": result, "ts": now}
+    _fund_rank_cache.set(cache_key, result)
     return result
 
 

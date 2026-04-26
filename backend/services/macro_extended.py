@@ -28,8 +28,9 @@ def get_m1_data() -> dict:
     """获取 M1 货币供应量同比增速 + M1-M2 剪刀差"""
     cache_key = "m1_data"
     now = time.time()
-    if cache_key in _ext_macro_cache and now - _ext_macro_cache[cache_key]["ts"] < MACRO_CACHE_TTL:
-        return _ext_macro_cache[cache_key]["data"]
+    cached = _ext_macro_cache.get(cache_key)
+    if cached is not None:
+        return cached
 
     result = {"m1_growth": None, "m2_growth": None, "scissors": None, "period": "", "available": False}
     try:
@@ -70,7 +71,7 @@ def get_m1_data() -> dict:
         print(f"[M1] Failed: {e}")
         traceback.print_exc()
 
-    _ext_macro_cache[cache_key] = {"data": result, "ts": now}
+    _ext_macro_cache.set(cache_key, result)
     return result
 
 
@@ -78,8 +79,9 @@ def get_social_financing() -> dict:
     """获取社会融资规模数据"""
     cache_key = "shrzgm"
     now = time.time()
-    if cache_key in _ext_macro_cache and now - _ext_macro_cache[cache_key]["ts"] < MACRO_CACHE_TTL:
-        return _ext_macro_cache[cache_key]["data"]
+    cached = _ext_macro_cache.get(cache_key)
+    if cached is not None:
+        return cached
 
     result = {"total": None, "period": "", "yoy_change": None, "available": False}
     try:
@@ -108,7 +110,7 @@ def get_social_financing() -> dict:
     except Exception as e:
         print(f"[SHRZGM] Failed: {e}")
 
-    _ext_macro_cache[cache_key] = {"data": result, "ts": now}
+    _ext_macro_cache.set(cache_key, result, ttl=MACRO_CACHE_TTL)
     return result
 
 
@@ -116,8 +118,9 @@ def get_lpr_rate() -> dict:
     """获取 LPR 贷款市场报价利率"""
     cache_key = "lpr"
     now = time.time()
-    if cache_key in _ext_macro_cache and now - _ext_macro_cache[cache_key]["ts"] < MACRO_CACHE_TTL:
-        return _ext_macro_cache[cache_key]["data"]
+    cached = _ext_macro_cache.get(cache_key)
+    if cached is not None:
+        return cached
 
     result = {"lpr_1y": None, "lpr_5y": None, "date": "", "available": False}
     try:
@@ -146,7 +149,7 @@ def get_lpr_rate() -> dict:
     except Exception as e:
         print(f"[LPR] Failed: {e}")
 
-    _ext_macro_cache[cache_key] = {"data": result, "ts": now}
+    _ext_macro_cache.set(cache_key, result, ttl=MACRO_CACHE_TTL)
     return result
 
 
@@ -154,8 +157,9 @@ def get_market_activity() -> dict:
     """获取市场涨跌家数/赚钱效应"""
     cache_key = "activity"
     now = time.time()
-    if cache_key in _ext_macro_cache and now - _ext_macro_cache[cache_key]["ts"] < FACTOR_CACHE_TTL:
-        return _ext_macro_cache[cache_key]["data"]
+    cached = _ext_macro_cache.get(cache_key)
+    if cached is not None:
+        return cached
 
     result = {"items": {}, "available": False}
     try:
@@ -172,7 +176,7 @@ def get_market_activity() -> dict:
     except Exception as e:
         print(f"[ACTIVITY] Failed: {e}")
 
-    _ext_macro_cache[cache_key] = {"data": result, "ts": now}
+    _ext_macro_cache.set(cache_key, result, ttl=FACTOR_CACHE_TTL)
     return result
 
 
@@ -182,8 +186,9 @@ def get_merrill_lynch_clock() -> dict:
     """
     cache_key = "merrill_clock"
     now = time.time()
-    if cache_key in _ext_macro_cache and now - _ext_macro_cache[cache_key]["ts"] < MACRO_CACHE_TTL:
-        return _ext_macro_cache[cache_key]["data"]
+    cached = _ext_macro_cache.get(cache_key)
+    if cached is not None:
+        return cached
 
     result = {
         "cycle": "unknown", "label": "未知",
@@ -239,5 +244,5 @@ def get_merrill_lynch_clock() -> dict:
     except Exception as e:
         print(f"[CLOCK] Failed: {e}")
 
-    _ext_macro_cache[cache_key] = {"data": result, "ts": now}
+    _ext_macro_cache.set(cache_key, result)
     return result
