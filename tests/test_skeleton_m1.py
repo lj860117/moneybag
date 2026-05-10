@@ -2907,3 +2907,128 @@ def test_embedding_module_importable():
     else:
         assert dim == 2000
 
+
+# ======================================================================
+# M4 W3: ChromaDB Store + interpret_with_rag Tests
+# ======================================================================
+
+
+def test_chromadb_store_importable():
+    """infra.knowledge.ChromaKnowledgeStore should be importable."""
+    from infra.knowledge import ChromaKnowledgeStore
+    from infra.knowledge.chromadb_store import ChromaKnowledgeStore as CKS
+    assert CKS is not None
+    assert ChromaKnowledgeStore is CKS
+
+
+def test_chromadb_store_graceful_without_chromadb():
+    """ChromaKnowledgeStore should degrade gracefully if chromadb not installed."""
+    from infra.knowledge.chromadb_store import ChromaKnowledgeStore
+    # Even if chromadb is not installed, construction should not crash
+    store = ChromaKnowledgeStore(persist_dir="/tmp/test_chromadb_nonexist")
+    # If chromadb not available, returns empty
+    if not store.is_available:
+        assert store.retrieve("test") == []
+        assert store.total_chunks() == 0
+        assert store.list_articles() == []
+        assert store.embedding_backend == "unavailable"
+
+
+def test_chromadb_store_has_protocol_methods():
+    """ChromaKnowledgeStore should have all KnowledgeRetrieverProtocol methods."""
+    from infra.knowledge.chromadb_store import ChromaKnowledgeStore
+    store = ChromaKnowledgeStore(persist_dir="/tmp/test_chromadb_protocol")
+    # Check method existence (regardless of chromadb availability)
+    assert hasattr(store, "retrieve")
+    assert hasattr(store, "index_article")
+    assert hasattr(store, "list_articles")
+    assert hasattr(store, "get_article_chunks")
+    assert hasattr(store, "total_chunks")
+    assert hasattr(store, "search")
+    assert hasattr(store, "bulk_index")
+
+
+def test_interpret_with_rag_build_context():
+    """build_rag_context should return structured RAG context."""
+    from infra.knowledge import KnowledgeRetriever, load_and_index_articles
+    from use_cases.interpret_with_rag import build_rag_context
+    retriever = KnowledgeRetriever()
+    load_and_index_articles(retriever)
+    ctx = build_rag_context(
+        retriever=retriever,
+        facts_summary="股票偏离目标 +12%，应急金不足 3 个月",
+        top_k=3,
+    )
+    assert "rag_chunks" in ctx
+    assert "further_reading" in ctx
+    assert "rag_prompt_injection" in ctx
+    assert "has_rag" in ctx
+    assert ctx["has_rag"] is True
+    assert len(ctx["rag_chunks"]) > 0
+    assert len(ctx["further_reading"]) > 0
+    assert "参考资料" in ctx["rag_prompt_injection"]
+
+
+def test_interpret_with_rag_empty_retriever():
+    """build_rag_context should handle empty retriever gracefully."""
+    from infra.knowledge import KnowledgeRetriever
+    from use_cases.interpret_with_rag import build_rag_context
+    retriever = KnowledgeRetriever()  # empty, not indexed
+    ctx = build_rag_context(retriever=retriever, facts_summary="test")
+    assert ctx["has_rag"] is False
+    assert ctx["rag_chunks"] == []
+    assert ctx["rag_prompt_injection"] == ""
+
+
+def test_interpret_with_rag_format_further_reading():
+    """format_further_reading should produce readable output."""
+    from use_cases.interpret_with_rag import format_further_reading
+    result = format_further_reading(["应急金的 6 个月法则", "股债再平衡原理"])
+    assert "延伸阅读" in result
+    assert "应急金的 6 个月法则" in result
+    assert "股债再平衡原理" in result
+
+    # Empty list returns empty string
+    assert format_further_reading([]) == ""
+
+
+def test_interpret_with_rag_enrich_interpretation():
+    """enrich_interpretation should append further reading to text."""
+    from infra.knowledge import KnowledgeRetriever, load_and_index_articles
+    from use_cases.interpret_with_rag import enrich_interpretation
+    retriever = KnowledgeRetriever()
+    load_and_index_articles(retriever)
+    result = enrich_interpretation(
+        retriever=retriever,
+        interpretation_text="当前配置偏离目标，股票占比过高。",
+        facts_summary="股票配比偏离 +12%",
+        category_hint="资产配置",
+    )
+    assert "text" in result
+    assert "further_reading" in result
+    assert "rag_sources" in result
+    assert "has_rag" in result
+    # Original text should be preserved
+    assert "当前配置偏离目标" in result["text"]
+    # Further reading should be appended
+    assert "延伸阅读" in result["text"]
+    assert result["has_rag"] is True
+
+
+def test_interpret_with_rag_no_infra_import():
+    """use_cases/interpret_with_rag.py must not import from infra/ (invariant #10)."""
+    import ast
+    uc_path = BACKEND_DIR / "use_cases" / "interpret_with_rag.py"
+    tree = ast.parse(uc_path.read_text())
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                assert not alias.name.startswith("infra"), (
+                    f"use_cases/interpret_with_rag.py imports infra: {alias.name}"
+                )
+        elif isinstance(node, ast.ImportFrom):
+            if node.module:
+                assert not node.module.startswith("infra"), (
+                    f"use_cases/interpret_with_rag.py imports infra: {node.module}"
+                )
+

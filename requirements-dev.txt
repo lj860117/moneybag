@@ -5,3 +5,5 @@ pytest-xdist>=3.5.0  # 并行跑
 pytest-timeout>=2.2.0  # 超时控制
 import-linter>=2.0  # 架构依赖门禁
 mypy>=1.8.0  # 类型检查（方案 C，M1 W4）
+chromadb>=0.5.0  # 向量数据库（本地 SQLite 持久化，M4 W3）
+sentence-transformers>=2.2.0  # 向量 embedding（M4 W1-2）
