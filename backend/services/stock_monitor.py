@@ -167,17 +167,17 @@ def update_stock_holding(code: str, user_id: str = "default", **kwargs) -> dict:
 
 def _fallback_hist_close(code: str) -> dict:
     """FIX 2026-04-19 F2: 实时数据拿不到时（非交易日/东财反爬），用最近一个交易日的日线收盘数据兜底
-    
+
     多源降级：东方财富 → 新浪 → 返回空
     """
-    import akshare as ak
+    from infra.data_source.market.stocks import get_stock_daily_hist, get_stock_daily_legacy
     from datetime import datetime, timedelta
 
     # 源 1：东方财富（可能反爬）
     try:
         end = datetime.now().strftime("%Y%m%d")
         start = (datetime.now() - timedelta(days=15)).strftime("%Y%m%d")
-        df = ak.stock_zh_a_hist(symbol=code, period="daily", start_date=start, end_date=end, adjust="qfq")
+        df = get_stock_daily_hist(symbol=code, period="daily", start_date=start, end_date=end, adjust="qfq")
         if df is not None and len(df) >= 1:
             last = df.iloc[-1]
             prev = df.iloc[-2] if len(df) >= 2 else last
@@ -205,7 +205,7 @@ def _fallback_hist_close(code: str) -> dict:
     # 源 2：新浪（降级）
     try:
         sym = (f"sh{code}" if code.startswith("6") else f"sz{code}")
-        df2 = ak.stock_zh_a_daily(symbol=sym, adjust="qfq")
+        df2 = get_stock_daily_legacy(symbol=sym, adjust="qfq")
         if df2 is not None and len(df2) >= 1:
             df2 = df2.tail(15)
             last = df2.iloc[-1]
@@ -247,9 +247,9 @@ def get_stock_realtime(code: str) -> dict:
         "data_date": None, "is_snapshot": False,
     }
     try:
-        import akshare as ak
+        from infra.data_source.market.stocks import get_stock_spot_xq
         # 雪球单只查询，字段最全
-        df = ak.stock_individual_spot_xq(symbol=code)
+        df = get_stock_spot_xq(symbol=code)
         if df is not None and len(df) > 0:
             def _val(col_keywords):
                 for kw in col_keywords:
@@ -308,8 +308,8 @@ def calc_stock_indicators(code: str) -> dict:
         "volume_ratio": None, "breakthrough": None,
     }
     try:
-        import akshare as ak
-        df = ak.stock_zh_a_hist(symbol=code, period="daily",
+        from infra.data_source.market.stocks import get_stock_daily_hist
+        df = get_stock_daily_hist(symbol=code, period="daily",
                                 start_date=(datetime.now().replace(day=1) -
                                             __import__("datetime").timedelta(days=120)).strftime("%Y%m%d"),
                                 end_date=datetime.now().strftime("%Y%m%d"),
@@ -564,8 +564,8 @@ def _ema(data: list, period: int) -> float:
 def _get_stock_name(code: str) -> str:
     """通过代码获取股票名称"""
     try:
-        import akshare as ak
-        df = ak.stock_info_a_code_name()
+        from infra.data_source.market.stocks import get_stock_code_name_list
+        df = get_stock_code_name_list()
         if df is not None:
             for _, row in df.iterrows():
                 if str(row.iloc[0]) == code:

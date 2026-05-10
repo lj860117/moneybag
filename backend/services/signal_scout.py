@@ -244,9 +244,9 @@ def _collect_technical_signals() -> list:
     signals = []
     try:
         # 涨停跌停池
-        import akshare as ak
+        from infra.data_source.alt.flows import get_zt_pool
         try:
-            df = ak.stock_zt_pool_em(date=datetime.now().strftime("%Y%m%d"))
+            df = get_zt_pool(date=datetime.now().strftime("%Y%m%d"))
             if df is not None and len(df) > 0:
                 zt_count = len(df)
                 signals.append({
@@ -482,8 +482,8 @@ def _fetch_stock_news(code: str, name: str) -> list:
 
     try:
         # 方式2：AKShare 个股新闻（东方财富）
-        import akshare as ak
-        df = ak.stock_news_em(symbol=code)  # 直接传6位代码
+        from infra.data_source.macro.indicators import get_stock_news
+        df = get_stock_news(symbol=code)  # 直接传6位代码
         if df is not None and len(df) > 0:
             for _, row in df.head(10).iterrows():
                 title = str(row.get("新闻标题", ""))

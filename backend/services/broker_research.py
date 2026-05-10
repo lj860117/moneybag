@@ -74,8 +74,8 @@ def get_latest_reports(limit: int = 30) -> list:
     # ── 方案 B（降级/补充）：AKShare 东财研报标题 ──
     if len(reports) < 5:
         try:
-            import akshare as ak
-            df = ak.stock_news_em(symbol="研报")
+            from infra.data_source.macro.indicators import get_stock_news
+            df = get_stock_news(symbol="研报")
             if df is not None and len(df) > 0:
                 title_col = next((c for c in df.columns if "标题" in c or "title" in c.lower()), df.columns[0])
                 time_col = next((c for c in df.columns if "时间" in c or "date" in c.lower()), None)

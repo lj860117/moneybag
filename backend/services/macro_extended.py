@@ -34,8 +34,8 @@ def get_m1_data() -> dict:
 
     result = {"m1_growth": None, "m2_growth": None, "scissors": None, "period": "", "available": False}
     try:
-        import akshare as ak
-        df = ak.macro_china_money_supply()
+        from infra.data_source.macro.indicators import get_china_money_supply
+        df = get_china_money_supply()
         if df is not None and len(df) > 0:
             cols = list(df.columns)
             m1_col = next((c for c in cols if "M1" in c and "同比" in c), None)
@@ -85,8 +85,8 @@ def get_social_financing() -> dict:
 
     result = {"total": None, "period": "", "yoy_change": None, "available": False}
     try:
-        import akshare as ak
-        df = ak.macro_china_shrzgm()
+        from infra.data_source.macro.indicators import get_china_social_financing
+        df = get_china_social_financing()
         if df is not None and len(df) > 0:
             cols = list(df.columns)
             total_col = next((c for c in cols if "社会融资规模" in c or "社融" in c), None)
@@ -124,8 +124,8 @@ def get_lpr_rate() -> dict:
 
     result = {"lpr_1y": None, "lpr_5y": None, "date": "", "available": False}
     try:
-        import akshare as ak
-        df = ak.macro_china_lpr()
+        from infra.data_source.macro.indicators import get_china_lpr
+        df = get_china_lpr()
         if df is not None and len(df) > 0:
             latest = df.iloc[-1]
             cols = list(df.columns)
@@ -163,8 +163,8 @@ def get_market_activity() -> dict:
 
     result = {"items": {}, "available": False}
     try:
-        import akshare as ak
-        df = ak.stock_market_activity_legu()
+        from infra.data_source.macro.indicators import get_market_activity as _get_market_activity
+        df = _get_market_activity()
         if df is not None and len(df) > 0:
             for _, row in df.iterrows():
                 key = str(row.get("item", "")).strip()

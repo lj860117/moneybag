@@ -57,8 +57,8 @@ def get_gdp() -> dict:
 
     result = {"available": False}
     try:
-        import akshare as ak
-        df = ak.macro_china_gdp()
+        from infra.data_source.macro.indicators import get_china_gdp
+        df = get_china_gdp()
         if df is not None and len(df) > 0:
             latest = df.iloc[0]  # 最新在第一行
             cols = list(df.columns)
@@ -93,8 +93,8 @@ def get_industrial_value_added() -> dict:
 
     result = {"available": False}
     try:
-        import akshare as ak
-        df = ak.macro_china_gyzjz()
+        from infra.data_source.macro.indicators import get_china_industrial_value_added
+        df = get_china_industrial_value_added()
         if df is not None and len(df) > 0:
             latest = df.iloc[0]
             cols = list(df.columns)
@@ -127,8 +127,8 @@ def get_consumer_goods_retail() -> dict:
 
     result = {"available": False}
     try:
-        import akshare as ak
-        df = ak.macro_china_consumer_goods_retail()
+        from infra.data_source.macro.indicators import get_china_retail_sales
+        df = get_china_retail_sales()
         if df is not None and len(df) > 0:
             latest = df.iloc[0]
             cols = list(df.columns)
@@ -161,8 +161,8 @@ def get_fixed_asset_investment() -> dict:
 
     result = {"available": False}
     try:
-        import akshare as ak
-        df = ak.macro_china_gdzctz()
+        from infra.data_source.macro.indicators import get_china_fixed_asset_investment
+        df = get_china_fixed_asset_investment()
         if df is not None and len(df) > 0:
             latest = df.iloc[0]
             cols = list(df.columns)
@@ -195,10 +195,10 @@ def get_lhb_summary() -> dict:
 
     result = {"available": False, "items": []}
     try:
-        import akshare as ak
+        from infra.data_source.macro.indicators import get_lhb_detail
         end = datetime.now().strftime("%Y%m%d")
         start = (datetime.now() - __import__("datetime").timedelta(days=3)).strftime("%Y%m%d")
-        df = ak.stock_lhb_detail_em(start_date=start, end_date=end)
+        df = get_lhb_detail(start_date=start, end_date=end)
         if df is not None and len(df) > 0:
             cols = list(df.columns)
             items = []
@@ -234,8 +234,8 @@ def get_management_holdings() -> dict:
 
     result = {"available": False, "items": []}
     try:
-        import akshare as ak
-        df = ak.stock_hold_management_detail_cninfo()
+        from infra.data_source.macro.indicators import get_management_holding_detail
+        df = get_management_holding_detail()
         if df is not None and len(df) > 0:
             cols = list(df.columns)
             items = []

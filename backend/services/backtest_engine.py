@@ -42,7 +42,7 @@ def _get_stock_hist(code: str, period: str = "daily", days: int = 750) -> list:
 
     prices = []
     try:
-        import akshare as ak
+        from infra.data_source.market.stocks import get_stock_daily_hist, get_stock_daily_legacy
         from datetime import datetime, timedelta
         end = datetime.now().strftime("%Y%m%d")
         start = (datetime.now() - timedelta(days=days)).strftime("%Y%m%d")
@@ -65,7 +65,7 @@ def _get_stock_hist(code: str, period: str = "daily", days: int = 750) -> list:
         if len(prices) < 10:
             # 尝试东方财富（可能被反爬）
             try:
-                df = ak.stock_zh_a_hist(symbol=code, period=period, start_date=start, end_date=end, adjust="qfq")
+                df = get_stock_daily_hist(code=code, period=period, start_date=start, end_date=end, adjust="qfq")
                 if df is not None and len(df) > 5:
                     close_col = next((c for c in df.columns if "收盘" in str(c).lower() or "close" in str(c).lower()), None)
                     date_col = next((c for c in df.columns if "日期" in str(c).lower() or "date" in str(c).lower()), None)
@@ -82,7 +82,7 @@ def _get_stock_hist(code: str, period: str = "daily", days: int = 750) -> list:
         # 降级：新浪历史数据
         if len(prices) < 10:
             try:
-                df2 = ak.stock_zh_a_daily(symbol=f"sh{code}" if code.startswith("6") else f"sz{code}", adjust="qfq")
+                df2 = get_stock_daily_legacy(symbol=f"sh{code}" if code.startswith("6") else f"sz{code}", adjust="qfq")
                 if df2 is not None and len(df2) > 5:
                     df2 = df2.tail(days)
                     close_col = next((c for c in df2.columns if "close" in str(c).lower()), None)
@@ -113,8 +113,8 @@ def _get_fund_hist(code: str, days: int = 750) -> list:
 
     prices = []
     try:
-        import akshare as ak
-        df = ak.fund_open_fund_info_em(symbol=code, indicator="累计净值走势")
+        from infra.data_source.market.stocks import get_fund_nav_history
+        df = get_fund_nav_history(code=code, indicator="累计净值走势")
         if df is not None and len(df) > 0:
             # 取最近 days 天
             df = df.tail(days)

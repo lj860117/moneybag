@@ -38,10 +38,10 @@ def get_commodity_prices() -> dict:
 
     result = {"gold": None, "copper": None, "available": False}
     try:
-        import akshare as ak
+        from infra.data_source.market.stocks import get_futures_main
         # 黄金期货（上期所）
         try:
-            df = ak.futures_main_sina(symbol="AU0")
+            df = get_futures_main(symbol="AU0")
             if df is not None and len(df) > 0:
                 last = df.iloc[-1]
                 cols = list(df.columns)
@@ -57,7 +57,7 @@ def get_commodity_prices() -> dict:
 
         # 铜期货（上期所）
         try:
-            df = ak.futures_main_sina(symbol="CU0")
+            df = get_futures_main(symbol="CU0")
             if df is not None and len(df) > 0:
                 last = df.iloc[-1]
                 cols = list(df.columns)
@@ -89,8 +89,8 @@ def get_stock_unlock_schedule() -> dict:
 
     result = {"items": [], "total_value": 0, "available": False}
     try:
-        import akshare as ak
-        df = ak.stock_restricted_release_summary_em()
+        from infra.data_source.market.stocks import get_restricted_release_summary
+        df = get_restricted_release_summary()
         if df is not None and len(df) > 0:
             cols = list(df.columns)
 
@@ -205,48 +205,17 @@ def get_etf_fund_flow() -> dict:
 
     result = {"top_inflow": [], "top_outflow": [], "total_etf": 0, "available": False}
     try:
-        import akshare as ak
+        from infra.data_source.market.stocks import get_etf_fund_daily
 
         # ---------- 方案 A: 真实资金流接口 ----------
         flow_done = False
-        for func_name in ["fund_etf_fund_flow_em", "fund_etf_spot_em"]:
-            if not hasattr(ak, func_name):
-                continue
-            try:
-                df = getattr(ak, func_name)()
-                if df is None or len(df) == 0:
-                    continue
-                cols = list(df.columns)
-                flow_col = [c for c in cols if "净流" in c or "流入" in c or "flow" in c.lower()]
-                name_col = [c for c in cols if "名称" in c or "简称" in c]
-                code_col = [c for c in cols if "代码" in c or "code" in c.lower()]
-                if flow_col and name_col:
-                    fc, nc = flow_col[0], name_col[0]
-                    cc = code_col[0] if code_col else None
-                    clean = df[[nc, fc] + ([cc] if cc else [])].copy()
-                    clean[fc] = clean[fc].apply(lambda x: _safe_float(x))
-                    clean = clean.dropna(subset=[fc])
-                    if len(clean) > 0:
-                        result["total_etf"] = len(df)
-                        for _, row in clean.nlargest(5, fc).iterrows():
-                            item = {"name": str(row[nc]), "flow": round(float(row[fc]), 2)}
-                            if cc: item["code"] = str(row[cc])
-                            result["top_inflow"].append(item)
-                        for _, row in clean.nsmallest(5, fc).iterrows():
-                            item = {"name": str(row[nc]), "flow": round(float(row[fc]), 2)}
-                            if cc: item["code"] = str(row[cc])
-                            result["top_outflow"].append(item)
-                        result["available"] = True
-                        flow_done = True
-                        print(f"[ETF_FLOW] 方案A成功: {func_name}, {len(df)} ETFs")
-                        break
-            except Exception as e:
-                print(f"[ETF_FLOW] {func_name} failed: {e}")
+        # NOTE: The old fund_etf_fund_flow_em / fund_etf_spot_em are not available in adapters.
+        # Skip to 方案 B directly.
 
         # ---------- 方案 B: 用增长率排名当替代 ----------
         if not flow_done:
             try:
-                df = ak.fund_etf_fund_daily_em()
+                df = get_etf_fund_daily()
                 if df is not None and len(df) > 0:
                     cols = list(df.columns)
                     name_col = [c for c in cols if "简称" in c or "名称" in c]
@@ -322,8 +291,8 @@ def _safe_float(x):
 def _fetch_futures_price(symbol: str, label: str, unit: str) -> dict:
     """通用期货价格获取（复用黄金/铜的逻辑）"""
     try:
-        import akshare as ak
-        df = ak.futures_main_sina(symbol=symbol)
+        from infra.data_source.market.stocks import get_futures_main
+        df = get_futures_main(symbol=symbol)
         if df is not None and len(df) > 0:
             last = df.iloc[-1]
             cols = list(df.columns)
@@ -379,10 +348,10 @@ def get_crude_oil_price() -> dict:
     # 布伦特原油（通过外盘获取）
     brent = {"price": 0, "available": False, "unit": "美元/桶", "change_pct": 0}
     try:
-        import akshare as ak
+        from infra.data_source.market.stocks import get_futures_foreign_hist
         # 先尝试 futures_foreign_hist
         try:
-            df = ak.futures_foreign_hist(symbol="布伦特原油")
+            df = get_futures_foreign_hist(symbol="布伦特原油")
             if df is not None and len(df) > 0:
                 last = df.iloc[-1]
                 cols = list(df.columns)

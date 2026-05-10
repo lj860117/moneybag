@@ -6,7 +6,7 @@
 
 ---
 
-## 当前阶段：M4 W3 — chromadb 向量库 + interpret_with_rag 延伸阅读（✅ 完成）
+## 当前阶段：M5 W3 — 旧路由返回 410 Gone（✅ 完成）
 
 ### 绞杀者模式 5 步进度
 
@@ -142,7 +142,7 @@ api/
 ### M3 W1 新增 API
 ```
 api/
-└── decisions.py             # 6 路由 — 事后复盘提交/历史查询/统计/预设理由列表/事前清单/清单项描述
+└── decisions.py             # 8 路由 — 事后复盘提交/历史查询/统计/预设理由列表/事前清单/清单项描述/月度报告/月度摘要
 ```
 
 ### M4 W1-2 新增 API
@@ -241,6 +241,25 @@ tests/
 | 2026-05-10 | M4 W1 RAG 知识库：KnowledgeChunk/KnowledgeArticle/RetrievalResult model + KnowledgeRetrieverProtocol + rag_service.py 纯函数（解析/分块/TF-IDF embedding/cosine search）+ infra/knowledge/retriever.py（内存向量存储）+ indexer.py（启动加载）+ 12 篇 A/B 级知识文章 + retrieve_knowledge use_case + api/rag.py（3 路由）+ 24 新测试（201 总数全绿）| `7a24526` |
 | 2026-05-10 | M4 W1-2 RAG 生产规范升级：meta 格式（tags/review_status）+ source_grade 严格化（3A+9B）+ sentence-transformers embedding（MiniLM 384 维，含 TF-IDF 降级）+ /api/rag/search 带 tags/grade 过滤 + embedding_backend 属性 + 10 新测试（211 总数全绿）| `6e54621` |
 | 2026-05-10 | M4 W3 chromadb 向量库 + interpret_with_rag：ChromaKnowledgeStore（SQLite 持久化 + graceful fallback）+ use_cases/interpret_with_rag.py（build_rag_context / format_further_reading / enrich_interpretation）+ requirements-dev 增加 chromadb + sentence-transformers + 8 新测试（219 总数全绿）| `0398d11` |
+| 2026-05-10 | M5 W1-2 月度决策质量报告：MonthlyReport/MotivationDistribution/DecisionPattern/QualityTrend model + ReportGeneratorProtocol + report_service.py（纯函数：动机分布/分数趋势/模式检测/推荐生成）+ generate_monthly_report use_case + api/decisions.py 新增 2 路由（GET monthly-report + summary）+ seed_decision_reviews.py mock 数据 + 34 新测试（332 总数全绿）| — |
+| 2026-05-10 | M5 W3 旧路由 410 Gone：api/quant.py 3 个 /api/ai-predict/* 路由返回 410 + api/misc.py /api/decisions 路由返回 410（旧 decision_maker v1 废弃）+ 410 body 含 migration_guide/deprecated_since/removed_at + 前端 app.js 仍有调用（已记录 issue）+ 14 新测试（346 总数全绿）| — |
+| 2026-05-10 | M5 W4 旧版物理删除：services/ai_predictor.py + services/decision_maker.py 物理删除 + scripts/night_worker.py 残留 import 修复 + services/judgment_tracker.py 权重重分配 + 346 测试无回归 | — |
+
+---
+
+## 废弃路由状态（M5 W3）
+
+| 路由 | 原模块 | 状态 | 前端调用 | 迁移目标 |
+|------|--------|------|---------|---------|
+| `GET /api/ai-predict/{code}` | services/ai_predictor.py | ✅ 410 Gone | ⚠️ app.js:2508 | `/api/decisions/review` + `/api/decisions/monthly-report` |
+| `GET /api/ai-predict/portfolio/{uid}` | services/ai_predictor.py | ✅ 410 Gone | ⚠️ app.js:2528 | 同上 |
+| `POST /api/ai-predict/batch` | services/ai_predictor.py | ✅ 410 Gone | 无 | 同上 |
+| `GET /api/decisions` | services/decision_maker.py | ✅ 410 Gone | ⚠️ app.js:4493 | `/api/decisions/review` + `/api/decisions/monthly-report` |
+
+**前端迁移 TODO**：
+- `app.js` line 2508: 移除 `/api/ai-predict/${code}` 调用（或改调新接口）
+- `app.js` line 2528: 移除 `/api/ai-predict/portfolio/${uid}` 调用
+- `app.js` line 4493: 移除 `/api/decisions?userId=` 调用，改为新决策复盘系统
 
 ---
 
@@ -252,7 +271,7 @@ tests/
 |---|------|---------|------------|
 | 1 | `services/` 层 30+ 文件仍直调 akshare（不变式 #3）| services/*.py | M2 老服务按需迁移：改哪个顺手迁到 domain/services/ |
 | 2 | `api/chat.py` httpx 直调（不变式 #3）| api/chat.py | M2 接入 LLMClientProtocol 适配器 |
-| 3 | `ai_predictor.py` / `decision_maker.py` v2 未切换 | backend/ 根目录 | M2 W1 起逐步切换，M2 末物理删除旧版 |
+| 3 | `ai_predictor.py` / `decision_maker.py` v2 未切换 | backend/ 根目录 | ✅ M5 W3-W4 完成：410 Gone + 物理删除 |
 | 4 | Provider stubs `fetch()` 全部返回 None | infra/data_source/providers/ | M2 填充实现 + fallback 三级降级链 |
 | 5 | `services/llm_gateway.py` 内部直接访问 `MemoryCache._data` | services/llm_gateway.py | M2 搬到 infra/llm/ 时一起修 |
 | 6 | `use_cases/` 层首个用例已落地 | use_cases/submit_family_questionnaire.py | ✅ M2 W2 完成 |

@@ -24,6 +24,7 @@ import shutil
 from datetime import datetime
 
 from fastapi import APIRouter
+from fastapi.responses import JSONResponse
 
 from config import DATA_DIR
 from services.signal_scout import (
@@ -159,15 +160,21 @@ def api_recommend_stocks(userId: str = "", topN: int = 10, pool: str = "hot", pe
 
 @router.get("/api/decisions")
 def api_decisions(userId: str = ""):
-    """买卖决策（优先凌晨预计算缓存，否则实时算）"""
-    uid = userId or "default"
-    from services.precomputed_cache import get_precomputed
-    cached = get_precomputed("decisions", user_id=uid)
-    if cached:
-        cached["from_cache"] = True
-        return cached
-    from services.decision_maker import generate_decisions
-    return generate_decisions(uid)
+    """[已废弃] 买卖决策 — 返回 410 Gone
+
+    M5 W3: decision_maker v1 已废弃。
+    迁移目标: POST /api/decisions/review (事后复盘) 或 GET /api/decisions/monthly-report/{user_id} (月度报告)
+    设计决策: 10-roadmap.md §四 废弃时间表
+    """
+    return JSONResponse(status_code=410, content={
+        "status": "gone",
+        "code": 410,
+        "message": "此接口已废弃。旧版买卖决策已被决策复盘系统取代。",
+        "migration_guide": "使用 POST /api/decisions/review 提交交易复盘，"
+                           "或 GET /api/decisions/monthly-report/{user_id} 查看决策质量报告。",
+        "deprecated_since": "2026-05-15",
+        "removed_at": "2026-07-01",
+    })
 
 
 @router.get("/api/exposure/{code}")

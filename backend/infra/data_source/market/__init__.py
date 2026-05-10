@@ -3,12 +3,9 @@ Market data bucket -- stock prices, K-lines, indices, ETFs, fund reference data.
 ================================================================================
 Part of the five-bucket data source taxonomy (12-framework-refactor.md section 6).
 
-Current scope (M1 W3):
-  - search_funds()  -- fund name/code search
-
-Planned (M1 W4):
-  - daily bars, index data, fund NAV
-  - migrated from services/market_data.py + services/stock_data_provider.py
+Current scope:
+  - search_funds()  -- fund name/code search (M1 W3)
+  - stocks.py       -- all market data adapters (M5 tech debt cleanup)
 
 Invariant #6: All external data through infra/data_source.
 """
@@ -81,3 +78,25 @@ def _fallback_fund_search(query: str, limit: int = 20) -> List[Dict]:
         return results
     except Exception:
         return []
+
+
+# Re-export all market data adapters from stocks.py
+from infra.data_source.market.stocks import (  # noqa: E402
+    get_stock_daily_hist,
+    get_stock_realtime_quotes_em,
+    get_stock_realtime_quotes,
+    get_stock_spot_xq,
+    get_stock_daily_legacy,
+    get_stock_code_name_list,
+    get_index_daily,
+    get_index_pe,
+    get_index_valuation_csindex,
+    get_fund_nav_history,
+    get_fund_name_list,
+    get_fund_estimated_nav,
+    get_fund_rank,
+    get_etf_fund_daily,
+    get_futures_main,
+    get_futures_foreign_hist,
+    get_restricted_release_summary,
+)

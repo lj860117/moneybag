@@ -54,8 +54,8 @@ def _get_returns_matrix(codes: list, days: int = 500) -> tuple:
 
     def _fetch_one(code):
         try:
-            import akshare as ak
-            df = ak.stock_zh_a_hist(symbol=code, period="daily", adjust="qfq")
+            from infra.data_source.market.stocks import get_stock_daily_hist
+            df = get_stock_daily_hist(code=code, period="daily", adjust="qfq")
             if df is not None and len(df) > 60:
                 df = df.tail(days)
                 return code, df["收盘"].values.astype(np.float64)

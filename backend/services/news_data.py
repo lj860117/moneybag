@@ -44,10 +44,10 @@ def get_fund_news(code: str, limit: int = 3) -> list:
     news_list = []
 
     try:
-        import akshare as ak
+        from infra.data_source.macro.indicators import get_stock_news
         # 尝试获取财经新闻
         try:
-            df = ak.stock_news_em(symbol=keyword)
+            df = get_stock_news(symbol=keyword)
             if df is not None and len(df) > 0:
                 for _, row in df.head(limit).iterrows():
                     title_col = [c for c in df.columns if "标题" in c or "title" in c.lower()]
@@ -66,7 +66,8 @@ def get_fund_news(code: str, limit: int = 3) -> list:
         # 黄金专用新闻源
         if code == "000216" and not news_list:
             try:
-                df = ak.futures_news_shmet(symbol="黄金")
+                from infra.data_source.alt.flows import get_futures_news
+                df = get_futures_news(symbol="黄金")
                 if df is not None and len(df) > 0:
                     for _, row in df.head(limit).iterrows():
                         title_col = [c for c in df.columns if "标题" in c or "title" in c.lower()]
@@ -133,10 +134,10 @@ def get_market_news(limit: int = 30) -> list:
 
     all_news = []
     try:
-        import akshare as ak
+        from infra.data_source.macro.indicators import get_stock_news
         # 优先：A 股市场新闻（质量最高）
         try:
-            df = ak.stock_news_em(symbol="A股")
+            df = get_stock_news(symbol="A股")
             all_news.extend(_extract_news(df, limit))
             print(f"[NEWS] A股: got {len(all_news)}")
         except Exception as e:
@@ -145,7 +146,7 @@ def get_market_news(limit: int = 30) -> list:
         # 补充：财经新闻（如果 A 股不够）
         if len(all_news) < limit:
             try:
-                df = ak.stock_news_em(symbol="财经")
+                df = get_stock_news(symbol="财经")
                 existing_titles = {n["title"] for n in all_news}
                 extras = _extract_news(df, limit - len(all_news))
                 extras = [n for n in extras if n["title"] not in existing_titles]
@@ -182,11 +183,11 @@ def get_policy_news(limit: int = 20) -> list:
 
     all_news = []
     try:
-        import akshare as ak
+        from infra.data_source.macro.indicators import get_stock_news
 
         # 源1：财经新闻中筛选政策相关
         try:
-            df = ak.stock_news_em(symbol="财经")
+            df = get_stock_news(symbol="财经")
             if df is not None and len(df) > 0:
                 title_col = next((c for c in df.columns if "标题" in c or "title" in c.lower()), df.columns[0])
                 time_col = next((c for c in df.columns if "时间" in c or "date" in c.lower() or "发布" in c), None)
@@ -210,7 +211,7 @@ def get_policy_news(limit: int = 20) -> list:
         # 源2：A股新闻中补充政策类
         if len(all_news) < limit:
             try:
-                df = ak.stock_news_em(symbol="A股")
+                df = get_stock_news(symbol="A股")
                 if df is not None and len(df) > 0:
                     title_col = next((c for c in df.columns if "标题" in c or "title" in c.lower()), df.columns[0])
                     time_col = next((c for c in df.columns if "时间" in c or "date" in c.lower() or "发布" in c), None)
@@ -359,8 +360,8 @@ def get_stock_news_by_code(code: str, limit: int = 8) -> list:
         return cached[:limit]
 
     try:
-        import akshare as ak
-        df = ak.stock_news_em(symbol=code)
+        from infra.data_source.macro.indicators import get_stock_news as _get_stock_news
+        df = _get_stock_news(symbol=code)
         if df is not None and len(df) > 0:
             title_col = [c for c in df.columns if "标题" in c or "title" in c.lower() or "新闻" in c]
             time_col = [c for c in df.columns if "时间" in c or "date" in c.lower()]

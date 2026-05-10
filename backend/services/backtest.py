@@ -36,8 +36,8 @@ def run_backtest(strategy: str = "smart_dca", years: int = 3, monthly_amount: fl
     }
 
     try:
-        import akshare as ak
-        df = ak.stock_zh_index_daily(symbol="sh000300")
+        from infra.data_source.market.stocks import get_index_daily
+        df = get_index_daily(symbol="sh000300")
         if df is None or len(df) < years * 250:
             return {**result, "error": "历史数据不足"}
 

@@ -45,9 +45,9 @@ def get_fund_nav(code: str) -> dict:
         return {"code": code, "nav": "N/A", "date": "N/A", "change": "0", "skip_reason": "股票代码，非基金"}
 
     try:
-        import akshare as ak
+        from infra.data_source.market.stocks import get_fund_nav_history as _get_fund_nav_hist
         # 开放式基金净值
-        df = ak.fund_open_fund_info_em(symbol=code, indicator="单位净值走势")
+        df = _get_fund_nav_hist(code=code, indicator="单位净值走势")
         if df is not None and len(df) > 0:
             latest = df.iloc[-1]
             prev = df.iloc[-2] if len(df) > 1 else df.iloc[-1]
@@ -102,8 +102,8 @@ def get_fear_greed_index() -> dict:
     """
     result = {"score": 50, "level": "中性", "dimensions": {}}
     try:
-        import akshare as ak
-        df = ak.stock_zh_index_daily(symbol="sh000300")
+        from infra.data_source.market.stocks import get_index_daily
+        df = get_index_daily(symbol="sh000300")
         if df is not None and len(df) >= 60:
             recent_60 = df.tail(60)
             recent_20 = df.tail(20)
@@ -192,11 +192,11 @@ def get_valuation_percentile() -> dict:
     - 主流个人投资平台(ETF.run/理杏仁/蛋卷)都用等权/中位数 → 我们也用等权
     """
     try:
-        import akshare as ak
+        from infra.data_source.market.stocks import get_index_pe, get_index_valuation_csindex
 
         # 方案1：乐咕"滚动市盈率中位数" — 与理杏仁(23.15)/ETF.run(23.83)口径最接近
         try:
-            df = ak.stock_index_pe_lg(symbol="沪深300")
+            df = get_index_pe(symbol="沪深300")
             if df is not None and len(df) >= 250:
                 # 优先用"滚动市盈率中位数"（≈ETF.run/理杏仁的PE-TTM中位数）
                 pe_col = None
@@ -274,7 +274,7 @@ def get_valuation_percentile() -> dict:
 
         # 降级：乐咕 stock_index_pe_lg（口径可能偏差，但有数据）
         try:
-            df = ak.stock_index_pe_lg(symbol="沪深300")
+            df = get_index_pe(symbol="沪深300")
             if df is not None and len(df) >= 250:
                 pe_col = "滚动市盈率"
                 if pe_col not in df.columns:
@@ -304,7 +304,7 @@ def get_valuation_percentile() -> dict:
 
         # 降级：中证官方 stock_zh_index_value_csindex（数据量少但权威）
         try:
-            df = ak.stock_zh_index_value_csindex(symbol="000300")
+            df = get_index_valuation_csindex(symbol="000300")
             if df is not None and len(df) > 0:
                 pe_col = "市盈率1"  # 静态PE
                 if pe_col in df.columns:
@@ -340,8 +340,8 @@ def _get_nav_on_date(code: str, date_str: str) -> Optional[float]:
         df = cached
     else:
         try:
-            import akshare as ak
-            df = ak.fund_open_fund_info_em(symbol=code, indicator="单位净值走势")
+            from infra.data_source.market.stocks import get_fund_nav_history as _get_fund_nav_hist
+            df = _get_fund_nav_hist(code=code, indicator="单位净值走势")
             if df is not None and len(df) > 0:
                 _nav_cache.set(cache_key, df)
             else:

@@ -100,10 +100,10 @@ def classify(force: bool = False) -> dict:
 def _get_market_params() -> dict:
     """获取沪深300关键参数"""
     try:
-        import akshare as ak
-        
+        from infra.data_source.market.stocks import get_index_daily
+
         # 沪深300日K（近120天）
-        df = ak.stock_zh_index_daily(symbol="sh000300")
+        df = get_index_daily(symbol="sh000300")
         if df is None or len(df) < 60:
             return _fallback_params()
         

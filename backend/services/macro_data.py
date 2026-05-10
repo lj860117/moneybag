@@ -32,7 +32,7 @@ def get_macro_calendar() -> list:
 
     events = []
     try:
-        import akshare as ak
+        from infra.data_source.macro.indicators import get_china_cpi, get_china_pmi, get_china_money_supply, get_china_ppi
         import math
         import re
 
@@ -82,7 +82,7 @@ def get_macro_calendar() -> list:
 
         # ---- CPI ----
         try:
-            df = ak.macro_china_cpi()
+            df = get_china_cpi()
             if df is not None and len(df) > 0:
                 print(f"[MACRO] CPI cols={list(df.columns)}, rows={len(df)}")
                 val_col = _find_col(df.columns, ["全国-同比增长", "全国-同比", "同比增长"]) or (df.columns[2] if len(df.columns) > 2 else None)
@@ -98,7 +98,7 @@ def get_macro_calendar() -> list:
 
         # ---- PMI ----
         try:
-            df = ak.macro_china_pmi()
+            df = get_china_pmi()
             if df is not None and len(df) > 0:
                 print(f"[MACRO] PMI cols={list(df.columns)}, rows={len(df)}")
                 val_col = _find_col(df.columns, ["制造业-指数", "制造业"]) or (df.columns[1] if len(df.columns) > 1 else None)
@@ -113,7 +113,7 @@ def get_macro_calendar() -> list:
 
         # ---- M2 ----
         try:
-            df = ak.macro_china_money_supply()
+            df = get_china_money_supply()
             if df is not None and len(df) > 0:
                 print(f"[MACRO] M2 cols={list(df.columns)}, rows={len(df)}")
                 val_col = _find_col(df.columns, ["货币和准货币(M2)-同比增长", "M2-同比", "M2同比"]) or (df.columns[2] if len(df.columns) > 2 else None)
@@ -128,7 +128,7 @@ def get_macro_calendar() -> list:
 
         # ---- PPI ----
         try:
-            df = ak.macro_china_ppi()
+            df = get_china_ppi()
             if df is not None and len(df) > 0:
                 print(f"[MACRO] PPI cols={list(df.columns)}, rows={len(df)}")
                 # 优先匹配"当月同比增长"，然后按列序号降级

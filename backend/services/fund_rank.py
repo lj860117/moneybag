@@ -30,8 +30,8 @@ def _load_fund_rank_data() -> dict:
     if cached is not None:
         return cached
     try:
-        import akshare as ak
-        df = ak.fund_open_fund_rank_em(symbol="全部")
+        from infra.data_source.market.stocks import get_fund_rank
+        df = get_fund_rank(symbol="全部")
         if df is not None and len(df) > 0:
             # 建立 code -> row 字典
             code_col = next((c for c in df.columns if "代码" in c), df.columns[0])

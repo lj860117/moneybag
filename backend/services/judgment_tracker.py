@@ -25,11 +25,11 @@ VERIFY_DAYS = 5           # 判断后第5天验证
 MIN_RECORDS_FOR_EMA = 10  # 至少10条记录才开始EMA校准
 
 # 默认模块权重 (sum=1.0)
+# M5 W4: ai_predictor 权重重分配到其他模块（旧版已删除）
 DEFAULT_WEIGHTS = {
-    "stock_screen": 0.20,
-    "signal": 0.15,
-    "risk": 0.15,
-    "ai_predictor": 0.15,
+    "stock_screen": 0.25,
+    "signal": 0.20,
+    "risk": 0.20,
     "monte_carlo": 0.10,
     "rl_position": 0.10,
     "portfolio_optimizer": 0.08,

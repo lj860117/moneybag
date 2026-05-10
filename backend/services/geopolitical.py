@@ -131,11 +131,11 @@ def get_geopolitical_events(limit: int = 30) -> dict:
     all_titles_seen = set()
 
     try:
-        import akshare as ak
+        from infra.data_source.macro.indicators import get_stock_news
 
         # 源1: 财经新闻
         try:
-            df = ak.stock_news_em(symbol="财经")
+            df = get_stock_news(symbol="财经")
             if df is not None and len(df) > 0:
                 events.extend(_extract_geo_events(df, all_titles_seen, limit))
         except Exception as e:
@@ -144,7 +144,7 @@ def get_geopolitical_events(limit: int = 30) -> dict:
         # 源2: A股新闻补充
         if len(events) < limit // 2:
             try:
-                df = ak.stock_news_em(symbol="A股")
+                df = get_stock_news(symbol="A股")
                 if df is not None and len(df) > 0:
                     events.extend(_extract_geo_events(df, all_titles_seen, limit - len(events)))
             except Exception as e:

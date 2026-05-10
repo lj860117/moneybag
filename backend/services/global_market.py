@@ -64,7 +64,7 @@ def get_us_indices() -> dict:
     result = {"dji": None, "spx": None, "ixic": None, "available": False}
 
     try:
-        import akshare as ak
+        from infra.data_source.macro.indicators import get_us_index
 
         indices = {
             "dji": ".DJI",   # 道琼斯
@@ -74,7 +74,7 @@ def get_us_indices() -> dict:
 
         for key, symbol in indices.items():
             try:
-                df = ak.index_us_stock_sina(symbol=symbol)
+                df = get_us_index(symbol=symbol)
                 if df is not None and len(df) > 0:
                     last = df.iloc[-1]
                     prev = df.iloc[-2] if len(df) > 1 else last
@@ -113,8 +113,8 @@ def get_forex_data() -> dict:
     result = {"usdcny": None, "dxy_proxy": None, "available": False}
 
     try:
-        import akshare as ak
-        df = ak.fx_spot_quote()
+        from infra.data_source.macro.indicators import get_fx_spot_quote
+        df = get_fx_spot_quote()
         if df is not None and len(df) > 0:
             # 找美元/人民币
             for _, row in df.iterrows():
@@ -160,8 +160,8 @@ def get_fed_rate() -> dict:
     result = {"current_rate": None, "last_change": None, "trend": "hold", "available": False}
 
     try:
-        import akshare as ak
-        df = ak.macro_bank_usa_interest_rate()
+        from infra.data_source.macro.indicators import get_usa_interest_rate
+        df = get_usa_interest_rate()
         if df is not None and len(df) > 0:
             # 取最新几条
             recent = df.tail(5)
@@ -249,17 +249,17 @@ def get_global_pe() -> dict:
             return None
 
     try:
-        import akshare as ak
+        from infra.data_source.macro.indicators import get_global_market_pe
         # 美国 PE
         try:
-            df_us = ak.stock_market_pe_lg(symbol="美国")
+            df_us = get_global_market_pe(symbol="美国")
             result["us_pe"] = _extract_pe(df_us, "美国")
         except Exception as e:
             print(f"[GLOBAL] US PE failed: {e}")
 
         # 中国 PE
         try:
-            df_cn = ak.stock_market_pe_lg(symbol="中国")
+            df_cn = get_global_market_pe(symbol="中国")
             result["cn_pe"] = _extract_pe(df_cn, "中国")
         except Exception as e:
             print(f"[GLOBAL] CN PE failed: {e}")

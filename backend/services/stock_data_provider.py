@@ -89,12 +89,12 @@ def get_stock_data() -> dict:
 def _try_em_source() -> dict | None:
     """东方财富源：stock_zh_a_spot_em"""
     try:
-        import akshare as ak
+        from infra.data_source.market.stocks import get_stock_realtime_quotes_em
         from services.utils import find_col as _fc, safe_float as _sf
 
         t0 = time.time()
         print("[DATA_PROVIDER] Trying 东方财富...")
-        df = ak.stock_zh_a_spot_em()
+        df = get_stock_realtime_quotes_em()
         if df is None or len(df) < 100:
             return None
 
@@ -145,14 +145,14 @@ def _try_sina_xq_source() -> dict | None:
     3. 雪球 stock_individual_spot_xq 并发补充 PE/PB/换手率/市值（~30秒, 50并发）
     """
     try:
-        import akshare as ak
+        from infra.data_source.market.stocks import get_stock_realtime_quotes, get_stock_spot_xq
         from services.utils import safe_float as _sf
 
         t0 = time.time()
 
         # Step 1: 新浪全量行情
         print("[DATA_PROVIDER] 新浪源加载中...")
-        df = ak.stock_zh_a_spot()
+        df = get_stock_realtime_quotes()
         if df is None or len(df) < 100:
             print("[DATA_PROVIDER] 新浪源数据不足")
             return None
@@ -226,7 +226,7 @@ def _try_sina_xq_source() -> dict | None:
                     else:
                         symbol = "SH" + code  # fallback
 
-                xq_df = ak.stock_individual_spot_xq(symbol=symbol)
+                xq_df = get_stock_spot_xq(symbol=symbol)
                 if xq_df is None or len(xq_df) == 0:
                     return stock
 

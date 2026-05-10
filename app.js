@@ -1364,7 +1364,7 @@ return `<div style="margin-bottom:12px"><div style="font-size:12px;font-weight:7
 let insightTab='overview';
 function _insightTabs(){
 const all=[
-['overview','📊 总览'],['recommend','💎 推荐'],['decisions','🎯 决策'],['sector','🔥 行业'],['broker','🏛️ 研报'],['scenario','🎭 情景'],['fundpick','🔍 选基'],['stockpick','🧠 选股'],['news','📰 新闻'],['policy','🏛️ 政策'],['tech','📈 技术'],['macro','📊 宏观'],['global','🌐 全球'],['signals','📡 信号'],['scorecard','📊 成绩单'],['doctor','🏥 体检'],['steward','🤖 管家'],['factorictest','🔬 因子检验'],['montecarlo','🎲 蒙特卡洛'],['aipredict','🤖 AI预测'],['geneticfactor','🧬 遗传因子'],['optimizer','⚡ 组合优化'],['altdata','📡 另类数据'],['rlposition','🎮 RL仓位'],['llmfactor','🧠 LLM因子'],['weekly','📋 周报']];
+['overview','📊 总览'],['recommend','💎 推荐'],['decisions','🎯 决策复盘'],['sector','🔥 行业'],['broker','🏛️ 研报'],['scenario','🎭 情景'],['fundpick','🔍 选基'],['stockpick','🧠 选股'],['news','📰 新闻'],['policy','🏛️ 政策'],['tech','📈 技术'],['macro','📊 宏观'],['global','🌐 全球'],['signals','📡 信号'],['scorecard','📊 成绩单'],['doctor','🏥 体检'],['steward','🤖 管家'],['factorictest','🔬 因子检验'],['montecarlo','🎲 蒙特卡洛'],['geneticfactor','🧬 遗传因子'],['optimizer','⚡ 组合优化'],['altdata','📡 另类数据'],['rlposition','🎮 RL仓位'],['llmfactor','🧠 LLM因子'],['weekly','📋 周报']];
 const simple=['overview','recommend','decisions','news','doctor','steward'];
 return isProMode()?all:all.filter(t=>simple.includes(t[0]))}
 async function renderInsight(){currentPage='insight';renderNav();const tabs=_insightTabs();
@@ -1382,7 +1382,6 @@ if(insightTab==='fundpick'){const el=document.getElementById('insightContent');i
 if(insightTab==='stockpick'){const el=document.getElementById('insightContent');if(el)renderStockPick(el);return}
 if(insightTab==='factorictest'){const el=document.getElementById('insightContent');if(el)renderFactorIC(el);return}
 if(insightTab==='montecarlo'){const el=document.getElementById('insightContent');if(el)renderMonteCarlo(el);return}
-if(insightTab==='aipredict'){const el=document.getElementById('insightContent');if(el)renderAIPredict(el);return}
 if(insightTab==='geneticfactor'){const el=document.getElementById('insightContent');if(el)renderGeneticFactor(el);return}
 if(insightTab==='optimizer'){const el=document.getElementById('insightContent');if(el)renderOptimizer(el);return}
 if(insightTab==='altdata'){const el=document.getElementById('insightContent');if(el)renderAltData(el);return}
@@ -2482,57 +2481,12 @@ el.innerHTML=html;
 // 六大量化引擎 UI（对标幻方量化）
 // ============================================================
 
-// ---- P1: AI 预测引擎 ----
+// ---- P1: AI 预测引擎（已废弃 M5 W4，功能迁至决策复盘系统）----
+// 旧函数保留空壳避免 undefined 错误
 async function renderAIPredict(el){
-el.innerHTML=`<div class="dashboard-card"><div class="dashboard-card-title">🤖 AI 预测引擎</div>
-<div style="font-size:12px;color:var(--text2);margin-bottom:8px">MLP神经网络 + GradientBoosting 双模型集成，~40特征预测未来涨跌</div>
-<div style="font-size:11px;color:var(--accent);margin-bottom:12px;padding:6px 8px;background:rgba(245,158,11,.06);border-radius:6px">📊 输入股票代码 → 获取预测收益率 + 方向 + 置信度 + 特征重要性</div>
-<div style="display:flex;gap:8px;margin-bottom:8px">
-<input id="aiCode" placeholder="股票代码 如 000001" class="input-field" style="flex:1;min-width:0;padding:10px 12px;border-radius:10px;border:1px solid var(--bg3);background:var(--bg2);color:var(--text);font-size:14px">
-<select id="aiDays" style="padding:10px;border-radius:10px;border:1px solid var(--bg3);background:var(--bg2);color:var(--text);font-size:12px;flex-shrink:0">
-<option value="3">3天</option><option value="5" selected>5天</option><option value="10">10天</option><option value="20">20天</option></select>
-</div>
-<button onclick="runAIPredict()" style="width:100%;padding:10px 16px;border-radius:10px;border:none;background:var(--accent);color:#fff;font-weight:700;cursor:pointer;font-size:14px;margin-bottom:16px">🤖 开始预测</button>
-<div id="aiPredResult"></div>
-<div style="margin-top:16px;padding-top:16px;border-top:1px solid rgba(148,163,184,.1)">
-<div style="font-size:13px;font-weight:700;margin-bottom:8px">📊 持仓组合预测</div>
-<button onclick="runAIPredPortfolio()" style="padding:8px 16px;border-radius:8px;border:none;background:linear-gradient(135deg,#3B82F6,#8B5CF6);color:#fff;font-weight:600;cursor:pointer;font-size:12px">🚀 一键预测全部持仓</button>
-<div id="aiPortResult" style="margin-top:12px"></div></div></div>`;
-}
-
-async function runAIPredict(){
-const code=document.getElementById('aiCode')?.value?.trim();if(!code){alert('请输入股票代码');return}
-const days=parseInt(document.getElementById('aiDays')?.value||'5');
-const el=document.getElementById('aiPredResult');if(!el)return;
-el.innerHTML='<div style="text-align:center;padding:20px;color:var(--text2)"><div class="loading-spinner" style="width:24px;height:24px;margin:0 auto 8px;border-width:2px"></div>训练模型中（首次约15-30秒）...</div>';
-try{const r=await fetch(API_BASE+`/ai-predict/${code}?days=${days}`,{signal:AbortSignal.timeout(60000)});const d=await r.json();
-if(d.error){el.innerHTML=`<div style="color:var(--red);padding:12px">${d.error}</div>`;return}
-const dirColor=d.direction==='看涨'?'#10B981':(d.direction==='看跌'?'#EF4444':'#94A3B8');
-let html=`<div style="display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin-bottom:16px">
-<div style="background:var(--bg2);border-radius:12px;padding:12px;text-align:center"><div style="font-size:11px;color:var(--text2)">预测收益</div><div style="font-size:22px;font-weight:800;color:${dirColor}">${d.prediction>0?'+':''}${d.prediction}%</div></div>
-<div style="background:var(--bg2);border-radius:12px;padding:12px;text-align:center"><div style="font-size:11px;color:var(--text2)">方向</div><div style="font-size:18px;font-weight:700;color:${dirColor}">${d.direction}</div></div>
-<div style="background:var(--bg2);border-radius:12px;padding:12px;text-align:center"><div style="font-size:11px;color:var(--text2)">置信度</div><div style="font-size:18px;font-weight:700">${d.confidence}%</div></div></div>`;
-html+=`<div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:12px">
-<div style="background:var(--bg2);border-radius:10px;padding:10px"><div style="font-size:11px;color:var(--text2);margin-bottom:6px">MLP 神经网络</div><div style="font-size:14px;font-weight:700">${d.models?.mlp?.prediction>0?'+':''}${d.models?.mlp?.prediction||0}% <span style="font-size:11px;color:var(--text2)">(权重${d.models?.mlp?.weight||0}%)</span></div></div>
-<div style="background:var(--bg2);border-radius:10px;padding:10px"><div style="font-size:11px;color:var(--text2);margin-bottom:6px">GBM 梯度提升</div><div style="font-size:14px;font-weight:700">${d.models?.gbm?.prediction>0?'+':''}${d.models?.gbm?.prediction||0}% <span style="font-size:11px;color:var(--text2)">(权重${d.models?.gbm?.weight||0}%)</span></div></div></div>`;
-const bt=d.backtest||{};
-html+=`<div style="font-size:12px;color:var(--text2);padding:8px;background:var(--bg2);border-radius:8px;margin-bottom:12px">回测 | 方向准确率: <b>${bt.direction_accuracy||0}%</b> · 相关系数: <b>${bt.correlation||0}</b> · 训练样本: ${bt.train_samples||0} · 测试样本: ${bt.test_samples||0}</div>`;
-if(d.feature_importance?.length>0){html+=`<div style="font-size:12px;font-weight:600;margin-bottom:6px">📊 特征重要性 Top 10</div>`;
-d.feature_importance.slice(0,10).forEach((f,i)=>{const pct=Math.round(f[1]*1000)/10;
-html+=`<div style="display:flex;align-items:center;gap:8px;margin-bottom:3px;font-size:11px"><span style="width:100px;color:var(--text2)">${f[0]}</span><div style="flex:1;height:6px;background:var(--bg3);border-radius:3px;overflow:hidden"><div style="height:100%;width:${Math.min(pct*5,100)}%;background:linear-gradient(90deg,#3B82F6,#8B5CF6);border-radius:3px"></div></div><span>${pct}%</span></div>`})}
-el.innerHTML=html;
-}catch(e){el.innerHTML=`<div style="color:var(--text2);text-align:center;padding:12px">预测失败: ${e.message}<br><button onclick="runAIPredict()" style="margin-top:6px;padding:4px 12px;border-radius:6px;border:none;background:var(--accent);color:#fff;cursor:pointer;font-size:11px">🔄 重试</button></div>`}}
-
-async function runAIPredPortfolio(){const el=document.getElementById('aiPortResult');if(!el)return;
-el.innerHTML='<div style="text-align:center;padding:15px;color:var(--text2)"><div class="loading-spinner" style="width:20px;height:20px;margin:0 auto 6px;border-width:2px"></div>正在预测全部持仓...</div>';
-try{const uid=getProfileId();const r=await fetch(API_BASE+`/ai-predict/portfolio/${uid}`,{signal:AbortSignal.timeout(120000)});const d=await r.json();
-if(d.error){el.innerHTML=`<div style="color:var(--red);padding:8px">${d.error}</div>`;return}
-const dirColor=d.portfolio_direction==='看涨'?'#10B981':(d.portfolio_direction==='看跌'?'#EF4444':'#94A3B8');
-let html=`<div style="background:var(--bg2);border-radius:10px;padding:12px;margin-bottom:12px;text-align:center"><div style="font-size:11px;color:var(--text2)">组合预测</div><div style="font-size:24px;font-weight:800;color:${dirColor}">${d.portfolio_prediction>0?'+':''}${d.portfolio_prediction}%</div><div style="font-size:13px;color:${dirColor}">${d.portfolio_direction}</div></div>`;
-(d.stocks||[]).forEach(s=>{const c=s.direction==='看涨'?'#10B981':(s.direction==='看跌'?'#EF4444':'#94A3B8');
-html+=`<div style="display:flex;justify-content:space-between;align-items:center;padding:8px;border-bottom:1px solid rgba(148,163,184,.1);font-size:12px"><span>${s.name||s.code}</span><span style="color:var(--text2)">${s.weight}%仓位</span><span style="color:${c};font-weight:700">${s.prediction>0?'+':''}${s.prediction}%</span><span style="font-size:11px">${s.confidence}%信心</span></div>`});
-el.innerHTML=html;
-}catch(e){el.innerHTML=`<div style="color:var(--text2);padding:8px">失败: ${e.message}</div>`}}
+el.innerHTML='<div class="dashboard-card"><div class="dashboard-card-title">🤖 AI 预测引擎</div><div style="padding:20px;text-align:center;color:var(--text2)"><div style="font-size:48px;margin-bottom:12px">🚫</div><div style="font-size:14px;font-weight:600;margin-bottom:8px">此功能已废弃</div><div style="font-size:12px;line-height:1.6">AI 预测功能已整合到决策复盘系统。<br>请使用「决策复盘」标签页查看你的决策质量和行为模式分析。</div></div></div>';}
+async function runAIPredict(){}
+async function runAIPredPortfolio(){}
 
 // ---- P2: 遗传因子挖掘 ----
 async function renderGeneticFactor(el){
@@ -4487,33 +4441,31 @@ el.innerHTML=html;
 
 
 async function renderDecisionsTab(el){
-el.innerHTML='<div style="text-align:center;padding:20px"><div class="loading-spinner" style="width:24px;height:24px;margin:0 auto 8px;border-width:2px"></div>加载决策数据...</div>';
+el.innerHTML='<div style="text-align:center;padding:20px"><div class="loading-spinner" style="width:24px;height:24px;margin:0 auto 8px;border-width:2px"></div>加载决策复盘数据...</div>';
 try{
 const uid=getProfileId();
-const r=await fetch(API_BASE+'/decisions?userId='+uid,{signal:AbortSignal.timeout(15000)});
-if(!r.ok){el.innerHTML='<div style="text-align:center;padding:20px;color:var(--text2)">决策数据暂不可用<br><button onclick="renderInsight()" style="margin-top:8px;padding:6px 16px;border-radius:8px;border:none;background:var(--accent);color:#fff;cursor:pointer">🔄 重试</button></div>';return}
+const r=await fetch(API_BASE+'/api/decisions/review/'+uid+'?limit=20',{signal:AbortSignal.timeout(15000)});
+if(!r.ok){el.innerHTML='<div style="text-align:center;padding:20px;color:var(--text2)">决策复盘数据暂不可用<br><button onclick="renderInsight()" style="margin-top:8px;padding:6px 16px;border-radius:8px;border:none;background:var(--accent);color:#fff;cursor:pointer">🔄 重试</button></div>';return}
 const d=await r.json();
-if(d.from_cache)console.log('[决策] 来自缓存');
-const decisions=d.decisions||[];
-if(!decisions.length&&!d.overall_strategy){el.innerHTML='<div style="text-align:center;padding:20px;color:var(--text2)">暂无决策建议'+(d.error?'：'+d.error:'')+'</div>';return}
-let html='';
-if(d.overall_strategy)html+='<div class="dashboard-card" style="border-left:3px solid var(--accent)"><div class="dashboard-card-title">🎯 总体策略</div><div style="font-size:14px;font-weight:600">'+d.overall_strategy+'</div><div style="font-size:11px;color:var(--text2);margin-top:4px">模型: '+(d.model||'?')+' | Regime: '+(d.market_regime||'?')+(d.from_cache?' | 📦缓存':'')+'</div></div>';
-const scenarios=d.scenarios||{};
-if(scenarios.optimistic||scenarios.neutral||scenarios.pessimistic){
-html+='<div class="dashboard-card"><div class="dashboard-card-title">🎭 三情景分析</div>';
-if(scenarios.optimistic)html+='<div style="font-size:12px;padding:4px 0">🟢 乐观: '+scenarios.optimistic+'</div>';
-if(scenarios.neutral)html+='<div style="font-size:12px;padding:4px 0">🟡 中性: '+scenarios.neutral+'</div>';
-if(scenarios.pessimistic)html+='<div style="font-size:12px;padding:4px 0">🔴 悲观: '+scenarios.pessimistic+'</div>';
-html+='</div>'}
-decisions.forEach(dec=>{
+const reviews=d.reviews||[];
+if(!reviews.length){el.innerHTML='<div style="text-align:center;padding:20px;color:var(--text2)">暂无决策复盘记录<br><div style="font-size:12px;margin-top:8px">每次交易后提交复盘，系统会分析你的决策模式</div></div>';return}
+let html='<div class="dashboard-card" style="border-left:3px solid var(--accent);margin-bottom:12px"><div class="dashboard-card-title">🎯 决策复盘记录</div><div style="font-size:12px;color:var(--text2)">共 '+reviews.length+' 条复盘 · 记录越多，行为模式分析越准确</div></div>';
+reviews.forEach(rev=>{
+const qs=rev.quality_score||{};
+const score=qs.total||0;
+const grade=qs.grade||'';
+const gradeLabel=grade==='excellent'?'优秀':grade==='good'?'良好':grade==='mediocre'?'一般':'较差';
+const gradeColor=score>=80?'#10B981':score>=60?'#3B82F6':score>=40?'#F59E0B':'#EF4444';
 const actionMap={buy:'🟢 买入',sell:'🔴 卖出',hold:'⚪ 持有',reduce:'🟠 减仓',add:'🟢 加仓'};
-const actionLabel=actionMap[dec.action]||dec.action;
-html+='<div class="dashboard-card" style="padding:12px;margin-bottom:8px"><div style="display:flex;justify-content:space-between;align-items:center"><div><span style="font-size:14px;font-weight:700">'+dec.name+'</span><span style="font-size:11px;color:var(--text2);margin-left:6px">'+dec.symbol+'</span></div><div style="font-size:14px;font-weight:800">'+actionLabel+'</div></div>';
-if(dec.position_pct)html+='<div style="font-size:12px;color:var(--text2);margin-top:4px">建议仓位: '+dec.position_pct+'% | 置信度: '+dec.confidence+'%</div>';
-if(dec.reason)html+='<div style="font-size:12px;margin-top:4px;padding:6px 8px;background:var(--bg2);border-radius:6px">'+dec.reason+'</div>';
-if(dec.risk_warning)html+='<div style="font-size:11px;color:var(--red);margin-top:4px">⚠️ '+dec.risk_warning+'</div>';
+const actionLabel=actionMap[rev.action]||rev.action||'买入';
+const time=(rev.time||rev.trade_time||'').slice(0,10);
+html+='<div class="dashboard-card" style="padding:12px;margin-bottom:8px"><div style="display:flex;justify-content:space-between;align-items:center"><div><span style="font-size:14px;font-weight:700">'+(rev.asset_name||'')+'</span><span style="font-size:11px;color:var(--text2);margin-left:6px">'+(rev.asset_code||'')+'</span></div><div style="font-size:14px;font-weight:800">'+actionLabel+'</div></div>';
+html+='<div style="display:flex;justify-content:space-between;align-items:center;margin-top:8px"><div style="font-size:12px;color:var(--text2)">'+time+'</div><div style="display:flex;align-items:center;gap:6px"><span style="font-size:20px;font-weight:800;color:'+gradeColor+'">'+score+'</span><span style="font-size:11px;color:'+gradeColor+'">'+gradeLabel+'</span></div></div>';
+const reasons=rev.reasons||[];
+if(reasons.length){
+const labels=reasons.map(r=>{const sig=r.signal;const icon=sig==='red'?'🚨':sig==='yellow'?'⚠️':'✅';return icon+(r.reason_id||r.custom_text||'').replace(/_/g,' ')}).join(' · ');
+html+='<div style="font-size:11px;margin-top:6px;padding:4px 8px;background:var(--bg2);border-radius:6px;color:var(--text2)">'+labels+'</div>'}
 html+='</div>'});
-if(d.generated_at)html+='<div style="font-size:11px;color:var(--text3);text-align:center;margin-top:8px">生成于 '+d.generated_at.slice(0,16)+'</div>';
 el.innerHTML=html;
 }catch(e){el.innerHTML='<div style="text-align:center;padding:20px;color:var(--text2)">加载超时<br><span style="font-size:12px">'+e.message+'</span><br><button onclick="renderInsight()" style="margin-top:8px;padding:6px 16px;border-radius:8px;border:none;background:var(--accent);color:#fff;cursor:pointer">🔄 重试</button></div>'}}
 

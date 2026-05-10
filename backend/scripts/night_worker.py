@@ -284,10 +284,9 @@ def step_r1_phase3():
             if not load_stock_holdings(uid) and not load_fund_holdings(uid):
                 log(f"  跳过 {p.get('name', uid)}: 空仓无需决策")
                 continue
-            from services.decision_maker import generate_decisions
-            dec = generate_decisions(uid)
-            results[f"decisions_{uid}"] = dec
-            log(f"  ✅ {p.get('name', uid)}: {len(dec.get('decisions', []))} 条决策")
+            # M5 W4: decision_maker v1 已废弃删除，凌晨决策生成暂跳过
+            # TODO: 接入 decision_maker_v2 或新决策复盘系统
+            log(f"  跳过 {p.get('name', uid)}: 决策生成待迁移到新系统")
         except Exception as e:
             log(f"  ❌ {p.get('name', uid)} 决策失败: {e}")
 

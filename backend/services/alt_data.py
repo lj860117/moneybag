@@ -68,11 +68,11 @@ def get_northbound_flow_detail() -> dict:
     result = {"today": {}, "trend": [], "top_stocks": [], "signal": ""}
 
     try:
-        import akshare as ak
+        from infra.data_source.alt.flows import get_north_net_flow, get_hsgt_hold_stock
 
         # 今日实时
         try:
-            df = ak.stock_hsgt_north_net_flow_in_em()
+            df = get_north_net_flow()
             if df is not None and len(df) > 0:
                 latest = df.tail(20)
                 result["trend"] = [
@@ -87,7 +87,7 @@ def get_northbound_flow_detail() -> dict:
 
         # 北向持股 top
         try:
-            df = ak.stock_hsgt_hold_stock_em(market="北向", indicator="今日排行")
+            df = get_hsgt_hold_stock(market="北向", indicator="今日排行")
             if df is not None and len(df) > 0:
                 for _, row in df.head(15).iterrows():
                     result["top_stocks"].append({
@@ -134,8 +134,8 @@ def get_margin_detail() -> dict:
     result = {"trend": [], "signal": "", "latest": {}}
 
     try:
-        import akshare as ak
-        df = ak.stock_margin_sse()
+        from infra.data_source.alt.flows import get_margin_sse
+        df = get_margin_sse()
         if df is not None and len(df) > 0:
             df = df.tail(30)
             for _, row in df.iterrows():
@@ -183,8 +183,8 @@ def get_dragon_tiger() -> dict:
     result = {"records": [], "inst_buy": [], "inst_sell": []}
 
     try:
-        import akshare as ak
-        df = ak.stock_lhb_detail_em()
+        from infra.data_source.macro.indicators import get_lhb_detail
+        df = get_lhb_detail()
         if df is not None and len(df) > 0:
             for _, row in df.head(30).iterrows():
                 record = {
@@ -226,8 +226,8 @@ def get_block_trade() -> dict:
     result = {"records": [], "premium_count": 0, "discount_count": 0}
 
     try:
-        import akshare as ak
-        df = ak.stock_dzjy_mrtj()
+        from infra.data_source.alt.flows import get_block_trade_daily
+        df = get_block_trade_daily()
         if df is not None and len(df) > 0:
             for _, row in df.head(30).iterrows():
                 trade = {
@@ -266,8 +266,8 @@ def get_insider_trading() -> dict:
     result = {"increases": [], "decreases": [], "signal": ""}
 
     try:
-        import akshare as ak
-        df = ak.stock_inner_trade_xq()
+        from infra.data_source.alt.flows import get_insider_trade_xq
+        df = get_insider_trade_xq()
         if df is not None and len(df) > 0:
             for _, row in df.head(30).iterrows():
                 record = {
@@ -314,8 +314,8 @@ def get_sector_flow() -> dict:
     result = {"inflow": [], "outflow": []}
 
     try:
-        import akshare as ak
-        df = ak.stock_sector_fund_flow_rank(indicator="今日", sector_type="行业资金流")
+        from infra.data_source.alt.flows import get_sector_fund_flow_rank
+        df = get_sector_fund_flow_rank(indicator="今日", sector_type="行业资金流")
         if df is not None and len(df) > 0:
             for _, row in df.iterrows():
                 sector = {

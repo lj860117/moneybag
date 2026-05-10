@@ -71,8 +71,8 @@ def get_sector_ranking() -> dict:
         return cached
 
     try:
-        import akshare as ak
-        df = ak.stock_board_industry_summary_ths()
+        from infra.data_source.alt.flows import get_industry_board_summary
+        df = get_industry_board_summary()
 
         if df is None or len(df) < 10:
             return {"available": False, "error": "行业数据不足", "source": "ths"}

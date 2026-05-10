@@ -36,8 +36,8 @@ def get_stock_news(code: str, limit: int = 5) -> list:
 
     result = []
     try:
-        import akshare as ak
-        df = ak.stock_news_em(symbol=code)
+        from infra.data_source.macro.indicators import get_stock_news as _get_stock_news
+        df = _get_stock_news(symbol=code)
         if df is not None and len(df) > 0:
             cols = list(df.columns)
             title_col = [c for c in cols if "标题" in c or "title" in c.lower() or "新闻" in c]
@@ -72,8 +72,8 @@ def get_stock_fund_flow(code: str) -> dict:
 
     result = {"available": False}
     try:
-        import akshare as ak
-        df = ak.stock_individual_fund_flow(stock=code, market="sh" if code.startswith("6") else "sz")
+        from infra.data_source.alt.flows import get_individual_fund_flow
+        df = get_individual_fund_flow(stock=code, market="sh" if code.startswith("6") else "sz")
         if df is not None and len(df) > 0:
             last = df.iloc[-1]
             cols = list(df.columns)
@@ -102,8 +102,8 @@ def get_stock_industry(code: str) -> str:
 
     industry = "未知"
     try:
-        import akshare as ak
-        df = ak.stock_individual_info_em(symbol=code)
+        from infra.data_source.alt.flows import get_stock_individual_info
+        df = get_stock_individual_info(symbol=code)
         if df is not None and len(df) > 0:
             # 找行业行
             for _, row in df.iterrows():
@@ -131,8 +131,8 @@ def get_industry_news(industry: str, limit: int = 3) -> list:
 
     result = []
     try:
-        import akshare as ak
-        df = ak.stock_news_em(symbol=industry)
+        from infra.data_source.macro.indicators import get_stock_news as _get_stock_news
+        df = _get_stock_news(symbol=industry)
         if df is not None and len(df) > 0:
             cols = list(df.columns)
             tc = [c for c in cols if "标题" in c or "title" in c.lower()]

@@ -144,8 +144,8 @@ def _load_fund_names():
     if cached is not None:
         return cached
     try:
-        import akshare as ak
-        df = ak.fund_name_em()
+        from infra.data_source.market.stocks import get_fund_name_list
+        df = get_fund_name_list()
         _name_cache.set("data", df, ttl=_NAME_TTL)
         return df
     except Exception:
@@ -162,8 +162,8 @@ def _load_estimation_all():
     if cached is not None:
         return cached
     try:
-        import akshare as ak
-        df = ak.fund_value_estimation_em()
+        from infra.data_source.market.stocks import get_fund_estimated_nav
+        df = get_fund_estimated_nav()
         _est_cache.set("data", df, ttl=_EST_TTL)
         return df
     except Exception:
@@ -228,8 +228,8 @@ def get_fund_nav_history(code: str, days: int = 60) -> list:
         return cached
 
     try:
-        import akshare as ak
-        df = ak.fund_open_fund_info_em(symbol=code, indicator="单位净值走势")
+        from infra.data_source.market.stocks import get_fund_nav_history as _get_fund_nav_hist
+        df = _get_fund_nav_hist(code=code, indicator="单位净值走势")
         if df is None or df.empty:
             raise ValueError("AKShare 空数据")
         df = df.tail(days)

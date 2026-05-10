@@ -109,8 +109,8 @@ def get_technical_indicators(symbol: str = "sh000300") -> dict:
         return cached
 
     try:
-        import akshare as ak
-        df = ak.stock_zh_index_daily(symbol=symbol)
+        from infra.data_source.market.stocks import get_index_daily
+        df = get_index_daily(symbol=symbol)
         if df is not None and len(df) >= 60:
             closes = [float(c) for c in df.tail(120)["close"].values]
             result = {

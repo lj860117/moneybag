@@ -321,8 +321,8 @@ def _evaluate_fitness(tree: Node, data: dict, forward_returns: np.ndarray) -> fl
 def _prepare_data(code: str, days: int = 800) -> tuple:
     """获取股票数据，返回 (data_dict, forward_returns)"""
     try:
-        import akshare as ak
-        df = ak.stock_zh_a_hist(symbol=code, period="daily", adjust="qfq")
+        from infra.data_source.market.stocks import get_stock_daily_hist
+        df = get_stock_daily_hist(code=code, period="daily", adjust="qfq")
         if df is None or len(df) < 200:
             return None, None
 

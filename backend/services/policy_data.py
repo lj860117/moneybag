@@ -47,8 +47,8 @@ def get_real_estate_data() -> dict:
 
     result = {"available": False, "data": [], "latest": {}}
     try:
-        import akshare as ak
-        df = ak.macro_china_real_estate()
+        from infra.data_source.macro.indicators import get_china_real_estate
+        df = get_china_real_estate()
         if df is not None and len(df) > 0:
             result["available"] = True
             # 取最近 12 条
@@ -89,8 +89,8 @@ def get_house_price_index() -> dict:
 
     result = {"available": False, "data": [], "latest": {}}
     try:
-        import akshare as ak
-        df = ak.macro_china_new_house_price()
+        from infra.data_source.macro.indicators import get_china_new_house_price
+        df = get_china_new_house_price()
         if df is not None and len(df) > 0:
             result["available"] = True
             recent = df.tail(12)
@@ -143,8 +143,8 @@ def get_policy_news_by_topic(topic: str = "房地产", limit: int = 5) -> dict:
 
     result = {"topic": topic, "news": [], "emoji": POLICY_TOPICS.get(topic, {}).get("emoji", "📋")}
     try:
-        import akshare as ak
-        df = ak.stock_news_em(symbol=topic)
+        from infra.data_source.macro.indicators import get_stock_news
+        df = get_stock_news(symbol=topic)
         if df is not None and len(df) > 0:
             cols = list(df.columns)
             title_col = next((c for c in cols if "标题" in c or "title" in c.lower()), cols[0] if cols else None)

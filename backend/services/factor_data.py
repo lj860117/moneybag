@@ -63,13 +63,12 @@ def get_northbound_flow() -> dict:
     # 注意：2024-08-16 后数据全 NaN，只能拿到历史趋势
     result["notice"] = "2024年8月起交易所不再披露每日北向净流入，AKShare 降级数据可能过旧"
     try:
-        import akshare as ak
+        from infra.data_source.alt.flows import get_hsgt_hist
         df = None
-        if hasattr(ak, "stock_hsgt_hist_em"):
-            try:
-                df = ak.stock_hsgt_hist_em(symbol="北向资金")
-            except Exception:
-                pass
+        try:
+            df = get_hsgt_hist(symbol="北向资金")
+        except Exception:
+            pass
 
         if df is not None and len(df) >= 20:
             val_col = next((c for c in df.columns if "净流入" in str(c) or "value" in str(c).lower()), None)
@@ -147,8 +146,8 @@ def get_margin_trading() -> dict:
 
     # ── 方案 B（降级）：AKShare stock_margin_sse（仅上交所 ≈ 60%） ──
     try:
-        import akshare as ak
-        df = ak.stock_margin_sse()  # 仅上交所
+        from infra.data_source.alt.flows import get_margin_sse
+        df = get_margin_sse()  # 仅上交所
         if df is not None and len(df) >= 20:
             bal_col = next((c for c in df.columns if "融资余额" in str(c)), None)
             if bal_col:
@@ -186,8 +185,8 @@ def get_treasury_yield() -> dict:
 
     result = {"yield_10y": 0, "yield_change": 0, "equity_premium": "", "available": False}
     try:
-        import akshare as ak
-        df = ak.bond_zh_us_rate(start_date="20240101")
+        from infra.data_source.alt.flows import get_bond_zh_us_rate
+        df = get_bond_zh_us_rate(start_date="20240101")
         if df is not None and len(df) >= 5:
             cn_col = next((c for c in df.columns if "中国" in str(c) and "10" in str(c)), None)
             if cn_col:
@@ -255,8 +254,8 @@ def get_shibor() -> dict:
 
     # ── 方案 B（降级）：AKShare rate_interbank ──
     try:
-        import akshare as ak
-        df = ak.rate_interbank(market="上海银行同业拆借市场", symbol="Shibor人民币", indicator="隔夜")
+        from infra.data_source.alt.flows import get_interbank_rate
+        df = get_interbank_rate(market="上海银行同业拆借市场", symbol="Shibor人民币", indicator="隔夜")
         if df is not None and len(df) >= 10:
             val_col = next((c for c in df.columns if "利率" in str(c) or "报价" in str(c)), None)
             if not val_col and len(df.columns) > 1:
@@ -292,7 +291,8 @@ def get_dividend_yield() -> dict:
 
     result = {"dividend_yield": 0, "level": "中性", "available": False}
     try:
-        import akshare as ak
+        from infra.data_source.market.stocks import get_index_pe
+        from infra.data_source.fundamental.financials import get_stock_lg_indicator
         # 方案A：用 stock_a_lg_indicator 获取个股股息率（沪深300成分股代表）
         # 方案B（降级）：从 stock_index_pe_lg 的数据推算
         dy_value = None
@@ -300,7 +300,7 @@ def get_dividend_yield() -> dict:
         # 尝试方案A：获取沪深300成分股加权股息率
         try:
             # 先用 stock_index_pe_lg 获取沪深300 PE，然后推算
-            df = ak.stock_index_pe_lg(symbol="沪深300")
+            df = get_index_pe(symbol="沪深300")
             if df is not None and len(df) > 0:
                 # 检查是否有股息率列
                 dy_col = next((c for c in df.columns if "股息率" in str(c)), None)
@@ -325,7 +325,7 @@ def get_dividend_yield() -> dict:
         # 方案B：尝试 stock_a_lg_indicator 获取代表性个股
         if dy_value is None:
             try:
-                df2 = ak.stock_a_lg_indicator(symbol="000300")  # 沪深300指数
+                df2 = get_stock_lg_indicator(symbol="000300")  # 沪深300指数
                 if df2 is not None and len(df2) > 0:
                     dy_col2 = next((c for c in df2.columns if "股息率" in str(c) or "dy" in str(c).lower()), None)
                     if dy_col2:
@@ -477,8 +477,8 @@ def get_main_money_flow() -> dict:
 
     result = {"net_flow": 0, "top_inflow": [], "top_outflow": [], "available": False}
     try:
-        import akshare as ak
-        df = ak.stock_individual_fund_flow_rank(indicator="今日")
+        from infra.data_source.alt.flows import get_individual_fund_flow_rank
+        df = get_individual_fund_flow_rank(indicator="今日")
         if df is not None and len(df) > 0:
             cols = list(df.columns)
             name_col = next((c for c in cols if "名称" in c), None)
@@ -537,8 +537,8 @@ def get_stock_financials(code: str) -> dict:
 
     # 方案 B：AKShare 降级
     try:
-        import akshare as ak
-        df = ak.stock_financial_analysis_indicator(symbol=code, start_year="2024")
+        from infra.data_source.fundamental.financials import get_financial_indicators
+        df = get_financial_indicators(symbol=code, start_year="2024")
         if df is not None and len(df) > 0:
             cols = list(df.columns)
 
@@ -578,8 +578,8 @@ def get_fund_holding_detail(code: str) -> dict:
 
     result = {"code": code, "holdings": [], "update_date": "", "available": False}
     try:
-        import akshare as ak
-        df = ak.fund_portfolio_hold_em(symbol=code, date="2025")
+        from infra.data_source.fundamental.financials import get_fund_portfolio_holdings
+        df = get_fund_portfolio_holdings(symbol=code, date="2025")
         if df is not None and len(df) > 0:
             cols = list(df.columns)
             name_col = next((c for c in cols if "股票名称" in c), None)
@@ -625,8 +625,8 @@ def get_northbound_holdings() -> dict:
 
     result = {"available": False, "sectors": [], "total_stocks": 0, "total_market_value": 0}
     try:
-        import akshare as ak
-        df = ak.stock_hsgt_hold_stock_em(market="北向", indicator="今日排行")
+        from infra.data_source.alt.flows import get_hsgt_hold_stock
+        df = get_hsgt_hold_stock(market="北向", indicator="今日排行")
 
         if df is None or len(df) < 100:
             result["error"] = "北向持股数据不足"

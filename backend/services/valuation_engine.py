@@ -65,8 +65,8 @@ def assess_valuation(code: str) -> dict:
 
         # 获取当前价（从实时行情或 daily）
         try:
-            import akshare as ak
-            df = ak.stock_zh_a_spot_em()
+            from infra.data_source.market.stocks import get_stock_realtime_quotes_em
+            df = get_stock_realtime_quotes_em()
             if df is not None:
                 code_col = next((c for c in df.columns if "代码" in c), None)
                 price_col = next((c for c in df.columns if "最新价" in c), None)
@@ -336,8 +336,8 @@ def dcf_valuation(code: str) -> dict:
         # 5. 获取当前价
         current_price = 0
         try:
-            import akshare as ak
-            df = ak.stock_zh_a_spot_em()
+            from infra.data_source.market.stocks import get_stock_realtime_quotes_em
+            df = get_stock_realtime_quotes_em()
             if df is not None:
                 code_col = next((c for c in df.columns if "代码" in c), None)
                 price_col = next((c for c in df.columns if "最新价" in c), None)

@@ -110,8 +110,8 @@ def get_stock_recommendations(user_id: str = "", top_n: int = 10, pool: str = "h
     if not candidates:
         # 降级：尝试从 AKShare 拉热门股票
         try:
-            import akshare as ak
-            df = ak.stock_zh_a_spot_em()
+            from infra.data_source.market.stocks import get_stock_realtime_quotes_em
+            df = get_stock_realtime_quotes_em()
             if df is not None and len(df) > 0:
                 cols = list(df.columns)
                 code_col = next((c for c in cols if "代码" in c), None)
@@ -316,7 +316,7 @@ def _score_technical(stock: dict) -> int:
         return cached
 
     try:
-        import akshare as ak
+        from infra.data_source.market.stocks import get_stock_daily_hist
         import numpy as np
         from datetime import datetime as _dt, timedelta as _td
 
@@ -327,7 +327,7 @@ def _score_technical(stock: dict) -> int:
             from services.stock_price_provider import get_daily_df
             df = get_daily_df(code, days=90)
         except Exception:
-            df = ak.stock_zh_a_hist(symbol=code, period="daily",
+            df = get_stock_daily_hist(code=code, period="daily",
                                      start_date=start_date, end_date=end_date, adjust="qfq")
         if df is None or len(df) < 30:
             return 50
@@ -447,7 +447,7 @@ def _score_risk(stock: dict) -> int:
     # 1. 个股 20 日年化波动率
     if code:
         try:
-            import akshare as ak
+            from infra.data_source.market.stocks import get_stock_daily_hist
             import numpy as np
             from datetime import datetime as _dt, timedelta as _td
             end_date = _dt.now().strftime("%Y%m%d")
@@ -457,7 +457,7 @@ def _score_risk(stock: dict) -> int:
                 from services.stock_price_provider import get_daily_df
                 df = get_daily_df(code, days=60)
             except Exception:
-                df = ak.stock_zh_a_hist(symbol=code, period="daily",
+                df = get_stock_daily_hist(code=code, period="daily",
                                          start_date=start_date, end_date=end_date, adjust="qfq")
             if df is not None and len(df) >= 20:
                 close = df["收盘"].values.astype(float)
