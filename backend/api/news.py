@@ -25,6 +25,8 @@ from services.ds_enhance import (
 
 
 # ---- 新闻 ----
+# 注意：具体路径（/api/news/policy /api/news/impact 等）必须在通配路径
+# /api/news/{code} 之前定义，FastAPI 按定义顺序匹配。
 
 @router.get("/api/news/portfolio")
 def get_portfolio_news():
@@ -34,12 +36,6 @@ def get_portfolio_news():
     for code in codes:
         result[code] = get_fund_news(code, 3)
     return result
-
-
-@router.get("/api/news/{code}")
-def get_news_by_fund(code: str, limit: int = 3):
-    """获取单只基金相关新闻"""
-    return {"code": code, "news": get_fund_news(code, limit)}
 
 
 @router.get("/api/news")
@@ -128,6 +124,14 @@ def get_news_risk():
         return result
     except Exception as e:
         return {"risk": "unknown", "error": str(e)}
+
+
+# ---- 通配路由（必须在所有具体路径之后！） ----
+
+@router.get("/api/news/{code}")
+def get_news_by_fund(code: str, limit: int = 3):
+    """获取单只基金相关新闻（通配路由，必须放最后避免劫持 policy/impact 等具体路径）"""
+    return {"code": code, "news": get_fund_news(code, limit)}
 
 
 # ---- 技术指标 ----

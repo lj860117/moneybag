@@ -370,21 +370,23 @@ def assess_news_risk(headlines: list, holdings_summary: str = "") -> dict:
         return {"riskLevel": "normal", "alerts": [], "source": "none"}
 
     news_text = "\n".join([f"- {h}" for h in headlines[:8]])
+    system = "你是风险分析助手。严格只输出 JSON 对象，不要任何解释文字或 markdown 代码块。"
     prompt = f"""以下是最新新闻：
 {news_text}
 
 用户持仓：{holdings_summary or '未知'}
 
-请评估这些新闻对用户持仓的风险影响，返回 JSON：
-{{"riskLevel": "normal/elevated/high/critical", "alerts": ["简短警报1","简短警报2"], "summary": "一句话总结"}}
-只返回 JSON。"""
+直接输出 JSON（不要任何其他文字）：
+{{"riskLevel": "normal/elevated/high/critical", "alerts": ["简短警报1","简短警报2"], "summary": "一句话总结"}}"""
 
-    result = _call_deepseek(prompt, max_tokens=200, cache_key=f"news_risk_{hash(news_text[:100])}")
+    result = _call_deepseek(prompt, system=system, max_tokens=200, cache_key=f"news_risk_{hash(news_text[:100])}")
 
     if result:
         try:
             import re
-            m = re.search(r'\{[^}]+\}', result, re.DOTALL)
+            # 先尝试完整 JSON 解析
+            cleaned = result.strip().strip("```json").strip("```").strip()
+            m = re.search(r'\{.*\}', cleaned, re.DOTALL)
             if m:
                 parsed = json.loads(m.group())
                 return {**parsed, "source": "ai"}
@@ -441,21 +443,15 @@ def deep_analyze_news_impact(news_items: list, holdings: list = None) -> list:
     if holdings:
         holdings_text = "\n用户持仓：" + ", ".join([h.get("name", h.get("code", "")) for h in holdings[:10]])
 
+    system = "你是 A 股分析助手。严格只输出 JSON 数组，不要任何解释文字、markdown 代码块或换行前缀。"
     prompt = f"""分析以下新闻对 A 股的影响：
 {news_text}
 {holdings_text}
 
-对每条重要新闻，给出：
-1. 影响的行业/板块
-2. 利好还是利空
-3. 影响程度（大/中/小）
-4. 对用户持仓的具体影响（如有）
+直接输出 JSON 数组（不要任何其他文字）：
+[{{"title":"新闻摘要","sectors":["行业"],"direction":"bullish/bearish/neutral","magnitude":"high/medium/low","impact":"一句话影响"}}]"""
 
-用简短 JSON 数组格式返回：
-[{{"title":"新闻摘要","sectors":["行业"],"direction":"bullish/bearish/neutral","magnitude":"high/medium/low","impact":"一句话影响"}}]
-只返回 JSON 数组。"""
-
-    result = _call_deepseek(prompt, max_tokens=400, cache_key=f"news_deep_{hash(news_text[:100])}")
+    result = _call_deepseek(prompt, system=system, max_tokens=500, cache_key=f"news_deep_{hash(news_text[:100])}")
 
     if result:
         try:
