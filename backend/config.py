@@ -109,7 +109,7 @@ DCA_MULTIPLIERS = {
 # ---- LLM API 配置 ----
 LLM_API_URL = os.environ.get("LLM_API_URL", "https://api.deepseek.com/v1/chat/completions")
 LLM_API_KEY = os.environ.get("LLM_API_KEY", "")
-LLM_MODEL = os.environ.get("LLM_MODEL", "deepseek-chat")
+LLM_MODEL = os.environ.get("LLM_MODEL", "deepseek-v4-flash")
 
 # ---- 版本号（Phase 1 更新）----
 APP_VERSION = "7.1.0"  # P0.1: 决策引擎完整数据注入（信息饥荒修复）

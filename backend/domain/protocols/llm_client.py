@@ -7,7 +7,7 @@ Current gateway provides: model routing, caching, rate limiting, cost tracking.
 This protocol exposes the calling interface; implementations handle the rest.
 
 Model tiers (from existing LLMGateway):
-  - "llm_light" -> deepseek-chat (V3: commentary, interpretation, chat)
+  - "llm_light" -> deepseek-v4-flash (V4: commentary, interpretation, chat)
   - "llm_heavy" -> deepseek-reasoner (R1: arbitration, diagnosis)
 
 Implementations:

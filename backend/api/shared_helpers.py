@@ -648,7 +648,7 @@ NICKNAMES = {"LeiJiang": "厉害了哥", "BuLuoGeLi": "部落格里"}
 # 可用模型列表
 # ========================================================
 AVAILABLE_MODELS = [
-    {"id": "deepseek-chat", "name": "DeepSeek V3", "provider": "deepseek", "base": "https://api.deepseek.com/v1", "env_key": "LLM_API_KEY"},
+    {"id": "deepseek-v4-flash", "name": "DeepSeek V4", "provider": "deepseek", "base": "https://api.deepseek.com/v1", "env_key": "LLM_API_KEY"},
     {"id": "deepseek-reasoner", "name": "DeepSeek R1 (深度思考)", "provider": "deepseek", "base": "https://api.deepseek.com/v1", "env_key": "LLM_API_KEY"},
 ]
 

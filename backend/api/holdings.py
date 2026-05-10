@@ -214,7 +214,7 @@ async def analyze_stock_holdings(req: dict = {}):
                 "https://api.deepseek.com/v1/chat/completions",
                 headers={"Authorization": f"Bearer {api_key}"},
                 json={
-                    "model": req.get("model", "deepseek-chat"),
+                    "model": req.get("model", "deepseek-v4-flash"),
                     "messages": [
                         {"role": "system", "content": system_prompt},
                         {"role": "user", "content": user_prompt},
@@ -350,7 +350,7 @@ async def analyze_fund_holdings(req: dict = {}):
                 "https://api.deepseek.com/v1/chat/completions",
                 headers={"Authorization": f"Bearer {api_key}"},
                 json={
-                    "model": req.get("model", "deepseek-chat"),
+                    "model": req.get("model", "deepseek-v4-flash"),
                     "messages": [
                         {"role": "system", "content": system_prompt},
                         {"role": "user", "content": user_prompt},

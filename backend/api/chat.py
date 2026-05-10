@@ -32,7 +32,7 @@ def list_models():
         key = os.environ.get(m["env_key"], "")
         if key:
             result.append({"id": m["id"], "name": m["name"], "provider": m["provider"]})
-    return {"models": result, "default": "deepseek-chat"}
+    return {"models": result, "default": "deepseek-v4-flash"}
 
 
 @router.post("/api/chat")
@@ -65,7 +65,7 @@ async def chat_analysis(req: ChatRequest):
     # 尝试调用 LLM（支持 OpenAI 兼容 API）
     api_key = os.environ.get("OPENAI_API_KEY") or os.environ.get("LLM_API_KEY")
     api_base = os.environ.get("LLM_API_BASE", "https://api.deepseek.com/v1")
-    model = req.model or os.environ.get("LLM_MODEL", "deepseek-chat")
+    model = req.model or os.environ.get("LLM_MODEL", "deepseek-v4-flash")
     # 根据模型查找对应 base URL
     for m in AVAILABLE_MODELS:
         if m["id"] == model:
@@ -244,7 +244,7 @@ async def chat_analysis_stream(req: ChatRequest):
 
     api_key = os.environ.get("OPENAI_API_KEY") or os.environ.get("LLM_API_KEY")
     api_base = os.environ.get("LLM_API_BASE", "https://api.deepseek.com/v1")
-    model = req.model or os.environ.get("LLM_MODEL", "deepseek-chat")
+    model = req.model or os.environ.get("LLM_MODEL", "deepseek-v4-flash")
     for m in AVAILABLE_MODELS:
         if m["id"] == model:
             api_base = m["base"]
