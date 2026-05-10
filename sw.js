@@ -1,9 +1,20 @@
 // 钱袋子 Service Worker — 离线缓存 + PWA 支持
-const CACHE_NAME = 'moneybag-v770-cache';
+const CACHE_NAME = 'moneybag-v800-cache';
 const STATIC_ASSETS = [
   '/',
   '/index.html',
   '/app.js',
+  '/pages/landing.js',
+  '/pages/alloc.js',
+  '/pages/quiz.js',
+  '/pages/portfolio.js',
+  '/pages/chat.js',
+  '/pages/insight.js',
+  '/pages/ledger.js',
+  '/pages/assets.js',
+  '/pages/stocks.js',
+  '/pages/analysis.js',
+  '/pages/history.js',
   '/manifest.json',
   'https://cdn.jsdelivr.net/npm/chart.js@4.4.4/dist/chart.umd.min.js',
 ];

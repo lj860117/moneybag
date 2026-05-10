@@ -90,8 +90,8 @@ def collect() -> list:
     cache_key = "all_signals"
     now = time.time()
     cached = _signal_cache.get(cache_key)
-        if cached is not None:
-            return cached
+    if cached is not None:
+        return cached
 
     signals = []
 

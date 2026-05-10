@@ -28,10 +28,10 @@ MODULE_META = {
 }
 
 from config import (
-from infra.cache import MemoryCache
     STOCK_SINGLE_MAX, STOCK_MIN_COUNT, STOCK_INDUSTRY_MAX,
     STOCK_STOP_LOSS, STOCK_TAKE_PROFIT, STOCK_CONCENTRATION_WARN,
 )
+from infra.cache import MemoryCache
 
 # ---- 持仓数据路径 ----
 _DATA_DIR = Path(os.environ.get("DATA_DIR", Path(__file__).parent.parent / "data"))
