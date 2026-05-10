@@ -698,10 +698,19 @@ class TestInvariants:
     def test_all_articles_from_knowledge_base(self) -> None:
         """All mapped article_ids correspond to known knowledge base slugs."""
         known_slugs = {
+            # 原有 12 篇
             "index-investing", "gold-hedge", "loss-aversion", "dca-strategy",
             "compound-interest", "stock-bond-rebalance", "anchoring-effect",
             "emergency-fund-6-months", "4pct-rule", "family-pyramid",
             "insurance-priority", "lifecycle-investing",
+            # M6 W3-4 新增 16 篇
+            "72-rule", "asset-allocation-basics", "bond-basics",
+            "convertible-bond-basics", "drawdown-psychology",
+            "etf-vs-active-fund", "herd-mentality", "hot-fund-trap",
+            "inflation-real-returns", "overconfidence-bias",
+            "position-sizing", "rebalancing-math",
+            "reit-basics", "sell-high-buy-low-trap",
+            "stop-loss-take-profit", "sunk-cost-fallacy",
         }
         for mapping in HOLDING_ARTICLE_MAPPINGS:
             assert mapping.article_id in known_slugs, (

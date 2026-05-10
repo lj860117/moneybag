@@ -201,6 +201,9 @@ def summarize_archive_month(user_id: str, year_month: str) -> dict:
         summary_text = (result.get("content") or "").strip()
     except Exception as e:
         print(f"[ARCHIVE] LLM summary failed {user_id}/{year_month}: {e}")
+
+    # LLM 未返回内容（无 key / 超时 / content 为空）时降级到统计文本
+    if not summary_text:
         summary_text = f"{len(month_decisions)} 次决策"
         if win_rate is not None:
             summary_text += f"，胜率 {win_rate * 100:.0f}%"
