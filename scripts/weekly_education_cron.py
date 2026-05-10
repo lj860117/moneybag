@@ -15,6 +15,7 @@ Key invariants:
   - Content 100% from RAG knowledge base (08-knowledge-rag.md)
   - Fatigue control: max 2/week, same article not repeated within 90 days
   - Holdings read from infra/store (not services/ direct-call)
+  - WxWork push: 1 per user per week max, failure logs but doesn't block cron
 """
 from __future__ import annotations
 
@@ -163,7 +164,7 @@ def run_weekly_education(
 
     Args:
         user_id: Target user
-        dry_run: If True, don't persist push record
+        dry_run: If True, don't persist push record or send wxwork push
         trigger: What triggered this run
 
     Returns:
@@ -198,13 +199,20 @@ def run_weekly_education(
 
     logger.info(f"[{user_id}] Selected: '{lesson.article_title}' (trigger={lesson.trigger.value})")
 
+    lesson_dict = lesson.to_dict()
+
     # 5. Persist push record (unless dry run)
     if not dry_run:
         record = record_lesson_push(lesson)
         save_push_record(record)
         logger.info(f"[{user_id}] Push record saved")
 
-    return lesson.to_dict()
+    # 6. WxWork push (best-effort: failure doesn't block, logs only)
+    week_iso = lesson.week_iso
+    pushed = push_lesson_to_wxwork(user_id, lesson_dict, week_iso, dry_run=dry_run)
+    lesson_dict["wxwork_pushed"] = pushed
+
+    return lesson_dict
 
 
 def get_all_user_ids() -> List[str]:
@@ -225,11 +233,108 @@ def get_all_user_ids() -> List[str]:
     return user_ids if user_ids else ["default_user"]
 
 
+def get_wxwork_userid(user_id: str) -> str:
+    """Look up WxWork user ID from profile store.
+
+    Returns empty string if not configured or not found.
+    Profile stores wxworkUserId field (set via frontend profile settings).
+    """
+    profile_store = FileStore(collection="profiles")
+    profile = profile_store.load(user_id)
+    if not profile:
+        return ""
+    return profile.get("wxworkUserId", "")
+
+
+def already_pushed_this_week(user_id: str, week_iso: str) -> bool:
+    """Check if a wxwork push was already sent to this user this week.
+
+    Uses education_wxwork_push store (separate from push_history which tracks
+    lesson selection; this tracks actual wxwork delivery to avoid duplicates).
+    Fatigue control: max 1 wxwork push per user per week.
+    """
+    wx_store = FileStore(collection="education_wxwork_push")
+    data = wx_store.load(user_id)
+    if not data:
+        return False
+    sent_weeks = data.get("sent_weeks", [])
+    return week_iso in sent_weeks
+
+
+def record_wxwork_push(user_id: str, week_iso: str) -> None:
+    """Record that a wxwork push was sent this week (for dedup)."""
+    wx_store = FileStore(collection="education_wxwork_push")
+    data = wx_store.load(user_id) or {}
+    sent_weeks: List[str] = data.get("sent_weeks", [])
+    if week_iso not in sent_weeks:
+        sent_weeks.append(week_iso)
+    # Keep only last 12 weeks to bound storage
+    sent_weeks = sent_weeks[-12:]
+    wx_store.save(user_id, {"sent_weeks": sent_weeks, "updated_at": time.time()})
+
+
+def push_lesson_to_wxwork(
+    user_id: str,
+    lesson_dict: Dict[str, Any],
+    week_iso: str,
+    dry_run: bool = False,
+) -> bool:
+    """Send weekly lesson via WxWork push.
+
+    Fatigue control: 1 push per user per week.
+    Failure: logs error, returns False, does NOT raise (doesn't block cron).
+
+    Returns True if sent successfully, False otherwise.
+    """
+    try:
+        from services.wxwork_push import is_configured, send_markdown
+    except ImportError:
+        logger.warning(f"[{user_id}] wxwork_push not available, skipping push")
+        return False
+
+    if not is_configured():
+        logger.info(f"[{user_id}] WxWork not configured, skipping push")
+        return False
+
+    wxwork_uid = get_wxwork_userid(user_id)
+    if not wxwork_uid:
+        logger.info(f"[{user_id}] No wxwork_uid in profile, skipping push")
+        return False
+
+    # Dedup: check if already sent this week
+    if already_pushed_this_week(user_id, week_iso):
+        logger.info(f"[{user_id}] Already pushed this week ({week_iso}), skipping")
+        return False
+
+    if dry_run:
+        logger.info(f"[{user_id}] [DRY-RUN] Would push to wxwork: {wxwork_uid}")
+        return True
+
+    # Build push content
+    title = lesson_dict.get("article_title", "")
+    intro = lesson_dict.get("intro_sentence", "")
+    link = f"/weekly-lesson?week={week_iso}"
+    content = f"📚 本周金融小课\n\n{title}\n\n{intro}\n\n🔗 阅读全文: {link}"
+
+    try:
+        result = send_markdown(content, user_id=wxwork_uid)
+        if result.get("ok"):
+            record_wxwork_push(user_id, week_iso)
+            logger.info(f"[{user_id}] WxWork push OK → {wxwork_uid}")
+            return True
+        else:
+            logger.warning(f"[{user_id}] WxWork push failed: {result}")
+            return False
+    except Exception as e:
+        logger.error(f"[{user_id}] WxWork push exception: {e}")
+        return False
+
+
 def main() -> None:
     """CLI entry point for weekly education cron."""
     parser = argparse.ArgumentParser(description="Weekly Financial Education Cron")
     parser.add_argument("--user-id", type=str, default="", help="Run for specific user (default: all users)")
-    parser.add_argument("--dry-run", action="store_true", help="Don't persist push records")
+    parser.add_argument("--dry-run", action="store_true", help="Don't persist push records or send wxwork")
     parser.add_argument("--trigger", type=str, default="weekly_regular",
                         choices=["weekly_regular", "holding_event", "new_article"],
                         help="Trigger type")
@@ -244,21 +349,27 @@ def main() -> None:
     else:
         user_ids = get_all_user_ids()
 
-    results = {"delivered": 0, "skipped": 0, "errors": 0}
+    results = {"delivered": 0, "skipped": 0, "errors": 0, "pushed": 0}
 
     for uid in user_ids:
         try:
             result = run_weekly_education(uid, dry_run=args.dry_run, trigger=trigger)
             if result:
                 results["delivered"] += 1
-                logger.info(f"[{uid}] ✅ Delivered: {result['article_title']}")
+                if result.get("wxwork_pushed"):
+                    results["pushed"] += 1
+                logger.info(f"[{uid}] ✅ Delivered: {result['article_title']} (wxwork={'✓' if result.get('wxwork_pushed') else '✗'})")
             else:
                 results["skipped"] += 1
         except Exception as e:
             results["errors"] += 1
             logger.error(f"[{uid}] ❌ Error: {e}")
 
-    logger.info(f"=== Done === Delivered: {results['delivered']}, Skipped: {results['skipped']}, Errors: {results['errors']}")
+    logger.info(
+        f"=== Done === Delivered: {results['delivered']}, "
+        f"WxWork pushed: {results['pushed']}, "
+        f"Skipped: {results['skipped']}, Errors: {results['errors']}"
+    )
 
 
 if __name__ == "__main__":

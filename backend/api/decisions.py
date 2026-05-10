@@ -711,3 +711,84 @@ async def post_weekly_lesson(req: WeeklyLessonRequest) -> WeeklyLessonResponse:
         reason="",
         fatigue_status=fatigue_info,
     )
+
+
+@router.get("/api/decisions/weekly-lesson/history")
+async def get_weekly_lesson_history(user_id: str, limit: int = 8) -> Dict[str, Any]:
+    """Return recent push history for weekly lesson page (past N records).
+
+    Used by frontend history section in /weekly-lesson page.
+    Returns list of records ordered newest first.
+    """
+    from infra.store.file_store import FileStore
+    from domain.models.education import LessonPushRecord
+
+    push_store = FileStore(collection="education_push_history")
+    raw_history = push_store.load(user_id)
+    records: List[LessonPushRecord] = []
+    if raw_history and "records" in raw_history:
+        records = [LessonPushRecord.from_dict(r) for r in raw_history["records"]]
+
+    # Sort newest first, cap at limit
+    sorted_records = sorted(records, key=lambda r: r.pushed_at, reverse=True)[:limit]
+
+    # Enrich with article titles from knowledge base
+    from infra.knowledge import get_retriever, load_and_index_articles
+    retriever = get_retriever()
+    if retriever.total_chunks() == 0:
+        load_and_index_articles(retriever)
+    article_map = {a.article_id: a.title for a in retriever.list_articles()}
+
+    result_records = []
+    for rec in sorted_records:
+        d = rec.to_dict()
+        d["article_title"] = article_map.get(rec.article_id, rec.article_id)
+        result_records.append(d)
+
+    return {"status": "ok", "records": result_records, "total": len(records)}
+
+
+@router.get("/api/knowledge/article/{article_id}")
+async def get_knowledge_article(article_id: str) -> Dict[str, Any]:
+    """Return full text content of a knowledge article by ID.
+
+    Used by frontend article reader modal in /weekly-lesson page.
+    Reads from RAG index (infra/knowledge/content/).
+    """
+    from infra.knowledge import get_retriever, load_and_index_articles
+    from pathlib import Path
+
+    retriever = get_retriever()
+    if retriever.total_chunks() == 0:
+        load_and_index_articles(retriever)
+
+    # Find article metadata
+    articles = retriever.list_articles()
+    article = next((a for a in articles if a.article_id == article_id), None)
+    if not article:
+        raise HTTPException(status_code=404, detail=f"Article '{article_id}' not found")
+
+    # Read raw content from file
+    content_dir = Path(__file__).resolve().parent.parent / "infra" / "knowledge" / "content"
+    article_file = content_dir / f"{article_id}.md"
+    if not article_file.exists():
+        raise HTTPException(status_code=404, detail=f"Article file not found: {article_id}.md")
+
+    raw_text = article_file.read_text(encoding="utf-8")
+
+    # Strip YAML frontmatter
+    if raw_text.startswith("---"):
+        parts = raw_text.split("---", 2)
+        content_text = parts[2].strip() if len(parts) >= 3 else raw_text
+    else:
+        content_text = raw_text
+
+    return {
+        "article_id": article_id,
+        "title": article.title,
+        "category": article.category,
+        "content": content_text,
+        "source": article.source,
+        "source_url": article.source_url,
+        "tags": article.tags,
+    }

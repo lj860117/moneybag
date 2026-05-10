@@ -369,7 +369,7 @@ async function runDataAudit(){const btn=document.getElementById('auditBtn');if(b
 
 // ---- 底部导航 ----
 function renderNav(){let n=document.getElementById('btmNav');if(!n){n=document.createElement('div');n.id='btmNav';n.className='bottom-nav';document.body.appendChild(n)}
-const tabs=[{id:'landing',icon:'🏠',label:'首页'},{id:'stocks',icon:'📈',label:'持仓'},{id:'insight',icon:'📰',label:'资讯'},{id:'chat',icon:'🤖',label:'AI分析'},{id:'history',icon:'📋',label:'历史'},{id:'assets',icon:'🏦',label:'资产'}];
+const tabs=[{id:'landing',icon:'🏠',label:'首页'},{id:'stocks',icon:'📈',label:'持仓'},{id:'insight',icon:'📰',label:'资讯'},{id:'chat',icon:'🤖',label:'AI分析'},{id:'history',icon:'📋',label:'历史'},{id:'assets',icon:'🏦',label:'资产'},{id:'weekly-lesson',icon:'📚',label:'小课'}];
 n.innerHTML=tabs.map(t=>`<div class="nav-item ${currentPage===t.id?'active':''}" onclick="navigateTo('${t.id}')"><div class="nav-icon">${t.icon}</div><div>${t.label}</div></div>`).join('');
 // 顶部用户名条（2026-04-19 V7.7: 只在首页显示，其他页面隐藏省屏幕空间）
 let hdr=document.getElementById('profileHeader');
@@ -437,7 +437,7 @@ localStorage.setItem('moneybag_wxwork_uid',wxId);
 document.querySelector('.modal-overlay')?.remove();
 if(wxId){alert('✅ 绑定成功！盯盘异动将推送给: '+wxId)}else{alert('已清除企微绑定')}}
 
-function navigateTo(p){currentPage=p;renderNav();if(p==='landing')renderLanding();else if(p==='portfolio')renderPortfolio();else if(p==='stocks')renderStocks();else if(p==='insight')renderInsight();else if(p==='chat')renderChat();else if(p==='history')renderHistory();else if(p==='ledger')renderLedger();else if(p==='assets')renderAssets()}
+function navigateTo(p){currentPage=p;renderNav();if(p==='landing')renderLanding();else if(p==='portfolio')renderPortfolio();else if(p==='stocks')renderStocks();else if(p==='insight')renderInsight();else if(p==='chat')renderChat();else if(p==='history')renderHistory();else if(p==='ledger')renderLedger();else if(p==='assets')renderAssets();else if(p==='weekly-lesson')renderWeeklyLesson()}
 
 // ---- 落地页（智能决策中心）----
 function renderLanding(){currentPage='landing';const p=loadPortfolio();const txns=loadTxns();const assets=loadAssets();const ledger=loadLedger();
@@ -5098,3 +5098,200 @@ el.innerHTML=html}catch(e){el.innerHTML='<div style="padding:20px;color:var(--be
   window.refreshPendingBadge = refreshBadge;
   window.openPendingPanel = openPendingPanel;
 })();
+
+// ---- 周度金融小课页 (M6 W3-4) ----
+async function renderWeeklyLesson() {
+  currentPage = 'weekly-lesson';
+  renderNav();
+
+  // Auth check: must be logged in
+  const pid = getProfileId();
+  if (!pid || pid === 'default') {
+    $('#app').innerHTML = `
+      <div class="page-container fade-up" style="text-align:center;padding:60px 20px">
+        <div style="font-size:48px;margin-bottom:16px">📚</div>
+        <div style="font-size:18px;font-weight:700;color:var(--text1);margin-bottom:8px">登录后查看小课</div>
+        <div style="font-size:14px;color:var(--text2);margin-bottom:24px">每周金融小课需要登录才能查看</div>
+        <button class="cta-btn" onclick="showProfileSettings()">去登录 →</button>
+      </div>`;
+    return;
+  }
+
+  // Compute current ISO week label
+  function getWeekLabel() {
+    const now = new Date();
+    const jan1 = new Date(now.getFullYear(), 0, 1);
+    const week = Math.ceil(((now - jan1) / 86400000 + jan1.getDay() + 1) / 7);
+    const monday = new Date(now);
+    monday.setDate(now.getDate() - ((now.getDay() + 6) % 7));
+    const sunday = new Date(monday);
+    sunday.setDate(monday.getDate() + 6);
+    const fmt = d => `${d.getMonth()+1}月${d.getDate()}日`;
+    return { label: `${fmt(monday)} — ${fmt(sunday)}`, week: `${now.getFullYear()}-W${String(week).padStart(2,'0')}` };
+  }
+
+  const { label: weekLabel, week: weekIso } = getWeekLabel();
+  const profileName = _profileName || '你';
+
+  // Render skeleton immediately
+  $('#app').innerHTML = `
+    <div class="page-container fade-up">
+      <div class="wl-header">
+        <div class="wl-week-badge">📅 ${weekLabel}</div>
+        <div class="wl-greeting">嗨 ${profileName}，本周的金融小课来了 👇</div>
+      </div>
+      <div id="wl-body">
+        <div class="wl-loading">
+          <div class="wl-spinner"></div>
+          <div style="color:var(--text2);font-size:14px;margin-top:12px">小课加载中...</div>
+        </div>
+      </div>
+      <div id="wl-history-section"></div>
+    </div>`;
+
+  if (!API_AVAILABLE) {
+    document.getElementById('wl-body').innerHTML = `
+      <div class="wl-empty-state">
+        <div class="wl-empty-icon">📚</div>
+        <div class="wl-empty-title">本周小课准备中</div>
+        <div class="wl-empty-sub">连接服务器后可查看个性化金融小课</div>
+      </div>`;
+    return;
+  }
+
+  try {
+    // Fetch current week lesson from API
+    const r = await fetch(API_BASE + '/decisions/weekly-lesson', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ user_id: pid }),
+      signal: AbortSignal.timeout(10000),
+    });
+
+    if (!r.ok) throw new Error('API error ' + r.status);
+    const data = await r.json();
+
+    const bodyEl = document.getElementById('wl-body');
+    if (!bodyEl) return;
+
+    if (!data.delivered || !data.lesson) {
+      // Empty state
+      bodyEl.innerHTML = `
+        <div class="wl-empty-state">
+          <div class="wl-empty-icon">📚</div>
+          <div class="wl-empty-title">本周小课准备中</div>
+          <div class="wl-empty-sub">${data.reason || '小课内容正在为你准备，请稍后查看'}</div>
+        </div>`;
+      return;
+    }
+
+    const lesson = data.lesson;
+    const articleUrl = `/weekly-lesson?week=${weekIso}&article=${encodeURIComponent(lesson.article_id)}`;
+
+    bodyEl.innerHTML = `
+      <div class="wl-card fade-up">
+        <div class="wl-card-badge">${lesson.article_category || '金融知识'}</div>
+        <div class="wl-card-title" onclick="window._wlOpenArticle('${encodeURIComponent(lesson.article_id)}', '${encodeURIComponent(lesson.article_title)}')" style="cursor:pointer">
+          ${lesson.article_title}
+          <span style="font-size:14px;color:var(--accent)"> →</span>
+        </div>
+        <div class="wl-card-intro">${lesson.intro_sentence || ''}</div>
+        <div class="wl-card-footer">
+          <span class="wl-trigger-tag">${_wlTriggerLabel(lesson.trigger)}</span>
+          <button class="wl-read-btn" onclick="window._wlOpenArticle('${encodeURIComponent(lesson.article_id)}', '${encodeURIComponent(lesson.article_title)}')">
+            阅读全文 →
+          </button>
+        </div>
+      </div>`;
+
+    // Load history (last 4 weeks, best-effort)
+    _wlLoadHistory(pid);
+
+  } catch (e) {
+    const bodyEl = document.getElementById('wl-body');
+    if (bodyEl) bodyEl.innerHTML = `
+      <div class="wl-empty-state">
+        <div class="wl-empty-icon">⚠️</div>
+        <div class="wl-empty-title">加载失败</div>
+        <div class="wl-empty-sub">网络异常，请稍后重试</div>
+        <button class="cta-btn" style="margin-top:16px;font-size:13px;padding:8px 20px" onclick="renderWeeklyLesson()">重试</button>
+      </div>`;
+  }
+}
+
+function _wlTriggerLabel(trigger) {
+  if (trigger === 'holding_event') return '📉 持仓事件触发';
+  if (trigger === 'new_article') return '🆕 新文章';
+  return '📅 本周推送';
+}
+
+window._wlOpenArticle = async function(articleIdEncoded, titleEncoded) {
+  const articleId = decodeURIComponent(articleIdEncoded);
+  const title = decodeURIComponent(titleEncoded);
+
+  const overlay = document.createElement('div');
+  overlay.className = 'modal-overlay';
+  overlay.onclick = e => { if (e.target === overlay) overlay.remove(); };
+  overlay.innerHTML = `
+    <div class="modal-sheet" style="padding:20px 20px 32px" onclick="event.stopPropagation()">
+      <div class="modal-handle"></div>
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px">
+        <div style="font-size:16px;font-weight:700;color:var(--text1)">${title}</div>
+        <button onclick="this.closest('.modal-overlay').remove()" style="background:transparent;border:none;color:var(--text2);font-size:20px;cursor:pointer">×</button>
+      </div>
+      <div id="wl-article-body" style="color:var(--text2);font-size:14px;line-height:1.7">
+        <div class="wl-spinner" style="margin:40px auto"></div>
+      </div>
+    </div>`;
+  document.body.appendChild(overlay);
+
+  if (!API_AVAILABLE) {
+    document.getElementById('wl-article-body').innerHTML = '<div style="color:var(--text2)">需要连接服务器才能加载文章内容。</div>';
+    return;
+  }
+
+  try {
+    const r = await fetch(API_BASE + '/knowledge/article/' + encodeURIComponent(articleId), {
+      signal: AbortSignal.timeout(8000),
+    });
+    const bodyEl = document.getElementById('wl-article-body');
+    if (!bodyEl) return;
+    if (r.ok) {
+      const d = await r.json();
+      const content = (d.content || d.text || '').replace(/\n/g, '<br>');
+      bodyEl.innerHTML = `<div style="white-space:pre-wrap">${content}</div>`;
+    } else {
+      bodyEl.innerHTML = '<div style="color:var(--text2)">文章内容暂时无法加载。</div>';
+    }
+  } catch (e) {
+    const bodyEl = document.getElementById('wl-article-body');
+    if (bodyEl) bodyEl.innerHTML = '<div style="color:var(--text2)">加载失败，请检查网络后重试。</div>';
+  }
+};
+
+async function _wlLoadHistory(userId) {
+  const section = document.getElementById('wl-history-section');
+  if (!section || !API_AVAILABLE) return;
+
+  try {
+    const r = await fetch(API_BASE + '/decisions/weekly-lesson/history?user_id=' + encodeURIComponent(userId), {
+      signal: AbortSignal.timeout(5000),
+    });
+    if (!r.ok) return;
+    const d = await r.json();
+    const records = d.records || [];
+    if (!records.length) return;
+
+    section.innerHTML = `
+      <div style="margin-top:24px">
+        <div style="font-size:13px;font-weight:600;color:var(--text2);margin-bottom:12px;text-transform:uppercase;letter-spacing:.5px">📖 往期回顾</div>
+        ${records.slice(0,4).map(rec => `
+          <div class="wl-history-item" onclick="window._wlOpenArticle('${encodeURIComponent(rec.article_id)}', '${encodeURIComponent(rec.article_title||rec.article_id)}')">
+            <div style="font-size:13px;color:var(--text1)">${rec.article_title || rec.article_id}</div>
+            <div style="font-size:11px;color:var(--text3);margin-top:2px">${rec.week_iso}</div>
+          </div>`).join('')}
+      </div>`;
+  } catch (e) {
+    // History is optional; silently skip on failure
+  }
+}

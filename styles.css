@@ -343,3 +343,137 @@ body{font-family:'Noto Sans SC',-apple-system,sans-serif;background:var(--bg);co
   /* 主题按钮只留图标，节省宽度 */
   #themeBtn{padding:2px 6px !important}
 }
+
+/* ---- M6 W3-4: 周度金融小课页 ---- */
+.wl-header{
+  margin-bottom:20px;
+}
+.wl-week-badge{
+  display:inline-block;
+  background:rgba(245,158,11,.12);
+  color:var(--accent);
+  font-size:12px;
+  font-weight:600;
+  padding:4px 10px;
+  border-radius:20px;
+  margin-bottom:8px;
+}
+.wl-greeting{
+  font-size:16px;
+  font-weight:700;
+  color:var(--text1);
+  line-height:1.4;
+}
+.wl-loading{
+  display:flex;
+  flex-direction:column;
+  align-items:center;
+  padding:60px 20px;
+}
+.wl-spinner{
+  width:28px;
+  height:28px;
+  border:3px solid var(--bg3);
+  border-top-color:var(--accent);
+  border-radius:50%;
+  animation:spin .8s linear infinite;
+}
+.wl-empty-state{
+  text-align:center;
+  padding:60px 20px;
+}
+.wl-empty-icon{
+  font-size:48px;
+  margin-bottom:12px;
+}
+.wl-empty-title{
+  font-size:18px;
+  font-weight:700;
+  color:var(--text1);
+  margin-bottom:8px;
+}
+.wl-empty-sub{
+  font-size:14px;
+  color:var(--text2);
+  line-height:1.5;
+}
+.wl-card{
+  background:var(--card);
+  border-radius:var(--radius);
+  padding:20px;
+  margin-bottom:16px;
+  border:1px solid rgba(245,158,11,.15);
+}
+.wl-card-badge{
+  display:inline-block;
+  background:rgba(99,102,241,.12);
+  color:#818CF8;
+  font-size:11px;
+  font-weight:600;
+  padding:2px 8px;
+  border-radius:10px;
+  margin-bottom:10px;
+  text-transform:uppercase;
+  letter-spacing:.5px;
+}
+.wl-card-title{
+  font-size:18px;
+  font-weight:700;
+  color:var(--text1);
+  line-height:1.4;
+  margin-bottom:10px;
+  transition:color .15s;
+}
+.wl-card-title:hover{
+  color:var(--accent);
+}
+.wl-card-intro{
+  font-size:14px;
+  color:var(--text2);
+  line-height:1.6;
+  margin-bottom:16px;
+}
+.wl-card-footer{
+  display:flex;
+  justify-content:space-between;
+  align-items:center;
+  flex-wrap:wrap;
+  gap:8px;
+}
+.wl-trigger-tag{
+  font-size:11px;
+  color:var(--text3);
+  background:var(--bg3);
+  padding:2px 8px;
+  border-radius:10px;
+}
+.wl-read-btn{
+  background:var(--accent);
+  color:#fff;
+  border:none;
+  border-radius:8px;
+  padding:6px 14px;
+  font-size:13px;
+  font-weight:600;
+  cursor:pointer;
+  transition:opacity .15s;
+}
+.wl-read-btn:active{
+  opacity:.8;
+}
+.wl-history-item{
+  background:var(--bg2);
+  border-radius:10px;
+  padding:12px 14px;
+  margin-bottom:8px;
+  cursor:pointer;
+  transition:background .15s;
+}
+.wl-history-item:hover{
+  background:var(--bg3);
+}
+@media(max-width:480px){
+  .wl-card-title{font-size:16px}
+  .wl-card-footer{flex-direction:column;align-items:flex-start}
+  .wl-read-btn{width:100%;text-align:center}
+}

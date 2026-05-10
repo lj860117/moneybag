@@ -6,7 +6,7 @@
 ---
 
 ## 当前阶段
-M6 W2 — 周度金融小课（✅ 完成）
+M6 W3-4 — RAG 扩展 + 前端小课页 + 企业微信推送（✅ 完成）
 
 ## 已完成
 - [x] 2026-04-25: 四层目录树（api/ use_cases/ domain/ infra/）
@@ -767,3 +767,56 @@ M6 W2 — 周度金融小课（✅ 完成）
   - 🟡 建议评估：M6 W2 周度教育将复用 infra/knowledge 框架
   - 🟡 建议评估：前端需新建三视角展示页面（保守/长期/行为三栏卡片）
   - 🟡 建议评估：与 07 七点清单触发条件部分重叠（amount>20% vs position sizing），确认不会双触发
+
+**会话 21**（M6 W2 周度金融小课）
+- 任务：M6 W2 周度教育完整实现 — domain model + education service + weekly lesson use case + cron 脚本 + API 路由
+- 产出：
+  - domain/models/education.py（~270 行）— LessonTrigger / PushStatus / HoldingContext / WeeklyLesson / LessonPushRecord / HoldingArticleMapping frozen dataclass + HOLDING_ARTICLE_MAPPINGS（16 条映射规则）+ MAX_PUSHES_PER_WEEK=2 / ARTICLE_REPEAT_COOLDOWN_DAYS=90 / EVENT_TRIGGER_MAX_PER_MONTH=1 / DRAWDOWN_THRESHOLD_PCT=10.0 常量
+  - domain/services/education_service.py（~220 行纯函数）— check_fatigue / evaluate_holding_conditions / get_matching_articles / render_intro_sentence / select_weekly_lesson / build_push_record / get_current_week_iso
+  - use_cases/generate_weekly_lesson.py（~120 行）— generate_weekly_lesson / record_lesson_push / check_push_allowed / get_lesson_history_summary
+  - scripts/weekly_education_cron.py（~200 行）— 每周日 20:00 cron，支持 --user-id / --dry-run / --trigger 参数，build_holding_context 读 balance_sheets store，get_all_user_ids 扫描 profiles store
+  - api/decisions.py 新增 POST /api/decisions/weekly-lesson 路由（WeeklyLessonRequest/Response）
+  - 疲劳控制：周总上限 2 条 / 同文章 90 天不重复 / 事件触发最多 1/月
+  - 新增 39 个测试，全绿 ✅
+- 状态：✅ 完成
+
+**会话 22**（M6 W3-4 RAG 扩展 + 前端小课页 + 企业微信推送）
+- 任务：三部分合并完成：(1) RAG 知识库 12→32 篇，(2) 前端 /weekly-lesson 展示页，(3) 企业微信推送 + 每月 RAG 更新骨架
+- 产出：
+  **Part 1 — RAG 知识库扩展（12 → 32 篇，新增 20 篇）**
+  - 股票深化（3 篇）：position-sizing.md / overconfidence-bias.md / stop-loss-take-profit.md
+  - 基金深化（3 篇）：etf-vs-active-fund.md / hot-fund-trap.md / asset-allocation-basics.md
+  - 债券&固收（3 篇）：bond-basics.md / convertible-bond-basics.md（+bond 侧 rebalancing-math）
+  - 衍生品&另类（3 篇）：reit-basics.md / inflation-real-returns.md / gold-hedge（已有，新增 inflation）
+  - 行为金融&心态（5 篇）：drawdown-psychology.md / stop-loss-take-profit.md / herd-mentality.md / sunk-cost-fallacy.md / sell-high-buy-low-trap.md
+  - 通用基础（3 篇）：72-rule.md / china-tax-basics.md / emergency-fund-placement.md
+  - 通用工具（2 篇）：real-estate-in-portfolio.md / prepay-mortgage-math.md
+  - 全部 32 篇 frontmatter 格式统一，review_status: published，A/B 级来源
+  - HOLDING_ARTICLE_MAPPINGS 扩展：16 → 33 条（新增 17 条 has_stock/has_fund/has_bond/has_real_estate/has_gold/drawdown_gt_10/any_holding 映射）
+  - 28 个唯一 article_id 全部有对应文件，交叉校验通过
+  **Part 2 — 前端周度小课展示页**
+  - app.js tabs 数组新增 {id:'weekly-lesson', icon:'📚', label:'小课'}
+  - navigateTo() 新增 else if(p==='weekly-lesson') renderWeeklyLesson()
+  - renderWeeklyLesson()：ISO 周标签、骨架渲染、API 调用（POST /api/decisions/weekly-lesson）、wl-card 展示（标题/intro/trigger tag/阅读按钮）、_wlLoadHistory() 历史展示
+  - _wlOpenArticle()：模态底卡 + GET /api/knowledge/article/{id} 全文展示
+  - _wlLoadHistory()：GET /api/decisions/weekly-lesson/history，显示近 4 条记录
+  - styles.css 新增 ~120 行 .wl-* 样式（header/week-badge/greeting/loading-spinner/empty-state/card/trigger-tag/read-btn/history-item + 480px 响应式）
+  - api/decisions.py 新增 GET /api/decisions/weekly-lesson/history 路由（FileStore 读取 + 最新 N 条）
+  - api/decisions.py 新增 GET /api/knowledge/article/{article_id} 路由（读取 .md 文件 + 剥离 frontmatter）
+  **Part 3 — 企业微信推送**
+  - scripts/weekly_education_cron.py 新增 get_wxwork_userid() / already_pushed_this_week() / record_wxwork_push() / push_lesson_to_wxwork() 四函数
+  - push_lesson_to_wxwork()：检查 is_configured() + profile.wxworkUserId + 每周去重（education_wxwork_push store）+ send_markdown 调用，失败 log 不 raise
+  - run_weekly_education() 新增第 6 步：调用 push_lesson_to_wxwork，结果写入返回 dict 的 wxwork_pushed 字段
+  - main() 新增 pushed 计数器，日志输出 wxwork=✓/✗
+  **月度 RAG 更新骨架**
+  - scripts/monthly_rag_update.py（~250 行）— frontmatter 校验（10 字段 + 有效 category/review_status + 正文 ≥100 字符）+ discover_new_articles（跳过已索引 + 仅 published）+ run_monthly_update（dry-run / force-reindex 支持）+ 状态持久化（education_rag_update_state store）+ CLI（--dry-run / --force-reindex）
+- 状态：✅ 完成
+- 影响面：
+  - 🟢 确认无影响：HOLDING_ARTICLE_MAPPINGS 仅增加条目，不修改现有规则（疲劳控制不变式保持）
+  - 🟢 确认无影响：32 篇文章全部 review_status: published，KnowledgeRetriever 加载不受影响
+  - 🟢 确认无影响：api/decisions.py 新增路由不影响现有 6 条路由
+  - 🟢 确认无影响：企业微信推送 best-effort（失败不 raise），cron 主流程零风险
+  - 🟢 确认无影响：前端 weekly-lesson tab 独立路由，不影响其他 tab
+  - 🟡 建议评估：monthly_rag_update.py 需配置 cron 触发（文档：docs/design/05-scheduling.md）
+  - 🟡 建议评估：新文章尚未覆盖「股票财报解读/估值/行业轮动/技术分析」四类，可下一 sprint 补充
+  - 🟡 建议评估：wxwork push 需用户在 profile 中填写 wxworkUserId 字段才能生效

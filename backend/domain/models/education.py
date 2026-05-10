@@ -259,6 +259,119 @@ HOLDING_ARTICLE_MAPPINGS: List[HoldingArticleMapping] = [
         intro_template="每个家庭的理财都应该从金字塔底层开始。",
         priority=2,
     ),
+    # --- New articles: 股票深化 ---
+    HoldingArticleMapping(
+        condition="has_stock",
+        article_id="position-sizing",
+        intro_template="持有个股时，仓位管理是控制风险最直接的手段。",
+        priority=7,
+    ),
+    HoldingArticleMapping(
+        condition="has_stock",
+        article_id="overconfidence-bias",
+        intro_template="持有个股的你，过度自信是最隐蔽的业绩杀手。",
+        priority=6,
+    ),
+    HoldingArticleMapping(
+        condition="has_stock",
+        article_id="stop-loss-take-profit",
+        intro_template="买了股票却不知道什么时候卖？来建立你的止盈止损规则。",
+        priority=7,
+    ),
+    # --- New articles: 基金深化 ---
+    HoldingArticleMapping(
+        condition="has_fund",
+        article_id="etf-vs-active-fund",
+        intro_template="你持有基金产品，ETF 和主动基金的长期差距可能超出你的想象。",
+        priority=7,
+    ),
+    HoldingArticleMapping(
+        condition="has_fund",
+        article_id="hot-fund-trap",
+        intro_template="上涨榜前列的基金，往往是下一期的踩雷区——来看冠军基金魔咒。",
+        priority=6,
+    ),
+    HoldingArticleMapping(
+        condition="has_fund",
+        article_id="asset-allocation-basics",
+        intro_template="持有多只基金却越来越像一只？来学学真正的资产配置。",
+        priority=5,
+    ),
+    # --- New articles: 债券&固收 ---
+    HoldingArticleMapping(
+        condition="has_bond",
+        article_id="bond-basics",
+        intro_template="你配置了债券类资产，深入了解它的收益来源和风险很有必要。",
+        priority=8,
+    ),
+    HoldingArticleMapping(
+        condition="has_bond",
+        article_id="convertible-bond-basics",
+        intro_template="可转债既不是纯股也不是纯债，搞清楚它的特殊规则再出手。",
+        priority=7,
+    ),
+    # --- New articles: 衍生品&另类 ---
+    HoldingArticleMapping(
+        condition="has_real_estate",
+        article_id="reit-basics",
+        intro_template="除了直接持有房产，公募 REITs 是更灵活的不动产投资方式。",
+        priority=6,
+    ),
+    HoldingArticleMapping(
+        condition="has_gold",
+        article_id="inflation-real-returns",
+        intro_template="黄金是抗通胀的工具，先来理解通胀是如何侵蚀真实收益的。",
+        priority=7,
+    ),
+    # --- New articles: 行为金融&心态 ---
+    HoldingArticleMapping(
+        condition="drawdown_gt_10",
+        article_id="drawdown-psychology",
+        intro_template="{asset_name}出现浮亏，这五个锚点帮你在下跌时保持理性。",
+        priority=10,
+    ),
+    HoldingArticleMapping(
+        condition="drawdown_gt_10",
+        article_id="stop-loss-take-profit",
+        intro_template="浮亏时最需要的是事先设好的卖出规则，而不是临时决策。",
+        priority=9,
+    ),
+    HoldingArticleMapping(
+        condition="has_stock",
+        article_id="herd-mentality",
+        intro_template="市场追涨杀跌时，从众心理是你最难察觉的敌人。",
+        priority=5,
+    ),
+    HoldingArticleMapping(
+        condition="any_holding",
+        article_id="sunk-cost-fallacy",
+        intro_template="买入价不应该成为你卖出的理由——沉没成本谬误是你的死穴吗？",
+        priority=4,
+    ),
+    HoldingArticleMapping(
+        condition="any_holding",
+        article_id="sell-high-buy-low-trap",
+        intro_template="大多数投资者的实际收益比基金本身差很多，来看看高买低卖的真实成本。",
+        priority=4,
+    ),
+    HoldingArticleMapping(
+        condition="any_holding",
+        article_id="inflation-real-returns",
+        intro_template="你的投资收益跑赢通胀了吗？先学会计算实际收益率。",
+        priority=3,
+    ),
+    HoldingArticleMapping(
+        condition="any_holding",
+        article_id="rebalancing-math",
+        intro_template="不做再平衡的长期代价有多大？数学告诉你答案。",
+        priority=3,
+    ),
+    HoldingArticleMapping(
+        condition="any_holding",
+        article_id="72-rule",
+        intro_template="72 法则：5 秒钟估算你的投资翻倍需要多少年。",
+        priority=2,
+    ),
 ]
 
 
