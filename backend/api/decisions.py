@@ -118,6 +118,32 @@ class ChecklistItemsResponse(BaseModel):
     items: List[Dict[str, str]] = Field(default_factory=list)
 
 
+class SocraticQuestionsRequest(BaseModel):
+    """Request to generate Socratic questions before a trade (09-advisor-features.md §一)."""
+    user_id: str = Field(..., min_length=1, description="User ID")
+    action: str = Field("buy", description="Trade action: buy | sell | add | reduce")
+    reason_ids: List[str] = Field(default_factory=list, description="Selected buy reason IDs")
+    # Context fields for question selection
+    concentration_pct: float = Field(0.0, ge=0, le=1.0, description="Single asset concentration after trade (0-1)")
+    days_since_last_trade: int = Field(60, ge=0, description="Days since last portfolio adjustment")
+    emergency_months: float = Field(6.0, ge=0, description="Emergency fund months coverage")
+    insurance_count: int = Field(4, ge=0, le=4, description="Insurance types held (0-4)")
+    amount_pct: float = Field(0.0, ge=0, le=1.0, description="Trade amount as fraction of investable assets")
+    has_debt: bool = Field(False, description="Has outstanding high-interest debt")
+    diversification_count: int = Field(5, ge=0, description="Number of uncorrelated asset classes held")
+    high_volatility: bool = Field(False, description="Recent high market volatility")
+    is_single_stock: bool = Field(False, description="Buying a single stock (vs. fund)")
+    max_questions: int = Field(5, ge=3, le=7, description="Maximum questions to return")
+
+
+class SocraticQuestionsResponse(BaseModel):
+    """Response with generated Socratic questions."""
+    status: str = "ok"
+    questions: List[Dict[str, Any]] = Field(default_factory=list, description="Rendered questions")
+    question_count: int = Field(0, description="Number of questions returned")
+    context_summary: str = Field("", description="Trigger context summary")
+
+
 # ---- Endpoints ----
 
 @router.post("/api/decisions/review", response_model=DecisionReviewResponse)
@@ -333,4 +359,57 @@ async def get_checklist_items() -> ChecklistItemsResponse:
     return ChecklistItemsResponse(
         status="ok",
         items=items,
+    )
+
+
+# ---- Mode A+: Socratic Questions (09-advisor-features.md §一) ----
+
+@router.post("/api/decisions/socratic-questions", response_model=SocraticQuestionsResponse)
+async def post_socratic_questions(req: SocraticQuestionsRequest) -> SocraticQuestionsResponse:
+    """Generate Socratic questions for pre-trade reflection.
+
+    Before executing a trade, present the user with 3-5 thought-provoking
+    questions selected from the template bank based on their action,
+    reasons, and portfolio context.
+
+    Key invariant: AI only selects + fills blanks, never free-creates.
+
+    Design doc: 09-advisor-features.md §一
+    """
+    # Validate action
+    valid_actions = {"buy", "sell", "add", "reduce"}
+    if req.action not in valid_actions:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Invalid action '{req.action}'. Must be one of: {valid_actions}",
+        )
+
+    from use_cases.generate_socratic_questions import generate_socratic_questions
+
+    # Build context dict from request fields
+    context: Dict[str, Any] = {
+        "concentration_pct": req.concentration_pct,
+        "days_since_last_trade": req.days_since_last_trade,
+        "emergency_months": req.emergency_months,
+        "insurance_count": req.insurance_count,
+        "amount_pct": req.amount_pct,
+        "has_debt": req.has_debt,
+        "diversification_count": req.diversification_count,
+        "high_volatility": req.high_volatility,
+        "is_single_stock": req.is_single_stock,
+    }
+
+    session = generate_socratic_questions(
+        user_id=req.user_id,
+        action=req.action,
+        reason_ids=req.reason_ids,
+        context=context,
+        max_questions=req.max_questions,
+    )
+
+    return SocraticQuestionsResponse(
+        status="ok",
+        questions=[q.to_dict() for q in session.questions],
+        question_count=len(session.questions),
+        context_summary=session.context_summary,
     )

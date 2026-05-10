@@ -106,6 +106,12 @@ from domain.models.knowledge import (
     SourceGrade,
     ContentCategory,
 )
+from domain.models.questions import (
+    QuestionCategory,
+    QuestionTemplate,
+    SocraticQuestion,
+    SocraticSession,
+)
 
 __all__ = [
     "LLMResponse",
@@ -132,4 +138,8 @@ __all__ = [
     "RetrievalResult",
     "SourceGrade",
     "ContentCategory",
+    "QuestionCategory",
+    "QuestionTemplate",
+    "SocraticQuestion",
+    "SocraticSession",
 ]

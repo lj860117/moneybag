@@ -6,7 +6,7 @@
 ---
 
 ## 当前阶段
-M4 W3 — RAG 接入 chat + decisions 完成（✅ 完成）
+M4 W4 — 苏格拉底式提问（09-advisor-features.md §一）（✅ 完成）
 
 ## 已完成
 - [x] 2026-04-25: 四层目录树（api/ use_cases/ domain/ infra/）
@@ -211,6 +211,19 @@ M4 W3 — RAG 接入 chat + decisions 完成（✅ 完成）
   - 所有 RAG 调用 try/except 包裹，失败不阻断主流程
   - get_retriever() 惰性单例 + total_chunks()==0 时自动 load_and_index_articles
   - 新增 12 个测试（219 → 231），231/231 全绿 ✅
+- [x] 2026-05-10: **M4 W4 苏格拉底式提问（09-advisor-features.md §一）**
+  - infra/knowledge/content/questions/socratic_templates.json — 51 条问题模板（覆盖 20 类 category × 30+ 触发条件）
+  - domain/models/questions.py — QuestionCategory(20 枚举) / QuestionTemplate / SocraticQuestion / SocraticSession frozen dataclass
+  - domain/protocols/question_bank.py — QuestionBankProtocol（load_templates / get_templates_by_trigger / get_template_by_id）
+  - domain/services/advisor_questions_service.py（~200 行纯函数）— derive_triggers / score_template / select_questions / render_question / build_socratic_session
+  - infra/knowledge/question_bank.py — JsonQuestionBank 实现 + get_question_bank() singleton
+  - use_cases/generate_socratic_questions.py — 编排 infra + domain service
+  - api/decisions.py 新增 POST /api/decisions/socratic-questions（SocraticQuestionsRequest/Response）
+  - 更新 3 个 __init__.py（domain/models + domain/protocols + infra/knowledge）
+  - mypy strict 新文件 0 错误
+  - domain 层零 infra import（AST 验证），service 层纯函数无 I/O
+  - 新增 40 个测试（231 → 271 不含 memory），298 passed 全绿 ✅
+  - 明确不做：三视角（§二）、周度教育（§三），留 M6
 
 ## 进行中
 - 无
@@ -219,8 +232,8 @@ M4 W3 — RAG 接入 chat + decisions 完成（✅ 完成）
 - 无
 
 ## 下次会话计划
-- M4 W4: 苏格拉底提问 + 三视角二次意见 — 读 09
 - M5: 第一份月度决策质量报告 — 读 07 + 10
+- M6: 三视角二次意见 + 周度教育 — 读 09 §二§三
 - 持续: services/ 层 akshare 直调逐步迁入 infra/data_source（绞杀者模式）
 
 ---

@@ -1,0 +1,359 @@
+[
+  {
+    "id": "q_use_horizon",
+    "category": "time_horizon",
+    "text": "这笔钱未来几年要用？如果 3 年内要用，是否该放在波动小的地方？",
+    "applicable_when": ["any_buy", "any_add"],
+    "weight": 10
+  },
+  {
+    "id": "q_sleep_test",
+    "category": "risk_tolerance",
+    "text": "如果明天跌 30%，你会不会失眠想卖出？",
+    "applicable_when": ["any_buy", "any_add", "high_volatility"],
+    "weight": 10
+  },
+  {
+    "id": "q_opportunity_cost",
+    "category": "opportunity_cost",
+    "text": "这笔钱放余额宝吃 2% 你能接受吗？如果不能，为什么一定要冒更大风险？",
+    "applicable_when": ["any_buy"],
+    "weight": 8
+  },
+  {
+    "id": "q_concentration_aware",
+    "category": "concentration",
+    "text": "如果再买这只，你持仓集中度会到 {concentration_pct}%，你知道这意味着什么吗？",
+    "applicable_when": ["high_concentration"],
+    "weight": 10
+  },
+  {
+    "id": "q_last_trade_result",
+    "category": "track_record",
+    "text": "上次调仓距今 {days_since_last} 天，上次调整效果如何？",
+    "applicable_when": ["recent_trade"],
+    "weight": 8
+  },
+  {
+    "id": "q_emergency_fund",
+    "category": "safety_net",
+    "text": "你的应急金还够覆盖 6 个月支出吗？如果不够，是否应该先补上？",
+    "applicable_when": ["low_emergency_fund"],
+    "weight": 10
+  },
+  {
+    "id": "q_why_now",
+    "category": "timing",
+    "text": "为什么是现在买？如果上周或下周再买，结果会有本质区别吗？",
+    "applicable_when": ["any_buy", "any_add"],
+    "weight": 9
+  },
+  {
+    "id": "q_source_of_idea",
+    "category": "information_source",
+    "text": "这个投资想法是怎么来的？是自己研究的，还是看到别人在买？",
+    "applicable_when": ["any_buy", "momentum_chase", "hot_news", "fomo"],
+    "weight": 9
+  },
+  {
+    "id": "q_what_if_wrong",
+    "category": "risk_awareness",
+    "text": "如果你的判断错了，最坏情况下会亏多少？这个数字你能承受吗？",
+    "applicable_when": ["any_buy", "any_add", "large_amount"],
+    "weight": 10
+  },
+  {
+    "id": "q_sell_criteria",
+    "category": "exit_plan",
+    "text": "你打算什么情况下卖出？如果没有明确的卖出标准，买入决定可能不完整。",
+    "applicable_when": ["any_buy", "any_add"],
+    "weight": 8
+  },
+  {
+    "id": "q_averaging_down_trap",
+    "category": "behavioral_bias",
+    "text": "你是在\"补仓摊成本\"吗？如果这只股票从没跌过，你还会买吗？",
+    "applicable_when": ["averaging_down"],
+    "weight": 10
+  },
+  {
+    "id": "q_fomo_check",
+    "category": "behavioral_bias",
+    "text": "如果没有最近的涨势/热点新闻，你还会想买吗？",
+    "applicable_when": ["momentum_chase", "hot_news", "fomo"],
+    "weight": 10
+  },
+  {
+    "id": "q_total_position_size",
+    "category": "position_sizing",
+    "text": "这笔买入占你总可投资金额的多少？是否超过了你设定的单笔上限？",
+    "applicable_when": ["any_buy", "large_amount"],
+    "weight": 9
+  },
+  {
+    "id": "q_understand_product",
+    "category": "knowledge_check",
+    "text": "你能用一句话说清楚这个产品赚钱的逻辑吗？如果说不清，是否该先搞懂？",
+    "applicable_when": ["any_buy"],
+    "weight": 8
+  },
+  {
+    "id": "q_correlation_check",
+    "category": "diversification",
+    "text": "你现有持仓里有没有和这只高度相关的？加了它是不是在重复押注？",
+    "applicable_when": ["any_buy", "any_add"],
+    "weight": 7
+  },
+  {
+    "id": "q_income_stability",
+    "category": "safety_net",
+    "text": "如果明天失业，这些投资的钱你能不动多久？",
+    "applicable_when": ["large_amount", "any_buy"],
+    "weight": 8
+  },
+  {
+    "id": "q_dca_vs_lump",
+    "category": "strategy",
+    "text": "你考虑过分批买入吗？一次性 all-in 和分 3 次买，哪个让你更安心？",
+    "applicable_when": ["large_amount", "any_buy"],
+    "weight": 7
+  },
+  {
+    "id": "q_rebalance_needed",
+    "category": "asset_allocation",
+    "text": "买完这笔后，你的股债比例还符合原计划吗？",
+    "applicable_when": ["any_buy", "any_add"],
+    "weight": 8
+  },
+  {
+    "id": "q_insurance_first",
+    "category": "safety_net",
+    "text": "你的重疾险、医疗险都配齐了吗？投资赚的可能不够一场大病花的。",
+    "applicable_when": ["low_insurance"],
+    "weight": 9
+  },
+  {
+    "id": "q_cooldown_reflection",
+    "category": "timing",
+    "text": "你能等 3 天再做决定吗？如果 3 天后还想买，说明不是冲动。",
+    "applicable_when": ["short_cooldown", "momentum_chase", "fomo"],
+    "weight": 9
+  },
+  {
+    "id": "q_past_similar_decision",
+    "category": "track_record",
+    "text": "你以前有没有类似的操作？结果怎么样？这次有什么不同？",
+    "applicable_when": ["any_buy", "any_add"],
+    "weight": 7
+  },
+  {
+    "id": "q_family_agreement",
+    "category": "family_finance",
+    "text": "家里另一半知道这笔投资吗？重大金融决定最好一起讨论。",
+    "applicable_when": ["large_amount"],
+    "weight": 7
+  },
+  {
+    "id": "q_valuation_basis",
+    "category": "fundamental",
+    "text": "你觉得它\"便宜\"的依据是什么？是和历史比，还是和同行比？",
+    "applicable_when": ["valuation_low", "any_buy"],
+    "weight": 8
+  },
+  {
+    "id": "q_sector_logic_change",
+    "category": "fundamental",
+    "text": "行业基本面改善是你的观点还是共识？共识已反映在价格里了吗？",
+    "applicable_when": ["sector_logic"],
+    "weight": 8
+  },
+  {
+    "id": "q_allocation_gap_real",
+    "category": "asset_allocation",
+    "text": "你说缺这部分配置，你的目标配比是怎么定的？有没有周期性回顾？",
+    "applicable_when": ["allocation_gap"],
+    "weight": 7
+  },
+  {
+    "id": "q_dca_plan_discipline",
+    "category": "strategy",
+    "text": "定投计划执行了多久？是否中途因为涨跌暂停过？",
+    "applicable_when": ["dca_plan"],
+    "weight": 7
+  },
+  {
+    "id": "q_loss_percentage_real",
+    "category": "risk_awareness",
+    "text": "如果跌了 20%，你的绝对亏损金额是多少？这个数字对你家意味着什么？",
+    "applicable_when": ["any_buy", "large_amount"],
+    "weight": 9
+  },
+  {
+    "id": "q_sell_timing",
+    "category": "exit_plan",
+    "text": "你是因为需要用钱才卖，还是觉得\"已经赚够了\"？后者往往是锚定效应。",
+    "applicable_when": ["any_sell"],
+    "weight": 9
+  },
+  {
+    "id": "q_sell_loss_reason",
+    "category": "behavioral_bias",
+    "text": "你是在\"止损\"还是在\"割肉逃跑\"？这两者的区别是你有没有预设止损线。",
+    "applicable_when": ["any_sell", "panic_sell"],
+    "weight": 10
+  },
+  {
+    "id": "q_sell_rebalance",
+    "category": "asset_allocation",
+    "text": "卖出后这笔钱打算放哪？如果没想好去处，是不是可以不动？",
+    "applicable_when": ["any_sell"],
+    "weight": 8
+  },
+  {
+    "id": "q_news_vs_data",
+    "category": "information_source",
+    "text": "驱动你决定的是新闻标题还是数据？新闻是噪音，数据才是信号。",
+    "applicable_when": ["hot_news", "momentum_chase"],
+    "weight": 9
+  },
+  {
+    "id": "q_peer_pressure",
+    "category": "behavioral_bias",
+    "text": "如果没有人告诉你\"别人在买\"，你还会想买吗？",
+    "applicable_when": ["fomo", "hot_news"],
+    "weight": 9
+  },
+  {
+    "id": "q_goal_alignment",
+    "category": "financial_goal",
+    "text": "这笔投资对你的财务目标（如子女教育、退休）有明确帮助吗？还是\"闲钱试试\"？",
+    "applicable_when": ["any_buy", "any_add"],
+    "weight": 8
+  },
+  {
+    "id": "q_liquidity_need",
+    "category": "time_horizon",
+    "text": "如果突然需要用钱，这个产品能在几天内变现？有没有锁定期？",
+    "applicable_when": ["any_buy", "illiquid_asset"],
+    "weight": 8
+  },
+  {
+    "id": "q_fee_awareness",
+    "category": "cost",
+    "text": "你算过买卖手续费 + 管理费一年吃掉多少收益吗？",
+    "applicable_when": ["any_buy", "frequent_trade"],
+    "weight": 7
+  },
+  {
+    "id": "q_tax_implication",
+    "category": "cost",
+    "text": "卖出有税务影响吗？是否持有满一年可以少交税？",
+    "applicable_when": ["any_sell", "short_hold"],
+    "weight": 6
+  },
+  {
+    "id": "q_single_stock_risk",
+    "category": "concentration",
+    "text": "你买的是单只股票还是分散的基金？单只股票的风险你了解吗？",
+    "applicable_when": ["single_stock_buy"],
+    "weight": 9
+  },
+  {
+    "id": "q_market_cycle",
+    "category": "timing",
+    "text": "现在市场处于什么阶段？你觉得是高位追还是低位捡？你的判断依据是什么？",
+    "applicable_when": ["any_buy", "momentum_chase"],
+    "weight": 8
+  },
+  {
+    "id": "q_emotional_state",
+    "category": "behavioral_bias",
+    "text": "你现在的情绪状态如何？兴奋时容易高估收益，焦虑时容易低估风险。",
+    "applicable_when": ["any_buy", "any_sell", "momentum_chase", "panic_sell"],
+    "weight": 9
+  },
+  {
+    "id": "q_information_asymmetry",
+    "category": "knowledge_check",
+    "text": "你知道的信息，市场上其他人也知道吗？如果都知道，为什么你能比他们赚更多？",
+    "applicable_when": ["any_buy", "hot_news"],
+    "weight": 8
+  },
+  {
+    "id": "q_worst_case_plan",
+    "category": "risk_awareness",
+    "text": "最坏情况发生时你的应对计划是什么？如果没有 Plan B，是否该把金额减半？",
+    "applicable_when": ["any_buy", "large_amount"],
+    "weight": 9
+  },
+  {
+    "id": "q_debt_priority",
+    "category": "safety_net",
+    "text": "你有未还清的高息贷款吗？投资收益能跑赢你的贷款利率吗？",
+    "applicable_when": ["any_buy", "has_debt"],
+    "weight": 9
+  },
+  {
+    "id": "q_overconfidence_check",
+    "category": "behavioral_bias",
+    "text": "过去一年你的投资收益率是多少？如果低于指数，为什么觉得这次能行？",
+    "applicable_when": ["any_buy", "any_add"],
+    "weight": 7
+  },
+  {
+    "id": "q_regret_minimization",
+    "category": "behavioral_bias",
+    "text": "5 年后回头看，哪个决定让你更后悔：买了跌 30%，还是没买涨了 30%？",
+    "applicable_when": ["any_buy", "any_sell"],
+    "weight": 8
+  },
+  {
+    "id": "q_diversification_enough",
+    "category": "diversification",
+    "text": "你目前持有几个不相关的资产类别？如果不到 3 个，分散度可能不够。",
+    "applicable_when": ["any_buy", "low_diversification"],
+    "weight": 7
+  },
+  {
+    "id": "q_reduce_reason",
+    "category": "exit_plan",
+    "text": "你减仓的理由是什么？是计划内再平衡，还是被波动吓到了？",
+    "applicable_when": ["any_reduce"],
+    "weight": 9
+  },
+  {
+    "id": "q_sunk_cost",
+    "category": "behavioral_bias",
+    "text": "你继续持有是因为看好未来，还是因为\"已经亏了不甘心卖\"？",
+    "applicable_when": ["averaging_down", "any_add"],
+    "weight": 10
+  },
+  {
+    "id": "q_benchmark_comparison",
+    "category": "track_record",
+    "text": "和沪深 300 / 中证 500 比，你的主动操作跑赢了吗？如果没有，定投指数是否更好？",
+    "applicable_when": ["any_buy", "frequent_trade"],
+    "weight": 7
+  },
+  {
+    "id": "q_margin_of_safety",
+    "category": "fundamental",
+    "text": "你觉得这个价格有安全边际吗？安全边际 = 内在价值 - 当前价格。",
+    "applicable_when": ["valuation_low", "any_buy"],
+    "weight": 7
+  },
+  {
+    "id": "q_holding_period_match",
+    "category": "time_horizon",
+    "text": "你的计划持有期和这个资产的波动周期匹配吗？股票至少该看 3-5 年。",
+    "applicable_when": ["any_buy", "short_hold"],
+    "weight": 8
+  },
+  {
+    "id": "q_portfolio_contribution",
+    "category": "asset_allocation",
+    "text": "这笔买入对你整体组合的风险收益比有正贡献吗？还是只是\"想买\"？",
+    "applicable_when": ["any_buy", "any_add"],
+    "weight": 7
+  }
+]
