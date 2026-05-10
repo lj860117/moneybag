@@ -99,6 +99,13 @@ from domain.models.checklist import (
     CHECKLIST_PASS_THRESHOLD,
     CHECKLIST_MAX_SCORE,
 )
+from domain.models.knowledge import (
+    KnowledgeChunk,
+    KnowledgeArticle,
+    RetrievalResult,
+    SourceGrade,
+    ContentCategory,
+)
 
 __all__ = [
     "LLMResponse",
@@ -120,4 +127,9 @@ __all__ = [
     "ChecklistResult",
     "CHECKLIST_PASS_THRESHOLD",
     "CHECKLIST_MAX_SCORE",
+    "KnowledgeChunk",
+    "KnowledgeArticle",
+    "RetrievalResult",
+    "SourceGrade",
+    "ContentCategory",
 ]

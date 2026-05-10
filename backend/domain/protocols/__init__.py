@@ -17,6 +17,7 @@ from domain.protocols.data_source import DataSourceProtocol
 from domain.protocols.family_profile import FamilyProfileProtocol
 from domain.protocols.balance_sheet import BalanceSheetProtocol
 from domain.protocols.decision_guard import DecisionGuardProtocol
+from domain.protocols.knowledge_retriever import KnowledgeRetrieverProtocol
 
 __all__ = [
     "CacheProtocol",
@@ -26,4 +27,5 @@ __all__ = [
     "FamilyProfileProtocol",
     "BalanceSheetProtocol",
     "DecisionGuardProtocol",
+    "KnowledgeRetrieverProtocol",
 ]

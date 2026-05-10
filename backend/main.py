@@ -105,6 +105,10 @@ app.include_router(allocation_router)
 from api.decisions import router as decisions_router
 app.include_router(decisions_router)
 
+# ---- M4 W1: RAG 知识库（3 路由）----
+from api.rag import rag_router
+app.include_router(rag_router)
+
 # ---- 静态文件服务（部署时前后端一体）----
 FRONTEND_DIR = Path(__file__).resolve().parent.parent  # moneybag/
 

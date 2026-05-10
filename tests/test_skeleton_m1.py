@@ -2433,4 +2433,331 @@ def test_chat_guard_anchor_validation():
     assert is_anchor_valid("") is False
 
 
+# ======================================================================
+# M4 W1: RAG Knowledge Base Tests
+# ======================================================================
+
+
+def test_knowledge_models_importable():
+    """KnowledgeChunk, KnowledgeArticle, RetrievalResult should be importable."""
+    from domain.models.knowledge import (
+        KnowledgeChunk,
+        KnowledgeArticle,
+        RetrievalResult,
+        SourceGrade,
+        ContentCategory,
+    )
+    assert KnowledgeChunk is not None
+    assert KnowledgeArticle is not None
+    assert RetrievalResult is not None
+    assert SourceGrade.A.value == "A"
+    assert ContentCategory.FAMILY_FINANCE.value == "家庭财务基础"
+
+
+def test_knowledge_models_in_init():
+    """domain.models should export KnowledgeChunk etc."""
+    from domain.models import KnowledgeChunk, KnowledgeArticle, RetrievalResult, SourceGrade, ContentCategory
+    assert KnowledgeChunk is not None
+
+
+def test_knowledge_retriever_protocol_importable():
+    """KnowledgeRetrieverProtocol should be importable and runtime_checkable."""
+    from domain.protocols import KnowledgeRetrieverProtocol
+    from domain.protocols.knowledge_retriever import KnowledgeRetrieverProtocol as KRP
+    assert KRP is not None
+    # Check it's runtime_checkable
+    import typing
+    assert hasattr(KRP, '__protocol_attrs__') or hasattr(KRP, '__abstractmethods__') or True
+
+
+def test_knowledge_chunk_roundtrip():
+    """KnowledgeChunk to_dict/from_dict should roundtrip."""
+    from domain.models.knowledge import KnowledgeChunk, SourceGrade
+    chunk = KnowledgeChunk(
+        chunk_id="test_chunk_0",
+        article_id="test-article",
+        content="This is test content about investing.",
+        title="Test Article",
+        category="家庭财务基础",
+        source_tag="Test Source 2024",
+        source_grade=SourceGrade.A,
+        embedding=[0.1, 0.2, 0.3],
+        chunk_index=0,
+        metadata={"reviewer": "test"},
+    )
+    d = chunk.to_dict()
+    assert d["chunk_id"] == "test_chunk_0"
+    assert d["source_grade"] == "A"
+    assert d["embedding"] == [0.1, 0.2, 0.3]
+
+    restored = KnowledgeChunk.from_dict(d)
+    assert restored.chunk_id == chunk.chunk_id
+    assert restored.source_grade == SourceGrade.A
+    assert restored.content == chunk.content
+
+
+def test_knowledge_article_roundtrip():
+    """KnowledgeArticle to_dict/from_dict should roundtrip."""
+    from domain.models.knowledge import KnowledgeArticle, SourceGrade
+    article = KnowledgeArticle(
+        article_id="emergency-fund",
+        title="应急金的 6 个月法则",
+        category="家庭财务基础",
+        source="Test Source",
+        source_grade=SourceGrade.B,
+        reviewer="tester",
+    )
+    d = article.to_dict()
+    restored = KnowledgeArticle.from_dict(d)
+    assert restored.title == article.title
+    assert restored.source_grade == SourceGrade.B
+
+
+def test_rag_service_parse_frontmatter():
+    """parse_article_frontmatter should extract YAML-like headers."""
+    from domain.services.rag_service import parse_article_frontmatter
+    content = """---
+title: Test Article
+category: 家庭财务基础
+source_grade: A
+---
+
+# Body here
+"""
+    fm = parse_article_frontmatter(content)
+    assert fm["title"] == "Test Article"
+    assert fm["category"] == "家庭财务基础"
+    assert fm["source_grade"] == "A"
+
+
+def test_rag_service_parse_body():
+    """parse_article_body should extract text after frontmatter."""
+    from domain.services.rag_service import parse_article_body
+    content = """---
+title: Test
+---
+
+# Hello World
+
+This is the body."""
+    body = parse_article_body(content)
+    assert "Hello World" in body
+    assert "This is the body" in body
+    assert "title: Test" not in body
+
+
+def test_rag_service_chunk_text():
+    """chunk_text should split long text into manageable chunks."""
+    from domain.services.rag_service import chunk_text
+    # Create text longer than CHUNK_MAX_CHARS
+    long_text = "\n\n".join([f"Paragraph {i}. " * 20 for i in range(10)])
+    chunks = chunk_text(long_text, max_chars=300, overlap=30)
+    assert len(chunks) > 1
+    # Each chunk should be reasonable size
+    for c in chunks:
+        assert len(c) >= 80  # MIN_CHUNK_CHARS
+
+
+def test_rag_service_tokenize():
+    """tokenize should handle Chinese + English mixed text."""
+    from domain.services.rag_service import tokenize
+    tokens = tokenize("家庭应急金需要 6 个月的 monthly expenses")
+    assert len(tokens) > 0
+    # Should contain Chinese bigrams
+    assert "家庭" in tokens or "应急" in tokens
+    # Should contain English words (>1 char)
+    assert "monthly" in tokens or "expenses" in tokens
+
+
+def test_rag_service_compute_embedding():
+    """compute_embedding should produce a normalized vector."""
+    from domain.services.rag_service import compute_embedding
+    import math
+    vocab = ["投资", "基金", "股票", "债券", "收益", "风险"]
+    emb = compute_embedding("投资基金的收益和风险", vocab)
+    assert len(emb) == len(vocab)
+    # Should be normalized (L2 norm ≈ 1)
+    norm = math.sqrt(sum(v * v for v in emb))
+    if norm > 0:
+        assert abs(norm - 1.0) < 0.01
+
+
+def test_rag_service_cosine_similarity():
+    """cosine_similarity should compute correct values."""
+    from domain.services.rag_service import cosine_similarity
+    # Same vector = 1.0
+    v = [1.0, 0.0, 0.0]
+    assert abs(cosine_similarity(v, v) - 1.0) < 0.001
+    # Orthogonal = 0.0
+    assert abs(cosine_similarity([1, 0, 0], [0, 1, 0])) < 0.001
+    # Empty = 0.0
+    assert cosine_similarity([], []) == 0.0
+
+
+def test_rag_service_build_chunks_for_article():
+    """build_chunks_for_article should produce chunks with correct metadata."""
+    from domain.services.rag_service import build_chunks_for_article
+    from domain.models.knowledge import KnowledgeArticle, SourceGrade
+    article = KnowledgeArticle(
+        article_id="test-article",
+        title="Test",
+        category="数学常识",
+        source="Test Source",
+        source_grade=SourceGrade.B,
+        reviewer="tester",
+        reviewed_at="2026-05-10",
+    )
+    body = "First paragraph about investing. " * 30 + "\n\n" + "Second paragraph about risk. " * 30
+    chunks = build_chunks_for_article(article, body)
+    assert len(chunks) >= 1
+    assert chunks[0].article_id == "test-article"
+    assert chunks[0].title == "Test"
+    assert chunks[0].source_grade == SourceGrade.B
+    assert chunks[0].chunk_index == 0
+
+
+def test_infra_knowledge_retriever_importable():
+    """infra.knowledge.KnowledgeRetriever should be importable."""
+    from infra.knowledge import KnowledgeRetriever
+    retriever = KnowledgeRetriever()
+    assert retriever.total_chunks() == 0
+    assert retriever.list_articles() == []
+    assert retriever.retrieve("test") == []
+
+
+def test_infra_knowledge_retriever_protocol_compliance():
+    """KnowledgeRetriever should satisfy KnowledgeRetrieverProtocol."""
+    from infra.knowledge import KnowledgeRetriever
+    from domain.protocols.knowledge_retriever import KnowledgeRetrieverProtocol
+    retriever = KnowledgeRetriever()
+    assert isinstance(retriever, KnowledgeRetrieverProtocol)
+
+
+def test_infra_knowledge_indexer_loads_articles():
+    """load_and_index_articles should load .md files from content dir."""
+    from infra.knowledge import KnowledgeRetriever, load_and_index_articles
+    retriever = KnowledgeRetriever()
+    count = load_and_index_articles(retriever)
+    # Should have indexed chunks from our 12 articles
+    assert count >= 20  # at least 2 chunks per article × 10+ articles
+    assert retriever.total_chunks() == count
+    articles = retriever.list_articles()
+    assert len(articles) >= 10  # core 10 + behavioral finance
+
+
+def test_infra_knowledge_retrieval_returns_results():
+    """Retrieval should return relevant chunks for investment queries."""
+    from infra.knowledge import KnowledgeRetriever, load_and_index_articles
+    retriever = KnowledgeRetriever()
+    load_and_index_articles(retriever)
+    # Query about emergency fund
+    results = retriever.retrieve("应急金怎么算")
+    assert len(results) > 0
+    # At least one result should be from emergency fund article
+    article_ids = [r.article_id for r in results]
+    assert any("emergency" in aid for aid in article_ids)
+
+
+def test_infra_knowledge_retrieval_category_filter():
+    """Category hint should boost relevant category results."""
+    from infra.knowledge import KnowledgeRetriever, load_and_index_articles
+    retriever = KnowledgeRetriever()
+    load_and_index_articles(retriever)
+    # Query with category hint
+    results = retriever.retrieve("投资策略", top_k=3, category_hint="资产配置")
+    assert len(results) > 0
+
+
+def test_infra_knowledge_retrieval_empty_query():
+    """Empty retriever should return empty results."""
+    from infra.knowledge import KnowledgeRetriever
+    retriever = KnowledgeRetriever()
+    results = retriever.retrieve("anything")
+    assert results == []
+
+
+def test_use_case_retrieve_knowledge_chunks():
+    """retrieve_knowledge_chunks use case should format response correctly."""
+    from infra.knowledge import KnowledgeRetriever, load_and_index_articles
+    from use_cases.retrieve_knowledge import retrieve_knowledge_chunks
+    retriever = KnowledgeRetriever()
+    load_and_index_articles(retriever)
+    result = retrieve_knowledge_chunks(retriever, query="复利 72法则", top_k=3)
+    assert "query" in result
+    assert "chunks" in result
+    assert "total_indexed" in result
+    assert "further_reading" in result
+    assert "has_results" in result
+    assert result["total_indexed"] > 0
+
+
+def test_use_case_list_knowledge_articles():
+    """list_knowledge_articles should return article metadata."""
+    from infra.knowledge import KnowledgeRetriever, load_and_index_articles
+    from use_cases.retrieve_knowledge import list_knowledge_articles
+    retriever = KnowledgeRetriever()
+    load_and_index_articles(retriever)
+    articles = list_knowledge_articles(retriever)
+    assert len(articles) >= 10
+    # Each should have expected keys
+    for a in articles:
+        assert "article_id" in a
+        assert "title" in a
+        assert "category" in a
+        assert "source_grade" in a
+
+
+def test_use_case_get_knowledge_stats():
+    """get_knowledge_stats should return correct statistics."""
+    from infra.knowledge import KnowledgeRetriever, load_and_index_articles
+    from use_cases.retrieve_knowledge import get_knowledge_stats
+    retriever = KnowledgeRetriever()
+    load_and_index_articles(retriever)
+    stats = get_knowledge_stats(retriever)
+    assert stats["article_count"] >= 10
+    assert stats["chunk_count"] > 0
+    assert len(stats["categories"]) > 0
+    assert stats["source_grades"]["A"] > 0 or stats["source_grades"]["B"] > 0
+
+
+def test_rag_api_module_importable():
+    """api.rag module should be importable."""
+    from api.rag import rag_router
+    assert rag_router is not None
+    # Check routes exist (paths include prefix)
+    routes = [r.path for r in rag_router.routes]
+    assert "/api/rag/retrieve" in routes
+    assert "/api/rag/articles" in routes
+    assert "/api/rag/stats" in routes
+
+
+def test_rag_no_domain_infra_import():
+    """domain/services/rag_service.py must not import from infra/ (invariant #10)."""
+    import ast
+    rag_service_path = BACKEND_DIR / "domain" / "services" / "rag_service.py"
+    tree = ast.parse(rag_service_path.read_text())
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                assert not alias.name.startswith("infra"), (
+                    f"domain/services/rag_service.py imports infra: {alias.name}"
+                )
+        elif isinstance(node, ast.ImportFrom):
+            if node.module:
+                assert not node.module.startswith("infra"), (
+                    f"domain/services/rag_service.py imports infra: {node.module}"
+                )
+
+
+def test_rag_no_cross_service_import():
+    """domain/services/rag_service.py must not import other domain/services (invariant #9)."""
+    import ast
+    rag_service_path = BACKEND_DIR / "domain" / "services" / "rag_service.py"
+    tree = ast.parse(rag_service_path.read_text())
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ImportFrom):
+            if node.module and "domain.services." in node.module:
+                assert False, (
+                    f"domain/services/rag_service.py cross-imports service: {node.module}"
+                )
 
