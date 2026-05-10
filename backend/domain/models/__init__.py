@@ -85,6 +85,20 @@ class LLMResponse:
         )
 
 from domain.models.allocation import AllocationTarget, AllocationState, DeviationAnalysis
+from domain.models.decision import (
+    BuyReason,
+    BuyReasonCategory,
+    DecisionQualityScore,
+    DecisionReview,
+    PREDEFINED_REASONS,
+    SignalLevel,
+)
+from domain.models.checklist import (
+    ChecklistItem,
+    ChecklistResult,
+    CHECKLIST_PASS_THRESHOLD,
+    CHECKLIST_MAX_SCORE,
+)
 
 __all__ = [
     "LLMResponse",
@@ -96,4 +110,14 @@ __all__ = [
     "AllocationTarget",
     "AllocationState",
     "DeviationAnalysis",
+    "BuyReason",
+    "BuyReasonCategory",
+    "DecisionQualityScore",
+    "DecisionReview",
+    "PREDEFINED_REASONS",
+    "SignalLevel",
+    "ChecklistItem",
+    "ChecklistResult",
+    "CHECKLIST_PASS_THRESHOLD",
+    "CHECKLIST_MAX_SCORE",
 ]

@@ -6,7 +6,7 @@
 ---
 
 ## 当前阶段
-M2 W4 — 资产配置框架 + 再平衡提醒（✅ 完成）
+M3 W2 — 模式 A 事前提示 + 7 点清单完整计算（✅ 完成）
 
 ## 已完成
 - [x] 2026-04-25: 四层目录树（api/ use_cases/ domain/ infra/）
@@ -136,6 +136,29 @@ M2 W4 — 资产配置框架 + 再平衡提醒（✅ 完成）
   - 新增 23 个测试（94 → 117），117/117 全绿 ✅
   - 新文件 domain 层零 infra import ✅（不变式 #9 + #10 达成）
   - allocation_service.py 全部纯函数，无 I/O 无副作用
+- [x] 2026-05-10: **M3 W1 决策复盘（模式 B 事后复盘先上）完成：买入理由多选 + 决策质量分 + /api/decisions/review 路由**
+  - domain/models/decision.py（~240 行）— BuyReasonCategory（5 分类：基本面/技术面/情绪面/跟风/其他）、SignalLevel（green/yellow/red）、PredefinedReason（8 条预设：4 green + 1 yellow + 3 red）、BuyReason（from_predefined / from_custom）、DecisionQualityScore（四维 0-25 × 4 = 0-100）、DecisionReview（完整复盘记录）
+  - domain/protocols/decision_guard.py — DecisionGuardProtocol（save_review / get_reviews / get_review_by_id / get_review_stats），不变式 #11 达成
+  - domain/services/decision_guard_service.py（~210 行）— compute_quality_score()（四维纯函数：理由清晰度 / 信息来源 / 风险意识 / 时间跨度 + 红黄灯惩罚）、evaluate_reasons()（信号分类+消息生成）、get_predefined_reasons()（UI 渲染数据）
+  - use_cases/review_decision.py（~175 行）— submit_decision_review（解析理由+计算分数+构建记录）/ save_review_to_archive（接入 decision_archive）/ get_user_reviews / get_review_statistics
+  - api/decisions.py（~160 行，4 路由）— POST /api/decisions/review + GET /review/{user_id} + GET /review/{user_id}/stats + GET /reasons
+  - main.py 注册 decisions_router（124 → 128 行，仍远低于 200 行上限）
+  - 更新 2 个 __init__.py 导出（domain/models + domain/protocols）
+  - 新增 24 个测试（117 → 141），141/141 全绿 ✅
+  - 新文件 domain 层零 infra import ✅（不变式 #9 + #10 达成）
+  - decision_guard_service.py 全部纯函数，无 I/O 无副作用
+  - 决策质量分公式：score = (clarity + source + risk + horizon) - red*10 - yellow*5, floor 10
+- [x] 2026-05-10: **M3 W2 模式 A 事前提示 + 7 点清单完整计算完成：checklist engine + /api/decisions/checklist 路由**
+  - domain/models/checklist.py（~120 行）— ChecklistItem（item_id / label_zh / score 0-10 / passed / is_red_light / detail）+ ChecklistResult（7 items / total_score / max_score=70 / passed / blocked / red_light_count / recommendation）+ CHECKLIST_PASS_THRESHOLD=42
+  - domain/rule_engine/checklist.py（~250 行）— run_checklist()：7 项纯函数评分引擎（应急金/四大险/集中度/3年期限/理由理性/仓位控制/冷静期），消费 RiskDefaults 阈值
+  - use_cases/run_checklist.py（~140 行）— run_pre_trade_checklist（解析理由→evaluate_reasons→run_checklist→生成警告）/ get_checklist_items_description（UI 数据）
+  - api/decisions.py 新增 2 路由（4→6 路由）— POST /api/decisions/checklist + GET /api/decisions/checklist/items
+  - main.py 128 行不变（复用已注册的 decisions_router）
+  - 更新 2 个 __init__.py 导出（domain/models + domain/rule_engine）
+  - 消费 M3 W1 的 evaluate_reasons() 红灯计数 → 注入清单第 5 项评分
+  - 新增 20 个测试（141 → 161），161/161 全绿 ✅
+  - 新文件 domain 层零 infra import ✅（不变式 #9 + #10 达成）
+  - checklist.py 全部纯函数，仅引用 defaults.py 阈值常量（不变式 #12）
 
 ## 进行中
 - 无
@@ -144,7 +167,8 @@ M2 W4 — 资产配置框架 + 再平衡提醒（✅ 完成）
 - 无
 
 ## 下次会话计划
-- M3 W1: 7 点决策清单（事前/事后双模式）— 读 07 + 03
+- M3 W3: 凌晨工厂接入决策质量分月度报告 — 读 05 + 07
+- M3 W4: 前端交易录入表单集成复盘 + 清单入口
 - 持续: services/ 层 akshare 直调逐步迁入 infra/data_source（绞杀者模式）
 - 持续: 调用方逐步直接 import 新模块（替代 shim 重导出）后删除 services/agent_memory.py
 
@@ -365,3 +389,48 @@ M2 W4 — 资产配置框架 + 再平衡提醒（✅ 完成）
   - 🟡 建议评估：M3 W1 七点清单第 7 条（配比偏离 >10%）将直接消费 allocation_service.analyze_deviation()
   - 🟡 建议评估：07 决策清单第 3 条（集中度 >25%/40%）将消费 RiskDefaults 阈值
   - 🟡 建议评估：05 凌晨工厂 night_worker_pipeline 将调用 compute_target_allocation + analyze_deviation 出报告
+
+### 2026-05-10
+**会话 13**（M3 W1 决策复盘 — 模式 B 事后复盘先上）
+- 任务：买入理由多选组件 + 决策质量分计算 + /api/decisions/review 路由
+- 产出：
+  - domain/models/decision.py（~240 行）— BuyReasonCategory（5 分类）+ SignalLevel（3 级）+ PredefinedReason（8 条预设）+ BuyReason（from_predefined/from_custom）+ DecisionQualityScore（四维 0-25）+ DecisionReview（完整复盘记录）
+  - domain/protocols/decision_guard.py — DecisionGuardProtocol（save_review / get_reviews / get_review_by_id / get_review_stats）
+  - domain/services/decision_guard_service.py（~210 行）— compute_quality_score / evaluate_reasons / get_predefined_reasons，全部纯函数
+  - use_cases/review_decision.py（~175 行）— submit_decision_review / save_review_to_archive / get_user_reviews / get_review_statistics
+  - api/decisions.py（~160 行，4 路由）— POST /api/decisions/review + GET /review/{user_id} + GET /review/{user_id}/stats + GET /reasons
+  - main.py 128 行（+4 行 include_router，仍远低于 200 行上限）
+  - 更新 2 个 __init__.py 导出（domain/models + domain/protocols）
+  - 新增 24 个测试（117 → 141），141/141 全绿
+- 状态：✅ 完成
+- 影响面：
+  - 🟢 确认无影响：tests/test_skeleton_m1.py 141/141 通过（原 117 + 新 24）
+  - 🟢 确认无影响：原有 213 路由 URL 路径不变，前端零改动
+  - 🟢 确认无影响：domain 层零 infra import，不变式 #9/#10 保持
+  - 🟢 确认无影响：decision_guard_service.py 纯函数无副作用
+  - 🟢 确认无影响：接入现有 decision_archive.add_decision()，格式兼容（新增 type="review" 字段）
+  - 🔴 必须同步评估：无（本次为全新模块，下游 M5 归因统计依赖 PREDEFINED_REASONS 枚举）
+  - 🟡 建议评估：M3 W2 模式 A（事前提示）将消费 decision_guard_service.evaluate_reasons() 的红灯计数
+  - 🟡 建议评估：M5 复盘归因将读 decision_archive 中 type="review" 记录，依赖 quality_score 和 reasons 结构
+  - 🟡 建议评估：07 买入理由选项如有增删 → 决策日志 schema 需同步（见 ANCHOR 改动传播表）
+
+**会话 14**（M3 W2 模式 A 事前提示 + 7 点清单完整计算）
+- 任务：7 点清单评分引擎 + /api/decisions/checklist 路由 + 消费 evaluate_reasons() 红灯计数
+- 产出：
+  - domain/models/checklist.py（~120 行）— ChecklistItem + ChecklistResult frozen dataclass + CHECKLIST_PASS_THRESHOLD=42
+  - domain/rule_engine/checklist.py（~250 行）— run_checklist()：7 项纯函数评分引擎
+  - use_cases/run_checklist.py（~140 行）— run_pre_trade_checklist + get_checklist_items_description
+  - api/decisions.py 新增 2 路由（4→6 路由）— POST /api/decisions/checklist + GET /checklist/items
+  - 更新 2 个 __init__.py 导出（domain/models + domain/rule_engine）
+  - 新增 20 个测试（141 → 161），161/161 全绿
+- 状态：✅ 完成
+- 影响面：
+  - 🟢 确认无影响：tests/test_skeleton_m1.py 161/161 通过（原 141 + 新 20）
+  - 🟢 确认无影响：原有 217 路由 URL 路径不变（新增 2 路由无冲突）
+  - 🟢 确认无影响：domain 层零 infra import，不变式 #9/#10 保持
+  - 🟢 确认无影响：main.py 128 行不变（复用 decisions_router，无新注册）
+  - 🟢 确认无影响：消费 M3 W1 的 evaluate_reasons() 是正常 use_case→domain 调用，无 cross-import
+  - 🔴 必须同步评估：无（本次为全新模块，下游暂无消费方）
+  - 🟡 建议评估：M3 W3 凌晨工厂将调用 run_checklist 生成月度报告
+  - 🟡 建议评估：清单阈值来自 RiskDefaults（03 defaults.py），如改 SINGLE_STOCK_MAX 等需重跑清单测试
+  - 🟡 建议评估：07 清单新增/删除一条 → checklist.py 需同步改（当前 7 条写死，未来可配置化）

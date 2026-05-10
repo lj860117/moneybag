@@ -4,7 +4,7 @@
 M1 W2 完成：199 路由全部拆到 api/*.py，本文件只保留：
   - FastAPI 实例初始化
   - 中间件（CORS / GZip）
-  - 23 个 include_router（P1 × 10 + P2 × 5 + P3 × 6 + M2W2 × 1 + M2W3 × 1）
+  - 24 个 include_router（P1 × 10 + P2 × 5 + P3 × 6 + M2 × 3）
   - 企业微信 / Profiles 旧 router 挂载
   - 静态文件服务（前后端一体部署）
 """
@@ -100,6 +100,10 @@ app.include_router(balance_sheet_router)
 # ---- M2 W4: 资产配置框架（4 路由）----
 from api.allocation import router as allocation_router
 app.include_router(allocation_router)
+
+# ---- M3 W1: 决策复盘（4 路由）----
+from api.decisions import router as decisions_router
+app.include_router(decisions_router)
 
 # ---- 静态文件服务（部署时前后端一体）----
 FRONTEND_DIR = Path(__file__).resolve().parent.parent  # moneybag/

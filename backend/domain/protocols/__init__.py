@@ -16,6 +16,7 @@ from domain.protocols.llm_client import LLMClientProtocol
 from domain.protocols.data_source import DataSourceProtocol
 from domain.protocols.family_profile import FamilyProfileProtocol
 from domain.protocols.balance_sheet import BalanceSheetProtocol
+from domain.protocols.decision_guard import DecisionGuardProtocol
 
 __all__ = [
     "CacheProtocol",
@@ -24,4 +25,5 @@ __all__ = [
     "DataSourceProtocol",
     "FamilyProfileProtocol",
     "BalanceSheetProtocol",
+    "DecisionGuardProtocol",
 ]

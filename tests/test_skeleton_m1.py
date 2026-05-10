@@ -1617,3 +1617,649 @@ def test_allocation_api_router_importable():
     assert router is not None
     # Verify it's a FastAPI router
     assert hasattr(router, "routes")
+
+
+# ============================================================
+# M3 W1: Decision Review (Mode B — post-trade review)
+# ============================================================
+
+# ---- Decision models importable ----
+
+def test_decision_models_importable():
+    """Decision models should be importable from domain.models."""
+    from domain.models import (
+        BuyReason,
+        BuyReasonCategory,
+        DecisionQualityScore,
+        DecisionReview,
+        PREDEFINED_REASONS,
+        SignalLevel,
+    )
+    assert BuyReason is not None
+    assert BuyReasonCategory is not None
+    assert DecisionQualityScore is not None
+    assert DecisionReview is not None
+    assert len(PREDEFINED_REASONS) == 8
+    assert SignalLevel.RED.value == "red"
+
+
+def test_buy_reason_category_values():
+    """BuyReasonCategory should have 5 values matching design doc."""
+    from domain.models.decision import BuyReasonCategory
+    categories = [c.value for c in BuyReasonCategory]
+    assert "fundamental" in categories
+    assert "technical" in categories
+    assert "emotional" in categories
+    assert "follow" in categories
+    assert "other" in categories
+    assert len(categories) == 5
+
+
+def test_predefined_reasons_have_correct_signals():
+    """Predefined reasons should have correct signal levels per design doc."""
+    from domain.models.decision import PREDEFINED_REASONS, SignalLevel
+    # Count by signal type
+    reds = [r for r in PREDEFINED_REASONS if r.signal == SignalLevel.RED]
+    yellows = [r for r in PREDEFINED_REASONS if r.signal == SignalLevel.YELLOW]
+    greens = [r for r in PREDEFINED_REASONS if r.signal == SignalLevel.GREEN]
+    # Design doc: 3 red (momentum_chase, hot_news, fomo), 1 yellow (averaging_down), 4 green
+    assert len(reds) == 3
+    assert len(yellows) == 1
+    assert len(greens) == 4
+
+
+def test_buy_reason_from_predefined():
+    """BuyReason.from_predefined() should resolve signal from REASON_BY_ID."""
+    from domain.models.decision import BuyReason
+    reason = BuyReason.from_predefined("momentum_chase")
+    assert reason.reason_id == "momentum_chase"
+    assert reason.signal == "red"
+    assert reason.category == "emotional"
+
+
+def test_buy_reason_from_custom():
+    """BuyReason.from_custom() should create green-signal custom reason."""
+    from domain.models.decision import BuyReason
+    reason = BuyReason.from_custom("我研究了这个公司三个月", category="fundamental")
+    assert reason.custom_text == "我研究了这个公司三个月"
+    assert reason.signal == "green"
+    assert reason.category == "fundamental"
+
+
+def test_decision_quality_score_frozen():
+    """DecisionQualityScore should be frozen (immutable)."""
+    from domain.models.decision import DecisionQualityScore
+    score = DecisionQualityScore(total=75, grade="good")
+    with pytest.raises(Exception):  # FrozenInstanceError
+        score.total = 80  # type: ignore
+
+
+def test_decision_quality_score_round_trip():
+    """DecisionQualityScore should round-trip through to_dict/from_dict."""
+    from domain.models.decision import DecisionQualityScore
+    original = DecisionQualityScore(
+        reason_clarity=20,
+        info_source=18,
+        risk_awareness=22,
+        time_horizon=15,
+        total=65,
+        red_flags=1,
+        yellow_flags=0,
+        grade="good",
+    )
+    d = original.to_dict()
+    restored = DecisionQualityScore.from_dict(d)
+    assert restored.total == 65
+    assert restored.grade == "good"
+    assert restored.red_flags == 1
+
+
+def test_decision_review_frozen():
+    """DecisionReview should be frozen (immutable)."""
+    from domain.models.decision import DecisionReview
+    review = DecisionReview(id="test_1", user_id="u1")
+    with pytest.raises(Exception):  # FrozenInstanceError
+        review.id = "new_id"  # type: ignore
+
+
+def test_decision_review_round_trip():
+    """DecisionReview should round-trip through to_dict/from_dict."""
+    from domain.models.decision import BuyReason, DecisionQualityScore, DecisionReview
+    original = DecisionReview(
+        id="rev_123",
+        user_id="user_abc",
+        trade_time="2026-05-10T10:00:00",
+        review_time="2026-05-10T10:30:00",
+        asset_code="600519",
+        asset_name="贵州茅台",
+        action="buy",
+        amount=50000.0,
+        reasons=[
+            BuyReason.from_predefined("valuation_low"),
+            BuyReason.from_custom("长期看好白酒行业"),
+        ],
+        quality_score=DecisionQualityScore(total=75, grade="good"),
+        notes="定投补仓",
+    )
+    d = original.to_dict()
+    restored = DecisionReview.from_dict(d)
+    assert restored.id == "rev_123"
+    assert restored.asset_code == "600519"
+    assert restored.amount == 50000.0
+    assert len(restored.reasons) == 2
+    assert restored.reasons[0].reason_id == "valuation_low"
+    assert restored.reasons[1].custom_text == "长期看好白酒行业"
+    assert restored.quality_score.total == 75
+
+
+# ---- DecisionGuardProtocol ----
+
+def test_decision_guard_protocol_importable():
+    """DecisionGuardProtocol should be importable from domain.protocols."""
+    from domain.protocols import DecisionGuardProtocol
+    assert DecisionGuardProtocol is not None
+
+
+def test_decision_guard_protocol_runtime_checkable():
+    """DecisionGuardProtocol should be runtime_checkable."""
+    from domain.protocols import DecisionGuardProtocol
+    # A random object should NOT satisfy the protocol
+    assert not isinstance("not_a_guard", DecisionGuardProtocol)
+
+
+# ---- Decision Guard Service ----
+
+def test_get_predefined_reasons():
+    """get_predefined_reasons() should return 8 reasons with required keys."""
+    from domain.services.decision_guard_service import get_predefined_reasons
+    reasons = get_predefined_reasons()
+    assert len(reasons) == 8
+    for r in reasons:
+        assert "id" in r
+        assert "label_zh" in r
+        assert "category" in r
+        assert "signal" in r
+
+
+def test_evaluate_reasons_counts_signals():
+    """evaluate_reasons() should count red and yellow signals correctly."""
+    from domain.models.decision import BuyReason
+    from domain.services.decision_guard_service import evaluate_reasons
+    reasons = [
+        BuyReason.from_predefined("momentum_chase"),  # red
+        BuyReason.from_predefined("fomo"),           # red
+        BuyReason.from_predefined("averaging_down"),  # yellow
+        BuyReason.from_predefined("valuation_low"),   # green
+    ]
+    red, yellow, messages = evaluate_reasons(reasons)
+    assert red == 2
+    assert yellow == 1
+    assert len(messages) == 3  # 2 red + 1 yellow messages
+
+
+def test_compute_quality_score_all_green():
+    """Quality score with all green reasons should be high."""
+    from domain.models.decision import BuyReason
+    from domain.services.decision_guard_service import compute_quality_score
+    reasons = [
+        BuyReason.from_predefined("valuation_low"),
+        BuyReason.from_predefined("allocation_gap"),
+        BuyReason.from_predefined("dca_plan"),
+    ]
+    score = compute_quality_score(
+        reasons=reasons,
+        has_emergency_fund=True,
+        concentration_ok=True,
+        money_not_needed_3y=True,
+        days_since_last_trade=90,
+    )
+    assert score.total >= 70
+    assert score.red_flags == 0
+    assert score.yellow_flags == 0
+    assert score.grade in ("good", "excellent")
+
+
+def test_compute_quality_score_all_red():
+    """Quality score with all red reasons should be low."""
+    from domain.models.decision import BuyReason
+    from domain.services.decision_guard_service import compute_quality_score
+    reasons = [
+        BuyReason.from_predefined("momentum_chase"),  # red
+        BuyReason.from_predefined("hot_news"),       # red
+        BuyReason.from_predefined("fomo"),            # red
+    ]
+    score = compute_quality_score(
+        reasons=reasons,
+        has_emergency_fund=False,
+        concentration_ok=False,
+        money_not_needed_3y=False,
+        days_since_last_trade=5,
+    )
+    assert score.total <= 30
+    assert score.red_flags == 3
+    assert score.grade == "poor"
+
+
+def test_compute_quality_score_no_reasons():
+    """Quality score with no reasons should be poor."""
+    from domain.services.decision_guard_service import compute_quality_score
+    score = compute_quality_score(
+        reasons=[],
+        has_emergency_fund=True,
+        concentration_ok=True,
+        money_not_needed_3y=True,
+    )
+    assert score.total == 20
+    assert score.grade == "poor"
+
+
+def test_compute_quality_score_risk_dimension():
+    """Risk awareness dimension should penalize missing safety nets."""
+    from domain.models.decision import BuyReason
+    from domain.services.decision_guard_service import compute_quality_score
+    reasons = [BuyReason.from_predefined("valuation_low")]
+
+    # All risk checks pass
+    score_safe = compute_quality_score(
+        reasons=reasons,
+        has_emergency_fund=True,
+        concentration_ok=True,
+        money_not_needed_3y=True,
+    )
+    # All risk checks fail
+    score_risky = compute_quality_score(
+        reasons=reasons,
+        has_emergency_fund=False,
+        concentration_ok=False,
+        money_not_needed_3y=False,
+    )
+    # Risk-aware should score higher
+    assert score_safe.risk_awareness > score_risky.risk_awareness
+    assert score_safe.total > score_risky.total
+
+
+def test_compute_quality_score_time_horizon():
+    """Time horizon dimension should penalize frequent trading."""
+    from domain.models.decision import BuyReason
+    from domain.services.decision_guard_service import compute_quality_score
+    reasons = [BuyReason.from_predefined("valuation_low")]
+
+    # Long interval
+    score_long = compute_quality_score(reasons=reasons, days_since_last_trade=90)
+    # Short interval
+    score_short = compute_quality_score(reasons=reasons, days_since_last_trade=10)
+    assert score_long.time_horizon > score_short.time_horizon
+
+
+# ---- Use Case: review_decision ----
+
+def test_submit_decision_review_basic():
+    """submit_decision_review should return a valid review + warnings."""
+    from use_cases.review_decision import submit_decision_review
+    review, warnings = submit_decision_review(
+        user_id="test_user",
+        asset_code="600519",
+        asset_name="贵州茅台",
+        action="buy",
+        amount=10000.0,
+        reason_ids=["valuation_low", "dca_plan"],
+        custom_reason_text="看好白酒复苏",
+    )
+    assert review.id.startswith("rev_")
+    assert review.asset_code == "600519"
+    assert review.quality_score.total > 0
+    assert len(review.reasons) == 3  # 2 predefined + 1 custom
+
+
+def test_submit_decision_review_red_flags_generate_warnings():
+    """Red flag reasons should generate warning messages."""
+    from use_cases.review_decision import submit_decision_review
+    review, warnings = submit_decision_review(
+        user_id="test_user",
+        asset_code="300750",
+        asset_name="宁德时代",
+        action="buy",
+        amount=20000.0,
+        reason_ids=["momentum_chase", "fomo"],
+    )
+    # Should have red flag warnings
+    red_warnings = [w for w in warnings if "红灯" in w]
+    assert len(red_warnings) == 2
+    assert review.quality_score.red_flags == 2
+
+
+def test_submit_decision_review_no_reasons_warning():
+    """No reasons should produce a low-score warning."""
+    from use_cases.review_decision import submit_decision_review
+    review, warnings = submit_decision_review(
+        user_id="test_user",
+        asset_code="000001",
+        asset_name="平安银行",
+        action="buy",
+        amount=5000.0,
+        reason_ids=[],
+        custom_reason_text="",
+    )
+    assert any("未选择" in w for w in warnings)
+    assert review.quality_score.grade == "poor"
+
+
+# ---- API Router ----
+
+def test_decisions_api_router_importable():
+    """Decisions API router should be importable."""
+    from api.decisions import router
+    assert router is not None
+    assert hasattr(router, "routes")
+
+
+def test_decisions_api_router_has_review_endpoint():
+    """Decisions API router should have /api/decisions/review POST endpoint."""
+    from api.decisions import router
+    paths = [r.path for r in router.routes if hasattr(r, "path")]
+    assert "/api/decisions/review" in paths
+
+
+def test_decisions_api_router_has_reasons_endpoint():
+    """Decisions API router should have /api/decisions/reasons GET endpoint."""
+    from api.decisions import router
+    paths = [r.path for r in router.routes if hasattr(r, "path")]
+    assert "/api/decisions/reasons" in paths
+
+
+# ============================================================
+# M3 W2: Pre-trade 7-Point Checklist (Mode A)
+# ============================================================
+
+# ---- Checklist models ----
+
+def test_checklist_models_importable():
+    """Checklist models should be importable from domain.models."""
+    from domain.models import (
+        ChecklistItem,
+        ChecklistResult,
+        CHECKLIST_PASS_THRESHOLD,
+        CHECKLIST_MAX_SCORE,
+    )
+    assert ChecklistItem is not None
+    assert ChecklistResult is not None
+    assert CHECKLIST_PASS_THRESHOLD == 42
+    assert CHECKLIST_MAX_SCORE == 70
+
+
+def test_checklist_item_frozen():
+    """ChecklistItem should be frozen."""
+    from domain.models.checklist import ChecklistItem
+    item = ChecklistItem(item_id="test", score=8)
+    with pytest.raises(Exception):
+        item.score = 5  # type: ignore
+
+
+def test_checklist_item_round_trip():
+    """ChecklistItem should round-trip through to_dict/from_dict."""
+    from domain.models.checklist import ChecklistItem
+    item = ChecklistItem(
+        item_id="emergency_fund",
+        label_zh="应急金是否充足",
+        score=7,
+        passed=True,
+        is_red_light=False,
+        detail="应急金尚可",
+    )
+    d = item.to_dict()
+    restored = ChecklistItem.from_dict(d)
+    assert restored.item_id == "emergency_fund"
+    assert restored.score == 7
+    assert restored.passed is True
+
+
+def test_checklist_result_frozen():
+    """ChecklistResult should be frozen."""
+    from domain.models.checklist import ChecklistResult
+    result = ChecklistResult(total_score=55, passed=True)
+    with pytest.raises(Exception):
+        result.total_score = 60  # type: ignore
+
+
+def test_checklist_result_round_trip():
+    """ChecklistResult should round-trip through to_dict/from_dict."""
+    from domain.models.checklist import ChecklistItem, ChecklistResult
+    result = ChecklistResult(
+        items=[ChecklistItem(item_id="test", score=8, passed=True)],
+        total_score=56,
+        max_score=70,
+        passed=True,
+        red_light_count=0,
+        recommendation="通过",
+    )
+    d = result.to_dict()
+    restored = ChecklistResult.from_dict(d)
+    assert restored.total_score == 56
+    assert restored.passed is True
+    assert len(restored.items) == 1
+    assert restored.items[0].item_id == "test"
+
+
+# ---- Checklist engine ----
+
+def test_checklist_engine_importable():
+    """run_checklist should be importable from domain.rule_engine."""
+    from domain.rule_engine import run_checklist
+    assert callable(run_checklist)
+
+
+def test_checklist_all_pass():
+    """With all good inputs, checklist should pass with high score."""
+    from domain.rule_engine.checklist import run_checklist
+    result = run_checklist(
+        emergency_months=8.0,
+        insurance_count=4,
+        single_asset_pct=0.15,
+        single_industry_pct=0.25,
+        money_needed_within_3y=False,
+        red_flag_count=0,
+        yellow_flag_count=0,
+        trade_pct_of_investable=0.10,
+        days_since_last_trade=60,
+    )
+    assert result.passed is True
+    assert result.blocked is False
+    assert result.total_score == 70  # perfect score
+    assert result.red_light_count == 0
+    assert len(result.items) == 7
+
+
+def test_checklist_all_fail():
+    """With all bad inputs, checklist should fail with low score."""
+    from domain.rule_engine.checklist import run_checklist
+    result = run_checklist(
+        emergency_months=1.0,
+        insurance_count=1,
+        single_asset_pct=0.40,
+        single_industry_pct=0.50,
+        money_needed_within_3y=True,
+        red_flag_count=3,
+        yellow_flag_count=0,
+        trade_pct_of_investable=0.60,
+        days_since_last_trade=3,
+    )
+    assert result.passed is False
+    assert result.blocked is True
+    assert result.total_score < 42  # below threshold
+    assert result.red_light_count >= 4  # multiple red lights
+
+
+def test_checklist_emergency_fund_scoring():
+    """Emergency fund check should score correctly at different levels."""
+    from domain.rule_engine.checklist import run_checklist
+    # 6+ months = 10
+    r1 = run_checklist(emergency_months=8.0)
+    assert r1.items[0].score == 10
+    assert r1.items[0].passed is True
+
+    # 4-6 months = 7
+    r2 = run_checklist(emergency_months=5.0)
+    assert r2.items[0].score == 7
+
+    # < 2 months = 1 (red light)
+    r3 = run_checklist(emergency_months=1.5)
+    assert r3.items[0].score == 1
+    assert r3.items[0].is_red_light is True
+
+
+def test_checklist_concentration_scoring():
+    """Concentration check should use RiskDefaults thresholds (25%/40%)."""
+    from domain.rule_engine.checklist import run_checklist
+    # Both OK
+    r1 = run_checklist(single_asset_pct=0.20, single_industry_pct=0.30)
+    assert r1.items[2].score == 10
+
+    # Asset slightly over (within 5%)
+    r2 = run_checklist(single_asset_pct=0.28, single_industry_pct=0.30)
+    assert r2.items[2].score == 6
+
+    # Both over
+    r3 = run_checklist(single_asset_pct=0.35, single_industry_pct=0.50)
+    assert r3.items[2].score == 1
+    assert r3.items[2].is_red_light is True
+
+
+def test_checklist_reason_rational_scoring():
+    """Reason rational check should consume red/yellow flag counts."""
+    from domain.rule_engine.checklist import run_checklist
+    # 0 flags = 10
+    r1 = run_checklist(red_flag_count=0, yellow_flag_count=0)
+    assert r1.items[4].score == 10
+
+    # 1 red = 4
+    r2 = run_checklist(red_flag_count=1, yellow_flag_count=0)
+    assert r2.items[4].score == 4
+
+    # 2+ red = 1 (red light)
+    r3 = run_checklist(red_flag_count=2, yellow_flag_count=0)
+    assert r3.items[4].score == 1
+    assert r3.items[4].is_red_light is True
+
+
+def test_checklist_cooldown_scoring():
+    """Cooldown check should score based on days since last trade."""
+    from domain.rule_engine.checklist import run_checklist
+    # >= 30 days = 10
+    r1 = run_checklist(days_since_last_trade=45)
+    assert r1.items[6].score == 10
+
+    # < 7 days = 2 (red light)
+    r2 = run_checklist(days_since_last_trade=3)
+    assert r2.items[6].score == 2
+    assert r2.items[6].is_red_light is True
+
+
+def test_checklist_pass_threshold():
+    """Checklist should pass at exactly 42/70 and fail at 41/70."""
+    from domain.models.checklist import CHECKLIST_PASS_THRESHOLD
+    assert CHECKLIST_PASS_THRESHOLD == 42
+
+
+def test_checklist_not_all_in_scoring():
+    """Not-all-in check should penalize large single trades."""
+    from domain.rule_engine.checklist import run_checklist
+    # <= 10% = 10
+    r1 = run_checklist(trade_pct_of_investable=0.05)
+    assert r1.items[5].score == 10
+
+    # 10-20% = 8
+    r2 = run_checklist(trade_pct_of_investable=0.15)
+    assert r2.items[5].score == 8
+
+    # > 50% = 1 (red light)
+    r3 = run_checklist(trade_pct_of_investable=0.60)
+    assert r3.items[5].score == 1
+    assert r3.items[5].is_red_light is True
+
+
+# ---- Use Case: run_checklist ----
+
+def test_run_pre_trade_checklist_basic():
+    """run_pre_trade_checklist should return ChecklistResult + warnings."""
+    from use_cases.run_checklist import run_pre_trade_checklist
+    result, warnings = run_pre_trade_checklist(
+        reason_ids=["valuation_low", "dca_plan"],
+        emergency_months=7.0,
+        insurance_count=4,
+        single_asset_pct=0.10,
+        single_industry_pct=0.20,
+        money_needed_within_3y=False,
+        trade_pct_of_investable=0.10,
+        days_since_last_trade=40,
+    )
+    assert result.passed is True
+    assert result.total_score == 70
+    assert len(result.items) == 7
+
+
+def test_run_pre_trade_checklist_with_red_flags():
+    """Checklist with red-flag reasons should reduce reason_rational score."""
+    from use_cases.run_checklist import run_pre_trade_checklist
+    result, warnings = run_pre_trade_checklist(
+        reason_ids=["momentum_chase", "fomo"],
+        emergency_months=7.0,
+        insurance_count=4,
+        single_asset_pct=0.10,
+        single_industry_pct=0.20,
+        money_needed_within_3y=False,
+        trade_pct_of_investable=0.10,
+        days_since_last_trade=40,
+    )
+    # reason_rational item should have low score
+    reason_item = [i for i in result.items if i.item_id == "reason_rational"][0]
+    assert reason_item.score == 1  # 2+ red flags
+    assert reason_item.is_red_light is True
+    # Should have warning messages
+    assert any("红灯" in w for w in warnings)
+
+
+def test_run_pre_trade_checklist_blocked():
+    """Checklist with many failures should set blocked=True."""
+    from use_cases.run_checklist import run_pre_trade_checklist
+    result, warnings = run_pre_trade_checklist(
+        reason_ids=["momentum_chase", "fomo", "hot_news"],
+        emergency_months=1.0,
+        insurance_count=1,
+        single_asset_pct=0.35,
+        single_industry_pct=0.50,
+        money_needed_within_3y=True,
+        trade_pct_of_investable=0.55,
+        days_since_last_trade=2,
+    )
+    assert result.blocked is True
+    assert result.passed is False
+    assert any("未通过" in w or "暂缓" in w for w in warnings)
+
+
+def test_get_checklist_items_description():
+    """get_checklist_items_description should return 7 items."""
+    from use_cases.run_checklist import get_checklist_items_description
+    items = get_checklist_items_description()
+    assert len(items) == 7
+    for item in items:
+        assert "item_id" in item
+        assert "label_zh" in item
+        assert "description" in item
+
+
+# ---- API: Checklist endpoints ----
+
+def test_decisions_api_has_checklist_endpoint():
+    """Decisions API router should have /api/decisions/checklist POST endpoint."""
+    from api.decisions import router
+    paths = [r.path for r in router.routes if hasattr(r, "path")]
+    assert "/api/decisions/checklist" in paths
+
+
+def test_decisions_api_has_checklist_items_endpoint():
+    """Decisions API router should have /api/decisions/checklist/items GET endpoint."""
+    from api.decisions import router
+    paths = [r.path for r in router.routes if hasattr(r, "path")]
+    assert "/api/decisions/checklist/items" in paths
+
+

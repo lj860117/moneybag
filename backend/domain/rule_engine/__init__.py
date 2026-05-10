@@ -14,6 +14,7 @@ from domain.rule_engine.defaults import (
     RebalanceDefaults,
     StaleDataDefaults,
 )
+from domain.rule_engine.checklist import run_checklist
 
 __all__ = [
     "AllocationDefaults",
@@ -21,4 +22,5 @@ __all__ = [
     "ScoringDefaults",
     "RebalanceDefaults",
     "StaleDataDefaults",
+    "run_checklist",
 ]
