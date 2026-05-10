@@ -673,6 +673,9 @@ checkTradingHours();
   // --- 持仓是否为空（判断是否进入"空仓模式"）---
   window._v6IsEmptyHoldings = function(){
     try {
+      // 优先信任服务端持仓检查结果（异步写入的 moneybag_has_holdings 标志）
+      const flagKey = (typeof _uk === 'function') ? _uk('moneybag_has_holdings') : 'moneybag_has_holdings';
+      if (localStorage.getItem(flagKey) === '1') return false;
       const p = (typeof loadPortfolio === 'function') ? (loadPortfolio() || {}) : {};
       const txns = (typeof loadTxns === 'function') ? (loadTxns() || []) : [];
       const assets = (typeof loadAssets === 'function') ? (loadAssets() || []) : [];

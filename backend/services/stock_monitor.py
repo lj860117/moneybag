@@ -311,10 +311,10 @@ def calc_stock_indicators(code: str) -> dict:
         from infra.data_source.market.stocks import get_stock_daily_hist
         df = get_stock_daily_hist(symbol=code, period="daily",
                                 start_date=(datetime.now().replace(day=1) -
-                                            __import__("datetime").timedelta(days=120)).strftime("%Y%m%d"),
+                                            __import__("datetime").timedelta(days=180)).strftime("%Y%m%d"),
                                 end_date=datetime.now().strftime("%Y%m%d"),
                                 adjust="qfq")
-        if df is None or len(df) < 30:
+        if df is None or len(df) < 5:
             _monitor_cache.set(cache_key, result, ttl=_MONITOR_TTL)
             return result
 
@@ -367,7 +367,7 @@ def calc_stock_indicators(code: str) -> dict:
     except Exception as e:
         print(f"[MONITOR] {code} indicators fail: {e}")
 
-    _monitor_cache.set(cache_key, result)
+    _monitor_cache.set(cache_key, result, ttl=1800)
     return result
 
 

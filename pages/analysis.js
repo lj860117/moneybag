@@ -550,6 +550,7 @@ el.innerHTML=`<div class="dashboard-card" style="overflow:hidden">
 <div style="display:flex;gap:8px;margin-bottom:16px">
 <button onclick="runStewardAsk()" style="flex:2;padding:12px;border-radius:10px;border:none;background:var(--accent);color:#fff;font-weight:700;cursor:pointer;font-size:14px">🤖 管家分析</button>
 <button onclick="runStewardBriefing()" style="flex:1;padding:12px;border-radius:10px;border:none;background:var(--card);border:1px solid var(--border);color:var(--text);font-weight:600;cursor:pointer;font-size:12px">📋 简报</button>
+<button onclick="runBriefingHistory()" style="flex:1;padding:12px;border-radius:10px;border:none;background:var(--card);border:1px solid var(--border);color:var(--text);font-weight:600;cursor:pointer;font-size:12px">📚 往期</button>
 </div>
 <div id="stewardResult"></div>
 <div style="margin-top:16px;padding-top:16px;border-top:1px solid rgba(148,163,184,.1)">
@@ -612,6 +613,29 @@ ${d.top_signal?`<div style="margin-top:8px;font-size:13px;padding:8px;background
 <div style="font-size:11px;color:var(--text3);margin-top:8px">${d.elapsed||0}s · 0次LLM</div></div>`;
 el.innerHTML=html;loadRegime();
 }catch(e){el.innerHTML=`<div style="color:var(--text2);text-align:center;padding:12px">简报获取失败: ${e.message}</div>`}}
+
+async function runBriefingHistory(){
+const el=document.getElementById('stewardResult');if(!el)return;
+el.innerHTML='<div style="text-align:center;padding:20px;color:var(--text2)"><div class="loading-spinner" style="width:24px;height:24px;margin:0 auto 8px;border-width:2px"></div>加载往期晨报...</div>';
+try{const uid=getProfileId()||getUserId();
+const r=await fetch(API_BASE+'/steward/briefing-history?userId='+encodeURIComponent(uid)+'&days=7',{signal:AbortSignal.timeout(15000)});
+const d=await r.json();
+const items=d.history||[];
+if(!items.length){el.innerHTML='<div style="text-align:center;padding:24px;color:var(--text2)">暂无往期晨报记录<br><span style="font-size:12px;opacity:0.6">管家每天生成的简报会保留7天</span></div>';return}
+const iconMap={'trending_bull':'📈','oscillating':'📊','high_vol_bear':'📉','rotation':'🔄'};
+let html='<div class="dashboard-card-title" style="margin-bottom:12px">📚 往期晨报 (近7天)</div>';
+items.forEach(b=>{
+const dateStr=b.date||'';
+const dateLabel=dateStr.length===8?`${dateStr.slice(0,4)}-${dateStr.slice(4,6)}-${dateStr.slice(6,8)}`:dateStr;
+html+=`<div style="padding:12px;background:var(--bg2);border-radius:12px;margin-bottom:8px">
+<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:4px">
+<span style="font-size:13px;font-weight:700">${iconMap[b.regime]||'📊'} ${dateLabel}</span>
+<span style="font-size:11px;color:var(--text2)">🛡️ ${b.risk_level||'normal'} · ${b.signals_count||0}条信号</span></div>
+<div style="font-size:12px;color:var(--text1)">${b.one_line||b.regime_description||''}</div>
+${b.top_signal?`<div style="font-size:12px;color:var(--text2);margin-top:4px">💡 ${b.top_signal}</div>`:''}
+</div>`;});
+el.innerHTML=html;
+}catch(e){el.innerHTML=`<div style="color:var(--text2);text-align:center;padding:12px">加载失败: ${e.message}</div>`}}
 
 // ---- 📋 周报 Tab ----
 async function renderWeeklyReport(el){

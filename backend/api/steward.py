@@ -42,6 +42,16 @@ def steward_briefing(userId: str = ""):
     return steward.briefing(userId)
 
 
+@router.get("/api/steward/briefing-history")
+def steward_briefing_history(userId: str = "", days: int = 7):
+    """往期晨报列表（MB-005）"""
+    if not userId:
+        raise HTTPException(400, "userId required")
+    steward = get_steward()
+    items = steward.briefing_history(userId, days)
+    return {"history": items, "count": len(items)}
+
+
 @router.get("/api/steward/review")
 def steward_review(userId: str = ""):
     """管家收盘复盘（完整版，含体检）"""

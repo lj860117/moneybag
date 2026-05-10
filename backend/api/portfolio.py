@@ -516,6 +516,12 @@ def get_risk_metrics_api(req: dict):
     return calc_risk_metrics(txs)
 
 
+@router.get("/api/risk-metrics")
+def get_risk_metrics_get(userId: str = ""):
+    """GET 版本（insight.js 用 ?userId= 调用）"""
+    return get_risk_metrics_api({"userId": userId})
+
+
 @router.post("/api/risk-actions")
 def get_risk_actions_api(req: dict):
     """风控硬阈值执行建议"""
@@ -532,6 +538,12 @@ def get_risk_actions_api(req: dict):
     except Exception:
         val_pct = 50
     return generate_risk_actions(txs, val_pct)
+
+
+@router.get("/api/risk-actions")
+def get_risk_actions_get(userId: str = ""):
+    """GET 版本（insight.js 用 ?userId= 调用）"""
+    return get_risk_actions_api({"userId": userId})
 
 
 # ---- 配置建议 ----

@@ -35,6 +35,50 @@ DATA_DIR = Path(os.environ.get("DATA_DIR",
 
 PROFILES_FILE = DATA_DIR / "profiles.json"
 
+# MB-002: 集中度预警冷却（24小时/天），文件缓存跨 cron 进程持久化
+_COOLDOWN_FILE = DATA_DIR / "_cache" / "alert_cooldown.json"
+
+
+def _load_cooldown() -> dict:
+    """读取预警冷却状态（跨进程持久化）"""
+    try:
+        if _COOLDOWN_FILE.exists():
+            return json.loads(_COOLDOWN_FILE.read_text(encoding="utf-8"))
+    except Exception:
+        pass
+    return {}
+
+
+def _save_cooldown(cooldown: dict):
+    """保存预警冷却状态"""
+    try:
+        _COOLDOWN_FILE.parent.mkdir(parents=True, exist_ok=True)
+        _COOLDOWN_FILE.write_text(json.dumps(cooldown, ensure_ascii=False), encoding="utf-8")
+    except Exception:
+        pass
+
+
+def _filter_alerts_with_cooldown(user_id: str, alerts: list) -> list:
+    """对纪律类告警（集中度/行业集中度）施加 24 小时冷却，其余保持 30 分钟冷却"""
+    import time
+    now = time.time()
+    cooldown = _load_cooldown()
+    filtered = []
+    for a in alerts:
+        alert_type = a.get("type", "unknown")
+        # 集中度类型 → 24 小时冷却
+        if alert_type in ("concentration", "industry_concentration"):
+            cd_sec = 86400
+        else:
+            cd_sec = 1800  # 其他预警 30 分钟
+        key = f"{user_id}_{alert_type}_{a.get('code', alert_type)}"
+        last_sent = cooldown.get(key, 0)
+        if now - last_sent > cd_sec:
+            filtered.append(a)
+            cooldown[key] = now
+    _save_cooldown(cooldown)
+    return filtered
+
 
 def _load_profiles() -> list:
     if PROFILES_FILE.exists():
@@ -162,9 +206,11 @@ def run_scan():
             print(f"  [信号] 推送失败: {e}")
 
         # 原有 alert 推送（保留，信号和 alert 双通道）
-        if wxwork_uid and result["alerts"]:
-            push_user_alerts(uid, wxwork_uid, result["alerts"])
-        elif result["alerts"] and not wxwork_uid:
+        # MB-002: 施加集中度 24 小时冷却，避免每 10 分钟重复推送
+        filtered_alerts = _filter_alerts_with_cooldown(uid, result["alerts"])
+        if wxwork_uid and filtered_alerts:
+            push_user_alerts(uid, wxwork_uid, filtered_alerts)
+        elif filtered_alerts and not wxwork_uid:
             print(f"  [推送] 用户 {name} 未绑定企微，跳过推送")
 
     # 保存全局最新结果（兼容旧格式）

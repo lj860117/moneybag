@@ -8,8 +8,11 @@
   briefing(user_id)        — 每日简报（精简版）
   review(user_id)          — 收盘复盘（完整+判断记录）
 """
+import json
+import os
 import time
 from datetime import datetime
+from pathlib import Path
 
 from services.decision_context import DecisionContext
 from services.pipeline_runner import PipelineRunner, PIPELINES
@@ -27,6 +30,9 @@ MODULE_META = {
     "layer": "output",
     "priority": 0,
 }
+
+# 晨报缓存目录
+_BRIEF_DIR = Path(os.environ.get("DATA_DIR", Path(__file__).parent.parent / "data")) / "briefings"
 
 
 class Steward:
@@ -125,7 +131,19 @@ class Steward:
         """
         每日简报（精简版）
         不问具体问题，只看大盘状态+持仓风险+信号
+        优先读取当日缓存（night_worker 07:30 预生成），避免重复计算
         """
+        # ---- 每日文件缓存（当日命中直接返回）----
+        today = datetime.now().strftime("%Y%m%d")
+        cache_fp = _BRIEF_DIR / f"{user_id}_{today}.json"
+        if cache_fp.exists():
+            try:
+                cached = json.loads(cache_fp.read_text(encoding="utf-8"))
+                cached["from_cache"] = True
+                return cached
+            except Exception as e:
+                print(f"[STEWARD] 读晨报缓存失败: {e}")
+
         start = time.time()
         
         ctx = DecisionContext(user_id=user_id, question="每日简报")
@@ -152,7 +170,14 @@ class Steward:
             "elapsed": ctx.elapsed_seconds,
             "timestamp": datetime.now().isoformat(),
         }
-        
+
+        # 写入当日缓存（供同日后续调用直接命中）
+        try:
+            _BRIEF_DIR.mkdir(parents=True, exist_ok=True)
+            cache_fp.write_text(json.dumps(briefing, ensure_ascii=False, indent=2), encoding="utf-8")
+        except Exception as e:
+            print(f"[STEWARD] 写晨报缓存失败: {e}")
+
         return briefing
     
     def review(self, user_id: str, force_llm: bool = True) -> dict:
@@ -225,6 +250,25 @@ class Steward:
             print(f"[STEWARD] judgment record failed: {e}")
         
         return ctx.to_user_response()
+
+    def briefing_history(self, user_id: str, days: int = 7) -> list:
+        """
+        返回最近 N 天的晨报缓存列表（MB-005 往期晨报）
+        """
+        if not _BRIEF_DIR.exists():
+            return []
+        files = sorted(_BRIEF_DIR.glob(f"{user_id}_*.json"), reverse=True)
+        result = []
+        for fp in files[:days]:
+            try:
+                data = json.loads(fp.read_text(encoding="utf-8"))
+                # fp.stem 格式：{user_id}_{YYYYMMDD}
+                date_str = fp.stem.replace(f"{user_id}_", "")
+                data["date"] = date_str
+                result.append(data)
+            except Exception as e:
+                print(f"[STEWARD] 读往期晨报失败 {fp}: {e}")
+        return result
 
 
 # ---- 辅助函数 ----

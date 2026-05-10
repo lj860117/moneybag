@@ -592,6 +592,10 @@ def screen_stocks(top_n: int = 50) -> dict:
                 continue
             if "ST" in name:
                 continue
+            # 过滤北交所股票（代码前缀 92/83，或 baostock 格式 bj.8xxxxx）
+            _code_clean = code.lower().replace("bj.", "")
+            if _code_clean.startswith("92") or _code_clean.startswith("83") or code.lower().startswith("bj."):
+                continue
             if pe is not None and (pe <= 0 or pe > 300):
                 continue
             if market_cap_yi is not None and market_cap_yi < 50:

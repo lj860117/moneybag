@@ -214,19 +214,29 @@ async def analyze_stock_holdings(req: dict = {}):
                 "https://api.deepseek.com/v1/chat/completions",
                 headers={"Authorization": f"Bearer {api_key}"},
                 json={
-                    "model": req.get("model", "deepseek-v4-max"),
+                    "model": req.get("model", "deepseek-v4-flash"),
                     "messages": [
-                    from services.analysis_history import save_analysis
-                    save_analysis(uid, "deepseek", "DeepSeek V3", "stock", reply, direction="auto")
-                except Exception as e:
-                    print(f"[HISTORY] stock analyze 存档失败: {e}")
-                return {
-                    "analysis": reply,
-                    "source": "ai",
-                    "scan": scan,
-                    "data_quality": data_quality_str,
-                    "is_trading_day": trading_day,
-                }
+                        {"role": "system", "content": system_prompt},
+                        {"role": "user", "content": user_prompt},
+                    ],
+                    "max_tokens": 2000,
+                    "temperature": 0.3,
+                },
+            )
+            resp.raise_for_status()
+            reply = resp.json()["choices"][0]["message"]["content"]
+        try:
+            from services.analysis_history import save_analysis
+            save_analysis(uid, "deepseek", "DeepSeek V4", "stock", reply, direction="auto")
+        except Exception as e:
+            print(f"[HISTORY] stock analyze 存档失败: {e}")
+        return {
+            "analysis": reply,
+            "source": "ai",
+            "scan": scan,
+            "data_quality": data_quality_str,
+            "is_trading_day": trading_day,
+        }
     except Exception as e:
         print(f"[STOCK_ANALYZE] DeepSeek fail: {e}")
 
@@ -339,17 +349,27 @@ async def analyze_fund_holdings(req: dict = {}):
                 "https://api.deepseek.com/v1/chat/completions",
                 headers={"Authorization": f"Bearer {api_key}"},
                 json={
-                    "model": req.get("model", "deepseek-v4-max"),
+                    "model": req.get("model", "deepseek-v4-flash"),
                     "messages": [
-                    from services.analysis_history import save_analysis
-                    save_analysis(uid, "deepseek", "DeepSeek V3", "fund", reply, direction="auto")
-                except Exception as e:
-                    print(f"[HISTORY] fund analyze 存档失败: {e}")
-                return {
-                    "analysis": reply,
-                    "source": "ai",
-                    "scan": scan,
-                }
+                        {"role": "system", "content": system_prompt},
+                        {"role": "user", "content": user_prompt},
+                    ],
+                    "max_tokens": 2000,
+                    "temperature": 0.3,
+                },
+            )
+            resp.raise_for_status()
+            reply = resp.json()["choices"][0]["message"]["content"]
+        try:
+            from services.analysis_history import save_analysis
+            save_analysis(uid, "deepseek", "DeepSeek V4", "fund", reply, direction="auto")
+        except Exception as e:
+            print(f"[HISTORY] fund analyze 存档失败: {e}")
+        return {
+            "analysis": reply,
+            "source": "ai",
+            "scan": scan,
+        }
     except Exception as e:
         print(f"[FUND_ANALYZE] DeepSeek fail: {e}")
 

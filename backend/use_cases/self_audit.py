@@ -191,12 +191,12 @@ def run_data_probes() -> list[dict]:
 
     # --- 行业轮动 ---
     try:
-        from services.sector_rotation import get_sector_rotation
+        from services.sector_rotation import get_sector_ranking
         def _check_sr(val):
-            if not val.get("available"):
-                return False, "available=False"
+            if not val:
+                return False, "返回空"
             return True, ""
-        results.append(_check("行业轮动", get_sector_rotation, validators=[_check_sr]))
+        results.append(_check("行业轮动", get_sector_ranking, validators=[_check_sr]))
     except Exception as e:
         results.append({"name": "行业轮动", "status": "fail", "issue": str(e), "value_summary": "", "elapsed_ms": 0})
 
@@ -417,7 +417,12 @@ def run_llm_audit(probe_results: list[dict], smoke_results: list[dict]) -> dict:
         _log(f"  LLM 审计失败: {e}")
         traceback.print_exc()
 
-    return {"available": False, "analysis": "", "issues": [], "health_score": -1}
+    # LLM 调用失败时，基于探针/冒烟结果计算兜底分
+    all_items = probe_results + smoke_results
+    fail_c = sum(1 for r in all_items if r["status"] == "fail")
+    warn_c = sum(1 for r in all_items if r["status"] == "warn")
+    fallback_score = max(0, 100 - fail_c * 10 - warn_c * 3)
+    return {"available": False, "analysis": "", "issues": [], "health_score": fallback_score}
 
 
 # ============================================================
@@ -454,12 +459,23 @@ def save_audit_report(report: dict):
 # ============================================================
 
 def push_audit_report(report: dict):
-    """把审计摘要推企微"""
+    """把审计摘要推企微（同一天只推一次，防止重复触发）"""
     try:
         from services.wxwork_push import is_configured, send_daily_report_to
         if not is_configured():
             _log("企微未配置，跳过推送")
             return
+
+        # ── 去重：当天已推送过则跳过 ──
+        report_date = report.get("date", "")
+        if AUDIT_LATEST.exists():
+            try:
+                existing = json.loads(AUDIT_LATEST.read_text(encoding="utf-8"))
+                if existing.get("pushed_date") == report_date:
+                    _log(f"今天 ({report_date}) 已推送过，跳过重复推送")
+                    return
+            except Exception:
+                pass
 
         overall = report["overall_status"]
         score = report["llm_audit"].get("health_score", "N/A")
@@ -507,6 +523,13 @@ def push_audit_report(report: dict):
 
         msg = "\n".join(lines)
         send_daily_report_to("LeiJiang", msg)
+        # 记录推送日期，防止当天重复推送
+        try:
+            data = json.loads(AUDIT_LATEST.read_text(encoding="utf-8"))
+            data["pushed_date"] = report_date
+            AUDIT_LATEST.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+        except Exception:
+            pass
         _log("企微推送完成")
     except Exception as e:
         _log(f"企微推送失败: {e}")

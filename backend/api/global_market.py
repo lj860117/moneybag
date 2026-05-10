@@ -5,6 +5,11 @@
 
 Design doc: docs/design/12-framework-refactor.md §二
 """
+import json
+import os
+import time
+from pathlib import Path
+
 from fastapi import APIRouter
 
 from services.global_market import (
@@ -42,8 +47,30 @@ def global_pe():
 
 @router.get("/api/global/snapshot")
 def global_snapshot():
-    """全球市场综合快照"""
-    return get_global_snapshot()
+    """全球市场综合快照（4小时文件缓存）"""
+    _cache_fp = Path(os.environ.get("DATA_DIR", "data")) / "_cache" / "global_snapshot.json"
+    try:
+        if _cache_fp.exists():
+            payload = json.loads(_cache_fp.read_text(encoding="utf-8"))
+            if time.time() < payload.get("expires_at", 0):
+                data = payload.get("data", {})
+                data["from_cache"] = True
+                return data
+    except Exception as e:
+        print(f"[GLOBAL_SNAPSHOT] 读文件缓存失败: {e}")
+    result = get_global_snapshot()
+    try:
+        _cache_fp.parent.mkdir(parents=True, exist_ok=True)
+        _cache_fp.write_text(
+            json.dumps(
+                {"data": result, "cached_at": time.time(), "expires_at": time.time() + 14400},
+                ensure_ascii=False,
+            ),
+            encoding="utf-8",
+        )
+    except Exception as e:
+        print(f"[GLOBAL_SNAPSHOT] 写文件缓存失败: {e}")
+    return result
 
 
 @router.get("/api/global/impact")

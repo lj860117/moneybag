@@ -43,8 +43,8 @@ def get_news_by_fund(code: str, limit: int = 3):
 
 
 @router.get("/api/news")
-def get_all_news(limit: int = 10):
-    """获取综合市场新闻"""
+def get_all_news(limit: int = 20):
+    """获取综合市场新闻（默认20条）"""
     return {"news": get_market_news(limit)}
 
 
@@ -99,19 +99,35 @@ def get_news_impact_api():
 
 @router.get("/api/news/deep-impact")
 def get_deep_news_impact():
-    """新闻深度影响分析 — DeepSeek 分析事件→行业→持仓"""
-    policy = get_policy_news(8)
-    market = get_market_news(5)
-    return {"impacts": deep_analyze_news_impact(policy + market)}
+    """新闻深度影响分析 — DeepSeek 分析事件→行业→持仓（30分钟缓存）"""
+    cached = macro_cache.get("deep_impact")
+    if cached is not None:
+        return cached
+    try:
+        policy = get_policy_news(8)
+        market = get_market_news(5)
+        result = {"impacts": deep_analyze_news_impact(policy + market)}
+        macro_cache.set("deep_impact", result, ttl=1800)
+        return result
+    except Exception as e:
+        return {"impacts": [], "error": str(e)}
 
 
 @router.get("/api/news/risk-assess")
 def get_news_risk():
-    """新闻风控评估 — DeepSeek 评估新闻对持仓风险影响"""
-    policy = get_policy_news(8)
-    market = get_market_news(5)
-    headlines = [n["title"] for n in (policy + market) if "加载中" not in n.get("title", "")]
-    return assess_news_risk(headlines)
+    """新闻风控评估 — DeepSeek 评估新闻对持仓风险影响（30分钟缓存）"""
+    cached = macro_cache.get("news_risk_assess")
+    if cached is not None:
+        return cached
+    try:
+        policy = get_policy_news(8)
+        market = get_market_news(5)
+        headlines = [n["title"] for n in (policy + market) if "加载中" not in n.get("title", "")]
+        result = assess_news_risk(headlines)
+        macro_cache.set("news_risk_assess", result, ttl=1800)
+        return result
+    except Exception as e:
+        return {"risk": "unknown", "error": str(e)}
 
 
 # ---- 技术指标 ----

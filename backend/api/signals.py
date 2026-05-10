@@ -5,8 +5,11 @@
 
 Design doc: docs/design/12-framework-refactor.md §四
 """
+import json
+import os
 import time
 from datetime import datetime
+from pathlib import Path
 
 from fastapi import APIRouter
 
@@ -183,7 +186,9 @@ def get_timing_advice():
                 verdict, detail = "🔴 不建议入场", "估值高+市场贪婪，等回调。"
             return {"timingScore": round(timing_score, 1), "signal": verdict.split(" ")[0],
                     "verdict": verdict, "detail": detail,
-                    "valuationPct": val.get("percentile", 50), "fgi": fgi, "from_cache": True}
+                    "valuationPct": val.get("percentile", 50), "fgi": fgi,
+                    "confidence": round(abs(timing_score - 50) / 50, 2),
+                    "from_cache": True}
     except Exception:
         pass
     val = get_valuation_percentile()
@@ -214,6 +219,7 @@ def get_timing_advice():
         "fgi": fgi,
         "fgiLevel": fgi_data["level"],
         "valuation": val,
+        "confidence": round(abs(timing_score - 50) / 50, 2),
     }
 
 
@@ -333,7 +339,19 @@ def get_fund_screen(fund_type: str = "all", sort_by: str = "score", top_n: int =
 
 @router.get("/api/stock-screen")
 def get_stock_screen(top_n: int = 50):
-    """AI多因子选股：30因子7维打分 V2 + DeepSeek 点评 TOP5"""
+    """AI多因子选股：30因子7维打分 V2 + DeepSeek 点评 TOP5（优先读凌晨缓存）"""
+    # 优先读 cache_warmer 写入的文件缓存，避免每次实时计算（30-40秒）
+    try:
+        cache_fp = Path(os.environ.get("DATA_DIR", "data")) / "_cache" / "stock_screen_50.json"
+        if cache_fp.exists():
+            payload = json.loads(cache_fp.read_text(encoding="utf-8"))
+            if time.time() < payload.get("expires_at", 0):
+                data = payload.get("data", {})
+                data["from_cache"] = True
+                return data
+    except Exception as e:
+        print(f"[STOCK_SCREEN] 读文件缓存失败: {e}")
+    # 文件缓存不存在或已过期，实时计算
     result = screen_stocks(top_n)
     if result.get("stocks"):
         result["stocks"] = comment_stock_picks(result["stocks"])
