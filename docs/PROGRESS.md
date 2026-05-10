@@ -6,7 +6,7 @@
 ---
 
 ## 当前阶段
-M4 W1-2 — RAG 生产规范升级：meta 格式 + sentence-transformers + /api/rag/search（✅ 完成）
+M4 W3 — chromadb 向量库持久化 + interpret_with_rag 延伸阅读（✅ 完成）
 
 ## 已完成
 - [x] 2026-04-25: 四层目录树（api/ use_cases/ domain/ infra/）
@@ -191,6 +191,13 @@ M4 W1-2 — RAG 生产规范升级：meta 格式 + sentence-transformers + /api/
   - build_chunks_for_article() 将 tags + review_status 写入 chunk metadata
   - rag_service.build_article_from_frontmatter() 支持 tags 逗号分隔解析 + review_status 校验
   - 新增 10 个测试（201 → 211），211/211 全绿 ✅
+- [x] 2026-05-10: **M4 W3 chromadb 向量库 + interpret_with_rag 延伸阅读完成**
+  - infra/knowledge/chromadb_store.py（~300 行）— ChromaKnowledgeStore：chromadb PersistentClient + SQLite 本地持久化 + cosine 相似度 + where 过滤（category/source_grade/tags）+ graceful fallback（chromadb 未安装时 is_available=False）
+  - use_cases/interpret_with_rag.py（~130 行）— build_rag_context()（自动检索 top-3 → 格式化 prompt 注入）+ format_further_reading()（"📚 延伸阅读"格式化）+ enrich_interpretation()（后处理：AI 输出附延伸阅读）
+  - infra/knowledge/__init__.py 导出 ChromaKnowledgeStore
+  - requirements-dev.txt 新增 chromadb>=0.5.0 + sentence-transformers>=2.2.0
+  - 新增 8 个测试（211 → 219），219/219 全绿 ✅
+  - use_cases/interpret_with_rag.py 零 infra import（不变式 #10 AST 验证）
 
 ## 进行中
 - 无
@@ -199,7 +206,7 @@ M4 W1-2 — RAG 生产规范升级：meta 格式 + sentence-transformers + /api/
 - 无
 
 ## 下次会话计划
-- M4 W3: 苏格拉底提问 + 三视角二次意见 — 读 09
+- M4 W4: 苏格拉底提问 + 三视角二次意见 — 读 09
 - M5: 第一份月度决策质量报告 — 读 07 + 10
 - 持续: services/ 层 akshare 直调逐步迁入 infra/data_source（绞杀者模式）
 
