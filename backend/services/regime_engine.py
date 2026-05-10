@@ -30,8 +30,8 @@ MODULE_META = {
 
 
 # ---- 缓存（Regime 30 分钟更新一次足够）----
-_regime_cache = MemoryCache(default_ttl=_REGIME_TTL)  # {"regime_analysis": {"data": result, "ts": float}}
 _REGIME_TTL = 1800  # 30 min
+_regime_cache = MemoryCache(default_ttl=_REGIME_TTL)  # {"regime_analysis": {"data": result, "ts": float}}
 
 
 def classify(force: bool = False) -> dict:

@@ -28,8 +28,8 @@ MODULE_META = {
 from config import NEWS_CACHE_TTL
 from infra.cache import MemoryCache
 
-_geo_cache = MemoryCache(default_ttl=_GEO_CACHE_TTL)
 _GEO_CACHE_TTL = 1800  # 30 分钟
+_geo_cache = MemoryCache(default_ttl=_GEO_CACHE_TTL)
 
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━

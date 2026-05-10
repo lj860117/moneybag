@@ -35,8 +35,8 @@ from datetime import datetime, timedelta
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from infra.cache import MemoryCache
 
-_alt_cache = MemoryCache(default_ttl=_ALT_CACHE_TTL)
 _ALT_CACHE_TTL = 1800  # 30 分钟
+_alt_cache = MemoryCache(default_ttl=_ALT_CACHE_TTL)
 
 
 def _clean_nan(obj):

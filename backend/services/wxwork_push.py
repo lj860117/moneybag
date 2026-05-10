@@ -31,12 +31,16 @@ MODULE_META = {
 import os
 import time
 import httpx
+from infra.cache import MemoryCache
 
 # 配置从环境变量读取
 _CORP_ID = os.getenv("WXWORK_CORP_ID", "")
 _SECRET = os.getenv("WXWORK_SECRET", "")
 _AGENT_ID = os.getenv("WXWORK_AGENT_ID", "")
 _USER_ID = os.getenv("WXWORK_USER_ID", "@all")
+
+# access_token 有效期 2 小时（企微规范），提前 5 分钟刷新
+_TOKEN_CACHE_TTL = 7200
 
 # access_token 缓存（2 小时有效）
 _token_cache = MemoryCache(default_ttl=_TOKEN_CACHE_TTL)  # {"wxwork_token": {"data": {"token": str, "expires": int}, "ts": float}}
@@ -161,7 +165,6 @@ import base64
 import struct
 import socket
 from Crypto.Cipher import AES
-from infra.cache import MemoryCache
 
 _CALLBACK_TOKEN = os.getenv("WXWORK_CALLBACK_TOKEN", "moneybag2026")
 _CALLBACK_AES_KEY = os.getenv("WXWORK_CALLBACK_AES_KEY", "")

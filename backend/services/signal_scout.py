@@ -53,8 +53,8 @@ SIGNAL_TYPES = {
 }
 
 # ---- 缓存 ----
-_signal_cache = MemoryCache(default_ttl=_SIGNAL_CACHE_TTL)
 _SIGNAL_CACHE_TTL = 1800  # 30 分钟
+_signal_cache = MemoryCache(default_ttl=_SIGNAL_CACHE_TTL)
 
 # ---- 休市日历 ----
 _MARKET_HOLIDAYS_2026 = {
@@ -392,8 +392,8 @@ def deliver(user_id: str, signals: list = None) -> dict:
 # 4. enrich(ctx) — Pipeline 适配层
 # ============================================================
 
-_enrich_cache = MemoryCache(default_ttl=_ENRICH_CACHE_TTL)  # {user_id: {"data": matched, "ts": time}}
 _ENRICH_CACHE_TTL = 900  # 15分钟
+_enrich_cache = MemoryCache(default_ttl=_ENRICH_CACHE_TTL)  # {user_id: {"data": matched, "ts": time}}
 
 def enrich(ctx):
     """

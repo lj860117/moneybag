@@ -40,8 +40,8 @@ import numpy as np
 from concurrent.futures import ThreadPoolExecutor
 from infra.cache import MemoryCache
 
-_gf_cache = MemoryCache(default_ttl=_GF_CACHE_TTL)
 _GF_CACHE_TTL = 86400  # 24 小时
+_gf_cache = MemoryCache(default_ttl=_GF_CACHE_TTL)
 
 
 # ============================================================

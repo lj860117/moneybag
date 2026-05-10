@@ -34,8 +34,8 @@ MODULE_META = {
     "priority": 4,
 }
 
-_mc_cache = MemoryCache(default_ttl=_MC_CACHE_TTL)
 _MC_CACHE_TTL = 3600  # 1 小时
+_mc_cache = MemoryCache(default_ttl=_MC_CACHE_TTL)
 
 
 def _get_historical_params(code: str, days: int = 750) -> dict | None:

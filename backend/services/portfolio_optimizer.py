@@ -21,27 +21,15 @@
   - 幻方量化 CVaR 风险预算框架
 """
 import time
-
-# ---- V4 底座：MODULE_META ----
-MODULE_META = {
-    "name": "portfolio_optimizer",
-    "scope": "private",
-    "input": ["user_id"],
-    "output": "optimal_weights",
-    "cost": "cpu",
-    "tags": ["组合优化", "MVO", "HRP", "CVaR"],
-    "description": "5种方法计算数学最优持仓比例(MVO/MinVol/CVaR/HRP/Equal)",
-    "layer": "analysis",
-    "priority": 5,
-}
 import math
 import traceback
 import numpy as np
 from scipy import optimize
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from infra.cache import MemoryCache
 
-_opt_cache = MemoryCache(default_ttl=_OPT_CACHE_TTL)
 _OPT_CACHE_TTL = 3600
+_opt_cache = MemoryCache(default_ttl=_OPT_CACHE_TTL)
 
 
 # ============================================================
@@ -96,7 +84,6 @@ def _annual_stats(returns_matrix):
 
 # FIX 2026-04-19 V7.2: 统一从 config 读取默认参数
 from config import PORTFOLIO_OPTIMIZER_DEFAULTS as _OPT_DEFAULTS
-from infra.cache import MemoryCache
 _RF_DEFAULT         = _OPT_DEFAULTS["risk_free"]
 _MAX_WEIGHT_DEFAULT = _OPT_DEFAULTS["max_weight"]
 _CVAR_ALPHA_DEFAULT = _OPT_DEFAULTS["cvar_alpha"]

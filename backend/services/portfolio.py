@@ -31,8 +31,8 @@ from services.data_layer import get_fund_nav, get_valuation_percentile, get_fear
 from infra.cache import MemoryCache
 
 # ---- AI 动态选基缓存 ----
-_ai_fund_cache = MemoryCache(default_ttl=_AI_FUND_CACHE_TTL)
 _AI_FUND_CACHE_TTL = 3600  # 1 小时
+_ai_fund_cache = MemoryCache(default_ttl=_AI_FUND_CACHE_TTL)
 
 # 颜色池（用于饼图）
 _FUND_COLORS = ["#3B82F6", "#10B981", "#F59E0B", "#F97316", "#EF4444", "#8B5CF6",

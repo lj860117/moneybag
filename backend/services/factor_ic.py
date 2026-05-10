@@ -34,8 +34,8 @@ import traceback
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from infra.cache import MemoryCache
 
-_ic_cache = MemoryCache(default_ttl=_IC_CACHE_TTL)
 _IC_CACHE_TTL = 86400  # 24 小时缓存（日频计算）
+_ic_cache = MemoryCache(default_ttl=_IC_CACHE_TTL)
 
 
 def _spearman_rank_corr(x: list, y: list) -> float:

@@ -22,8 +22,8 @@ from datetime import datetime, timedelta
 from collections import Counter
 from infra.cache import MemoryCache
 
-_forecast_cache = MemoryCache(default_ttl=_FORECAST_CACHE_TTL)
 _FORECAST_CACHE_TTL = 86400  # 24小时（研报更新不频繁）
+_forecast_cache = MemoryCache(default_ttl=_FORECAST_CACHE_TTL)
 
 
 # 评级→数值映射（用于计算加权共识）

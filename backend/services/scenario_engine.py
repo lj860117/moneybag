@@ -30,8 +30,8 @@ import httpx
 from datetime import datetime
 from infra.cache import MemoryCache
 
-_scenario_cache = MemoryCache(default_ttl=_SCENARIO_CACHE_TTL)
 _SCENARIO_CACHE_TTL = 1800  # 30分钟（情景分析时效性要求高）
+_scenario_cache = MemoryCache(default_ttl=_SCENARIO_CACHE_TTL)
 
 
 # ============================================================
