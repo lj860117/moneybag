@@ -6,7 +6,7 @@
 ---
 
 ## 当前阶段
-M4 W1 — RAG 知识库 + 12 篇知识文档 + /api/rag 路由（✅ 完成）
+M4 W1-2 — RAG 生产规范升级：meta 格式 + sentence-transformers + /api/rag/search（✅ 完成）
 
 ## 已完成
 - [x] 2026-04-25: 四层目录树（api/ use_cases/ domain/ infra/）
@@ -180,6 +180,17 @@ M4 W1 — RAG 知识库 + 12 篇知识文档 + /api/rag 路由（✅ 完成）
   - 新增 24 个测试（177 → 201），201/201 全绿 ✅
   - 新文件 domain 层零 infra import ✅（不变式 #9 + #10 AST 验证达成）
   - rag_service.py 全部纯函数，无 I/O 无副作用
+- [x] 2026-05-10: **M4 W1-2 RAG 生产规范升级：meta 格式 + sentence-transformers + /api/rag/search**
+  - KnowledgeArticle 新增 tags（list[str]）+ review_status（draft/reviewed/published）字段
+  - 来源分级严格化：3 篇 A 级（Bengen 1994 JFP / Tversky & Kahneman 1974 Science / Kahneman & Tversky 1979 Econometrica）+ 9 篇 B 级（经典著作/机构报告）
+  - 12 篇文章全部添加 tags + review_status: published
+  - infra/knowledge/embedding.py — sentence-transformers 集成（paraphrase-multilingual-MiniLM-L12-v2, 384 维），无库时自动降级 TF-IDF
+  - retriever.py 双后端：_rebuild_index_st() / _rebuild_index_tfidf() + embedding_backend 属性
+  - api/rag.py 新增 POST /api/rag/search（支持 tags/source_grade 过滤）
+  - StatsResponse 新增 embedding_backend 字段
+  - build_chunks_for_article() 将 tags + review_status 写入 chunk metadata
+  - rag_service.build_article_from_frontmatter() 支持 tags 逗号分隔解析 + review_status 校验
+  - 新增 10 个测试（201 → 211），211/211 全绿 ✅
 
 ## 进行中
 - 无
@@ -188,7 +199,7 @@ M4 W1 — RAG 知识库 + 12 篇知识文档 + /api/rag 路由（✅ 完成）
 - 无
 
 ## 下次会话计划
-- M4 W2: 苏格拉底提问 + 三视角二次意见 — 读 09
+- M4 W3: 苏格拉底提问 + 三视角二次意见 — 读 09
 - M5: 第一份月度决策质量报告 — 读 07 + 10
 - 持续: services/ 层 akshare 直调逐步迁入 infra/data_source（绞杀者模式）
 

@@ -6,7 +6,7 @@
 
 ---
 
-## 当前阶段：M4 W1 — RAG 知识库 + 12 篇知识文档 + /api/rag 路由（✅ 完成）
+## 当前阶段：M4 W1-2 — RAG 生产规范升级：meta + sentence-transformers + /search（✅ 完成）
 
 ### 绞杀者模式 5 步进度
 
@@ -91,9 +91,10 @@ infra/
 │       └── baostock_provider.py  # BaostockProvider stub
 ├── knowledge/
 │   ├── __init__.py          # 导出 KnowledgeRetriever + load_and_index_articles
-│   ├── retriever.py         # M4 W1: KnowledgeRetrieverProtocol 实现（内存向量存储）
+│   ├── retriever.py         # M4 W1: KnowledgeRetrieverProtocol 实现（内存向量存储，双后端 ST/TF-IDF）
+│   ├── embedding.py         # M4 W2: sentence-transformers 集成（384 维 MiniLM）+ 自动降级
 │   ├── indexer.py           # M4 W1: 启动时从 content/ 加载文章并建索引
-│   └── content/             # M4 W1: 12 篇知识 Markdown 文章（A/B 级来源）
+│   └── content/             # M4 W1-2: 12 篇知识 Markdown（3A + 9B 级，含 tags/review_status）
 ├── events/
 │   └── __init__.py          # 占位
 └── config/
@@ -143,10 +144,10 @@ api/
 └── decisions.py             # 6 路由 — 事后复盘提交/历史查询/统计/预设理由列表/事前清单/清单项描述
 ```
 
-### M4 W1 新增 API
+### M4 W1-2 新增 API
 ```
 api/
-└── rag.py                   # 3 路由 — POST /api/rag/retrieve + GET /articles + GET /stats
+└── rag.py                   # 4 路由 — POST /api/rag/retrieve + POST /api/rag/search + GET /articles + GET /stats
 ```
 
 ### use_cases/ — 用例层（M2 W2 首个用例落地）
@@ -174,7 +175,7 @@ tests/
 ├── test_data_honesty.py
 ├── test_memory_e2e.py
 ├── test_red_team.py
-├── test_skeleton_m1.py      # 201 条冒烟测试（全绿）
+├── test_skeleton_m1.py      # 211 条冒烟测试（全绿）
 └── test_trading_calendar.py
 ```
 
@@ -236,6 +237,7 @@ tests/
 | 2026-05-10 | M3 W2 模式 A 事前提示 + 7 点清单：ChecklistItem/ChecklistResult model + domain/rule_engine/checklist.py（7 项评分引擎：应急金/四大险/集中度/3年期限/理由理性/仓位控制/冷静期）+ run_checklist use_case（消费 evaluate_reasons 红灯计数）+ api/decisions.py 新增 2 路由（POST checklist / GET checklist/items）+ 20 新测试（161 总数全绿）| — |
 | 2026-05-10 | M3 W4 字段级硬边界 + red_team_audit CI：infra/llm/red_team_audit.py（11 条 BANNED_PATTERNS + audit_response + audit_field，拦截率 100%）+ infra/llm/chat_guard.py（锚点强制+5轮上限+诱导拦截+无锚点 chat M3 下线）+ scripts/red_team_audit_ci.py CI 脚本 + .github/workflows/ci.yml 新增 red-team-audit job + 16 新测试（177 总数全绿）| — |
 | 2026-05-10 | M4 W1 RAG 知识库：KnowledgeChunk/KnowledgeArticle/RetrievalResult model + KnowledgeRetrieverProtocol + rag_service.py 纯函数（解析/分块/TF-IDF embedding/cosine search）+ infra/knowledge/retriever.py（内存向量存储）+ indexer.py（启动加载）+ 12 篇 A/B 级知识文章 + retrieve_knowledge use_case + api/rag.py（3 路由）+ 24 新测试（201 总数全绿）| `7a24526` |
+| 2026-05-10 | M4 W1-2 RAG 生产规范升级：meta 格式（tags/review_status）+ source_grade 严格化（3A+9B）+ sentence-transformers embedding（MiniLM 384 维，含 TF-IDF 降级）+ /api/rag/search 带 tags/grade 过滤 + embedding_backend 属性 + 10 新测试（211 总数全绿）| `6e54621` |
 
 ---
 
@@ -305,6 +307,7 @@ tests/
 | 周 | 任务 | 产出 |
 |---|------|------|
 | **W1** | RAG 知识库上线（10+ 篇核心文章）| ✅ KnowledgeChunk/KnowledgeArticle/RetrievalResult model + KnowledgeRetrieverProtocol + rag_service（纯函数）+ infra/knowledge/retriever + indexer + 12 篇 A/B 级文章 + retrieve_knowledge use_case + api/rag.py（3 路由）+ 24 新测试（201 总数全绿）|
+| **W1-2** | 生产规范升级（meta/ST embedding/search）| ✅ tags + review_status 字段 + 3A/9B 严格分级 + sentence-transformers（384 维 MiniLM，含 TF-IDF 降级）+ /api/rag/search + 10 新测试（211 总数全绿）|
 | **W2** | 苏格拉底提问 + 三视角二次意见 | — |
 | **W3** | AI 解读层接入 RAG（prompt 硬约束"只引用检索结果"）| — |
 | **W4** | 周度金融小课推送 | — |
