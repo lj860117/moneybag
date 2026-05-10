@@ -214,19 +214,8 @@ async def analyze_stock_holdings(req: dict = {}):
                 "https://api.deepseek.com/v1/chat/completions",
                 headers={"Authorization": f"Bearer {api_key}"},
                 json={
-                    "model": req.get("model", "deepseek-v4-flash"),
+                    "model": req.get("model", "deepseek-v4-max"),
                     "messages": [
-                        {"role": "system", "content": system_prompt},
-                        {"role": "user", "content": user_prompt},
-                    ],
-                    "max_tokens": 1200,
-                    "temperature": 0.7,
-                },
-            )
-            if resp.status_code == 200:
-                data = resp.json()
-                reply = data["choices"][0]["message"]["content"]
-                try:
                     from services.analysis_history import save_analysis
                     save_analysis(uid, "deepseek", "DeepSeek V3", "stock", reply, direction="auto")
                 except Exception as e:
@@ -350,19 +339,8 @@ async def analyze_fund_holdings(req: dict = {}):
                 "https://api.deepseek.com/v1/chat/completions",
                 headers={"Authorization": f"Bearer {api_key}"},
                 json={
-                    "model": req.get("model", "deepseek-v4-flash"),
+                    "model": req.get("model", "deepseek-v4-max"),
                     "messages": [
-                        {"role": "system", "content": system_prompt},
-                        {"role": "user", "content": user_prompt},
-                    ],
-                    "max_tokens": 1200,
-                    "temperature": 0.7,
-                },
-            )
-            if resp.status_code == 200:
-                data = resp.json()
-                reply = data["choices"][0]["message"]["content"]
-                try:
                     from services.analysis_history import save_analysis
                     save_analysis(uid, "deepseek", "DeepSeek V3", "fund", reply, direction="auto")
                 except Exception as e:
