@@ -7,6 +7,8 @@ source_grade: A
 reviewer: LeiJiang
 reviewed_at: 2026-05-10
 version: v1
+tags: 退休规划, 提取率, 4%法则, 财务自由
+review_status: published
 ---
 
 # 4% 法则与退休提取率

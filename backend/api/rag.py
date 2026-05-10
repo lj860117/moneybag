@@ -6,7 +6,8 @@ Endpoints for knowledge retrieval, article listing, and statistics.
 Design doc: docs/design/08-knowledge-rag.md
 
 Routes:
-  POST /api/rag/retrieve     - Retrieve relevant knowledge chunks
+  POST /api/rag/retrieve     - Retrieve relevant knowledge chunks (legacy)
+  POST /api/rag/search       - Enhanced search with filters (tags, grade)
   GET  /api/rag/articles     - List all indexed articles
   GET  /api/rag/stats        - Knowledge base statistics
 """
@@ -83,6 +84,8 @@ class ArticleResponse(BaseModel):
     reviewer: str
     reviewed_at: str
     version: str
+    tags: list[str] = []
+    review_status: str = "draft"
 
 
 class StatsResponse(BaseModel):
@@ -91,6 +94,16 @@ class StatsResponse(BaseModel):
     chunk_count: int
     categories: list[str]
     source_grades: dict[str, int]
+    embedding_backend: str = "tfidf"
+
+
+class SearchRequest(BaseModel):
+    """Request body for enhanced knowledge search."""
+    query: str = Field(..., min_length=1, max_length=500, description="Natural language query")
+    top_k: int = Field(default=3, ge=1, le=10, description="Max chunks to return")
+    category_hint: str = Field(default="", description="Optional category filter")
+    tags: list[str] = Field(default_factory=list, description="Filter by tags")
+    source_grade: str = Field(default="", description="Filter by source grade (A/B/C)")
 
 
 # ---- Endpoints ----
@@ -126,7 +139,52 @@ async def list_articles() -> list[dict[str, Any]]:
 async def knowledge_stats() -> dict[str, Any]:
     """Get knowledge base statistics.
 
-    Returns article count, chunk count, categories, source grades.
+    Returns article count, chunk count, categories, source grades, embedding backend.
     """
     retriever = _get_retriever()
-    return get_knowledge_stats(retriever)
+    stats = get_knowledge_stats(retriever)
+    stats["embedding_backend"] = retriever.embedding_backend
+    return stats
+
+
+@rag_router.post("/search", response_model=RetrieveResponse)
+async def search_knowledge(request: SearchRequest) -> dict[str, Any]:
+    """Enhanced knowledge search with filters.
+
+    Supports filtering by tags and source_grade in addition to
+    semantic similarity search. Uses sentence-transformers when available.
+    """
+    retriever = _get_retriever()
+    chunks = retriever.search(
+        query=request.query,
+        top_k=request.top_k,
+        category_hint=request.category_hint,
+        tags=request.tags if request.tags else None,
+        source_grade=request.source_grade,
+    )
+
+    # Format response
+    chunk_dicts = []
+    seen_titles: set[str] = set()
+    further_reading: list[str] = []
+    for c in chunks:
+        chunk_dicts.append({
+            "chunk_id": c.chunk_id,
+            "article_id": c.article_id,
+            "title": c.title,
+            "content": c.content,
+            "category": c.category,
+            "source_tag": c.source_tag,
+            "source_grade": c.source_grade.value,
+        })
+        if c.title not in seen_titles:
+            seen_titles.add(c.title)
+            further_reading.append(c.title)
+
+    return {
+        "query": request.query,
+        "chunks": chunk_dicts,
+        "total_indexed": retriever.total_chunks(),
+        "further_reading": further_reading,
+        "has_results": len(chunks) > 0,
+    }

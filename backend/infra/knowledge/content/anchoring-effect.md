@@ -7,6 +7,8 @@ source_grade: A
 reviewer: LeiJiang
 reviewed_at: 2026-05-10
 version: v1
+tags: 锚定效应, 认知偏误, 行为金融, 决策陷阱
+review_status: published
 ---
 
 # 锚定效应与投资决策

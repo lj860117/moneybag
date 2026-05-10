@@ -7,6 +7,8 @@ source_grade: A
 reviewer: LeiJiang
 reviewed_at: 2026-05-10
 version: v1
+tags: 损失厌恶, 处置效应, 行为偏误, 卖出纪律
+review_status: published
 ---
 
 # 损失厌恶与处置效应

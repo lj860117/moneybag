@@ -7,6 +7,8 @@ source_grade: B
 reviewer: LeiJiang
 reviewed_at: 2026-05-10
 version: v1
+tags: 应急金, 流动性, 6个月法则, 风险缓冲
+review_status: published
 ---
 
 # 应急金的 6 个月法则

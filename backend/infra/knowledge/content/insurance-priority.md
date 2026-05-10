@@ -3,10 +3,12 @@ title: 保险配置优先级
 category: 家庭财务基础
 source: 中国银保监会《关于规范互联网保险销售可回溯管理的通知》(2020) + 招商银行私人银行保险规划指南 (2023)
 source_url: https://www.cbirc.gov.cn/
-source_grade: A
+source_grade: B
 reviewer: LeiJiang
 reviewed_at: 2026-05-10
 version: v1
+tags: 保险, 医疗险, 重疾险, 寿险, 保障优先
+review_status: published
 ---
 
 # 保险配置优先级

@@ -7,6 +7,8 @@ source_grade: B
 reviewer: LeiJiang
 reviewed_at: 2026-05-10
 version: v1
+tags: 定投, 成本平均, 纪律储蓄, 波动利用
+review_status: published
 ---
 
 # 定投策略的数学原理

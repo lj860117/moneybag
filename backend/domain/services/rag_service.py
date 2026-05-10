@@ -108,11 +108,20 @@ def build_article_from_frontmatter(
     article_id: str, frontmatter: dict[str, str]
 ) -> KnowledgeArticle:
     """Construct KnowledgeArticle from parsed frontmatter."""
-    grade_str = frontmatter.get("source_grade", "B")
+    grade_str = frontmatter.get("source_grade", frontmatter.get("level", "B"))
     try:
         grade = SourceGrade(grade_str)
     except ValueError:
         grade = SourceGrade.B
+
+    # Parse tags (comma-separated string or already a list)
+    tags_raw = frontmatter.get("tags", "")
+    tags = [t.strip() for t in tags_raw.split(",") if t.strip()] if tags_raw else []
+
+    # Parse review_status
+    review_status = frontmatter.get("review_status", "draft")
+    if review_status not in ("draft", "reviewed", "published"):
+        review_status = "draft"
 
     return KnowledgeArticle(
         article_id=article_id,
@@ -124,6 +133,8 @@ def build_article_from_frontmatter(
         reviewer=frontmatter.get("reviewer", ""),
         reviewed_at=frontmatter.get("reviewed_at", ""),
         version=frontmatter.get("version", "v1"),
+        tags=tags,
+        review_status=review_status,
     )
 
 
@@ -201,6 +212,8 @@ def build_chunks_for_article(
                 "reviewer": article.reviewer,
                 "reviewed_at": article.reviewed_at,
                 "version": article.version,
+                "tags": article.tags,
+                "review_status": article.review_status,
             },
         )
         result.append(chunk)

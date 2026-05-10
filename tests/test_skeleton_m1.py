@@ -2761,3 +2761,149 @@ def test_rag_no_cross_service_import():
                     f"domain/services/rag_service.py cross-imports service: {node.module}"
                 )
 
+
+# ======================================================================
+# M4 W1-2: RAG Upgrade Tests (meta format, /search, embedding backend)
+# ======================================================================
+
+
+def test_knowledge_article_has_tags_field():
+    """KnowledgeArticle should have tags and review_status fields."""
+    from domain.models.knowledge import KnowledgeArticle, SourceGrade
+    article = KnowledgeArticle(
+        article_id="test",
+        title="Test",
+        category="测试",
+        source="Test",
+        tags=["投资", "复利"],
+        review_status="published",
+    )
+    assert article.tags == ["投资", "复利"]
+    assert article.review_status == "published"
+    d = article.to_dict()
+    assert d["tags"] == ["投资", "复利"]
+    assert d["review_status"] == "published"
+
+
+def test_knowledge_article_from_dict_parses_tags():
+    """KnowledgeArticle.from_dict should handle tags as comma-string or list."""
+    from domain.models.knowledge import KnowledgeArticle
+    # Tags as list
+    a1 = KnowledgeArticle.from_dict({"title": "T", "tags": ["a", "b"], "review_status": "reviewed"})
+    assert a1.tags == ["a", "b"]
+    assert a1.review_status == "reviewed"
+    # Tags as comma-separated string
+    a2 = KnowledgeArticle.from_dict({"title": "T", "tags": "foo, bar, baz"})
+    assert a2.tags == ["foo", "bar", "baz"]
+
+
+def test_rag_service_parses_tags_from_frontmatter():
+    """build_article_from_frontmatter should parse tags and review_status."""
+    from domain.services.rag_service import build_article_from_frontmatter
+    fm = {
+        "title": "Test Article",
+        "category": "数学常识",
+        "source": "Test",
+        "source_grade": "B",
+        "tags": "复利, 72法则, 长期投资",
+        "review_status": "published",
+    }
+    article = build_article_from_frontmatter("test-article", fm)
+    assert article.tags == ["复利", "72法则", "长期投资"]
+    assert article.review_status == "published"
+
+
+def test_rag_service_chunks_include_tags_in_metadata():
+    """build_chunks_for_article should include tags in chunk metadata."""
+    from domain.services.rag_service import build_chunks_for_article
+    from domain.models.knowledge import KnowledgeArticle, SourceGrade
+    article = KnowledgeArticle(
+        article_id="test",
+        title="Test",
+        category="测试",
+        source="Test",
+        source_grade=SourceGrade.B,
+        tags=["投资", "基金"],
+        review_status="published",
+    )
+    body = "Content paragraph one about investing. " * 20 + "\n\n" + "Second paragraph about funds. " * 20
+    chunks = build_chunks_for_article(article, body)
+    assert len(chunks) >= 1
+    assert chunks[0].metadata["tags"] == ["投资", "基金"]
+    assert chunks[0].metadata["review_status"] == "published"
+
+
+def test_indexed_articles_have_correct_grades():
+    """After indexing, articles should have correct A/B grade distribution (3A + 9B)."""
+    from infra.knowledge import KnowledgeRetriever, load_and_index_articles
+    retriever = KnowledgeRetriever()
+    load_and_index_articles(retriever)
+    articles = retriever.list_articles()
+    a_count = sum(1 for a in articles if a.source_grade.value == "A")
+    b_count = sum(1 for a in articles if a.source_grade.value == "B")
+    assert a_count == 3, f"Expected 3 A-grade articles, got {a_count}"
+    assert b_count == 9, f"Expected 9 B-grade articles, got {b_count}"
+
+
+def test_indexed_articles_have_tags():
+    """Indexed articles should have non-empty tags."""
+    from infra.knowledge import KnowledgeRetriever, load_and_index_articles
+    retriever = KnowledgeRetriever()
+    load_and_index_articles(retriever)
+    articles = retriever.list_articles()
+    for article in articles:
+        assert len(article.tags) > 0, f"Article {article.article_id} has no tags"
+        assert article.review_status == "published"
+
+
+def test_retriever_search_method():
+    """KnowledgeRetriever.search() should support tag/grade filters."""
+    from infra.knowledge import KnowledgeRetriever, load_and_index_articles
+    retriever = KnowledgeRetriever()
+    load_and_index_articles(retriever)
+    # Search with no filters
+    results = retriever.search("投资策略", top_k=3)
+    assert len(results) > 0
+    # Search with grade filter
+    a_results = retriever.search("投资", top_k=5, source_grade="A")
+    for r in a_results:
+        assert r.source_grade.value == "A"
+
+
+def test_retriever_embedding_backend_property():
+    """KnowledgeRetriever should report its embedding backend."""
+    from infra.knowledge import KnowledgeRetriever
+    retriever = KnowledgeRetriever()
+    # In test env without sentence-transformers installed, should be tfidf
+    assert retriever.embedding_backend in ("tfidf", "sentence-transformers")
+
+
+def test_rag_api_has_search_endpoint():
+    """api.rag should have /search endpoint."""
+    from api.rag import rag_router
+    routes = [r.path for r in rag_router.routes]
+    assert "/api/rag/search" in routes
+
+
+def test_embedding_module_importable():
+    """infra.knowledge.embedding should be importable."""
+    from infra.knowledge.embedding import (
+        is_sentence_transformers_available,
+        get_embedding_dim,
+        MODEL_NAME,
+        EMBEDDING_DIM_ST,
+        EMBEDDING_DIM_TFIDF,
+    )
+    assert MODEL_NAME == "paraphrase-multilingual-MiniLM-L12-v2"
+    assert EMBEDDING_DIM_ST == 384
+    assert EMBEDDING_DIM_TFIDF == 2000
+    # Should return a boolean
+    available = is_sentence_transformers_available()
+    assert isinstance(available, bool)
+    # Dim should match backend
+    dim = get_embedding_dim()
+    if available:
+        assert dim == 384
+    else:
+        assert dim == 2000
+

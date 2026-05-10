@@ -3,10 +3,12 @@ title: 黄金在家庭资产中的对冲角色
 category: 单类资产
 source: 《投资最重要的事》(Howard Marks, 2011) + World Gold Council "The relevance of gold as a strategic asset" (2023)
 source_url: https://www.gold.org/goldhub/research/relevance-of-gold-as-a-strategic-asset-2023
-source_grade: A
+source_grade: B
 reviewer: LeiJiang
 reviewed_at: 2026-05-10
 version: v1
+tags: 黄金, 对冲, 避险资产, 资产配置
+review_status: published
 ---
 
 # 黄金在家庭资产中的对冲角色

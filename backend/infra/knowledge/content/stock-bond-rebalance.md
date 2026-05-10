@@ -3,10 +3,12 @@ title: 股债再平衡原理
 category: 资产配置
 source: 《共同基金常识》(John C. Bogle, 2007) + Vanguard Research "Best practices for portfolio rebalancing" (2019)
 source_url: https://corporate.vanguard.com/content/dam/corp/research/pdf/best-practices-for-portfolio-rebalancing-us-isg.pdf
-source_grade: A
+source_grade: B
 reviewer: LeiJiang
 reviewed_at: 2026-05-10
 version: v1
+tags: 再平衡, 股债配比, 风险控制, 纪律投资
+review_status: published
 ---
 
 # 股债再平衡原理

@@ -3,10 +3,12 @@ title: 生命周期投资策略
 category: 资产配置
 source: 《生命周期投资法》(Ian Ayres & Barry Nalebuff, 2010) + Vanguard Target Retirement Fund 资产配置滑道 (2023)
 source_url: https://institutional.vanguard.com/investment/solutions/target-retirement-funds
-source_grade: A
+source_grade: B
 reviewer: LeiJiang
 reviewed_at: 2026-05-10
 version: v1
+tags: 生命周期, 年龄配比, 目标日期, 滑道
+review_status: published
 ---
 
 # 生命周期投资策略

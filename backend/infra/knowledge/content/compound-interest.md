@@ -7,6 +7,8 @@ source_grade: B
 reviewer: LeiJiang
 reviewed_at: 2026-05-10
 version: v1
+tags: 复利, 72法则, 长期投资, 费率影响
+review_status: published
 ---
 
 # 复利的力量与 72 法则

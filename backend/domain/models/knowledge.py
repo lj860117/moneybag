@@ -122,6 +122,8 @@ class KnowledgeArticle:
     reviewer: str = ""
     reviewed_at: str = ""
     version: str = "v1"
+    tags: list[str] = field(default_factory=list)
+    review_status: str = "draft"  # draft | reviewed | published
 
     def to_dict(self) -> dict[str, object]:
         """Serialize to dict."""
@@ -135,11 +137,16 @@ class KnowledgeArticle:
             "reviewer": self.reviewer,
             "reviewed_at": self.reviewed_at,
             "version": self.version,
+            "tags": self.tags,
+            "review_status": self.review_status,
         }
 
     @classmethod
     def from_dict(cls, d: dict[str, Any]) -> "KnowledgeArticle":
         """Construct from stored dict."""
+        tags_raw = d.get("tags", [])
+        if isinstance(tags_raw, str):
+            tags_raw = [t.strip() for t in tags_raw.split(",") if t.strip()]
         return cls(
             article_id=d.get("article_id", ""),
             title=d.get("title", ""),
@@ -150,6 +157,8 @@ class KnowledgeArticle:
             reviewer=d.get("reviewer", ""),
             reviewed_at=d.get("reviewed_at", ""),
             version=d.get("version", "v1"),
+            tags=tags_raw if isinstance(tags_raw, list) else [],
+            review_status=d.get("review_status", "draft"),
         )
 
 

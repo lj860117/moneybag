@@ -3,10 +3,12 @@ title: 家庭财务金字塔
 category: 家庭财务基础
 source: 招商银行私人银行《家庭财务健康白皮书》2023
 source_url: https://www.cmbchina.com/privatebank/
-source_grade: A
+source_grade: B
 reviewer: LeiJiang
 reviewed_at: 2026-05-10
 version: v1
+tags: 金字塔, 分层理财, 保障优先, 家庭财务
+review_status: published
 ---
 
 # 家庭财务金字塔

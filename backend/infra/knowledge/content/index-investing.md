@@ -3,10 +3,12 @@ title: 指数投资的逻辑
 category: 资产配置
 source: 《共同基金常识》(John C. Bogle, 2007) + S&P Indices Versus Active (SPIVA) Scorecard 2023
 source_url: https://www.spglobal.com/spdji/en/research-insights/spiva/
-source_grade: A
+source_grade: B
 reviewer: LeiJiang
 reviewed_at: 2026-05-10
 version: v1
+tags: 指数基金, 被动投资, 低费率, ETF
+review_status: published
 ---
 
 # 指数投资的逻辑
