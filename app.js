@@ -523,7 +523,44 @@ migrateV3toV4();
     }
   }
   renderLanding();
+  // 周自检横幅（审计报告 overall_status != healthy 时显示）
+  if(API_AVAILABLE) checkAuditBanner();
 })();
+
+// ---- 周自检横幅 ----
+function checkAuditBanner(){
+  fetch(API_BASE+'/audit/latest',{signal:AbortSignal.timeout(5000)})
+    .then(function(r){return r.ok?r.json():null})
+    .then(function(d){
+      if(!d||d.read||d.overall_status==='healthy'||d.overall_status==='none'||!d.banner_title)return;
+      showAuditBanner(d);
+    })
+    .catch(function(){});
+}
+function showAuditBanner(d){
+  if(document.getElementById('_auditBanner'))return;
+  var color=d.overall_status==='critical'?'#c0392b':'#e67e22';
+  var icon=d.overall_status==='critical'?'🚨':'⚠️';
+  var el=document.createElement('div');
+  el.id='_auditBanner';
+  el.style.cssText='position:fixed;top:0;left:0;right:0;z-index:10002;background:'+color+';color:#fff;padding:10px 16px;display:flex;align-items:center;gap:10px;font-size:14px;box-shadow:0 2px 8px rgba(0,0,0,.3)';
+  el.innerHTML='<span style="font-size:18px">'+icon+'</span>'
+    +'<div style="flex:1"><strong>'+_escHtml(d.banner_title)+'</strong>'
+    +(d.banner_message?'<br><span style="font-size:12px;opacity:.9">'+_escHtml(d.banner_message)+'</span>':'')
+    +'</div>'
+    +'<button onclick="dismissAuditBanner()" style="background:rgba(255,255,255,.25);border:none;color:#fff;padding:4px 10px;border-radius:4px;cursor:pointer;font-size:13px">知道了</button>';
+  document.body.insertBefore(el,document.body.firstChild);
+  // 为页面主内容留出顶部空间
+  var h=el.offsetHeight||52;
+  document.body.style.paddingTop=h+'px';
+}
+function dismissAuditBanner(){
+  var el=document.getElementById('_auditBanner');
+  if(el){document.body.style.paddingTop='';el.remove();}
+  // 告知后端已读
+  fetch(API_BASE+'/audit/mark-read',{method:'POST',signal:AbortSignal.timeout(5000)}).catch(function(){});
+}
+function _escHtml(s){return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');}
 
 // Phase 5: 盯盘预警轮询 + visibilitychange
 var _alertPolling=null;
