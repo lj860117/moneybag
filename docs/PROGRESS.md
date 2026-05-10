@@ -6,7 +6,7 @@
 ---
 
 ## 当前阶段
-M3 W2 — 模式 A 事前提示 + 7 点清单完整计算（✅ 完成）
+M3 W4 — 字段级硬边界 + red_team_audit CI + 对话受限模式（✅ 完成）
 
 ## 已完成
 - [x] 2026-04-25: 四层目录树（api/ use_cases/ domain/ infra/）
@@ -159,6 +159,13 @@ M3 W2 — 模式 A 事前提示 + 7 点清单完整计算（✅ 完成）
   - 新增 20 个测试（141 → 161），161/161 全绿 ✅
   - 新文件 domain 层零 infra import ✅（不变式 #9 + #10 达成）
   - checklist.py 全部纯函数，仅引用 defaults.py 阈值常量（不变式 #12）
+- [x] 2026-05-10: **M3 W4 字段级硬边界 + red_team_audit CI + 对话受限模式完成**
+  - infra/llm/red_team_audit.py（~165 行）— BANNED_PATTERNS（11 条正则：买卖建议/价格预测/仓位百分比/保本承诺/个股推荐）+ audit_response() + audit_field()（字段级边界：market_environment/portfolio_health_issue/risk_inventory_risk/direction_notes）+ compute_interception_rate()
+  - infra/llm/chat_guard.py（~135 行）— validate_chat_request()（锚点强制 + 5 轮上限）+ check_action_seeking()（7 种诱导模式→固定话术）+ FALLBACK_RESPONSE + NO_ANCHOR_RESPONSE（无锚点 chat M3 下线）
+  - scripts/red_team_audit_ci.py（~130 行）— CI 脚本：18 条必拦截 + 10 条必放行测试语料，拦截率 100%（目标 >99%）
+  - .github/workflows/ci.yml 新增 red-team-audit job（第 5 个 CI job，不需要 LLM API key）
+  - 新增 16 个测试（161 → 177），177/177 全绿 ✅
+  - 拦截率 100%（18/18 拦截 + 10/10 放行）
 
 ## 进行中
 - 无
@@ -167,10 +174,9 @@ M3 W2 — 模式 A 事前提示 + 7 点清单完整计算（✅ 完成）
 - 无
 
 ## 下次会话计划
-- M3 W3: 凌晨工厂接入决策质量分月度报告 — 读 05 + 07
-- M3 W4: 前端交易录入表单集成复盘 + 清单入口
+- M4 W1: RAG 知识库 + 苏格拉底提问 — 读 08 + 09
+- M5: 第一份月度决策质量报告 — 读 07 + 10
 - 持续: services/ 层 akshare 直调逐步迁入 infra/data_source（绞杀者模式）
-- 持续: 调用方逐步直接 import 新模块（替代 shim 重导出）后删除 services/agent_memory.py
 
 ---
 
@@ -434,3 +440,21 @@ M3 W2 — 模式 A 事前提示 + 7 点清单完整计算（✅ 完成）
   - 🟡 建议评估：M3 W3 凌晨工厂将调用 run_checklist 生成月度报告
   - 🟡 建议评估：清单阈值来自 RiskDefaults（03 defaults.py），如改 SINGLE_STOCK_MAX 等需重跑清单测试
   - 🟡 建议评估：07 清单新增/删除一条 → checklist.py 需同步改（当前 7 条写死，未来可配置化）
+
+**会话 15**（M3 W4 字段级硬边界 + red_team_audit CI + 对话受限模式）
+- 任务：red_team_audit 接入 CI + 对话受限（无锚点 chat 下线）+ 字段级硬边界
+- 产出：
+  - infra/llm/red_team_audit.py（~165 行）— 11 条 BANNED_PATTERNS + audit_response + audit_field + compute_interception_rate
+  - infra/llm/chat_guard.py（~135 行）— validate_chat_request + check_action_seeking + 固定话术
+  - scripts/red_team_audit_ci.py（~130 行）— CI 脚本（18 必拦 + 10 必放，拦截率 100%）
+  - .github/workflows/ci.yml 新增 red-team-audit job
+  - 新增 16 个测试（161 → 177），177/177 全绿
+- 状态：✅ 完成
+- 影响面：
+  - 🟢 确认无影响：tests/test_skeleton_m1.py 177/177 通过（原 161 + 新 16）
+  - 🟢 确认无影响：main.py 128 行不变
+  - 🟢 确认无影响：现有 API 路由不变（chat_guard 仅供未来接入）
+  - 🔴 必须同步评估：04-ai-interface.md 禁用词正则变更 → 必须同步 red_team_audit.py + CI 语料
+  - 🟡 建议评估：api/chat.py 需在 M4 接入 chat_guard（当前 chat_guard 已就绪但未接入旧路由）
+  - 🟡 建议评估：infra/llm/gateway.py 应在每次 LLM 返回后调用 audit_response（M4 接入）
+  - 🟡 建议评估：13-governance.md CI 规则需与 BANNED_PATTERNS 保持一致

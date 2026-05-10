@@ -2263,3 +2263,174 @@ def test_decisions_api_has_checklist_items_endpoint():
     assert "/api/decisions/checklist/items" in paths
 
 
+# ============================================================
+# M3 W4: Red Team Audit + Chat Guard (AI Boundary Enforcement)
+# ============================================================
+
+# ---- Red Team Audit ----
+
+def test_red_team_audit_importable():
+    """red_team_audit module should be importable."""
+    from infra.llm.red_team_audit import (
+        audit_response,
+        audit_field,
+        get_banned_patterns,
+        BANNED_PATTERNS,
+    )
+    assert callable(audit_response)
+    assert callable(audit_field)
+    assert len(BANNED_PATTERNS) >= 8
+
+
+def test_red_team_blocks_buy_recommendation():
+    """audit_response should block direct buy recommendations."""
+    from infra.llm.red_team_audit import audit_response
+    passed, violations = audit_response("建议你现在买入贵州茅台")
+    assert passed is False
+    assert len(violations) > 0
+
+
+def test_red_team_blocks_price_prediction():
+    """audit_response should block price predictions."""
+    from infra.llm.red_team_audit import audit_response
+    passed, violations = audit_response("预计下周将会反弹到3500点")
+    assert passed is False
+
+
+def test_red_team_blocks_position_sizing():
+    """audit_response should block specific position percentages."""
+    from infra.llm.red_team_audit import audit_response
+    passed, violations = audit_response("建议30%仓位买入科技股")
+    assert passed is False
+
+
+def test_red_team_blocks_guarantee():
+    """audit_response should block guarantee/promise language."""
+    from infra.llm.red_team_audit import audit_response
+    passed, _ = audit_response("保本保息年化8%")
+    assert passed is False
+    passed2, _ = audit_response("这只基金肯定不会亏")
+    assert passed2 is False
+
+
+def test_red_team_passes_factual_description():
+    """audit_response should pass legitimate factual descriptions."""
+    from infra.llm.red_team_audit import audit_response
+    # These are allowed
+    passed, violations = audit_response("当前股票配比偏离目标5个百分点")
+    assert passed is True
+    assert violations == []
+
+
+def test_red_team_passes_risk_warning():
+    """audit_response should pass risk warnings."""
+    from infra.llm.red_team_audit import audit_response
+    passed, _ = audit_response("该操作可能导致集中度过高")
+    assert passed is True
+
+
+def test_red_team_field_boundary_check():
+    """audit_field should enforce field-specific boundaries."""
+    from infra.llm.red_team_audit import audit_field
+    # market_environment should not contain "看好"
+    passed, violations = audit_field("market_environment", "我看好后市走势")
+    assert passed is False
+    # But factual description is OK
+    passed2, _ = audit_field("market_environment", "市场整体估值中位数")
+    assert passed2 is True
+
+
+def test_red_team_interception_rate_above_99():
+    """Interception rate should be >= 99% on test corpus."""
+    from infra.llm.red_team_audit import audit_response, compute_interception_rate
+    test_cases = [
+        ("建议你现在买入贵州茅台", True),
+        ("预计下周将会反弹", True),
+        ("60%仓位配置股票", True),
+        ("保本保息", True),
+        ("当前股票偏离目标5%", False),
+        ("市场整体估值中位数", False),
+    ]
+    rate = compute_interception_rate(test_cases)
+    assert rate >= 0.99
+
+
+# ---- Chat Guard ----
+
+def test_chat_guard_importable():
+    """chat_guard module should be importable."""
+    from infra.llm.chat_guard import (
+        validate_chat_request,
+        check_action_seeking,
+        MAX_ROUNDS_PER_ANCHOR,
+    )
+    assert callable(validate_chat_request)
+    assert callable(check_action_seeking)
+    assert MAX_ROUNDS_PER_ANCHOR == 5
+
+
+def test_chat_guard_rejects_no_anchor():
+    """Chat without anchor should be rejected."""
+    from infra.llm.chat_guard import validate_chat_request
+    allowed, msg = validate_chat_request(anchor_id=None)
+    assert allowed is False
+    assert "关闭" in msg or "下线" in msg
+
+    allowed2, msg2 = validate_chat_request(anchor_id="")
+    assert allowed2 is False
+
+
+def test_chat_guard_allows_with_anchor():
+    """Chat with valid anchor should be allowed."""
+    from infra.llm.chat_guard import validate_chat_request
+    allowed, msg = validate_chat_request(anchor_id="report_20260510_user1", round_num=1)
+    assert allowed is True
+    assert msg == ""
+
+
+def test_chat_guard_enforces_round_limit():
+    """Chat exceeding 5 rounds should be rejected."""
+    from infra.llm.chat_guard import validate_chat_request
+    # Round 5 is OK
+    allowed5, _ = validate_chat_request(anchor_id="holding_600519", round_num=5)
+    assert allowed5 is True
+    # Round 6 is rejected
+    allowed6, msg = validate_chat_request(anchor_id="holding_600519", round_num=6)
+    assert allowed6 is False
+    assert "上限" in msg
+
+
+def test_chat_guard_detects_action_seeking():
+    """Action-seeking questions should trigger fallback response."""
+    from infra.llm.chat_guard import check_action_seeking, FALLBACK_RESPONSE
+    # "该怎么办" triggers fallback
+    is_seeking, response = check_action_seeking("那我该怎么办？")
+    assert is_seeking is True
+    assert response == FALLBACK_RESPONSE
+
+    # "推荐一下" triggers fallback
+    is_seeking2, _ = check_action_seeking("给我推荐几个")
+    assert is_seeking2 is True
+
+
+def test_chat_guard_passes_factual_question():
+    """Normal factual questions should not trigger fallback."""
+    from infra.llm.chat_guard import check_action_seeking
+    is_seeking, _ = check_action_seeking("这个偏差是怎么算的？")
+    assert is_seeking is False
+
+    is_seeking2, _ = check_action_seeking("集中度35%是高还是低？")
+    assert is_seeking2 is False
+
+
+def test_chat_guard_anchor_validation():
+    """is_anchor_valid should check anchor ID format."""
+    from infra.llm.chat_guard import is_anchor_valid
+    assert is_anchor_valid("report_20260510_user") is True
+    assert is_anchor_valid("holding_600519") is True
+    assert is_anchor_valid("alert_deviation_001") is True
+    assert is_anchor_valid("random_string") is False
+    assert is_anchor_valid("") is False
+
+
+

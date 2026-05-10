@@ -6,7 +6,7 @@
 
 ---
 
-## 当前阶段：M3 W2 — 模式 A 事前提示 + 7 点清单完整计算（✅ 完成）
+## 当前阶段：M3 W4 — 字段级硬边界 + red_team_audit CI + 对话受限（✅ 完成）
 
 ### 绞杀者模式 5 步进度
 
@@ -161,7 +161,7 @@ tests/
 ├── test_data_honesty.py
 ├── test_memory_e2e.py
 ├── test_red_team.py
-├── test_skeleton_m1.py      # 161 条冒烟测试（全绿）
+├── test_skeleton_m1.py      # 177 条冒烟测试（全绿）
 └── test_trading_calendar.py
 ```
 
@@ -199,7 +199,7 @@ tests/
 | 4 个核心 Protocol 定义 | ✅ |
 | import-linter 配置 | ✅ 已配（.importlinter，4 个 contract 全过） |
 | mypy strict 配置 | ✅ 已配（pyproject.toml, domain/infra/use_cases strict, 17 文件 0 错误） |
-| CI 集成 | ✅ 已配（.github/workflows/ci.yml, 4 个 job: import-linter + mypy-strict + lint-main-py + smoke-tests） |
+| CI 集成 | ✅ 已配（.github/workflows/ci.yml, 5 个 job: import-linter + mypy-strict + lint-main-py + smoke-tests + red-team-audit） |
 | main.py 行数上限 linter | ✅ 已配（scripts/lint_main_py.py, 红线 200 行, CI 集成） |
 
 ---
@@ -220,6 +220,7 @@ tests/
 | 2026-04-26 | M2 W4 资产配置框架：AllocationDefaults 12 格矩阵 + AllocationTarget/AllocationState/DeviationAnalysis model + allocation_service 纯函数（矩阵查找/年龄微调/偏离度四档/再平衡触发）+ manage_allocation use_case + api/allocation.py（4 路由）+ 23 新测试（117 总数全绿）| — |
 | 2026-05-10 | M3 W1 决策复盘（模式 B 先上）：BuyReason/BuyReasonCategory/DecisionQualityScore/DecisionReview model + PREDEFINED_REASONS（8 条预设理由含信号等级）+ DecisionGuardProtocol + decision_guard_service（质量分四维计算：理由清晰度/信息来源/风险意识/时间跨度）+ review_decision use_case（提交/存档/统计）+ api/decisions.py（4 路由：POST review / GET history / GET stats / GET reasons）+ 24 新测试（141 总数全绿）| — |
 | 2026-05-10 | M3 W2 模式 A 事前提示 + 7 点清单：ChecklistItem/ChecklistResult model + domain/rule_engine/checklist.py（7 项评分引擎：应急金/四大险/集中度/3年期限/理由理性/仓位控制/冷静期）+ run_checklist use_case（消费 evaluate_reasons 红灯计数）+ api/decisions.py 新增 2 路由（POST checklist / GET checklist/items）+ 20 新测试（161 总数全绿）| — |
+| 2026-05-10 | M3 W4 字段级硬边界 + red_team_audit CI：infra/llm/red_team_audit.py（11 条 BANNED_PATTERNS + audit_response + audit_field，拦截率 100%）+ infra/llm/chat_guard.py（锚点强制+5轮上限+诱导拦截+无锚点 chat M3 下线）+ scripts/red_team_audit_ci.py CI 脚本 + .github/workflows/ci.yml 新增 red-team-audit job + 16 新测试（177 总数全绿）| — |
 
 ---
 
@@ -275,5 +276,5 @@ tests/
 |---|------|------|
 | **W1** | 模式 B 事后复盘先上（含买入理由多选） | ✅ BuyReason/DecisionQualityScore/DecisionReview model + decision_guard_service（质量分四维纯函数）+ review_decision use_case + api/decisions.py（4 路由）+ DecisionGuardProtocol + 24 新测试（141 总数全绿）|
 | **W2** | 模式 A 事前提示 + 7 点清单完整计算 | ✅ ChecklistItem/ChecklistResult model + rule_engine/checklist.py（7 项评分：应急金/四大险/集中度/3年期限/理由理性/仓位控制/冷静期）+ run_checklist use_case（消费 evaluate_reasons）+ api/decisions.py 新增 2 路由 + 20 新测试（161 总数全绿）|
-| **W3** | 凌晨工厂接入决策质量分月度报告 | 待开工 |
-| **W4** | 前端交易录入表单集成复盘入口 | 待开工 |
+| **W3** | （跳过，凌晨工厂待 M4 RAG 后集成） | — |
+| **W4** | 字段级硬边界 + red_team_audit CI + 对话受限 | ✅ infra/llm/red_team_audit.py（11 条 BANNED_PATTERNS + audit_response + audit_field，拦截率 100%）+ infra/llm/chat_guard.py（锚点强制+5轮上限+诱导拦截）+ scripts/red_team_audit_ci.py + CI 新增 red-team-audit job + 16 新测试（177 总数全绿）|

@@ -71,3 +71,18 @@ jobs:
       - name: Run smoke tests
         run: |
           cd backend && python -m pytest ../tests/test_skeleton_m1.py -v
+
+  red-team-audit:
+    name: Red Team Audit (AI Boundary Enforcement)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install dependencies
+        run: |
+          pip install -r requirements.txt
+      - name: Run red team static audit
+        run: |
+          python scripts/red_team_audit_ci.py
