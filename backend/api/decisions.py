@@ -64,6 +64,7 @@ class DecisionReviewResponse(BaseModel):
     review: Dict[str, Any] = Field(default_factory=dict, description="The saved review record")
     quality_score: Dict[str, Any] = Field(default_factory=dict, description="Quality score breakdown")
     warnings: List[str] = Field(default_factory=list, description="Red/yellow flag messages")
+    further_reading: List[str] = Field(default_factory=list, description="RAG knowledge article titles")
 
 
 class ReviewListResponse(BaseModel):
@@ -108,6 +109,7 @@ class ChecklistResponse(BaseModel):
     blocked: bool = Field(False, description="Whether the trade should be blocked")
     red_light_count: int = Field(0, description="Number of red-light items")
     warnings: List[str] = Field(default_factory=list, description="Warning messages")
+    further_reading: List[str] = Field(default_factory=list, description="RAG knowledge article titles")
 
 
 class ChecklistItemsResponse(BaseModel):
@@ -165,11 +167,40 @@ async def post_decision_review(req: DecisionReviewRequest) -> DecisionReviewResp
     # Persist to archive
     saved = save_review_to_archive(req.user_id, review)
 
+    # ---- RAG 延伸阅读（M4 W3）----
+    further_reading: List[str] = []
+    try:
+        from infra.knowledge import get_retriever, load_and_index_articles
+        from use_cases.interpret_with_rag import build_rag_context
+
+        retriever = get_retriever()
+        if retriever.total_chunks() == 0:
+            load_and_index_articles(retriever)
+
+        # 根据 reason_ids 和质量评分构建查询摘要
+        facts_summary = f"买入操作 {req.asset_name}({req.asset_code})，理由: {', '.join(req.reason_ids) if req.reason_ids else '无'}"
+        if req.custom_reason_text:
+            facts_summary += f"; {req.custom_reason_text}"
+        grade = review.quality_score.grade if hasattr(review.quality_score, "grade") else ""
+        if grade:
+            facts_summary += f"; 决策质量: {grade}"
+
+        rag_ctx = build_rag_context(
+            retriever, facts_summary=facts_summary, category_hint="行为金融", top_k=3
+        )
+        if rag_ctx["has_rag"]:
+            further_reading = rag_ctx["further_reading"]
+            for title in further_reading:
+                warnings.append(f"📚 延伸阅读：{title}")
+    except Exception as e:
+        print(f"[DECISIONS/review] RAG failed (non-blocking): {e}")
+
     return DecisionReviewResponse(
         status="ok",
         review=saved,
         quality_score=review.quality_score.to_dict(),
         warnings=warnings,
+        further_reading=further_reading,
     )
 
 
@@ -253,6 +284,31 @@ async def post_checklist(req: ChecklistRequest) -> ChecklistResponse:
         days_since_last_trade=req.days_since_last_trade,
     )
 
+    # ---- RAG 延伸阅读（M4 W3）----
+    further_reading: List[str] = []
+    try:
+        from infra.knowledge import get_retriever, load_and_index_articles
+        from use_cases.interpret_with_rag import build_rag_context
+
+        retriever = get_retriever()
+        if retriever.total_chunks() == 0:
+            load_and_index_articles(retriever)
+
+        # 用 reason_ids 构建查询摘要
+        facts_summary = f"买入理由: {', '.join(req.reason_ids) if req.reason_ids else '无'}"
+        if req.custom_reason_text:
+            facts_summary += f"; {req.custom_reason_text}"
+
+        rag_ctx = build_rag_context(
+            retriever, facts_summary=facts_summary, category_hint="行为金融", top_k=3
+        )
+        if rag_ctx["has_rag"]:
+            further_reading = rag_ctx["further_reading"]
+            for title in further_reading:
+                warnings.append(f"📚 延伸阅读：{title}")
+    except Exception as e:
+        print(f"[DECISIONS/checklist] RAG failed (non-blocking): {e}")
+
     return ChecklistResponse(
         status="ok",
         checklist=result.to_dict(),
@@ -262,6 +318,7 @@ async def post_checklist(req: ChecklistRequest) -> ChecklistResponse:
         blocked=result.blocked,
         red_light_count=result.red_light_count,
         warnings=warnings,
+        further_reading=further_reading,
     )
 
 

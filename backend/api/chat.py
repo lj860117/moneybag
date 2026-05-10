@@ -83,6 +83,28 @@ async def chat_analysis(req: ChatRequest):
             if intent.get("intent") != "general":
                 system_prompt += f"\n\n## 用户意图预判\n用户可能在问关于「{intent['intent']}」的问题，请优先从这个角度回答。"
 
+            # ---- RAG 知识注入（M4 W3）----
+            rag_context: dict = {"has_rag": False, "further_reading": []}
+            try:
+                from infra.knowledge import get_retriever, load_and_index_articles
+                from use_cases.interpret_with_rag import build_rag_context
+
+                retriever = get_retriever()
+                if retriever.total_chunks() == 0:
+                    load_and_index_articles(retriever)
+                rag_context = build_rag_context(
+                    retriever,
+                    facts_summary=user_msg,
+                    category_hint=intent.get("intent", ""),
+                    top_k=3,
+                )
+                if rag_context["has_rag"]:
+                    system_prompt += "\n\n" + rag_context["rag_prompt_injection"]
+                    print(f"[CHAT] RAG injected {len(rag_context['rag_chunks'])} chunks")
+            except Exception as e:
+                print(f"[CHAT] RAG injection failed (non-blocking): {e}")
+                rag_context = {"has_rag": False, "further_reading": []}
+
             async with httpx.AsyncClient(timeout=30) as client:
                 resp = await client.post(
                     f"{api_base}/chat/completions",
@@ -109,6 +131,20 @@ async def chat_analysis(req: ChatRequest):
                     except Exception as e:
                         print(f"[CHAT] Decision log failed: {e}")
 
+                    # ---- RAG 延伸阅读附加（M4 W3）----
+                    if rag_context.get("has_rag"):
+                        try:
+                            from use_cases.interpret_with_rag import enrich_interpretation
+                            enriched = enrich_interpretation(
+                                retriever,
+                                interpretation_text=reply,
+                                facts_summary=user_msg,
+                                category_hint=intent.get("intent", ""),
+                            )
+                            reply = enriched["text"]
+                        except Exception as e:
+                            print(f"[CHAT] RAG enrich failed (non-blocking): {e}")
+
                     # 2026-04-19 V7.4.2: 后台异步提炼记忆（不阻塞用户响应）
                     if req.userId and len(user_msg) > 10 and len(reply) > 30:
                         try:
@@ -123,7 +159,11 @@ async def chat_analysis(req: ChatRequest):
                         except Exception as e:
                             print(f"[CHAT] auto_extract 启动失败: {e}")
 
-                    return {"reply": reply, "source": "ai"}
+                    return {
+                        "reply": reply,
+                        "source": "ai",
+                        "further_reading": rag_context.get("further_reading", []),
+                    }
                 else:
                     print(f"[CHAT] DeepSeek error: {resp.text[:200]}")
         except Exception as e:
