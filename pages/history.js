@@ -65,24 +65,46 @@ btn.closest('.modal-content').querySelectorAll('.compare-panel').forEach(p=>{p.s
 async function renderSectorHot(el){
 el.innerHTML='<div style="text-align:center;padding:20px"><div class="loading-spinner" style="width:24px;height:24px;margin:0 auto 8px;border-width:2px"></div>加载行业数据...</div>';
 try{
-const r=await fetch('/api/market-factors/all');const d=await r.json();
-const sr=d.sector_rotation||d;
-if(!sr.available&&!sr.top_gainers){const note=d._weekend_note||'';el.innerHTML='<div style="text-align:center;padding:40px;color:var(--text2)">'+(note?'<div style="font-size:14px;margin-bottom:8px">📅</div><div style="font-size:13px;line-height:1.6">'+note+'</div>':'行业数据暂不可用')+'<br><button onclick="renderInsight()" style="margin-top:12px;padding:6px 16px;border-radius:8px;border:none;background:var(--accent);color:#fff;cursor:pointer;font-size:12px">🔄 重试</button></div>';return}
-const gainers=sr.top_gainers||sr.sectors||[];
-const signal=sr.rotation_signal||sr.pattern||'均衡';
-let html='<div class="dashboard-card" style="border-left:3px solid var(--accent)"><div class="dashboard-card-title">🔥 行业轮动信号</div><div style="font-size:16px;font-weight:800;margin:8px 0">'+signal+'</div></div>';
-if(gainers.length){html+='<div class="dashboard-card"><div class="dashboard-card-title">📈 涨幅TOP行业</div>';
-gainers.slice(0,10).forEach((s,i)=>{const name=s.name||s.板块名称||'';const chg=s.change_pct||s.涨跌幅||0;const color=chg>=0?'var(--bull,#22c55e)':'var(--bear,#ef4444)';
-html+=`<div style="display:flex;justify-content:space-between;padding:6px 0;border-bottom:1px solid var(--border,rgba(255,255,255,.05))"><span style="font-size:13px">${i+1}. ${name}</span><span style="font-size:13px;font-weight:700;color:${color}">${typeof chg==='number'?chg.toFixed(2)+'%':chg}</span></div>`});
-html+='</div>'}
-// 大宗商品
-try{const cr=await fetch('/api/market-factors/commodities');const cd=await cr.json();
-if(cd.available||cd.gold){html+='<div class="dashboard-card"><div class="dashboard-card-title">🛢️ 大宗商品</div>';
-if(cd.gold)html+=`<div style="display:flex;justify-content:space-between;padding:6px 0"><span>🥇 黄金</span><span style="font-weight:700">${cd.gold.price}${cd.gold.unit} <span style="color:${cd.gold.change_pct>=0?'var(--bull)':'var(--bear)'}">${cd.gold.change_pct>=0?'+':''}${cd.gold.change_pct?.toFixed(1)||0}%</span></span></div>`;
-if(cd.copper)html+=`<div style="display:flex;justify-content:space-between;padding:6px 0"><span>🔶 铜</span><span style="font-weight:700">${cd.copper.price}${cd.copper.unit} <span style="color:${cd.copper.change_pct>=0?'var(--bull)':'var(--bear)'}">${cd.copper.change_pct>=0?'+':''}${cd.copper.change_pct?.toFixed(1)||0}%</span></span></div>`;
-if(cd.crude_oil)html+=`<div style="display:flex;justify-content:space-between;padding:6px 0"><span>🛢️ 原油SC0</span><span style="font-weight:700">${cd.crude_oil.sc_price}元 ${cd.crude_oil.alert_level!=='normal'?'⚠️'+cd.crude_oil.alert_level:''}</span></div>`;
-html+='</div>'}}catch(e){}
-el.innerHTML=html}catch(e){el.innerHTML='<div style="text-align:center;padding:20px;color:#ef4444">加载失败: '+e.message+'</div>'}}
+const r=await fetch('/api/market-factors/all',{signal:AbortSignal.timeout(15000)});const d=await r.json();
+// API 实际返回 {commodities, unlock, etf_flow, updatedAt}，不含 sector_rotation
+// 用 etf_flow.top_inflow 展示 ETF 资金流向作为行业偏好信号
+const etf=d.etf_flow||{};
+const inflow=etf.top_inflow||[];
+const outflow=etf.top_outflow||[];
+const note=d._weekend_note||'';
+let html='';
+// ETF 资金流向
+if(inflow.length||outflow.length){
+  html+='<div class="dashboard-card" style="border-left:3px solid var(--accent)"><div class="dashboard-card-title">💹 ETF 资金流向（行业偏好信号）</div><div style="font-size:12px;color:var(--text2);margin-bottom:8px">机构资金净流入 ETF 反映行业配置偏好</div></div>';
+  if(inflow.length){
+    html+='<div class="dashboard-card"><div class="dashboard-card-title">📈 净流入 TOP ETF</div>';
+    inflow.slice(0,10).forEach((s,i)=>{
+      const name=s.name||s.fund_name||'';const flow=s.flow||s.net_inflow||0;
+      html+=`<div style="display:flex;justify-content:space-between;padding:6px 0;border-bottom:1px solid var(--border,rgba(255,255,255,.05))"><span style="font-size:13px">${i+1}. ${name}<span style="font-size:10px;color:var(--text2);margin-left:4px">${s.code||''}</span></span><span style="font-size:13px;font-weight:700;color:var(--bull,#22c55e)">+${typeof flow==='number'?flow.toFixed(2):flow}亿</span></div>`;
+    });
+    html+='</div>';
+  }
+  if(outflow.length){
+    html+='<div class="dashboard-card"><div class="dashboard-card-title">📉 净流出 ETF</div>';
+    outflow.slice(0,5).forEach((s,i)=>{
+      const name=s.name||s.fund_name||'';const flow=s.flow||s.net_inflow||0;
+      html+=`<div style="display:flex;justify-content:space-between;padding:6px 0;border-bottom:1px solid var(--border,rgba(255,255,255,.05))"><span style="font-size:13px">${i+1}. ${name}</span><span style="font-size:13px;font-weight:700;color:var(--bear,#ef4444)">${typeof flow==='number'?flow.toFixed(2):flow}亿</span></div>`;
+    });
+    html+='</div>';
+  }
+}else{
+  html+='<div style="text-align:center;padding:40px;color:var(--text2)">'+(note?'<div style="font-size:14px;margin-bottom:8px">📅</div><div style="font-size:13px;line-height:1.6">'+note+'</div>':'ETF 资金流向数据暂无更新')+'<br><button onclick="renderSectorHot(document.getElementById(\'insightContent\'))" style="margin-top:12px;padding:6px 16px;border-radius:8px;border:none;background:var(--accent);color:#fff;cursor:pointer;font-size:12px">🔄 重试</button></div>';
+}
+// 大宗商品（使用 all 接口已返回的 commodities 数据，不重复请求）
+const cd=d.commodities||{};
+if(cd.available||cd.gold){
+  html+='<div class="dashboard-card"><div class="dashboard-card-title">🛢️ 大宗商品</div>';
+  if(cd.gold)html+=`<div style="display:flex;justify-content:space-between;padding:6px 0"><span>🥇 黄金</span><span style="font-weight:700">${cd.gold.price}${cd.gold.unit||''} <span style="color:${(cd.gold.change_pct||0)>=0?'var(--bull)':'var(--bear)'}">${(cd.gold.change_pct||0)>=0?'+':''}${(cd.gold.change_pct||0).toFixed(1)}%</span></span></div>`;
+  if(cd.copper)html+=`<div style="display:flex;justify-content:space-between;padding:6px 0"><span>🔶 铜</span><span style="font-weight:700">${cd.copper.price}${cd.copper.unit||''} <span style="color:${(cd.copper.change_pct||0)>=0?'var(--bull)':'var(--bear)'}">${(cd.copper.change_pct||0)>=0?'+':''}${(cd.copper.change_pct||0).toFixed(1)}%</span></span></div>`;
+  html+='</div>';
+}
+el.innerHTML=html||'<div style="text-align:center;padding:20px;color:var(--text2)">暂无行业数据</div>';
+}catch(e){el.innerHTML='<div style="text-align:center;padding:20px;color:#ef4444">加载失败: '+e.message+'</div>'}}
 
 async function renderBrokerView(el){
 el.innerHTML='<div style="text-align:center;padding:20px"><div class="loading-spinner" style="width:24px;height:24px;margin:0 auto 8px;border-width:2px"></div>加载研报数据...</div>';
@@ -170,7 +192,7 @@ async function renderDecisionsTab(el){
 el.innerHTML='<div style="text-align:center;padding:20px"><div class="loading-spinner" style="width:24px;height:24px;margin:0 auto 8px;border-width:2px"></div>加载决策复盘数据...</div>';
 try{
 const uid=getProfileId();
-const r=await fetch(API_BASE+'/api/decisions/review/'+uid+'?limit=20',{signal:AbortSignal.timeout(15000)});
+const r=await fetch(API_BASE+'/decisions/review/'+uid+'?limit=20',{signal:AbortSignal.timeout(15000)});
 if(!r.ok){el.innerHTML='<div style="text-align:center;padding:20px;color:var(--text2)">决策复盘数据暂不可用<br><button onclick="renderInsight()" style="margin-top:8px;padding:6px 16px;border-radius:8px;border:none;background:var(--accent);color:#fff;cursor:pointer">🔄 重试</button></div>';return}
 const d=await r.json();
 const reviews=d.reviews||[];
