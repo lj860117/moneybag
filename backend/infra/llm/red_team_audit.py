@@ -17,7 +17,7 @@ Invariant #3: All LLM calls through infra/llm/gateway.
 from __future__ import annotations
 
 import re
-from typing import Dict, List, Tuple
+from typing import Any, Dict, List, Tuple
 
 
 # ============================================================
@@ -55,7 +55,7 @@ BANNED_PATTERNS: List[re.Pattern[str]] = [
 # ============================================================
 
 # Each field has: allowed_keywords (must have at least one) + banned_keywords
-FIELD_BOUNDARIES: Dict[str, Dict[str, List[str]]] = {
+FIELD_BOUNDARIES: Dict[str, Dict[str, Any]] = {
     "market_environment": {
         "banned": ["看好", "看空", "建议加仓", "建议减仓", "强烈推荐"],
         "max_length": 200,
@@ -134,7 +134,7 @@ def audit_field(field_name: str, value: str) -> Tuple[bool, List[str]]:
             violations.append(f"Field '{field_name}' contains banned word: '{word}'")
 
     # Check max length
-    max_len = boundary.get("max_length", 500)
+    max_len: int = int(boundary.get("max_length", 500))
     if len(value) > max_len:
         violations.append(
             f"Field '{field_name}' exceeds max length: {len(value)} > {max_len}"

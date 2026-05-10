@@ -44,7 +44,7 @@ def build_rag_context(
           - has_rag: whether any relevant chunks were found
     """
     # Retrieve relevant chunks
-    chunks = retriever.retrieve(  # type: ignore[union-attr]
+    chunks = retriever.retrieve(  # type: ignore[attr-defined]
         query=facts_summary,
         top_k=top_k,
         category_hint=category_hint,

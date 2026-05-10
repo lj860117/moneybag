@@ -2834,15 +2834,17 @@ def test_rag_service_chunks_include_tags_in_metadata():
 
 
 def test_indexed_articles_have_correct_grades():
-    """After indexing, articles should have correct A/B grade distribution (3A + 9B)."""
+    """After indexing, articles should have correct A/B grade distribution.
+    M6 扩充后：8A + 24B = 32 篇（从 12 篇扩充至 32 篇）。
+    """
     from infra.knowledge import KnowledgeRetriever, load_and_index_articles
     retriever = KnowledgeRetriever()
     load_and_index_articles(retriever)
     articles = retriever.list_articles()
     a_count = sum(1 for a in articles if a.source_grade.value == "A")
     b_count = sum(1 for a in articles if a.source_grade.value == "B")
-    assert a_count == 3, f"Expected 3 A-grade articles, got {a_count}"
-    assert b_count == 9, f"Expected 9 B-grade articles, got {b_count}"
+    assert a_count == 8, f"Expected 8 A-grade articles, got {a_count}"
+    assert b_count == 24, f"Expected 24 B-grade articles, got {b_count}"
 
 
 def test_indexed_articles_have_tags():

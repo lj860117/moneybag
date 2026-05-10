@@ -40,6 +40,20 @@ module = [
 ]
 ignore_errors = true
 
+# ---- RAG/知识库层：逐步收紧，现阶段宽松（chromadb/sentence_transformers 无 stub）----
+# infra.knowledge 依赖 chromadb/sentence_transformers，无官方 stub，暂不强制
+# domain.rule_engine.decision_archive / domain.services.user_preference_service 历史遗留泛型注解
+[[tool.mypy.overrides]]
+module = [
+    "infra.knowledge",
+    "infra.knowledge.*",
+    "infra.events",
+    "infra.events.*",
+    "domain.rule_engine.decision_archive",
+    "domain.services.user_preference_service",
+]
+ignore_errors = true
+
 # ---- 第三方库：忽略缺失 stub ----
 [[tool.mypy.overrides]]
 module = [
@@ -59,5 +73,11 @@ module = [
     "httpx.*",
     "PIL",
     "PIL.*",
+    "chromadb",
+    "chromadb.*",
+    "sentence_transformers",
+    "sentence_transformers.*",
+    "zhdate",
+    "zhdate.*",
 ]
 ignore_missing_imports = true

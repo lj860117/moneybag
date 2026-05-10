@@ -36,12 +36,12 @@ def retrieve_knowledge_chunks(
         Dict with keys: query, chunks, total_indexed, further_reading
     """
     # Call retriever (Protocol method)
-    chunks: list[KnowledgeChunk] = retriever.retrieve(  # type: ignore[union-attr]
+    chunks: list[KnowledgeChunk] = retriever.retrieve(  # type: ignore[attr-defined]
         query=query, top_k=top_k, category_hint=category_hint
     )
 
     # Get total indexed count
-    total = retriever.total_chunks()  # type: ignore[union-attr]
+    total = retriever.total_chunks()  # type: ignore[attr-defined]
 
     # Format response
     chunk_dicts = [_format_chunk(c) for c in chunks]
@@ -68,7 +68,7 @@ def list_knowledge_articles(retriever: object) -> list[dict[str, Any]]:
 
     Returns list of article metadata dicts.
     """
-    articles: list[KnowledgeArticle] = retriever.list_articles()  # type: ignore[union-attr]
+    articles: list[KnowledgeArticle] = retriever.list_articles()  # type: ignore[attr-defined]
     return [a.to_dict() for a in articles]
 
 
@@ -77,8 +77,8 @@ def get_knowledge_stats(retriever: object) -> dict[str, Any]:
 
     Returns dict with article_count, chunk_count, categories.
     """
-    articles: list[KnowledgeArticle] = retriever.list_articles()  # type: ignore[union-attr]
-    total_chunks = retriever.total_chunks()  # type: ignore[union-attr]
+    articles: list[KnowledgeArticle] = retriever.list_articles()  # type: ignore[attr-defined]
+    total_chunks = retriever.total_chunks()  # type: ignore[attr-defined]
 
     categories: set[str] = set()
     source_grades: dict[str, int] = {"A": 0, "B": 0, "C": 0}
