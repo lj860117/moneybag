@@ -570,3 +570,144 @@ async def post_multi_view_review(req: MultiViewReviewRequest) -> MultiViewReview
         triggers_met=review.triggers_met,
         summary_text=review.summary_text,
     )
+
+
+# ---- M6 W2: Weekly Education Lesson (09-advisor-features.md §三) ----
+
+class WeeklyLessonRequest(BaseModel):
+    """Request to generate a weekly education lesson."""
+    user_id: str = Field(..., min_length=1, description="User ID")
+    trigger: str = Field("weekly_regular", description="Trigger: weekly_regular | holding_event | new_article")
+    # Optional holding overrides (for testing; normally derived from stored data)
+    has_fund: Optional[bool] = Field(None, description="Override: user has fund holdings")
+    has_stock: Optional[bool] = Field(None, description="Override: user has stock holdings")
+    has_gold: Optional[bool] = Field(None, description="Override: user has gold holdings")
+    has_real_estate: Optional[bool] = Field(None, description="Override: user has real estate")
+    max_drawdown_pct: Optional[float] = Field(None, description="Override: max position drawdown %")
+    drawdown_asset_name: Optional[str] = Field(None, description="Override: which asset has drawdown")
+
+
+class WeeklyLessonResponse(BaseModel):
+    """Response with selected weekly lesson."""
+    status: str = "ok"
+    lesson: Optional[Dict[str, Any]] = Field(None, description="Selected lesson or None")
+    delivered: bool = Field(False, description="Whether a lesson was selected")
+    reason: str = Field("", description="Why no lesson (if not delivered)")
+    fatigue_status: Dict[str, Any] = Field(default_factory=dict, description="Current fatigue state")
+
+
+@router.post("/api/decisions/weekly-lesson", response_model=WeeklyLessonResponse)
+async def post_weekly_lesson(req: WeeklyLessonRequest) -> WeeklyLessonResponse:
+    """Generate a weekly education lesson personalized to user holdings.
+
+    Selects from RAG knowledge base based on:
+    - User's current asset classes (fund/stock/gold/RE)
+    - Drawdown events (>10% triggers behavioral finance content)
+    - Fatigue control (max 2/week, no repeats within 90 days)
+
+    Key invariant: AI only selects + fills intro sentence template.
+    Content 100% from fixed knowledge base articles.
+
+    Design doc: 09-advisor-features.md §三
+    """
+    from domain.models.education import (
+        HoldingContext,
+        LessonPushRecord,
+        LessonTrigger,
+    )
+    from use_cases.generate_weekly_lesson import (
+        check_push_allowed,
+        generate_weekly_lesson,
+        record_lesson_push,
+    )
+    from infra.knowledge import get_retriever, load_and_index_articles
+    from infra.store.file_store import FileStore
+
+    # Validate trigger
+    valid_triggers = {"weekly_regular", "holding_event", "new_article"}
+    if req.trigger not in valid_triggers:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Invalid trigger '{req.trigger}'. Must be one of: {valid_triggers}",
+        )
+
+    trigger = LessonTrigger(req.trigger)
+
+    # Load push history
+    push_store = FileStore(collection="education_push_history")
+    raw_history = push_store.load(req.user_id)
+    push_history: List[LessonPushRecord] = []
+    if raw_history and "records" in raw_history:
+        push_history = [LessonPushRecord.from_dict(r) for r in raw_history["records"]]
+
+    # Check fatigue
+    fatigue_info = check_push_allowed(push_history, trigger)
+
+    if not fatigue_info["allowed"]:
+        return WeeklyLessonResponse(
+            status="ok",
+            lesson=None,
+            delivered=False,
+            reason=fatigue_info["reason"],
+            fatigue_status=fatigue_info,
+        )
+
+    # Build holding context (from request overrides or stored data)
+    from scripts.weekly_education_cron import build_holding_context as _build_ctx
+
+    if any(v is not None for v in [req.has_fund, req.has_stock, req.has_gold,
+                                    req.has_real_estate, req.max_drawdown_pct]):
+        # Use overrides
+        context = HoldingContext(
+            user_id=req.user_id,
+            asset_classes=[],
+            has_fund=req.has_fund if req.has_fund is not None else False,
+            has_stock=req.has_stock if req.has_stock is not None else False,
+            has_gold=req.has_gold if req.has_gold is not None else False,
+            has_real_estate=req.has_real_estate if req.has_real_estate is not None else False,
+            max_drawdown_pct=req.max_drawdown_pct,
+            drawdown_asset_name=req.drawdown_asset_name,
+            total_positions=1,
+        )
+    else:
+        context = _build_ctx(req.user_id)
+
+    # Load knowledge articles
+    retriever = get_retriever()
+    if retriever.total_chunks() == 0:
+        load_and_index_articles(retriever)
+    articles = retriever.list_articles()
+
+    # Generate lesson
+    lesson = generate_weekly_lesson(
+        context=context,
+        push_history=push_history,
+        available_articles=articles,
+        trigger=trigger,
+    )
+
+    if lesson is None:
+        return WeeklyLessonResponse(
+            status="ok",
+            lesson=None,
+            delivered=False,
+            reason="没有匹配的课程（可能全部已推送过）",
+            fatigue_status=fatigue_info,
+        )
+
+    # Save push record
+    import time as _time
+    record = record_lesson_push(lesson)
+    push_history.append(record)
+    push_store.save(req.user_id, {
+        "records": [r.to_dict() for r in push_history],
+        "updated_at": _time.time(),
+    })
+
+    return WeeklyLessonResponse(
+        status="ok",
+        lesson=lesson.to_dict(),
+        delivered=True,
+        reason="",
+        fatigue_status=fatigue_info,
+    )

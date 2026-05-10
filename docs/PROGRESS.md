@@ -6,7 +6,7 @@
 ---
 
 ## 当前阶段
-M6 W1 — 三视角二次意见（✅ 完成）
+M6 W2 — 周度金融小课（✅ 完成）
 
 ## 已完成
 - [x] 2026-04-25: 四层目录树（api/ use_cases/ domain/ infra/）
@@ -241,6 +241,20 @@ M6 W1 — 三视角二次意见（✅ 完成）
   - domain 层零 infra import（不变式 #9/#10 保持）
   - multi_view_advisor_service.py 全部纯函数，无 I/O 无副作用（不变式 #12）
   - 新增 51 个测试（含触发条件/模板评分/模板渲染/置信度/端到端生成/API endpoint/集成测试/不变式测试），全绿 ✅
+- [x] 2026-05-10: **M6 W2 周度金融小课（09-advisor-features.md §三）**
+  - domain/models/education.py（~220 行）— LessonTrigger / PushStatus / HoldingContext / WeeklyLesson / LessonPushRecord / HoldingArticleMapping frozen dataclass + HOLDING_ARTICLE_MAPPINGS（16 条映射规则）+ 疲劳控制常量
+  - domain/services/education_service.py（~220 行纯函数）— check_fatigue / evaluate_holding_conditions / get_matching_articles / render_intro_sentence / select_weekly_lesson / build_push_record
+  - use_cases/generate_weekly_lesson.py（~120 行）— generate_weekly_lesson / record_lesson_push / check_push_allowed / get_lesson_history_summary
+  - scripts/weekly_education_cron.py（~200 行）— 每周日 20:00 cron 脚本，支持 --user-id / --dry-run / --trigger 参数
+  - api/decisions.py 新增 POST /api/decisions/weekly-lesson 路由（WeeklyLessonRequest/Response）
+  - 更新 domain/models/__init__.py 导出教育模型
+  - 疲劳控制：周总上限 2 条 / 同文章 90 天内不重复 / 事件触发最多 1/月
+  - 持仓绑定：16 条 holding→article 映射规则（基金→指数投资/定投、黄金→对冲、股票→再平衡/行为金融、浮亏>10%→损失厌恶/锚定效应、房产→生命周期、保险→金字塔/优先级、通用→复利/应急金/4%法则）
+  - 内容 100% 来自 RAG 知识库 12 篇文章（08-knowledge-rag.md），AI 只挑选+填模板
+  - mypy strict 新文件 0 错误（3 源文件 --follow-imports=skip 验证）
+  - domain 层零 infra import（不变式 #9/#10 保持）
+  - education_service.py 全部纯函数，无 I/O 无副作用（不变式 #12）
+  - 新增 39 个测试（持仓条件/文章匹配/疲劳控制/模板渲染/端到端选课/模型序列化/use_case/API/不变式），全绿 ✅
 - [x] 2026-05-10: **M5 W1-2 月度决策质量报告（07-decision-guard.md §四 复盘归因）**
   - domain/models/report.py（~230 行）— MotivationDistribution（理由分布）/ DecisionPattern（高频亏损模式）/ QualityTrend（分数趋势）/ MonthlyReport（顶层报告）frozen dataclass
   - domain/protocols/report_generator.py — ReportGeneratorProtocol（generate_report / get_report / list_reports），不变式 #11 达成
@@ -354,7 +368,7 @@ M6 W1 — 三视角二次意见（✅ 完成）
 - 无
 
 ## 下次会话计划
-- M6 W2: 周度金融小课（09-advisor-features.md §三）— 绑定持仓推送
+- M6 完成收尾：前端小课展示页 + 企业微信推送接入
 - 持续: services/ 层 akshare 直调逐步迁入 infra/data_source（绞杀者模式）
 
 ---

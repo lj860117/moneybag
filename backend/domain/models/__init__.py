@@ -169,3 +169,27 @@ __all__.extend([
     "MultiViewRequest",
     "TriggerCondition",
 ])
+
+from domain.models.education import (
+    HoldingContext,
+    WeeklyLesson,
+    LessonPushRecord,
+    LessonTrigger,
+    PushStatus,
+    HoldingArticleMapping,
+    HOLDING_ARTICLE_MAPPINGS,
+    MAX_PUSHES_PER_WEEK,
+    ARTICLE_REPEAT_COOLDOWN_DAYS,
+)
+
+__all__.extend([
+    "HoldingContext",
+    "WeeklyLesson",
+    "LessonPushRecord",
+    "LessonTrigger",
+    "PushStatus",
+    "HoldingArticleMapping",
+    "HOLDING_ARTICLE_MAPPINGS",
+    "MAX_PUSHES_PER_WEEK",
+    "ARTICLE_REPEAT_COOLDOWN_DAYS",
+])
