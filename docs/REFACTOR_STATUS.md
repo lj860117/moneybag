@@ -1,12 +1,12 @@
 # MoneyBag 重构状态追踪
 
-> 最后更新：2026-04-26
+> 最后更新：2026-05-10
 > 对应设计文档：`docs/design/12-framework-refactor.md`
 > Git tag 基线：`m1-w1-skeleton`
 
 ---
 
-## 当前阶段：M3 W4 — 字段级硬边界 + red_team_audit CI + 对话受限（✅ 完成）
+## 当前阶段：M4 W1 — RAG 知识库 + 12 篇知识文档 + /api/rag 路由（✅ 完成）
 
 ### 绞杀者模式 5 步进度
 
@@ -28,28 +28,31 @@
 domain/
 ├── __init__.py
 ├── models/
-│   ├── __init__.py          # LLMResponse + FamilyProfile/Member/SubAccount + BalanceSheet/BalanceSheetItem + AllocationTarget/AllocationState/DeviationAnalysis + BuyReason/DecisionQualityScore/DecisionReview
+│   ├── __init__.py          # LLMResponse + FamilyProfile/Member/SubAccount + BalanceSheet/BalanceSheetItem + AllocationTarget/AllocationState/DeviationAnalysis + BuyReason/DecisionQualityScore/DecisionReview + KnowledgeChunk/KnowledgeArticle/RetrievalResult
 │   ├── family.py            # M2 W2: FamilyProfile / Member / SubAccount frozen dataclass
 │   ├── balance_sheet.py     # M2 W3: BalanceSheet / BalanceSheetItem frozen dataclass + 过期检测
 │   ├── allocation.py        # M2 W4: AllocationTarget / AllocationState / DeviationAnalysis frozen dataclass
-│   └── decision.py          # M3 W1: BuyReason / BuyReasonCategory / DecisionQualityScore / DecisionReview + PREDEFINED_REASONS
-│   └── checklist.py         # M3 W2: ChecklistItem / ChecklistResult + CHECKLIST_PASS_THRESHOLD
+│   ├── decision.py          # M3 W1: BuyReason / BuyReasonCategory / DecisionQualityScore / DecisionReview + PREDEFINED_REASONS
+│   ├── checklist.py         # M3 W2: ChecklistItem / ChecklistResult + CHECKLIST_PASS_THRESHOLD
+│   └── knowledge.py         # M4 W1: KnowledgeChunk / KnowledgeArticle / RetrievalResult + SourceGrade / ContentCategory
 ├── protocols/
-│   ├── __init__.py          # 重导出 7 Protocol
+│   ├── __init__.py          # 重导出 8 Protocol
 │   ├── cache.py             # CacheProtocol
 │   ├── store.py             # StoreProtocol
 │   ├── llm_client.py        # LLMClientProtocol
 │   ├── data_source.py       # DataSourceProtocol
 │   ├── family_profile.py   # M2 W2: FamilyProfileProtocol
 │   ├── balance_sheet.py    # M2 W3: BalanceSheetProtocol
-│   └── decision_guard.py   # M3 W1: DecisionGuardProtocol
+│   ├── decision_guard.py   # M3 W1: DecisionGuardProtocol
+│   └── knowledge_retriever.py  # M4 W1: KnowledgeRetrieverProtocol
 ├── services/
 │   ├── __init__.py          # 占位（不变式 #9：禁止互 import）
 │   ├── user_preference_service.py  # M2 W1: 偏好/画像/铁律/情绪/生活事件/待审洞察
 │   ├── family_profile_service.py   # M2 W2: 问卷解析/校验/推导
 │   ├── balance_sheet_service.py    # M2 W3: 资产负债表构建/校验/过期检测/汇总
 │   ├── allocation_service.py       # M2 W4: 配比计算/偏离度分析/再平衡触发（纯函数）
-│   └── decision_guard_service.py   # M3 W1: 决策质量分计算/买入理由评估/信号检测（纯函数）
+│   ├── decision_guard_service.py   # M3 W1: 决策质量分计算/买入理由评估/信号检测（纯函数）
+│   └── rag_service.py              # M4 W1: RAG 纯函数（解析/分块/embedding/检索）
 └── rule_engine/
     ├── __init__.py          # AllocationDefaults/RiskDefaults/ScoringDefaults/RebalanceDefaults/StaleDataDefaults
     ├── defaults.py          # ⭐ M2 W4: 所有硬阈值常量集中管理（配比矩阵/偏离度/风险/评分/再平衡/过期）
@@ -87,7 +90,10 @@ infra/
 │       ├── akshare_provider.py   # AkshareProvider stub
 │       └── baostock_provider.py  # BaostockProvider stub
 ├── knowledge/
-│   └── __init__.py          # 占位
+│   ├── __init__.py          # 导出 KnowledgeRetriever + load_and_index_articles
+│   ├── retriever.py         # M4 W1: KnowledgeRetrieverProtocol 实现（内存向量存储）
+│   ├── indexer.py           # M4 W1: 启动时从 content/ 加载文章并建索引
+│   └── content/             # M4 W1: 12 篇知识 Markdown 文章（A/B 级来源）
 ├── events/
 │   └── __init__.py          # 占位
 └── config/
@@ -137,6 +143,12 @@ api/
 └── decisions.py             # 6 路由 — 事后复盘提交/历史查询/统计/预设理由列表/事前清单/清单项描述
 ```
 
+### M4 W1 新增 API
+```
+api/
+└── rag.py                   # 3 路由 — POST /api/rag/retrieve + GET /articles + GET /stats
+```
+
 ### use_cases/ — 用例层（M2 W2 首个用例落地）
 
 ```
@@ -146,7 +158,8 @@ use_cases/
 ├── manage_balance_sheet.py         # M2 W3: 资产负债表 CRUD 编排
 ├── manage_allocation.py            # M2 W4: 配比目标计算/偏离度分析/再平衡检查编排
 ├── review_decision.py              # M3 W1: 决策复盘提交/存档/统计编排
-└── run_checklist.py                # M3 W2: 事前清单评估编排（消费 evaluate_reasons）
+├── run_checklist.py                # M3 W2: 事前清单评估编排（消费 evaluate_reasons）
+└── retrieve_knowledge.py           # M4 W1: RAG 检索/列表/统计编排
 ```
 
 ### 测试
@@ -161,7 +174,7 @@ tests/
 ├── test_data_honesty.py
 ├── test_memory_e2e.py
 ├── test_red_team.py
-├── test_skeleton_m1.py      # 177 条冒烟测试（全绿）
+├── test_skeleton_m1.py      # 201 条冒烟测试（全绿）
 └── test_trading_calendar.py
 ```
 
@@ -178,6 +191,7 @@ tests/
 | `FamilyProfileProtocol` | `domain/protocols/family_profile.py` | `infra/store/family_profile_store.py` (FamilyProfileStore，委托 FileStore) | — |
 | `BalanceSheetProtocol` | `domain/protocols/balance_sheet.py` | `infra/store/balance_sheet_store.py` (BalanceSheetStore，委托 FileStore) | — |
 | `DecisionGuardProtocol` | `domain/protocols/decision_guard.py` | `domain/rule_engine/decision_archive.py` (现有档案系统扩展) | M3 W2 接入 7 点清单 |
+| `KnowledgeRetrieverProtocol` | `domain/protocols/knowledge_retriever.py` | `infra/knowledge/retriever.py` (KnowledgeRetriever，内存 TF-IDF 向量存储) | ChromaDB 实现 (post-M4) |
 
 ---
 
@@ -187,7 +201,7 @@ tests/
 2. **LLMClient 通过 lazy import 代理到 services/llm_gateway.py** — 老 gateway 520 行代码不动，新代码 import `infra.llm.LLMClient`。M2 时 gateway 实现搬到 infra/。
 3. **`_cache = {}` 已清零** — M1 W3 完成：47 处散装缓存全部迁移到 `infra.cache.MemoryCache`，api 层和 services 层 dict 式读写已归零。⚠️ services/llm_gateway.py 内部磁盘缓存持久化逻辑仍直接访问 `MemoryCache._data`（已知技术债）。
 4. **api 层 akshare/tushare 直调已清零** — M1 W3 完成：`api/` 目录内 `import akshare` 归 0。⚠️ services/ 层仍有 30+ 文件直调 akshare（绞杀者模式，M1 W4 scope）。
-5. **main.py 128 行** — 已达成 97% 降幅（4044 → 128），剩余 2 个路由为根路径健康检查。CI 红线 200 行已配置（scripts/lint_main_py.py + ci.yml lint-main-py job）。
+5. **main.py 132 行** — 已达成 97% 降幅（4044 → 132），剩余 2 个路由为根路径健康检查。CI 红线 200 行已配置（scripts/lint_main_py.py + ci.yml lint-main-py job）。
 6. **agent_memory.py 已拆分为 re-export shim** — M2 W1 完成：1277 行实现迁移到 domain/services/user_preference_service.py + domain/rule_engine/decision_archive.py。shim 仅 ~95 行重导出。build_memory_summary() 降级为 stub（返回空串）。9+ 处调用方零改动。
 
 ---
@@ -221,6 +235,7 @@ tests/
 | 2026-05-10 | M3 W1 决策复盘（模式 B 先上）：BuyReason/BuyReasonCategory/DecisionQualityScore/DecisionReview model + PREDEFINED_REASONS（8 条预设理由含信号等级）+ DecisionGuardProtocol + decision_guard_service（质量分四维计算：理由清晰度/信息来源/风险意识/时间跨度）+ review_decision use_case（提交/存档/统计）+ api/decisions.py（4 路由：POST review / GET history / GET stats / GET reasons）+ 24 新测试（141 总数全绿）| — |
 | 2026-05-10 | M3 W2 模式 A 事前提示 + 7 点清单：ChecklistItem/ChecklistResult model + domain/rule_engine/checklist.py（7 项评分引擎：应急金/四大险/集中度/3年期限/理由理性/仓位控制/冷静期）+ run_checklist use_case（消费 evaluate_reasons 红灯计数）+ api/decisions.py 新增 2 路由（POST checklist / GET checklist/items）+ 20 新测试（161 总数全绿）| — |
 | 2026-05-10 | M3 W4 字段级硬边界 + red_team_audit CI：infra/llm/red_team_audit.py（11 条 BANNED_PATTERNS + audit_response + audit_field，拦截率 100%）+ infra/llm/chat_guard.py（锚点强制+5轮上限+诱导拦截+无锚点 chat M3 下线）+ scripts/red_team_audit_ci.py CI 脚本 + .github/workflows/ci.yml 新增 red-team-audit job + 16 新测试（177 总数全绿）| — |
+| 2026-05-10 | M4 W1 RAG 知识库：KnowledgeChunk/KnowledgeArticle/RetrievalResult model + KnowledgeRetrieverProtocol + rag_service.py 纯函数（解析/分块/TF-IDF embedding/cosine search）+ infra/knowledge/retriever.py（内存向量存储）+ indexer.py（启动加载）+ 12 篇 A/B 级知识文章 + retrieve_knowledge use_case + api/rag.py（3 路由）+ 24 新测试（201 总数全绿）| `7a24526` |
 
 ---
 
@@ -278,3 +293,18 @@ tests/
 | **W2** | 模式 A 事前提示 + 7 点清单完整计算 | ✅ ChecklistItem/ChecklistResult model + rule_engine/checklist.py（7 项评分：应急金/四大险/集中度/3年期限/理由理性/仓位控制/冷静期）+ run_checklist use_case（消费 evaluate_reasons）+ api/decisions.py 新增 2 路由 + 20 新测试（161 总数全绿）|
 | **W3** | （跳过，凌晨工厂待 M4 RAG 后集成） | — |
 | **W4** | 字段级硬边界 + red_team_audit CI + 对话受限 | ✅ infra/llm/red_team_audit.py（11 条 BANNED_PATTERNS + audit_response + audit_field，拦截率 100%）+ infra/llm/chat_guard.py（锚点强制+5轮上限+诱导拦截）+ scripts/red_team_audit_ci.py + CI 新增 red-team-audit job + 16 新测试（177 总数全绿）|
+
+---
+
+## M4 目标
+
+系统会说话——RAG 知识库让 AI 解读有据可查，苏格拉底提问引导用户思考。
+
+### M4 周排
+
+| 周 | 任务 | 产出 |
+|---|------|------|
+| **W1** | RAG 知识库上线（10+ 篇核心文章）| ✅ KnowledgeChunk/KnowledgeArticle/RetrievalResult model + KnowledgeRetrieverProtocol + rag_service（纯函数）+ infra/knowledge/retriever + indexer + 12 篇 A/B 级文章 + retrieve_knowledge use_case + api/rag.py（3 路由）+ 24 新测试（201 总数全绿）|
+| **W2** | 苏格拉底提问 + 三视角二次意见 | — |
+| **W3** | AI 解读层接入 RAG（prompt 硬约束"只引用检索结果"）| — |
+| **W4** | 周度金融小课推送 | — |
