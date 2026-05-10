@@ -1,0 +1,158 @@
+{
+  "conservative_graham": [
+    {
+      "id": "cv_safety_margin",
+      "trigger": ["any_buy_major"],
+      "template": "假设{asset_class}跌{decline_pct}%，你的现金流还能撑吗？安全边际是第一位的。"
+    },
+    {
+      "id": "cv_downside_protection",
+      "trigger": ["after_loss", "high_volatility"],
+      "template": "现在{asset_name}已跌{loss_pct}%，再加仓等于在刀口舔血。先问问：最坏情况下你能承受多少损失？"
+    },
+    {
+      "id": "cv_cash_preservation",
+      "trigger": ["concentration_high", "any_buy_major"],
+      "template": "你的现金储备能撑几个月？投资前必须确保这笔钱不是应急钱。"
+    },
+    {
+      "id": "cv_probability",
+      "trigger": ["emerging_market", "single_stock"],
+      "template": "{asset_name}的成功概率是多少？格雷厄姆会说：概率不清就别动。"
+    },
+    {
+      "id": "cv_valuation_anchor",
+      "trigger": ["valuation_cheap", "any_buy_major"],
+      "template": "这个价格相比历史平均便宜多少？打了多少折扣？折扣背后的风险是什么？"
+    },
+    {
+      "id": "cv_debt_check",
+      "trigger": ["high_debt", "any_buy_major"],
+      "template": "你还有贷款在身，先把负债压下去再说加仓。债务风险往往比市场风险更致命。"
+    },
+    {
+      "id": "cv_business_moat",
+      "trigger": ["single_stock", "sector_concentration"],
+      "template": "{asset_name}有什么护城河？如果说不出来，说明你没搞懂这笔投资。"
+    },
+    {
+      "id": "cv_mr_market",
+      "trigger": ["panic_selling", "fomo_buying"],
+      "template": "市场先生在情绪化定价。问问自己：如果被套 20%，你会继续持有这个资产吗？"
+    },
+    {
+      "id": "cv_position_sizing",
+      "trigger": ["any_buy_major"],
+      "template": "单笔投入不超过总资产 {max_pct}%。这次加仓后，{asset_class}占比会到 {new_pct}%，太高了。"
+    },
+    {
+      "id": "cv_rebalance_first",
+      "trigger": ["long_since_rebalance", "any_buy_major"],
+      "template": "距离上次调整已经{days}天，先回顾一下上次调整效果如何？有效的调仓不会这么频繁。"
+    }
+  ],
+  "longterm_bogle": [
+    {
+      "id": "lt_30year_horizon",
+      "trigger": ["any_buy_major"],
+      "template": "30 年后回头看，这次调整比定投{index_name}指数更好吗？时间是你最大的朋友。"
+    },
+    {
+      "id": "lt_time_advantage",
+      "trigger": ["panic_selling"],
+      "template": "{asset_class}今年跌了{loss_pct}%，但过去{historical_period}年的年化收益是{annual_return}%。你有耐心等吗？"
+    },
+    {
+      "id": "lt_dca_consistency",
+      "trigger": ["one_time_buy"],
+      "template": "一次性投入往往不如定投 3-5 年分批配置。想好持仓时间表了吗？"
+    },
+    {
+      "id": "lt_cost_killer",
+      "trigger": ["active_trading", "frequent_rebalance"],
+      "template": "{year}年调仓{times}次，费率/滑点成本是{cost_pct}%。这样的收益还超得过指数吗？"
+    },
+    {
+      "id": "lt_sequence_risk",
+      "trigger": ["near_retirement", "drawdown_event"],
+      "template": "你还有{years_to_retire}年退休。现在的波动会吃掉多少退休生活质量？配置要防顺序风险。"
+    },
+    {
+      "id": "lt_core_satellite",
+      "trigger": ["sector_rotation"],
+      "template": "核心持有{core_asset}（70-80%），卫星调仓{satellite_asset}（20-30%）——这样既不错过机会也不过度交易。"
+    },
+    {
+      "id": "lt_inflation_hedge",
+      "trigger": ["inflation_high", "cash_position"],
+      "template": "通胀率已{inflation_rate}%，全现金持仓等于在贬值。即使不激进，也要配点{hedge_asset}对冲。"
+    },
+    {
+      "id": "lt_tax_efficiency",
+      "trigger": ["frequent_rebalance", "realize_loss"],
+      "template": "税收成本吃掉了多少收益？税收优化做的好，等于变相给自己加薪。"
+    },
+    {
+      "id": "lt_compounding_magic",
+      "trigger": ["early_career", "accumulation_phase"],
+      "template": "你现在{age}岁，复利还有{compounding_years}年。少折腾，多积累——这是最强的引擎。"
+    },
+    {
+      "id": "lt_rebalance_discipline",
+      "trigger": ["any_buy_major"],
+      "template": "既然配置框架已定，就按框架定期再平衡，不要被市场噪音带偏。"
+    }
+  ],
+  "behavioral_kahneman": [
+    {
+      "id": "bh_anchoring_trap",
+      "trigger": ["recent_drop", "fomo_buying"],
+      "template": "你是因为{asset_name}真的便宜，还是因为它跌了{drop_pct}%让你心动？这就是锚点效应，要警惕。"
+    },
+    {
+      "id": "bh_loss_aversion",
+      "trigger": ["drawdown_event", "panic_check"],
+      "template": "浮亏{loss_pct}%让你想割肉吗？我们对损失的恐惧往往大于对收益的渴望——那是进化的代价，也是陷阱。"
+    },
+    {
+      "id": "bh_recency_bias",
+      "trigger": ["hot_sector", "momentum_buy"],
+      "template": "{sector}这个月涨了{return_pct}%，你想追买吗？最近的表现容易骗人——别被它迷惑。"
+    },
+    {
+      "id": "bh_disposition_effect",
+      "trigger": ["sell_winner", "hold_loser"],
+      "template": "你是不是更想卖掉赚的、继续拿赔的？这是赋禀效应——我们总高估自己已拥有的东西。"
+    },
+    {
+      "id": "bh_herd_instinct",
+      "trigger": ["everyone_buying", "viral_stock"],
+      "template": "{asset_name}这两周讨论度爆了，但这恰恰是风险最高的时刻。羊群效应很致命。"
+    },
+    {
+      "id": "bh_overconfidence",
+      "trigger": ["after_win", "research_heavy"],
+      "template": "上次投资赚了{recent_return}%，会不会让你高估了自己的选股能力？这是过度自信的开始。"
+    },
+    {
+      "id": "bh_sunk_cost",
+      "trigger": ["long_hold", "underwater_position"],
+      "template": "这只{asset_name}你持了{hold_days}天，已经亏{loss_pct}%，你是因为看好它还是因为'舍不得认赔'？"
+    },
+    {
+      "id": "bh_narrow_framing",
+      "trigger": ["single_focus", "concentration_high"],
+      "template": "你在盯{asset_name}的涨跌，但全部资产的波动只有 X%——别因为某只票忽视整体风险。"
+    },
+    {
+      "id": "bh_mental_accounting",
+      "trigger": ["risky_play", "speculation"],
+      "template": "这 10 万你叫'可以赔的'，但它真的 ringfenced 了吗？还是会在你最需要的时候挪用它？"
+    },
+    {
+      "id": "bh_emotion_check",
+      "trigger": ["volatile_day", "any_major_decision"],
+      "template": "做这个决定时，你是理性的吗？还是在某种情绪驱动下？冷静 24 小时再说。"
+    }
+  ]
+}

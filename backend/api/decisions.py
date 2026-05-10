@@ -34,6 +34,11 @@ from use_cases.run_checklist import (
     get_checklist_items_description,
     run_pre_trade_checklist,
 )
+from use_cases.generate_monthly_report import (
+    generate_monthly_report,
+    get_available_months,
+    get_monthly_report_summary,
+)
 
 router = APIRouter(tags=["决策复盘"])
 
@@ -142,6 +147,47 @@ class SocraticQuestionsResponse(BaseModel):
     questions: List[Dict[str, Any]] = Field(default_factory=list, description="Rendered questions")
     question_count: int = Field(0, description="Number of questions returned")
     context_summary: str = Field("", description="Trigger context summary")
+
+
+class MultiViewReviewRequest(BaseModel):
+    """Request to generate multi-perspective second opinion (09-advisor-features.md §二)."""
+    user_id: str = Field(..., min_length=1, description="User ID")
+    asset_name: str = Field(..., min_length=1, description="Asset name (e.g., '贵州茅台', 'SPY')")
+    asset_class: str = Field(
+        ...,
+        description="Asset class: stock, fund, bond, real_estate, crypto, gold, commodities",
+    )
+    transaction_amount: float = Field(..., gt=0, description="Amount being transacted (CNY)")
+    current_position_value: float = Field(0.0, ge=0, description="Current position value")
+    total_portfolio_value: float = Field(..., gt=0, description="Total portfolio size")
+    recent_return_pct: Optional[float] = Field(None, description="Return last 3 months (%)")
+    historical_return_pct: Optional[float] = Field(None, description="Long-term avg return (%)")
+    loss_pct: Optional[float] = Field(None, description="Current drawdown (%)")
+    days_since_rebalance: Optional[int] = Field(None, ge=0, description="Days since last adjustment")
+
+
+class MultiViewReviewResponse(BaseModel):
+    """Response with three-perspective second opinion."""
+    status: str = "ok"
+    review: Optional[Dict[str, Any]] = Field(None, description="Full review or None if triggers not met")
+    triggered: bool = Field(False, description="Whether any trigger conditions were met")
+    triggers_met: List[str] = Field(default_factory=list, description="Which trigger conditions fired")
+    summary_text: str = Field("", description="Combined 3-perspective summary text")
+
+
+class MonthlyReportResponse(BaseModel):
+    """Response with monthly decision quality report."""
+    status: str = "ok"
+    report: Dict[str, Any] = Field(default_factory=dict, description="Full monthly report")
+
+
+class MonthlyReportSummaryResponse(BaseModel):
+    """Response with report availability summary."""
+    status: str = "ok"
+    available_months: List[str] = Field(default_factory=list, description="Months with data")
+    latest_month: str = Field("", description="Most recent month with data")
+    latest_avg_score: float = Field(0.0, description="Latest month avg quality score")
+    total_reviews_all_time: int = Field(0, description="Total reviews all time")
 
 
 # ---- Endpoints ----
@@ -412,4 +458,115 @@ async def post_socratic_questions(req: SocraticQuestionsRequest) -> SocraticQues
         questions=[q.to_dict() for q in session.questions],
         question_count=len(session.questions),
         context_summary=session.context_summary,
+    )
+
+
+# ---- M5 W1-2: Monthly Decision Quality Report ----
+
+@router.get("/api/decisions/monthly-report/{user_id}", response_model=MonthlyReportResponse)
+async def get_monthly_report(user_id: str, year_month: str = "") -> MonthlyReportResponse:
+    """Generate or retrieve a monthly decision quality report.
+
+    If year_month is empty, uses the latest available month.
+    Report includes:
+      - Total operations / pass rate
+      - Motivation distribution (买入理由分布)
+      - Quality score trend (平均/最高/最低)
+      - Loss pattern detection (高频亏损理由识别)
+      - Recommendations
+
+    Design doc: 07-decision-guard.md §四 — M5 复盘归因
+    """
+    if not year_month:
+        # Use latest available month
+        months = get_available_months(user_id)
+        if not months:
+            return MonthlyReportResponse(
+                status="ok",
+                report={"error": "no_data", "message": "暂无决策复盘记录"},
+            )
+        year_month = months[-1]
+
+    # Validate year_month format
+    if len(year_month) != 7 or year_month[4] != "-":
+        raise HTTPException(
+            status_code=400,
+            detail=f"Invalid year_month format '{year_month}'. Expected 'YYYY-MM'.",
+        )
+
+    report = generate_monthly_report(user_id=user_id, year_month=year_month)
+    return MonthlyReportResponse(status="ok", report=report)
+
+
+@router.get("/api/decisions/monthly-report/{user_id}/summary", response_model=MonthlyReportSummaryResponse)
+async def get_monthly_report_summary_endpoint(user_id: str) -> MonthlyReportSummaryResponse:
+    """Get a quick summary of available monthly reports.
+
+    Returns available months, latest avg score, total reviews.
+    Used by frontend to show report availability before full generation.
+    """
+    summary = get_monthly_report_summary(user_id)
+    return MonthlyReportSummaryResponse(
+        status="ok",
+        available_months=summary.get("available_months", []),  # type: ignore[arg-type]
+        latest_month=str(summary.get("latest_month", "")),
+        latest_avg_score=float(summary.get("latest_avg_score", 0.0)),
+        total_reviews_all_time=int(summary.get("total_reviews_all_time", 0)),
+    )
+
+
+# ---- M6 W1: Three-Perspective Second Opinion (09-advisor-features.md §二) ----
+
+@router.post("/api/decisions/multi-view", response_model=MultiViewReviewResponse)
+async def post_multi_view_review(req: MultiViewReviewRequest) -> MultiViewReviewResponse:
+    """Generate three-perspective second opinion for a major portfolio decision.
+
+    Triggers when:
+      - Transaction amount > 20% of total portfolio
+      - First time buying a major asset class (gold, real estate, crypto)
+      - Single asset would exceed 25% concentration after trade
+
+    Returns 3 views (conservative/long-term/behavioral) each 50-80 chars,
+    selected from fixed template bank. AI only selects + fills blanks.
+
+    Key invariant: no market predictions, no position recommendations.
+
+    Design doc: 09-advisor-features.md §二
+    """
+    from domain.models.multi_perspective import MultiViewRequest
+    from use_cases.run_multi_view_review import generate_portfolio_review
+    from infra.knowledge import get_multi_view_advisor
+
+    advisor = get_multi_view_advisor()
+
+    domain_request = MultiViewRequest(
+        user_id=req.user_id,
+        asset_name=req.asset_name,
+        asset_class=req.asset_class,
+        transaction_amount=req.transaction_amount,
+        current_position_value=req.current_position_value,
+        total_portfolio_value=req.total_portfolio_value,
+        recent_return_pct=req.recent_return_pct,
+        historical_return_pct=req.historical_return_pct,
+        loss_pct=req.loss_pct,
+        days_since_rebalance=req.days_since_rebalance,
+    )
+
+    review = generate_portfolio_review(domain_request, advisor)
+
+    if review is None:
+        return MultiViewReviewResponse(
+            status="ok",
+            review=None,
+            triggered=False,
+            triggers_met=[],
+            summary_text="",
+        )
+
+    return MultiViewReviewResponse(
+        status="ok",
+        review=review.to_dict(),
+        triggered=True,
+        triggers_met=review.triggers_met,
+        summary_text=review.summary_text,
     )

@@ -112,6 +112,12 @@ from domain.models.questions import (
     SocraticQuestion,
     SocraticSession,
 )
+from domain.models.report import (
+    MotivationDistribution,
+    DecisionPattern,
+    QualityTrend,
+    MonthlyReport,
+)
 
 __all__ = [
     "LLMResponse",
@@ -142,4 +148,24 @@ __all__ = [
     "QuestionTemplate",
     "SocraticQuestion",
     "SocraticSession",
+    "MotivationDistribution",
+    "DecisionPattern",
+    "QualityTrend",
+    "MonthlyReport",
 ]
+
+from domain.models.multi_perspective import (
+    PerspectiveView,
+    PerspectiveType,
+    MultiViewReview,
+    MultiViewRequest,
+    TriggerCondition,
+)
+
+__all__.extend([
+    "PerspectiveView",
+    "PerspectiveType",
+    "MultiViewReview",
+    "MultiViewRequest",
+    "TriggerCondition",
+])

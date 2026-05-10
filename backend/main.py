@@ -109,6 +109,10 @@ app.include_router(decisions_router)
 from api.rag import rag_router
 app.include_router(rag_router)
 
+# ---- M6 W1: 三视角二次意见（3 路由）----
+from api.advisor import router as advisor_router
+app.include_router(advisor_router)
+
 # ---- 静态文件服务（部署时前后端一体）----
 FRONTEND_DIR = Path(__file__).resolve().parent.parent  # moneybag/
 
