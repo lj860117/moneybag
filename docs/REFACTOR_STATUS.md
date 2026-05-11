@@ -332,4 +332,92 @@ tests/
 | **W1-2** | 生产规范升级（meta/ST embedding/search）| ✅ tags + review_status 字段 + 3A/9B 严格分级 + sentence-transformers（384 维 MiniLM，含 TF-IDF 降级）+ /api/rag/search + 10 新测试（211 总数全绿）|
 | **W2** | 苏格拉底提问 + 三视角二次意见 | — |
 | **W3** | chromadb 向量库 + AI 解读附延伸阅读 | ✅ ChromaKnowledgeStore（SQLite 持久化 + graceful fallback）+ interpret_with_rag（build_rag_context / enrich_interpretation）+ 8 新测试（219 总数全绿）|
-| **W4** | 周度金融小课推送 | — |
+| **W4** | 周度金融小课推送 | ✅ weekly_education_cron.py + 企业微信推送 + 疲劳控制 + 前端 /weekly-lesson 页面 + RAG 扩展 20 篇（34 篇总量）+ monthly_rag_update.py 脚本骨架 + 22 新测试（346 总数全绿）|
+
+---
+
+## M5 目标
+
+用户能看到自己的决策质量；废弃代码清理。
+
+### M5 周排
+
+| 周 | 任务 | 产出 |
+|---|------|------|
+| **W1-2** | 复盘归因 + 风险画像（动机分析）| ✅ MonthlyReport/MotivationDistribution/DecisionPattern/QualityTrend model + report_service.py（纯函数）+ generate_monthly_report use_case + api/decisions.py 新增 2 路由 + seed_decision_reviews.py mock 数据 + 34 新测试（332 总数全绿）|
+| **W3** | 旧路由返回 410 Gone | ✅ api/quant.py 3 个 /api/ai-predict/* 路由 410 + api/misc.py /api/decisions 410 + 410 body 含 migration_guide + 14 新测试（346 总数全绿）|
+| **W4** | `ai_predictor.py` / `decision_maker.py` 旧版物理删除 | ✅ services/ai_predictor.py + services/decision_maker.py 物理删除 + scripts/night_worker.py 残留 import 修复 + services/judgment_tracker.py 权重重分配 + 346 测试无回归 |
+
+---
+
+## M6 目标
+
+系统从"替你判断"升级为"你的助手"。
+
+### M6 周排
+
+| 周 | 任务 | 产出 |
+|---|------|------|
+| **W1** | 三视角二次意见（保守/长期/行为）| — |
+| **W2** | 周度金融小课（绑定持仓推送）| ✅ weekly_education_cron.py 企业微信推送集成 + 疲劳控制 + 前端 /weekly-lesson 页面（本周日期/文章标题/历史入口/空态）+ backend/api/decisions.py 新增 2 路由 + 22 新测试（346 总数全绿）|
+| **W3-4** | RAG 扩展 20 篇 + 每月加 2-3 篇机制 | ✅ 22 篇新增知识文章（行为金融/债券/基金/房产/宏观等）+ monthly_rag_update.py 脚本骨架 + RAG 总量 34 篇 |
+
+---
+
+## M7+ 目标（长期增强设计）
+
+M1-M6 完成「防蠢基础设施」后，M7+ 从「被动提醒」升级为「主动治理」。
+
+### M7+ 批次总览
+
+| 批次 | 里程碑 | 产出文件 | 状态 |
+|------|--------|---------|------|
+| **Batch 1** | M7 | 外部数据同步（券商 CSV 导入）| ✅ `base_broker_parser.py` + `huatai_parser.py` + `bookkeeping_csv_parser.py` + `sync_broker_statement.py` |
+| **Batch 2** | M7 | Glide Path + 四档年龄下滑 | ✅ `domain/rule_engine/glide_path_rules.py`（<250 行）+ `domain/rule_engine/deviation_thresholds.py`（<100 行）|
+| **Batch 3** | M8 | 10 维评分（从 5 维扩展到 10 维）| ✅ `domain/rule_engine/fund_filter_rules.py`（301 行，确认不拆分）|
+| **Batch 4** | M8 | 行业偏离度验证 | ✅ `tests/validation/fund_filter_validation.py`（<200 行）|
+| **Batch 5** | M8 | 行为归因基础版 | ✅ `domain/services/behavior_detector.py` + `domain/services/behavior_checks.py` + `domain/services/behavior_reporter.py` |
+| **Batch 6** | M9 | 行为归因联动执行版 | ✅ `domain/rule_engine/behavior_intervention_rules.py`（<200 行）|
+| **Batch 7** | M9 | 事件解读 | ✅ `infra/knowledge/events/event_template_library.py`（20-30 类模板）+ `infra/knowledge/events/event_matcher.py`（<150 行）|
+| **Batch 8** | M9+ | TradingView 辅助监控 + 行为干预可视化 | ✅ `api/chart.py`（<50 行）+ `infra/data_source/providers/tushare_chart.py`（<100 行）|
+
+**M7+ 结束验收标准**：数据打通 → 智能筛选 → 动态阈值 → 行为干预闭环全部跑通。
+
+---
+
+## M7+ defaults.py 新增 dataclass 汇总
+
+```python
+# --- Batch 1: 外部数据同步 ---
+ExternalSyncDefaults: AUTO_SYNC_EXPIRE_DAYS=90, MANUAL_SYNC_EXPIRE_DAYS=30
+
+# --- Batch 2: Glide Path ---
+GlidePathDefaults: GOLD_PCT=0.05, USER_OVERRIDE_RANGE=0.10, STYLE_VALUE_TARGET=0.50, STYLE_LARGE_CAP_TARGET=0.70, EXTREME_VOLATILITY_THRESHOLD=0.30
+
+# --- Batch 2: 动态阈值 ---
+DeviationThresholdDefaults: LOW_VOL_CEILING=0.15, MID_VOL_CEILING=0.25, LOW_VOL_TOLERANCE=0.05, MID_VOL_TOLERANCE=0.07, HIGH_VOL_TOLERANCE=0.10
+
+# --- Batch 3: 10 维筛选 ---
+FundFilterDefaults: FEE_RED=0.01, FEE_YELLOW=0.005, SCALE_RED=50_000_000, SCALE_YELLOW=200_000_000, ...
+
+# --- Batch 4: 行业偏离度 ---
+IndustryDeviationDefaults: SINGLE_INDUSTRY_YELLOW=0.25, SINGLE_INDUSTRY_RED=0.35, TOP3_INDUSTRY_YELLOW=0.70
+
+# --- Batch 5: 行为归因 ---
+BehaviorDefaults: CHASING_RSI_THRESHOLD=70.0, CHASING_GAIN_THRESHOLD=0.15, FOMO_MARKET_GAIN=0.02, ...
+
+# --- Batch 6: 行为干预 ---
+BehaviorInterventionDefaults: BEHAVIOR_GUARD_ENABLED=True, COOLDOWN_HOURS=24, POSITION_LIMIT_REDUCTION=0.20, FOMO_AMOUNT_CAP_PCT=0.05
+```
+
+---
+
+## M7+ 遗留 TODO
+
+| TODO | 影响 | 安排 |
+|------|------|------|
+| §九 验证 2：凌晨工厂步骤扩展能力 | Batch 7 event_matcher.py 接入凌晨工厂 | 等验证 2 确认后实现 NightWorkerStep 包装类 |
+| §九 验证 3：DataSourceProtocol 基金半年报字段 | Batch 3 机构持仓比/换手率/持有人结构完整判定 | 当前标 "na" 不参与判定，接口扩展后取消降级 |
+| ~~前端 TradingView 迷你行情页~~ | ~~Batch 8 数据端点已就绪，前端未开发~~ | ✅ 已完成：pages/chart.js 弹窗模式 + 基金卡片📊按钮 |
+| behavior_marks 接入 Batch 5/6 真实数据 | Batch 8 图表行为偏差标记 | 等 Batch 5/6 有真实数据输出后接入 |
+| api/behavior.py（行为风控状态 + 开关）| ~~Batch 6 前端展示~~ | ✅ 已完成：4 路由（guard-status/toggle/active-interventions/override）|

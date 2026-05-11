@@ -15,10 +15,11 @@ Behavior Intervention Rules -- 行为归因联动执行（M9 Batch 6）
 不变式 #1：AI 不预测证券价格
 不变式 #8：domain/services 之间禁止互相 import
 
-# TODO: 前端集成 — api/behavior.py 需新增路由：
+# DONE: 前端集成 — api/behavior.py 已实现：
 #       GET /api/behavior/guard-status?userId=xxx
 #       POST /api/behavior/guard-toggle (body: {enabled, reason})
 #       GET /api/behavior/active-interventions?userId=xxx
+#       POST /api/behavior/override/{index}?userId=xxx
 """
 from __future__ import annotations
 

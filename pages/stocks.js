@@ -1,10 +1,10 @@
 // ---- 📈 持仓盯盘页（股票+基金统一） ----
 let _stockScanData=null;let _fundScanData=null;let _holdingsSubTab='stock';let _overviewData=null;
 async function renderStocks(){currentPage='stocks';renderNav();
-$('#app').innerHTML=`<div class="insight-page fade-up"><div id="overviewHero"><div style="text-align:center;padding:20px"><div class="loading-spinner"></div></div></div><div style="display:flex;gap:8px;margin-bottom:16px"><button id="subTabStock" class="action-btn ${_holdingsSubTab==='stock'?'primary':'secondary'}" onclick="_holdingsSubTab='stock';renderStocksContent()" style="flex:1">📊 股票</button><button id="subTabFund" class="action-btn ${_holdingsSubTab==='fund'?'primary':'secondary'}" onclick="_holdingsSubTab='fund';renderFundsContent()" style="flex:1">💰 基金</button></div><div id="holdingsContent"><div style="text-align:center;padding:40px"><div class="loading-spinner"></div><div style="color:var(--text2);margin-top:12px">加载持仓数据...</div></div></div></div>`;
+$('#app').innerHTML=`<div class="insight-page fade-up"><div id="overviewHero"><div style="text-align:center;padding:20px"><div class="loading-spinner"></div></div></div><div id="behaviorGuardBar"></div><div style="display:flex;gap:8px;margin-bottom:16px"><button id="subTabStock" class="action-btn ${_holdingsSubTab==='stock'?'primary':'secondary'}" onclick="_holdingsSubTab='stock';renderStocksContent()" style="flex:1">📊 股票</button><button id="subTabFund" class="action-btn ${_holdingsSubTab==='fund'?'primary':'secondary'}" onclick="_holdingsSubTab='fund';renderFundsContent()" style="flex:1">💰 基金</button></div><div id="holdingsContent"><div style="text-align:center;padding:40px"><div class="loading-spinner"></div><div style="color:var(--text2);margin-top:12px">加载持仓数据...</div></div></div></div>`;
 if(!API_AVAILABLE){document.getElementById('holdingsContent').innerHTML='<div style="text-align:center;padding:40px;color:var(--text2)">后端离线</div>';return}
-// 加载总览 + 子页面并行
-loadOverviewHero();
+// 加载总览 + 子页面 + 行为风控状态并行
+loadOverviewHero();loadBehaviorGuardBar();
 if(_holdingsSubTab==='fund')renderFundsContent();else renderStocksContent()}
 
 async function loadOverviewHero(){
@@ -46,6 +46,46 @@ ${devHtml?`<div style="text-align:center;margin-top:4px">偏离: ${devHtml}</div
 ${ov.healthIssues&&ov.healthIssues.length?`<div style="margin-top:8px;padding:8px 12px;background:rgba(245,158,11,.08);border-radius:8px;font-size:11px;color:#F59E0B">${ov.healthIssues.join(' · ')}</div>`:''}
 </div>`;
 }catch(e){console.warn('Overview load error:',e)}}
+
+async function loadBehaviorGuardBar(){
+const el=document.getElementById('behaviorGuardBar');if(!el)return;
+try{const r=await fetch(API_BASE+'/api/behavior/guard-status?'+getProfileParam(),{signal:AbortSignal.timeout(5000)});
+if(!r.ok){el.innerHTML='';return}
+const d=await r.json();
+const icon=d.enabled?'🟢':'🔴';const color=d.enabled?'rgba(16,185,129,.1)':'rgba(239,68,68,.1)';
+const border=d.enabled?'rgba(16,185,129,.3)':'rgba(239,68,68,.3)';
+const countBadge=d.active_count>0?` · <span style="color:#F59E0B;font-weight:600">${d.active_count} 项干预中</span>`:'';
+el.innerHTML=`<div onclick="showBehaviorGuardPanel()" style="background:${color};border:1px solid ${border};border-radius:8px;padding:8px 12px;margin-bottom:12px;font-size:12px;cursor:pointer;display:flex;align-items:center;justify-content:space-between"><span>${icon} ${d.tip}${countBadge}</span><span style="color:var(--text2);font-size:11px">设置 ›</span></div>`;
+}catch(e){el.innerHTML=''}}
+
+function showBehaviorGuardPanel(){
+const o=document.createElement('div');o.className='modal-overlay';o.onclick=e=>{if(e.target===o)o.remove()};
+o.innerHTML=`<div class="modal-sheet" onclick="event.stopPropagation()"><div class="modal-handle"></div><div class="modal-title">🛡️ 行为风控</div><div class="modal-subtitle">检测交易偏差，提供冷静期提醒</div><div id="guardContent" style="padding:12px 0"><div class="loading-spinner"></div></div></div>`;
+document.body.appendChild(o);_loadGuardPanel()}
+
+async function _loadGuardPanel(){
+const el=document.getElementById('guardContent');if(!el)return;
+try{const[statusRes,intRes]=await Promise.all([
+fetch(API_BASE+'/api/behavior/guard-status?'+getProfileParam(),{signal:AbortSignal.timeout(5000)}),
+fetch(API_BASE+'/api/behavior/active-interventions?'+getProfileParam(),{signal:AbortSignal.timeout(5000)})]);
+const status=await statusRes.json();const intData=await intRes.json();
+const toggleColor=status.enabled?'var(--green)':'var(--red)';
+const toggleText=status.enabled?'已启用':'已关闭';
+const toggleAction=status.enabled?'false':'true';
+let intHtml='<div style="font-size:12px;color:var(--text2);padding:12px 0">暂无活跃干预</div>';
+if(intData.interventions&&intData.interventions.length>0){
+intHtml=intData.interventions.map((inv,i)=>`<div style="background:var(--bg2,#1e293b);border-radius:8px;padding:10px;margin-bottom:8px"><div style="display:flex;justify-content:space-between;align-items:center"><span style="font-size:13px;font-weight:600">${inv.pattern}</span><span style="font-size:11px;color:var(--text2)">${inv.status}</span></div><div style="font-size:12px;color:var(--text2);margin-top:4px">${inv.message}</div><div style="font-size:11px;color:var(--text2);margin-top:4px">触发: ${inv.triggered_at?.slice(0,16)||'--'}${inv.expires_at?' · 过期: '+inv.expires_at.slice(0,16):''}</div>${inv.status==='active'?`<button class="action-btn secondary" onclick="_overrideIntervention(${i})" style="margin-top:6px;padding:3px 10px;font-size:11px">确认覆盖</button>`:''}</div>`).join('')}
+el.innerHTML=`<div style="display:flex;justify-content:space-between;align-items:center;padding:8px 0;border-bottom:1px solid var(--bg3,#334155)"><span style="font-size:14px">总开关</span><button class="action-btn ${status.enabled?'primary':'secondary'}" onclick="_toggleGuard(${toggleAction})" style="padding:4px 12px;font-size:12px"><span style="color:${toggleColor}">${toggleText}</span></button></div><div style="margin-top:12px"><div style="font-size:13px;font-weight:600;margin-bottom:8px">活跃干预 (${intData.total})</div>${intHtml}</div>`;
+}catch(e){el.innerHTML='<div style="color:var(--red);font-size:12px">加载失败</div>'}}
+
+async function _toggleGuard(enabled){
+try{await fetch(API_BASE+'/api/behavior/guard-toggle?'+getProfileParam(),{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({enabled,reason:'用户手动切换'})});
+_loadGuardPanel();loadBehaviorGuardBar()}catch(e){alert('切换失败')}}
+
+async function _overrideIntervention(idx){
+if(!confirm('确认覆盖此干预？覆盖后该限制立即解除。'))return;
+try{await fetch(API_BASE+'/api/behavior/override/'+idx+'?'+getProfileParam(),{method:'POST'});
+_loadGuardPanel();loadBehaviorGuardBar()}catch(e){alert('覆盖失败')}}
 
 async function renderStocksContent(){
 _holdingsSubTab='stock';
@@ -130,8 +170,8 @@ const ddColor=risk.maxDrawdown!=null&&risk.maxDrawdown>0.03?'var(--red)':'var(--
 return`<div class="stock-card" onclick="showFundHoldingDetail('${h.code}')" style="cursor:pointer">
 <div style="display:flex;justify-content:space-between;align-items:center">
 <div><div style="font-size:14px;font-weight:700">${h.name||h.code}</div><div style="font-size:11px;color:var(--text2)">${h.code}</div></div>
-<div style="text-align:right"><div style="font-size:14px;font-weight:600">${rt.estNav||'--'}</div>
-<div style="font-size:12px;color:${rateColor}">${estRate!=null?(estRate>=0?'+':'')+estRate.toFixed(2)+'%':'--'}</div></div></div>
+<div style="display:flex;align-items:center;gap:8px"><button class="action-btn secondary" onclick="event.stopPropagation();showFundChart('${h.code}')" style="padding:3px 8px;font-size:11px">K线</button><div style="text-align:right"><div style="font-size:14px;font-weight:600">${rt.estNav||'--'}</div>
+<div style="font-size:12px;color:${rateColor}">${estRate!=null?(estRate>=0?'+':'')+estRate.toFixed(2)+'%':'--'}</div></div></div></div>
 <div style="display:flex;gap:12px;margin-top:8px;font-size:11px;color:var(--text2)">
 <span>净值 ${rt.nav||'--'}</span><span style="color:${ddColor}">回撤 ${ddStr}</span>
 <span>连跌 ${risk.downDays||0}天</span>

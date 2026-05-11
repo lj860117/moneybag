@@ -121,6 +121,14 @@ app.include_router(audit_router)
 from api.broker_import import router as broker_import_router
 app.include_router(broker_import_router)
 
+# ---- M9+ Batch 8: 迷你行情 TradingView（1 路由）----
+from api.chart import router as chart_router
+app.include_router(chart_router)
+
+# ---- M9+ Batch 6: 行为风控（4 路由）----
+from api.behavior import router as behavior_router
+app.include_router(behavior_router)
+
 # ---- 静态文件服务（部署时前后端一体）----
 FRONTEND_DIR = Path(__file__).resolve().parent.parent  # moneybag/
 

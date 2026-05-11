@@ -497,7 +497,7 @@ localStorage.setItem('moneybag_wxwork_uid',wxId);
 document.querySelector('.modal-overlay')?.remove();
 if(wxId){alert('✅ 绑定成功！盯盘异动将推送给: '+wxId)}else{alert('已清除企微绑定')}}
 
-function navigateTo(p){currentPage=p;renderNav();if(p==='landing')renderLanding();else if(p==='portfolio')renderPortfolio();else if(p==='stocks')renderStocks();else if(p==='insight')renderInsight();else if(p==='chat')renderChat();else if(p==='history')renderHistory();else if(p==='ledger')renderLedger();else if(p==='assets')renderAssets();else if(p==='weekly-lesson')renderWeeklyLesson()}
+function navigateTo(p){currentPage=p;renderNav();if(p==='landing')renderLanding();else if(p==='portfolio')renderPortfolio();else if(p==='stocks')renderStocks();else if(p==='insight')renderInsight();else if(p==='chat')renderChat();else if(p==='history')renderHistory();else if(p==='ledger')renderLedger();else if(p==='assets')renderAssets();else if(p==='weekly-lesson')renderWeeklyLesson();else if(p==='chart')renderChart()}
 
 
 // ---- 弹窗 ----
