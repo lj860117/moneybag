@@ -156,6 +156,28 @@ class FundFilterDefaults:
     ACTIVE_SAME_CATEGORY_MAX: ClassVar[int] = 4     # 同一分类主动基金最多保留数
 
 
+# --- Batch 4: 行业偏离度 ---
+@dataclass(frozen=True)
+class IndustryDeviationDefaults:
+    """M7+ Batch 4: 行业偏离度阈值"""
+    SINGLE_INDUSTRY_YELLOW: ClassVar[float] = 0.25   # 单行业占比黄灯（>25%）
+    SINGLE_INDUSTRY_RED: ClassVar[float] = 0.35      # 单行业占比红灯（>35%）
+    TOP3_INDUSTRY_YELLOW: ClassVar[float] = 0.70     # 前三大行业占比黄灯（>70%）
+
+
+# --- Batch 5: 行为归因 ---
+@dataclass(frozen=True)
+class BehaviorDefaults:
+    """M7+ Batch 5: 行为归因检测阈值"""
+    CHASING_RSI_THRESHOLD: ClassVar[float] = 70.0    # 追高 RSI 阈值
+    CHASING_GAIN_THRESHOLD: ClassVar[float] = 0.15   # 追高近 20 日涨幅阈值
+    FOMO_MARKET_GAIN: ClassVar[float] = 0.02         # FOMO 大涨日阈值（沪深300 单日>2%）
+    OVER_TRADING_HOLDING_DAYS: ClassVar[int] = 30    # 过度交易持仓周期阈值（天）
+    OVER_TRADING_MONTHLY_COUNT: ClassVar[int] = 5    # 过度交易月交易次数阈值
+    HIGH_PE_PERCENTILE: ClassVar[float] = 0.70       # 高位加仓 PE 分位阈值
+    ANCHORING_MONTHS: ClassVar[int] = 3              # 锚定效应月数阈值
+
+
 # Convenience exports for single-module imports
 __all__ = [
     "AllocationDefaults",
@@ -166,4 +188,6 @@ __all__ = [
     "GlidePathDefaults",
     "DeviationThresholdDefaults",
     "FundFilterDefaults",
+    "IndustryDeviationDefaults",
+    "BehaviorDefaults",
 ]

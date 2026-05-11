@@ -16,6 +16,8 @@ from domain.rule_engine.defaults import (
     GlidePathDefaults,
     DeviationThresholdDefaults,
     FundFilterDefaults,
+    IndustryDeviationDefaults,
+    BehaviorDefaults,
 )
 from domain.rule_engine.checklist import run_checklist
 from domain.rule_engine.glide_path_rules import (
@@ -53,6 +55,10 @@ __all__ = [
     "DeviationThresholdDefaults",
     # M7+ Batch 3 defaults
     "FundFilterDefaults",
+    # M7+ Batch 4 defaults
+    "IndustryDeviationDefaults",
+    # M7+ Batch 5 defaults
+    "BehaviorDefaults",
     # M1-M6 checklist
     "run_checklist",
     # M7+ Batch 2: Glide Path
