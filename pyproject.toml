@@ -49,6 +49,8 @@ module = [
     "infra.knowledge.*",
     "infra.events",
     "infra.events.*",
+    "infra.data_source.import_",
+    "infra.data_source.import_.*",
     "domain.rule_engine.decision_archive",
     "domain.services.user_preference_service",
 ]
@@ -79,5 +81,9 @@ module = [
     "sentence_transformers.*",
     "zhdate",
     "zhdate.*",
+    "pandas",
+    "pandas.*",
+    "chardet",
+    "chardet.*",
 ]
 ignore_missing_imports = true
