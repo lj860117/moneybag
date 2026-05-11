@@ -217,14 +217,14 @@ class TestHoldingConditions:
         assert "drawdown_gt_10" not in conditions
 
     def test_empty_portfolio(self) -> None:
-        """Empty portfolio gets no conditions."""
+        """Empty portfolio gets 'always' condition only."""
         context = HoldingContext(
             user_id="test",
             asset_classes=[],
             total_positions=0,
         )
         conditions = evaluate_holding_conditions(context)
-        assert len(conditions) == 0
+        assert conditions == ["always"]
 
 
 # ============================================================================
