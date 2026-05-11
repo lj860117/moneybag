@@ -370,11 +370,21 @@ const INSIGHT_CACHE = {
   pnl: { ttl: 900000 },           // 15 分钟
   nav: { ttl: 600000 },           // 10 分钟
   fund_dynamic: { ttl: 900000 },  // 15 分钟
+  global_snap: { ttl: 900000 },   // 15 分钟
+  global_impact: { ttl: 900000 }, // 15 分钟
+  news_impact: { ttl: 900000 },   // 15 分钟
 };
 
 function getCached(key) {
-  const cfg = INSIGHT_CACHE[key];
-  if (!cfg || !cfg.cached) return null;
+  let cfg = INSIGHT_CACHE[key];
+  if (!cfg) {
+    // 动态 key 支持：fund_news_600519 → 用 fund_news 的 ttl
+    const base = key.replace(/_[^_]+$/, '');
+    cfg = INSIGHT_CACHE[base];
+    if (!cfg) return null;
+    cfg = INSIGHT_CACHE[key] = { ttl: cfg.ttl };
+  }
+  if (!cfg.cached) return null;
   const age = Date.now() - cfg.timestamp;
   if (age > cfg.ttl) {
     cfg.cached = null;
@@ -385,8 +395,13 @@ function getCached(key) {
 }
 
 function setCached(key, data) {
-  const cfg = INSIGHT_CACHE[key];
-  if (!cfg) return;
+  let cfg = INSIGHT_CACHE[key];
+  if (!cfg) {
+    const base = key.replace(/_[^_]+$/, '');
+    const baseCfg = INSIGHT_CACHE[base];
+    if (!baseCfg) return;
+    cfg = INSIGHT_CACHE[key] = { ttl: baseCfg.ttl };
+  }
   cfg.cached = data;
   cfg.timestamp = Date.now();
 }

@@ -204,12 +204,26 @@ ${macro.length?macro.map((e,i)=>{const mkey=Object.keys(macroKeyMap).find(k=>e.n
 
 // 全球市场数据页
 async function renderInsightGlobal(el){
+// 尝试缓存
+let snap=getCached('global_snap');
+let impact=getCached('global_impact');
+if(snap){
+  // 有缓存，直接渲染
+  _renderGlobalContent(el,snap,impact||{analysis:'',source:'none'});
+  return;
+}
 el.innerHTML='<div style="text-align:center;padding:40px;color:var(--text2)"><div class="loading-spinner" style="width:32px;height:32px;margin:0 auto 12px;border-width:3px"></div>正在加载全球市场数据...</div>';
 try{
-const [snap,impact]=await Promise.all([
+const [snapData,impactData]=await Promise.all([
 fetch(API_BASE+'/global/snapshot').then(r=>r.json()),
 fetch(API_BASE+'/global/impact').then(r=>r.json()).catch(()=>({analysis:'暂不可用',source:'none'}))
 ]);
+setCached('global_snap',snapData);
+setCached('global_impact',impactData);
+_renderGlobalContent(el,snapData,impactData);
+}catch(e){el.innerHTML=`<div style="text-align:center;padding:40px;color:var(--text2)">全球数据加载失败: ${e.message}</div>`}}
+
+function _renderGlobalContent(el,snap,impact){
 const us=snap.us_indices||{};const fx=snap.forex||{};const fed=snap.fed_rate||{};const gpe=snap.global_pe||{};
 let h='<div class="dashboard-card"><div class="dashboard-card-title">🌐 全球市场实时</div>';
 // 美股三大指数
@@ -225,7 +239,7 @@ h+='</div>';
 // DeepSeek 影响分析
 if(impact.analysis){h+=`<div class="dashboard-card"><div class="dashboard-card-title">🤖 AI 全球→A股影响分析 <span style="font-size:10px;color:var(--text2)">${impact.source==='ai'?'DeepSeek':'数据'}</span></div><div style="font-size:13px;line-height:1.8;white-space:pre-wrap">${impact.analysis}</div></div>`}
 el.innerHTML=h;
-}catch(e){el.innerHTML=`<div style="text-align:center;padding:40px;color:var(--text2)">全球数据加载失败: ${e.message}</div>`}}
+}
 
 // 基金智能筛选页
 let fundPickType='all';let fundPickSort='score';
