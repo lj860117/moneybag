@@ -143,8 +143,8 @@ def step_data_warm():
         log(f"  AKShare 预热失败: {e}")
 
     try:
-        from services.sector_rotation import get_sector_rotation
-        get_sector_rotation()
+        from services.sector_rotation import get_sector_ranking
+        get_sector_ranking()
         warmed.append("行业轮动")
     except Exception as e:
         pass
@@ -173,14 +173,14 @@ def step_r1_phase1():
         from services.market_data import get_fear_greed_index, get_valuation_percentile
         from services.factor_data import get_northbound_flow, get_shibor, get_margin_trading
         from services.geopolitical import get_geopolitical_risk_score
-        from services.sector_rotation import get_sector_rotation
+        from services.sector_rotation import get_sector_ranking
         from services.broker_research import get_broker_consensus
 
         fgi = get_fear_greed_index()
         val = get_valuation_percentile()
         north = get_northbound_flow()
         geo = get_geopolitical_risk_score()
-        sr = get_sector_rotation()
+        sr = get_sector_ranking()
         br = get_broker_consensus()
 
         data_text = f"""宏观数据快照:
@@ -574,7 +574,7 @@ def run_night_worker():
         from services.precomputed_cache import save_precomputed
         from services.factor_data import get_northbound_flow, get_shibor, get_margin_trading
         from services.market_data import get_fear_greed_index, get_valuation_percentile
-        from services.sector_rotation import get_sector_rotation
+        from services.sector_rotation import get_sector_ranking
         from services.broker_research import get_broker_consensus
 
         save_precomputed("factors", {
@@ -585,7 +585,7 @@ def run_night_worker():
         save_precomputed("fear_greed", get_fear_greed_index())
         save_precomputed("valuation", get_valuation_percentile())
 
-        sr = get_sector_rotation()
+        sr = get_sector_ranking()
         if sr.get("available"):
             save_precomputed("sector_rotation", sr)
 

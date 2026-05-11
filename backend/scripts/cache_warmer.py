@@ -333,8 +333,8 @@ def _write_precomputed_fast():
 
         # 行业轮动
         try:
-            from services.sector_rotation import get_sector_rotation
-            sr = get_sector_rotation()
+            from services.sector_rotation import get_sector_ranking
+            sr = get_sector_ranking()
             if sr.get("available"):
                 save_precomputed("sector_rotation", sr)
         except Exception:

@@ -150,8 +150,8 @@ def _collect_market_snapshot() -> dict:
 
     # 行业轮动
     try:
-        from services.sector_rotation import get_sector_rotation
-        sr = get_sector_rotation()
+        from services.sector_rotation import get_sector_ranking
+        sr = get_sector_ranking()
         if sr.get("available"):
             snapshot["sector_rotation"] = {
                 "pattern": sr.get("rotation_signal", "均衡"),
