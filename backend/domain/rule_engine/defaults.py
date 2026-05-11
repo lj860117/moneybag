@@ -106,6 +106,56 @@ class StaleDataDefaults:
     BALANCE_SHEET_MAX_DAYS: ClassVar[int] = 30  # Balance sheet items (cash, investments, etc.)
 
 
+# ══════════════════════════════════════════════════════════
+# M7+ 新增常量（按批次顺序排列，不修改上方 M1-M6 已有常量）
+# ══════════════════════════════════════════════════════════
+
+# --- Batch 2: Glide Path ---
+@dataclass(frozen=True)
+class GlidePathDefaults:
+    """M7+ Batch 2: 年龄下滑 + 偏离度"""
+    GOLD_PCT: ClassVar[float] = 0.05                # 黄金固定占比
+    USER_OVERRIDE_RANGE: ClassVar[float] = 0.10     # 用户可覆盖范围 ±10%
+    STYLE_VALUE_TARGET: ClassVar[float] = 0.50      # 价值风格目标占比
+    STYLE_LARGE_CAP_TARGET: ClassVar[float] = 0.70  # 大盘风格目标占比
+    EXTREME_VOLATILITY_THRESHOLD: ClassVar[float] = 0.30  # 极端行情阈值
+
+
+# --- Batch 2: 动态阈值 ---
+@dataclass(frozen=True)
+class DeviationThresholdDefaults:
+    """M7+ Batch 2: 波动率分档"""
+    LOW_VOL_CEILING: ClassVar[float] = 0.15         # 低波动率上界
+    MID_VOL_CEILING: ClassVar[float] = 0.25         # 中波动率上界
+    LOW_VOL_TOLERANCE: ClassVar[float] = 0.05       # 低波动率偏离容忍
+    MID_VOL_TOLERANCE: ClassVar[float] = 0.07       # 中波动率偏离容忍
+    HIGH_VOL_TOLERANCE: ClassVar[float] = 0.10      # 高波动率偏离容忍
+
+
+# --- Batch 3: 10 维筛选 ---
+@dataclass(frozen=True)
+class FundFilterDefaults:
+    """M7+ Batch 3: 10 维筛选阈值"""
+    FEE_RED: ClassVar[float] = 0.01                 # 管理费率红灯（>1%）
+    FEE_YELLOW: ClassVar[float] = 0.005             # 管理费率黄灯（>0.5%）
+    SCALE_RED: ClassVar[int] = 50_000_000           # 规模红灯（<5000万）
+    SCALE_YELLOW: ClassVar[int] = 200_000_000       # 规模黄灯（<2亿）
+    INSTITUTION_YELLOW: ClassVar[float] = 0.20      # 机构持仓比黄灯（<20%）
+    MANAGER_TENURE_YELLOW: ClassVar[float] = 2.0    # 基金经理任职黄灯（<2年）
+    TRACKING_ERROR_BROAD_RED: ClassVar[float] = 0.003    # 宽基跟踪误差红灯（>0.3%）
+    TRACKING_ERROR_BROAD_YELLOW: ClassVar[float] = 0.002  # 宽基跟踪误差黄灯（>0.2%）
+    TRACKING_ERROR_SECTOR_RED: ClassVar[float] = 0.005    # 行业跟踪误差红灯（>0.5%）
+    TRACKING_ERROR_SECTOR_YELLOW: ClassVar[float] = 0.003  # 行业跟踪误差黄灯（>0.3%）
+    SHARPE_YELLOW_PERCENTILE: ClassVar[float] = 0.30  # 夏普比率黄灯（同类后30%）
+    TURNOVER_YELLOW: ClassVar[float] = 3.0          # 换手率黄灯（>300%）
+    RETAIL_YELLOW: ClassVar[float] = 0.90           # 散户比例黄灯（>90%）
+    MAX_DRAWDOWN_YELLOW_RATIO: ClassVar[float] = 1.5  # 最大回撤黄灯（>同类1.5倍）
+    FUND_AGE_YELLOW: ClassVar[float] = 3.0          # 成立年限黄灯（<3年）
+    YELLOW_FLAG_THRESHOLD: ClassVar[int] = 3        # 黄灯累计阈值（≥3进复核池）
+    PASSIVE_SAME_INDEX_MAX: ClassVar[int] = 3       # 同一指数被动基金最多保留数
+    ACTIVE_SAME_CATEGORY_MAX: ClassVar[int] = 4     # 同一分类主动基金最多保留数
+
+
 # Convenience exports for single-module imports
 __all__ = [
     "AllocationDefaults",
@@ -113,4 +163,7 @@ __all__ = [
     "ScoringDefaults",
     "RebalanceDefaults",
     "StaleDataDefaults",
+    "GlidePathDefaults",
+    "DeviationThresholdDefaults",
+    "FundFilterDefaults",
 ]
