@@ -48,7 +48,7 @@ def get_daily_hist_mootdx(code: str, days: int = 90) -> Optional[Any]:
         return cached
 
     try:
-        from mootdx.quotes import Quotes  # noqa: delayed import
+        from mootdx.quotes import Quotes  # type: ignore[import-not-found]  # noqa: delayed import
 
         client = Quotes.factory(market="std", bestip=True, timeout=15)
         # frequency=9 对应日线
@@ -94,7 +94,7 @@ def get_finance_mootdx(code: str) -> Optional[dict]:
     key = f"mdx_finance_{code}"
     cached = _finance_cache.get(key)
     if cached is not None:
-        return cached  # type: ignore[return-value]
+        return cached  # type: ignore[no-any-return]
 
     try:
         from mootdx.quotes import Quotes  # noqa: delayed import

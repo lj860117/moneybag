@@ -60,7 +60,7 @@ def get_stock_quote_tencent(code: str) -> Optional[dict]:
     key = f"tencent_{code}"
     cached = _cache.get(key)
     if cached is not None:
-        return cached  # type: ignore[return-value]
+        return cached  # type: ignore[no-any-return]
 
     try:
         symbol = _to_symbol(code)
