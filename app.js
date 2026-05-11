@@ -353,16 +353,61 @@ function fmtFull(n){return'¥'+n.toLocaleString('zh-CN')}
 function getProfile(s){return RISK_PROFILES.find(p=>s>=p.min&&s<=p.max)||RISK_PROFILES[2]}
 function calcReturns(a,amt,sc){let t=0;a.forEach(x=>{t+=(amt*x.pct/100)*x.returns[sc]});return t}
 
+
+// ---- 客户端数据缓存（P0 性能优化：避免重复 fetch 造成的 3-4s 等待）----
+// 2026-05-11 FIX: 基于后端 TTL 配置实现的前端内存缓存
+// 缓存结构: { [cacheKey]: { data, timestamp, ttl }, ... }
+const INSIGHT_CACHE = {
+  dashboard: { ttl: 120000 },    // 2 分钟（数据源有多个 TTL，取保守值）
+  news: { ttl: 300000 },          // 5 分钟（新闻变化快）
+  policy: { ttl: 600000 },        // 10 分钟
+  macro: { ttl: 900000 },         // 15 分钟
+  global: { ttl: 900000 },        // 15 分钟
+  fund_news: { ttl: 600000 },     // 10 分钟
+  portfolio_news: { ttl: 600000 }, // 10 分钟
+  policy_news: { ttl: 600000 },   // 10 分钟
+  signals: { ttl: 900000 },       // 15 分钟
+  pnl: { ttl: 900000 },           // 15 分钟
+  nav: { ttl: 600000 },           // 10 分钟
+  fund_dynamic: { ttl: 900000 },  // 15 分钟
+};
+
+function getCached(key) {
+  const cfg = INSIGHT_CACHE[key];
+  if (!cfg || !cfg.cached) return null;
+  const age = Date.now() - cfg.timestamp;
+  if (age > cfg.ttl) {
+    cfg.cached = null;
+    cfg.timestamp = 0;
+    return null;
+  }
+  return cfg.cached;
+}
+
+function setCached(key, data) {
+  const cfg = INSIGHT_CACHE[key];
+  if (!cfg) return;
+  cfg.cached = data;
+  cfg.timestamp = Date.now();
+}
+
+function clearInsightCache() {
+  Object.values(INSIGHT_CACHE).forEach(cfg => {
+    cfg.cached = null;
+    cfg.timestamp = 0;
+  });
+}
+
 // ---- API ----
 async function checkAPI(){try{const r=await fetch(API_BASE+'/health',{signal:AbortSignal.timeout(3000)});API_AVAILABLE=r.ok}catch{API_AVAILABLE=false}}
-async function fetchNav(){if(!API_AVAILABLE)return;try{const r=await fetch(API_BASE+'/nav/all');if(r.ok)liveNavData=await r.json()}catch{}}
+async function fetchNav(){if(!API_AVAILABLE)return;let cached=getCached('nav');if(cached){liveNavData=cached;return}try{const r=await fetch(API_BASE+'/nav/all');if(r.ok){liveNavData=await r.json();setCached('nav',liveNavData)}}catch{}}
 async function fetchSignals(){if(!API_AVAILABLE)return null;try{const p=loadPortfolio();if(!p.holdings.length)return null;const r=await fetch(API_BASE+'/signals',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(p)});if(r.ok)return await r.json()}catch{}return null}
 async function fetchPnl(){if(!API_AVAILABLE)return null;try{const p=loadPortfolio();if(!p.holdings.length)return null;const r=await fetch(API_BASE+'/portfolio/pnl',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(p)});if(r.ok)return await r.json()}catch{}return null}
-async function fetchDashboard(){if(!API_AVAILABLE)return null;try{const r=await fetch(API_BASE+'/dashboard',{signal:AbortSignal.timeout(30000)});if(r.ok)return await r.json()}catch(e){console.warn('Dashboard fetch failed:',e)}return null}
-async function fetchFundNews(code){if(!API_AVAILABLE)return[];try{const r=await fetch(API_BASE+'/news/'+code);if(r.ok){const d=await r.json();return d.news||[]}}catch{}return[]}
-async function fetchPortfolioNews(){if(!API_AVAILABLE)return{};try{const r=await fetch(API_BASE+'/news/portfolio');if(r.ok)return await r.json()}catch{}return{}}
-async function fetchFundDynamic(code){if(!API_AVAILABLE)return null;try{const r=await fetch(API_BASE+'/fund/info/'+code,{signal:AbortSignal.timeout(15000)});if(r.ok)return await r.json()}catch{}return null}
-async function fetchPolicyNews(){if(!API_AVAILABLE)return[];try{const r=await fetch(API_BASE+'/news/policy',{signal:AbortSignal.timeout(15000)});if(r.ok){const d=await r.json();return d.news||[]}}catch{}return[]}
+async function fetchDashboard(){if(!API_AVAILABLE)return null;let cached=getCached('dashboard');if(cached)return cached;try{const r=await fetch(API_BASE+'/dashboard',{signal:AbortSignal.timeout(30000)});if(r.ok){const d=await r.json();setCached('dashboard',d);return d}}catch(e){console.warn('Dashboard fetch failed:',e)}return null}
+async function fetchFundNews(code){if(!API_AVAILABLE)return[];const ckey='fund_news_'+code;let cached=getCached(ckey);if(cached)return cached;try{const r=await fetch(API_BASE+'/news/'+code);if(r.ok){const d=await r.json();const news=d.news||[];setCached(ckey,news);return news}}catch{}return[]}
+async function fetchPortfolioNews(){if(!API_AVAILABLE)return{};let cached=getCached('portfolio_news');if(cached)return cached;try{const r=await fetch(API_BASE+'/news/portfolio');if(r.ok){const d=await r.json();setCached('portfolio_news',d);return d}}catch{}return{}}
+async function fetchFundDynamic(code){if(!API_AVAILABLE)return null;const ckey='fund_dynamic_'+code;let cached=getCached(ckey);if(cached)return cached;try{const r=await fetch(API_BASE+'/fund/info/'+code,{signal:AbortSignal.timeout(15000)});if(r.ok){const d=await r.json();setCached(ckey,d);return d}}catch{}return null}
+async function fetchPolicyNews(){if(!API_AVAILABLE)return[];let cached=getCached('policy_news');if(cached)return cached;try{const r=await fetch(API_BASE+'/news/policy',{signal:AbortSignal.timeout(15000)});if(r.ok){const d=await r.json();const news=d.news||[];setCached('policy_news',news);return news}}catch{}return[]}
 async function runDataAudit(){const btn=document.getElementById('auditBtn');if(btn)btn.textContent='🔄 检查中...';try{const r=await fetch(API_BASE+'/health/data-audit',{signal:AbortSignal.timeout(60000)});if(!r.ok)throw new Error('audit failed');const d=await r.json();const statusIcon={'ok':'✅','warn':'⚠️','error':'❌'};const statusColor={'ok':'#10B981','warn':'#F59E0B','error':'#EF4444'};const overallIcon={'healthy':'✅','degraded':'⚠️','unhealthy':'❌'};const o=document.createElement('div');o.className='modal-overlay';o.onclick=e=>{if(e.target===o)o.remove()};o.innerHTML=`<div class="modal-sheet" onclick="event.stopPropagation()"><div class="modal-handle"></div><div class="modal-title">${overallIcon[d.overall]||'🔍'} 数据健康体检报告</div><div class="modal-subtitle">${d.summary} · ${new Date(d.timestamp).toLocaleString('zh-CN')}</div><div style="padding:12px 0">${d.checks.map(c=>`<div style="display:flex;align-items:center;padding:8px 0;border-bottom:1px solid rgba(148,163,184,.1)"><span style="font-size:16px;width:28px">${statusIcon[c.status]}</span><span style="flex:1;font-size:13px;color:var(--text1)">${c.name}</span><span style="font-size:12px;color:${statusColor[c.status]};text-align:right;max-width:50%">${c.msg}</span></div>`).join('')}</div><div style="font-size:11px;color:var(--text2);padding-top:8px;border-top:1px solid rgba(148,163,184,.1)">💡 此体检自动检查：宏观数据新鲜度、估值准确性、基金净值及时性、新闻相关性、API响应速度</div></div>`;document.body.appendChild(o);if(btn)btn.textContent='🔍 数据体检'}catch(e){if(btn)btn.textContent='❌ 检查失败';setTimeout(()=>{if(btn)btn.textContent='🔍 数据体检'},3000)}}
 
 // ---- 样式已迁移至 styles.css ----

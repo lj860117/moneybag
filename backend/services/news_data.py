@@ -91,12 +91,16 @@ def get_fund_news(code: str, limit: int = 3) -> list:
 
 
 def get_market_news(limit: int = 30) -> list:
-    """获取综合市场新闻（优先 A 股相关，过滤无用信息）"""
+    """获取综合市场新闻（优先 A 股相关，过滤无用信息）
+
+    缓存策略：始终抓取最多 _MAX_FETCH 条并全量缓存，调用方的 limit 仅决定返回条数，
+    不影响缓存内容，避免 get_market_news(5) 写入缓存后后续调用无法获得更多条目的问题。
+    """
+    _MAX_FETCH = 30  # 每次抓取上限（与 API 源返回量匹配）
     cache_key = "market_news_all"
-    now = time.time()
     cached = _news_cache.get(cache_key)
     if cached is not None:
-        return cached
+        return cached[:limit]
 
     # 标题中包含这些词的直接排除
     EXCLUDE_KEYWORDS = ["荷兰", "伦敦股市", "日经", "纽约股市", "法兰克福", "巴黎股市"]
@@ -138,17 +142,17 @@ def get_market_news(limit: int = 30) -> list:
         # 优先：A 股市场新闻（质量最高）
         try:
             df = get_stock_news(symbol="A股")
-            all_news.extend(_extract_news(df, limit))
+            all_news.extend(_extract_news(df, _MAX_FETCH))
             print(f"[NEWS] A股: got {len(all_news)}")
         except Exception as e:
             print(f"[NEWS] A股 failed: {e}")
 
         # 补充：财经新闻（如果 A 股不够）
-        if len(all_news) < limit:
+        if len(all_news) < _MAX_FETCH:
             try:
                 df = get_stock_news(symbol="财经")
                 existing_titles = {n["title"] for n in all_news}
-                extras = _extract_news(df, limit - len(all_news))
+                extras = _extract_news(df, _MAX_FETCH - len(all_news))
                 extras = [n for n in extras if n["title"] not in existing_titles]
                 all_news.extend(extras)
                 print(f"[NEWS] 财经补充: +{len(extras)}")
@@ -160,8 +164,9 @@ def get_market_news(limit: int = 30) -> list:
     if not all_news:
         all_news = [{"title": "市场资讯加载中...", "time": "", "source": "系统"}]
 
+    # 全量缓存（_MAX_FETCH 条），limit 仅在返回时切片
     _news_cache.set(cache_key, all_news)
-    return all_news
+    return all_news[:limit]
 
 
 # ---- 宏观经济日历 ----
