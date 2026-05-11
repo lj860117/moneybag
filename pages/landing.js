@@ -79,12 +79,12 @@ if(r.ok){const d=await r.json();const el=document.getElementById('reviewContent'
 const concl=d.conclusion||d.summary||'暂无复盘数据';
 let html=`<div style="font-size:14px;font-weight:700;margin-bottom:12px">${concl}</div>`;
 if(d.regime_description)html+=`<div style="font-size:12px;color:var(--text2);margin-bottom:8px">📊 ${d.regime_description||d.regime}</div>`;
-if(d.modules_called?.length)html+=`<div style="font-size:12px;color:var(--text2);margin-bottom:8px">📦 分析模块: ${d.modules_called.join(', ')} (${d.modules_called.length}个)</div>`;
-if(d.direction)html+=`<div style="font-size:13px;margin-bottom:8px;padding:8px;background:var(--bg2);border-radius:8px">方向: <b>${d.direction}</b> | 置信度: <b>${d.confidence||50}%</b> | 门控: ${d.gate_decision||'?'}</div>`;
+if(d.modules_called?.length)html+=`<div style="font-size:12px;color:var(--text2);margin-bottom:8px">📦 综合分析了 ${d.modules_called.length} 个维度的数据</div>`;
+if(d.direction){const dirMap={'bullish':'看多','bearish':'看空','neutral':'中性'};const gateMap={'llm_arbitration':'AI综合研判','rule_based':'规则引擎','manual':'人工判断'};html+=`<div style="font-size:13px;margin-bottom:8px;padding:8px;background:var(--bg2);border-radius:8px">方向: <b>${dirMap[d.direction]||d.direction}</b> | 置信度: <b>${d.confidence||50}%</b> | 决策依据: ${gateMap[d.gate_decision]||d.gate_decision||'综合判断'}</div>`}
 const diagFile=d.diagnosis||'';
 if(diagFile)html+=`<div style="margin-bottom:8px;padding:10px;background:rgba(99,102,241,.06);border-radius:10px;font-size:13px;line-height:1.8;border-left:3px solid #6366F1"><div style="font-weight:700;margin-bottom:4px">🤖 R1 深度诊断</div>${diagFile}</div>`;
 if(d.risk_level&&d.risk_level!=='normal')html+=`<div style="font-size:12px;color:var(--red)">${{'warning':'⚠️ 有风险提示','danger':'🔴 风控红灯','blocked':'🚫 操作已拦截'}[d.risk_level]||'⚠️ '+d.risk_level}</div>`;
-html+=`<div style="font-size:11px;color:var(--text3);margin-top:12px;text-align:center">${d.elapsed?d.elapsed+'s · ':''}LLM ${d.llm_calls||0}次 · ${d.timestamp||'N/A'}</div>`;
+html+=`<div style="font-size:11px;color:var(--text3);margin-top:12px;text-align:center">${d.elapsed?d.elapsed+'s · ':''}${d.timestamp?new Date(d.timestamp).toLocaleString('zh-CN'):''}</div>`;
 el.innerHTML=html}}catch(e){const el=document.getElementById('reviewContent');if(el)el.innerHTML=`<div style="color:var(--text2)">加载失败: ${e.message}</div>`}}
 
 // ---- 首页：统一净资产 Hero 更新 ----
