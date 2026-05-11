@@ -18,7 +18,7 @@ from abc import ABC, abstractmethod
 from pathlib import Path
 from typing import BinaryIO, Union
 
-import pandas as pd
+import pandas as pd  # type: ignore[import-untyped]
 
 from domain.models.transaction import Transaction
 
@@ -59,7 +59,7 @@ def _normalize_column_name(name: str) -> str:
 def _detect_encoding(file_bytes: bytes) -> str:
     """用 chardet 检测编码，默认 utf-8"""
     try:
-        import chardet
+        import chardet  # type: ignore[import-not-found]
         detection = chardet.detect(file_bytes[:10000])
         encoding = detection.get("encoding", "utf-8") or "utf-8"
         # chardet 可能返回 GB2312，统一用 gbk（超集）

@@ -16,7 +16,7 @@ from datetime import date, datetime
 from decimal import Decimal, InvalidOperation
 from typing import Optional, Union
 
-import pandas as pd
+import pandas as pd  # type: ignore[import-untyped]
 
 from domain.models.transaction import (
     DataSource,
