@@ -9,6 +9,7 @@ V6 Phase 1 新增模块
 数据源：AKShare 新闻 + 关键词规则引擎
 接入点：Pipeline enrich() → DecisionContext.modules_results["geopolitical"]
 """
+from __future__ import annotations
 import time
 from datetime import datetime, timedelta
 

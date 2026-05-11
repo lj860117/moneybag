@@ -40,24 +40,10 @@ echo "本地仓库:   $REPO_ROOT"
 echo ""
 
 # ---- 1. 同步后端核心文件（精确覆盖）----
-echo "[1/7] 同步后端核心文件..."
+echo "[1/7] 同步后端根文件..."
 BACKEND_FILES=(
-    "backend/api/signals.py"
-    "backend/api/portfolio.py"
-    "backend/api/news.py"
-    "backend/api/global_market.py"
-    "backend/api/steward.py"
-    "backend/api/decisions.py"
-    "backend/api/broker_import.py"
-    "backend/services/stock_monitor.py"
-    "backend/services/stock_screen.py"
-    "backend/services/steward.py"
-    "backend/services/news_data.py"
-    "backend/services/wxwork_push.py"
-    "backend/scripts/stock_monitor_cron.py"
-    "backend/scripts/night_worker.py"
-    "backend/scripts/weekly_education_cron.py"
-    "backend/scripts/monthly_rag_update.py"
+    "backend/main.py"
+    "backend/config.py"
 )
 
 for f in "${BACKEND_FILES[@]}"; do
@@ -70,14 +56,22 @@ for f in "${BACKEND_FILES[@]}"; do
 done
 
 # ---- 1.5 同步后端新增目录（rsync 增量，M7+ 新模块）----
-echo "[2/7] 同步后端新增目录..."
+echo "[2/7] 同步后端目录..."
 BACKEND_DIRS=(
+    "backend/api/"
+    "backend/routers/"
+    "backend/services/"
     "backend/domain/rule_engine/"
     "backend/domain/models/"
     "backend/domain/services/"
+    "backend/domain/protocols/"
     "backend/infra/data_source/"
+    "backend/infra/cache/"
+    "backend/infra/store/"
+    "backend/infra/llm/"
     "backend/infra/knowledge/"
     "backend/use_cases/"
+    "backend/scripts/"
 )
 
 for d in "${BACKEND_DIRS[@]}"; do

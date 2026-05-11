@@ -18,6 +18,7 @@
   - 每周只跑一次 → LLM 审计用 V4 Max，不心疼 token
   - 结果落盘 → 前端启动时轮询 /api/audit/latest，有新报告显示 banner
 """
+from __future__ import annotations
 import os
 import sys
 import json

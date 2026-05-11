@@ -6,6 +6,7 @@ GET  /api/audit/history    — 返回历史审计日期列表
 POST /api/audit/mark-read  — 将当前报告标记为已读
 POST /api/audit/run        — 手动触发一次审计（需要 API_KEY 头保护）
 """
+from __future__ import annotations
 import json
 import os
 from pathlib import Path

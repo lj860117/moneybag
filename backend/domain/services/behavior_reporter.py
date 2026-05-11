@@ -33,7 +33,7 @@ class BehaviorReport:
     patterns_found: int            # 检测到的模式数
     report_markdown: str           # Markdown 格式报告内容
     volatility_context: str        # 季度波动率背景描述
-    generated_at: datetime = None  # type: ignore[assignment]
+    generated_at: Optional[datetime] = None
 
     def __post_init__(self) -> None:
         if self.generated_at is None:

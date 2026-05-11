@@ -10,6 +10,7 @@
               ↓ 自动选源
   东方财富 | 新浪+雪球混合 | 缓存
 """
+from __future__ import annotations
 
 # ---- V4 底座：MODULE_META ----
 MODULE_META = {

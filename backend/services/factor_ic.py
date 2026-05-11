@@ -15,6 +15,7 @@
 
 参考：Barra 多因子模型 + 幻方量化因子研究框架
 """
+from __future__ import annotations
 
 # ---- V4 底座：MODULE_META ----
 MODULE_META = {

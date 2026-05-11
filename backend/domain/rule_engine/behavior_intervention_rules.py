@@ -26,7 +26,7 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
-from typing import Optional
+from typing import Any, Optional
 
 from domain.services.behavior_detector import BehaviorPattern
 from domain.rule_engine.defaults import BehaviorInterventionDefaults
@@ -75,7 +75,7 @@ class InterventionAction:
     """最终输出的干预动作"""
     action_type: str             # "prompt" | "limit" | "block"
     message: str                 # 用户可见的干预提示
-    m3_overrides: Optional[dict] # 对 M3 字段的临时覆盖（降级时为 None）
+    m3_overrides: Optional[dict[str, float]] # 对 M3 字段的临时覆盖（降级时为 None）
     requires_confirmation: bool  # 是否需要用户二次确认
     is_degraded: bool            # 验证 1 不支持时为 True
 
@@ -250,7 +250,7 @@ def _build_message(rule: InterventionRule, pattern: BehaviorPattern, is_degraded
 def evaluate_intervention(
     pattern: BehaviorPattern,
     current_trade: TradeRequest,
-    m3_config: dict,
+    m3_config: dict[str, Any],
     verification_1_result: str = VERIFICATION_1_RESULT,
 ) -> Optional[InterventionAction]:
     """
@@ -293,8 +293,8 @@ def evaluate_intervention(
     needs_m3_override = rule.m3_field is not None
 
     # 构建 M3 覆盖
-    m3_overrides: Optional[dict] = None
-    if not is_degraded and needs_m3_override:
+    m3_overrides: Optional[dict[str, float]] = None
+    if not is_degraded and needs_m3_override and rule.m3_field and rule.temp_value is not None:
         # 正常模式：可以覆盖 M3 字段
         m3_overrides = {rule.m3_field: rule.temp_value}
 

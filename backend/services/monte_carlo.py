@@ -14,6 +14,7 @@
   - AQR Capital Management Monte Carlo 方法论
   - CFA Level 2 Monte Carlo Simulation 章节
 """
+from __future__ import annotations
 import math
 import time
 import random

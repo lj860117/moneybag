@@ -12,6 +12,7 @@
   6. 新闻影响深度分析
   7. 配置建议增强
 """
+from __future__ import annotations
 import os
 import json
 import time

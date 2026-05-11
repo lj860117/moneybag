@@ -44,7 +44,7 @@ def validate_transactions(
         ValidationResult(valid, failed, warnings)
     """
     result = ValidationResult()
-    seen_keys: set[tuple] = set()  # 去重集合
+    seen_keys: set[tuple[str, date, str, str, Decimal]] = set()  # 去重集合
     today = date.today()
 
     for txn in transactions:

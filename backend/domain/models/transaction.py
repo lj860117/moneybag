@@ -11,7 +11,7 @@ from dataclasses import dataclass, field
 from datetime import date
 from decimal import Decimal
 from enum import Enum
-from typing import Optional
+from typing import Any, Optional
 
 
 class TradeDirection(str, Enum):
@@ -47,7 +47,7 @@ class Transaction:
     source: DataSource = DataSource.AUTO          # 数据来源标记
     transaction_type: TransactionType = TransactionType.MANUAL  # 交易类型
     broker: Optional[str] = None                  # 券商名称（如 "changjiang"），手动录入时为 None
-    raw_row: Optional[dict] = field(default=None, repr=False)  # 原始行数据（调试用）
+    raw_row: Optional[dict[str, Any]] = field(default=None, repr=False)  # 原始行数据（调试用）
 
 
 @dataclass

@@ -14,7 +14,7 @@ from __future__ import annotations
 
 from datetime import date, datetime
 from decimal import Decimal, InvalidOperation
-from typing import Union
+from typing import Optional, Union
 
 import pandas as pd
 
@@ -135,13 +135,12 @@ class ChangjiangParser(BaseBrokerParser):
         quantity = self._parse_int(row.get("成交数量"))
 
         # 手续费（合并各项费用）
-        fee = Decimal("0")
+        fee_sum = Decimal("0")
         for fee_col in ("手续费", "印花税", "过户费", "佣金"):
             fee_val = self._parse_decimal(row.get(fee_col, 0))
             if fee_val is not None:
-                fee += abs(fee_val)
-        if fee == Decimal("0"):
-            fee = None
+                fee_sum += abs(fee_val)
+        fee: Optional[Decimal] = fee_sum if fee_sum != Decimal("0") else None
 
         # 构造原始行数据（用于调试）
         raw_row = {k: (str(v) if pd.notna(v) else None) for k, v in row.items()}

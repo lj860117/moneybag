@@ -6,6 +6,7 @@
 评分来源：V6.5 盈利预测 + 已有 signal/factor/risk 模块 + 同花顺热点题材
 输出：Top N 推荐列表 + 6维雷达图数据 + R1推理理由 + 建议仓位
 """
+from __future__ import annotations
 
 MODULE_META = {
     "name": "recommend_engine",
