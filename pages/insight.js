@@ -372,30 +372,45 @@ if(listEl)listEl.innerHTML='<div style="text-align:center;padding:20px;color:var
   // --- deep-impact 渲染 ---
   async function renderDeepImpact(el){
     el.innerHTML = _v6Skeleton('正在分析新闻深度影响...');
-    const d = await _v6Fetch('/news/impact');
-    if (!d || !d.items || !d.items.length) {
+    // 优先用 deep-impact（AI 深度分析），fallback 到 news/impact（规则分析）
+    let d = await _v6Fetch('/news/deep-impact');
+    // API 返回字段：impacts (数组), 每项: {title, sectors, direction, magnitude, impact}
+    let items = (d && d.impacts) ? d.impacts : null;
+    if (!items || !items.length) {
+      // fallback：news/impact 端点，字段: impacts[{title, fund_code, impact_level, analysis}]
+      const d2 = await _v6Fetch('/news/impact');
+      items = (d2 && d2.impacts) ? d2.impacts : null;
+    }
+    if (!items || !items.length) {
       el.innerHTML = '<div style="text-align:center;padding:40px;color:var(--text2)">暂无深度影响数据</div>';
       return;
     }
     let html = `<div class="section-title">💥 新闻深度影响分析 <span style="font-size:11px;color:var(--accent);font-weight:400">Phase 5 · AI 驱动</span></div>`;
-    d.items.forEach(item => {
-      const lvl = item.impact_level || item.level || 'neutral';
+    items.forEach(item => {
+      // deep-impact 端点用 direction 字段；news/impact 端点用 impact_level
+      const lvl = item.direction || item.impact_level || item.level || 'neutral';
       const c = lvl === 'bullish' || lvl === 'positive' ? 'var(--green)'
               : lvl === 'bearish' || lvl === 'negative' ? 'var(--red)' : '#F59E0B';
       const tag = lvl === 'bullish' || lvl === 'positive' ? '📈 利好'
                : lvl === 'bearish' || lvl === 'negative' ? '📉 利空' : '➖ 中性';
-      const sectors = item.affected_sectors
-        ? (Array.isArray(item.affected_sectors) ? item.affected_sectors : [item.affected_sectors]).join(' · ')
-        : '';
+      // deep-impact 用 sectors（数组）；news/impact 用 affected_sectors
+      const sectorsArr = item.sectors || item.affected_sectors || [];
+      const sectors = Array.isArray(sectorsArr) ? sectorsArr.join(' · ') : String(sectorsArr);
+      // deep-impact 用 magnitude 字段表示强度；news/impact 用 impact_score
+      const mag = item.magnitude || '';
+      const magLabel = mag === 'high' ? '高' : mag === 'medium' ? '中' : mag === 'low' ? '低' : '';
       const score = item.impact_score != null ? item.impact_score : '';
+      // 影响描述：deep-impact 用 impact；news/impact 用 analysis/summary
+      const desc = item.impact || item.analysis || item.summary || '';
       html += `<div class="dashboard-card" style="border-left:3px solid ${c};margin-bottom:8px">
         <div style="display:flex;justify-content:space-between;align-items:flex-start">
           <div style="flex:1">
             <div style="font-size:14px;font-weight:700;line-height:1.5">${item.title || ''}</div>
-            <div style="font-size:12px;color:var(--text2);margin-top:4px;line-height:1.6">${item.analysis || item.summary || ''}</div>
+            <div style="font-size:12px;color:var(--text2);margin-top:4px;line-height:1.6">${desc}</div>
           </div>
           <div style="text-align:right;min-width:60px;margin-left:12px">
             <div style="font-size:12px;font-weight:700;color:${c}">${tag}</div>
+            ${magLabel ? `<div style="font-size:11px;color:var(--text2);margin-top:2px">强度：${magLabel}</div>` : ''}
             ${score !== '' ? `<div style="font-size:18px;font-weight:900;color:${c};margin-top:2px">${score}</div>` : ''}
           </div>
         </div>

@@ -29,6 +29,10 @@ def get_stock_daily_hist(
 ) -> Any:
     """Get stock daily OHLCV history (akshare stock_zh_a_hist).
 
+    降级链（K 线）：AKShare（东财 HTTP）→ mootdx（通达信 TCP，不封 IP）
+    第三降级 mootdx 由 stock_price_provider 的 baostock 路径触发；
+    此处直接处理 AKShare → mootdx 两级。
+
     Args:
         code: stock code e.g. "000001"
         period: "daily" | "weekly" | "monthly"
@@ -40,6 +44,7 @@ def get_stock_daily_hist(
         DataFrame with columns: 日期,开盘,收盘,最高,最低,成交量,成交额,振幅,涨跌幅,涨跌额,换手率
         None on failure.
     """
+    # 降级 1: AKShare（东财 HTTP）
     try:
         import akshare as ak
         kwargs: Dict[str, Any] = {"symbol": code, "period": period, "adjust": adjust}
@@ -47,10 +52,32 @@ def get_stock_daily_hist(
             kwargs["start_date"] = start_date
         if end_date:
             kwargs["end_date"] = end_date
-        return ak.stock_zh_a_hist(**kwargs)
+        df = ak.stock_zh_a_hist(**kwargs)
+        if df is not None and len(df) > 0:
+            return df
     except Exception as e:
-        print(f"[DATA_SOURCE/MARKET] get_stock_daily_hist({code}): {e}")
-        return None
+        print(f"[DATA_SOURCE/MARKET] get_stock_daily_hist({code}) AKShare 失败: {e}")
+
+    # 降级 2: mootdx（通达信 TCP，不走东财，不封 IP）
+    try:
+        from infra.data_source.providers.mootdx_provider import get_daily_hist_mootdx
+        from datetime import datetime as _dt, timedelta as _td
+        # 根据 start_date/end_date 估算天数
+        days = 90  # 默认
+        if start_date:
+            try:
+                delta = _dt.now() - _dt.strptime(start_date, "%Y%m%d")
+                days = max(30, delta.days + 10)
+            except Exception:
+                pass
+        df = get_daily_hist_mootdx(code=code, days=days)
+        if df is not None and len(df) > 0:
+            print(f"[DATA_SOURCE/MARKET] get_stock_daily_hist({code}) 已降级至 mootdx")
+            return df
+    except Exception as e:
+        print(f"[DATA_SOURCE/MARKET] get_stock_daily_hist({code}) mootdx 降级也失败: {e}")
+
+    return None
 
 
 def get_stock_realtime_quotes_em() -> Any:

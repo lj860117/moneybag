@@ -1,10 +1,10 @@
 """
-钱袋子 — V7.1: 推荐引擎
-5 维评分（估值30% + 盈利25% + 技术15% + 资金15% + 风险15%）→ 排序 → R1 生成理由
+钱袋子 — V7.2: 推荐引擎
+6 维评分（估值28% + 盈利23% + 技术15% + 资金14% + 风险10% + 题材10%）→ 排序 → R1 生成理由
 
 候选池：Tushare report_rc 有研报覆盖的股票（≈200-300只）
-评分来源：V6.5 盈利预测 + 已有 signal/factor/risk 模块
-输出：Top N 推荐列表 + 5维雷达图数据 + R1推理理由 + 建议仓位
+评分来源：V6.5 盈利预测 + 已有 signal/factor/risk 模块 + 同花顺热点题材
+输出：Top N 推荐列表 + 6维雷达图数据 + R1推理理由 + 建议仓位
 """
 
 MODULE_META = {
@@ -14,7 +14,7 @@ MODULE_META = {
     "output": "recommendations",
     "cost": "llm_heavy",
     "tags": ["推荐", "评分", "选股", "配置"],
-    "description": "V7推荐引擎：5维评分+R1理由+建议仓位",
+    "description": "V7.2推荐引擎：6维评分（新增题材维度）+R1理由+建议仓位",
     "layer": "analysis",
     "priority": 5,
 }
@@ -22,37 +22,40 @@ MODULE_META = {
 import os
 import time
 import json
+import threading
 from datetime import datetime
 from config import DATA_DIR
 from infra.cache import MemoryCache
 
 _REC_CACHE_TTL = 3600  # 1小时
+_pool_building = False  # 标记 fina_indicator 正在后台构建中
 _rec_cache = MemoryCache(default_ttl=_REC_CACHE_TTL)
 
-# 5 维权重（可配置，V8 复盘可调）
+# 6 维权重（可配置，V8 复盘可调）— V7.2 新增 theme 维度
 RECOMMEND_WEIGHTS = {
-    "valuation": 0.30,
-    "earnings": 0.25,
-    "technical": 0.15,
-    "capital": 0.15,
-    "risk": 0.15,
+    "valuation": 0.28,  # 估值（原30%，让出2%给题材）
+    "earnings":  0.23,  # 盈利（原25%，让出2%给题材）
+    "technical": 0.15,  # 技术（不变）
+    "capital":   0.14,  # 资金（原15%，让出1%给题材）
+    "risk":      0.10,  # 风险（原15%，让出5%给题材）
+    "theme":     0.10,  # 题材热度（新增：同花顺热门题材归因）
 }
 
-# V7.5 增强：按持有周期分类的权重
+# V7.5 增强：按持有周期分类的权重（含 V7.2 新增 theme 维度）
 PERIOD_WEIGHTS = {
     "short": {  # 短线 1-2 周
-        "valuation": 0.05, "earnings": 0.10, "technical": 0.40,
-        "capital": 0.30, "risk": 0.15,
+        "valuation": 0.05, "earnings": 0.10, "technical": 0.35,
+        "capital": 0.30, "risk": 0.10, "theme": 0.10,
         "label": "短线（1-2周）", "icon": "⚡",
     },
     "medium": {  # 中线 1-3 月
-        "valuation": 0.25, "earnings": 0.30, "technical": 0.15,
-        "capital": 0.20, "risk": 0.10,
+        "valuation": 0.25, "earnings": 0.28, "technical": 0.15,
+        "capital": 0.17, "risk": 0.05, "theme": 0.10,
         "label": "中线（1-3月）", "icon": "📊",
     },
     "long": {  # 长线 6 月+
-        "valuation": 0.35, "earnings": 0.30, "technical": 0.05,
-        "capital": 0.10, "risk": 0.20,
+        "valuation": 0.33, "earnings": 0.28, "technical": 0.05,
+        "capital": 0.09, "risk": 0.15, "theme": 0.10,
         "label": "长线（6月+）", "icon": "🏦",
     },
 }
@@ -102,6 +105,24 @@ def get_stock_recommendations(user_id: str = "", top_n: int = 10, pool: str = "h
     cached = _rec_cache.get(cache_key)
     if cached is not None:
         return cached
+
+    # 文件缓存：推荐结果持久化（TTL=4小时），服务重启后秒级响应
+    from pathlib import Path
+    import json as _json
+    _file_cache_dir = Path(DATA_DIR) / "_cache"
+    _file_cache_dir.mkdir(parents=True, exist_ok=True)
+    _safe_key = cache_key.replace("/", "_")
+    _file_cache_fp = _file_cache_dir / f"recommend_{_safe_key}.json"
+    _FILE_CACHE_TTL = 4 * 3600  # 4小时
+    if _file_cache_fp.exists():
+        try:
+            payload = _json.loads(_file_cache_fp.read_text())
+            if time.time() < payload.get("_expires_at", 0):
+                result = {k: v for k, v in payload.items() if not k.startswith("_")}
+                _rec_cache.set(cache_key, result)
+                return result
+        except Exception:
+            pass
 
     print(f"[RECOMMEND] 开始推荐: user={user_id}, pool={pool}, top={top_n}")
 
@@ -173,15 +194,73 @@ def get_stock_recommendations(user_id: str = "", top_n: int = 10, pool: str = "h
     print(f"[RECOMMEND] 完成: 候选{len(candidates)} → 评分{len(scored)} → 推荐{len(top)}")
 
     _rec_cache.set(cache_key, result)
+    # 写入文件缓存（4小时 TTL，服务重启后可秒级响应）
+    try:
+        payload = {**result, "_expires_at": time.time() + _FILE_CACHE_TTL}
+        _file_cache_fp.write_text(_json.dumps(payload, ensure_ascii=False, default=str))
+    except Exception as e:
+        print(f"[RECOMMEND] 文件缓存写入失败: {e}")
     return result
 
 
 def _get_candidate_pool(pool: str) -> list:
-    """获取候选股票池"""
-    candidates = []
+    """获取候选股票池
+
+    缓存策略（SQLite 每日缓存）：
+    - 同一天同一 pool 只请求一次 report_rc（避免消耗每日 10 次限额）
+    - report_rc 频率超限时自动切换 fina_indicator + HS300 成分股兜底
+    - 两者都失败时回落到 SQLite 中最近 7 天的历史记录
+    """
+    import sqlite3
+    from pathlib import Path
+    from datetime import datetime as _dt, timedelta as _td
+
+    today = _dt.now().strftime("%Y%m%d")
+    db_path = Path(DATA_DIR) / "_cache" / "candidate_pool.db"
+    db_path.parent.mkdir(parents=True, exist_ok=True)
+
+    def _db_read(date_str: str) -> list | None:
+        try:
+            conn = sqlite3.connect(str(db_path))
+            cur = conn.cursor()
+            cur.execute(
+                "CREATE TABLE IF NOT EXISTS pool_cache "
+                "(date TEXT, pool TEXT, data TEXT, PRIMARY KEY(date, pool))"
+            )
+            cur.execute("SELECT data FROM pool_cache WHERE date=? AND pool=?", (date_str, pool))
+            row = cur.fetchone()
+            conn.close()
+            return json.loads(row[0]) if row else None
+        except Exception:
+            return None
+
+    def _db_write(data: list, date_str: str = today):
+        try:
+            conn = sqlite3.connect(str(db_path))
+            cur = conn.cursor()
+            cur.execute(
+                "CREATE TABLE IF NOT EXISTS pool_cache "
+                "(date TEXT, pool TEXT, data TEXT, PRIMARY KEY(date, pool))"
+            )
+            cur.execute(
+                "INSERT OR REPLACE INTO pool_cache VALUES (?,?,?)",
+                (date_str, pool, json.dumps(data, ensure_ascii=False)),
+            )
+            conn.commit()
+            conn.close()
+        except Exception as e:
+            print(f"[RECOMMEND] SQLite 写缓存失败: {e}")
+
+    # 1. 今日缓存命中 → 直接返回（一天只拉一次 report_rc）
+    cached = _db_read(today)
+    if cached:
+        print(f"[RECOMMEND] 候选池 SQLite 命中(今日/{today}): {len(cached)} 只")
+        return cached
+
+    candidates: list = []
 
     if pool == "hot":
-        # 从研报中提取最近被覆盖的股票
+        # 2. 尝试 report_rc（每天限10次，写入缓存后当日不再消耗）
         try:
             from services.tushare_data import _call_tushare
             rows = _call_tushare(
@@ -189,8 +268,7 @@ def _get_candidate_pool(pool: str) -> list:
                 {"limit": 200},
                 "ts_code,name,report_date,eps,pe,roe,rating,max_price,min_price",
             )
-            # 按 ts_code 去重，取最新
-            seen = {}
+            seen: dict = {}
             for r in rows:
                 code = r.get("ts_code", "")
                 if code and code not in seen:
@@ -204,23 +282,208 @@ def _get_candidate_pool(pool: str) -> list:
                         "rating": r.get("rating", ""),
                         "target_high": r.get("max_price"),
                         "target_low": r.get("min_price"),
+                        "source": "report_rc",
                     }
             candidates = list(seen.values())
-            print(f"[RECOMMEND] 候选池(hot): {len(candidates)} 只")
+            print(f"[RECOMMEND] 候选池(report_rc): {len(candidates)} 只")
+            # report_rc 返回空（可能次数用尽但无异常），自动切换 fina_indicator 兜底
+            if not candidates:
+                print("[RECOMMEND] report_rc 返回空，切换 fina_indicator 兜底")
+                candidates = _build_fina_pool_sync_or_bg(today, pool, _db_write)
         except Exception as e:
-            print(f"[RECOMMEND] 获取候选池失败: {e}")
+            print(f"[RECOMMEND] report_rc 失败({e})，切换 fina_indicator 兜底")
+            candidates = _build_fina_pool_sync_or_bg(today, pool, _db_write)
+
+    # 3. 成功则写入今日 SQLite 缓存
+    if candidates:
+        _db_write(candidates, today)
+        return candidates
+
+    # 4. 两者均失败 → 回落最近 7 天历史记录
+    for i in range(1, 8):
+        past_date = (_dt.now() - _td(days=i)).strftime("%Y%m%d")
+        stale = _db_read(past_date)
+        if stale:
+            print(f"[RECOMMEND] 使用 {past_date} 历史缓存（降级）: {len(stale)} 只")
+            return stale
+
+    return candidates
+
+
+def _build_fina_pool_sync_or_bg(today: str, pool: str, db_write_fn) -> list:
+    """首次冷启动时，在后台线程构建候选池（避免 HTTP 超时）。
+
+    - 如果后台已在构建（_pool_building），直接返回空列表，让上层走 7 天缓存。
+    - 如果没有在构建，启动后台线程，本次请求返回空列表（前端显示"正在预热"）。
+    - 后台线程完成后写入 SQLite，下次请求即可命中缓存（通常 1-2 分钟）。
+    """
+    global _pool_building
+    if _pool_building:
+        print("[RECOMMEND] fina_indicator 正在后台构建，本次跳过等待")
+        return []
+
+    def _bg_build():
+        global _pool_building
+        _pool_building = True
+        try:
+            candidates = _build_fina_pool()
+            if candidates:
+                db_write_fn(candidates, today)
+                print(f"[RECOMMEND] 后台候选池构建完成: {len(candidates)} 只，已写入 SQLite")
+        except Exception as e:
+            print(f"[RECOMMEND] 后台候选池构建失败: {e}")
+        finally:
+            _pool_building = False
+
+    t = threading.Thread(target=_bg_build, daemon=True)
+    t.start()
+    print("[RECOMMEND] 候选池正在后台预热（fina_indicator），约1-2分钟后就绪")
+    return []
+
+
+def _build_fina_pool(limit: int = 60) -> list:
+    """report_rc 限额时的兜底候选池
+
+    用 fina_indicator（5000分，无每日次数上限，仅有每分钟频次限制）
+    从 HS300 成分股拼财务候选池。
+
+    Steps:
+    1. 优先通过 index_weight 取最新 HS300 成分股；失败则用内置静态列表
+    2. 逐只查 fina_indicator（0.12s 间隔控速，约 500次/分钟）
+    3. 一次性查 stock_basic 补充股票名称
+    """
+    import time as _time
+
+    # HS300 核心成分股静态备用列表（按市值权重排序，更新于 2026Q1）
+    _HS300_STATIC = [
+        "600519.SH", "300750.SZ", "601318.SH", "600036.SH", "600900.SH",
+        "601166.SH", "601398.SH", "601288.SH", "601939.SH", "601628.SH",
+        "000858.SZ", "000333.SZ", "600276.SH", "002475.SZ", "601888.SH",
+        "600887.SH", "600309.SH", "002594.SZ", "000568.SZ", "600031.SH",
+        "601006.SH", "601012.SH", "000725.SZ", "601186.SH", "600741.SH",
+        "000002.SZ", "601601.SH", "000651.SZ", "002304.SZ", "600030.SH",
+        "601688.SH", "600690.SH", "601669.SH", "002415.SZ", "601390.SH",
+        "600048.SH", "601766.SH", "601211.SH", "601236.SH", "000776.SZ",
+        "002230.SZ", "300015.SZ", "600918.SH", "601225.SH", "600104.SH",
+        "601336.SH", "002049.SZ", "600600.SH", "601319.SH", "600438.SH",
+        "601111.SH", "603288.SH", "002142.SZ", "002607.SZ", "600089.SH",
+        "000860.SZ", "002236.SZ", "600702.SH", "601816.SH", "600050.SH",
+    ]
+
+    candidates: list = []
+    try:
+        from services.tushare_data import _call_tushare
+
+        # Step 1: 获取成分股列表
+        ts_codes: list = []
+        try:
+            wt_rows = _call_tushare(
+                "index_weight", {"index_code": "399300.SZ", "limit": 100}, "con_code,weight"
+            )
+            if wt_rows:
+                wt_rows.sort(key=lambda x: float(x.get("weight") or 0), reverse=True)
+                ts_codes = [r["con_code"] for r in wt_rows[:limit] if r.get("con_code")]
+                print(f"[RECOMMEND] index_weight 获取 {len(ts_codes)} 只 HS300 成分股")
+        except Exception:
+            pass
+        if not ts_codes:
+            ts_codes = _HS300_STATIC[:limit]
+            print(f"[RECOMMEND] 使用静态 HS300 列表: {len(ts_codes)} 只")
+
+        # Step 2: 逐只查 fina_indicator（ROE/EPS/PE 最新季报）
+        seen: dict = {}
+        for ts_code in ts_codes:
+            if ts_code in seen:
+                continue
+            try:
+                rows = _call_tushare(
+                    "fina_indicator",
+                    {"ts_code": ts_code, "limit": 1},
+                    "ts_code,end_date,roe,eps,pe,grossprofit_margin",
+                )
+                r = rows[0] if rows else {}
+                seen[ts_code] = {
+                    "code": ts_code.split(".")[0],
+                    "ts_code": ts_code,
+                    "name": ts_code.split(".")[0],  # 暂用代码，Step 3 补名称
+                    "forecast_eps": r.get("eps"),
+                    "forecast_pe": r.get("pe"),
+                    "forecast_roe": r.get("roe"),
+                    "rating": "",
+                    "target_high": None,
+                    "target_low": None,
+                    "source": "fina_indicator",
+                }
+                _time.sleep(0.12)  # 控速：≤500次/分钟
+            except Exception as e:
+                print(f"[RECOMMEND] fina_indicator {ts_code}: {e}")
+                continue
+
+        # Step 3: 补充股票名称（stock_basic 一次批量）
+        if seen:
+            try:
+                name_rows = _call_tushare(
+                    "stock_basic",
+                    {"ts_code": ",".join(seen.keys()), "list_status": "L"},
+                    "ts_code,name",
+                )
+                for nr in name_rows or []:
+                    tc = nr.get("ts_code", "")
+                    if tc in seen and nr.get("name"):
+                        seen[tc]["name"] = nr["name"]
+            except Exception:
+                pass
+
+        candidates = list(seen.values())
+        print(f"[RECOMMEND] 候选池(fina_indicator 兜底): {len(candidates)} 只")
+
+    except Exception as e:
+        print(f"[RECOMMEND] fina_indicator 兜底完全失败: {e}")
+
+    # mootdx finance 兜底（fina_indicator 积分耗尽时，取 HS300 前 20 只）
+    if not candidates:
+        print("[RECOMMEND] 尝试 mootdx finance 作最后兜底...")
+        _HS300_TOP20 = [
+            "600519", "300750", "601318", "600036", "600900",
+            "601166", "601398", "601288", "601939", "601628",
+            "000858", "000333", "600276", "002475", "601888",
+            "600887", "600309", "002594", "000568", "600031",
+        ]
+        for code in _HS300_TOP20:
+            try:
+                from infra.data_source.providers.mootdx_provider import get_finance_mootdx
+                f = get_finance_mootdx(code)
+                if f:
+                    ts_code = f"{code}.SH" if code.startswith("6") else f"{code}.SZ"
+                    candidates.append({
+                        "code": code,
+                        "ts_code": ts_code,
+                        "name": code,  # 无名称来源，用代码替代
+                        "forecast_eps": f.get("eps"),
+                        "forecast_pe": None,
+                        "forecast_roe": f.get("roe"),
+                        "rating": "",
+                        "target_high": None,
+                        "target_low": None,
+                        "source": "mootdx",
+                    })
+            except Exception as e:
+                print(f"[RECOMMEND] mootdx finance 兜底 {code}: {e}")
+        if candidates:
+            print(f"[RECOMMEND] mootdx finance 兜底成功: {len(candidates)} 只")
 
     return candidates
 
 
 def _calc_composite_score(stock: dict) -> dict:
-    """计算 5 维综合评分"""
+    """计算 6 维综合评分（V7.2 新增 theme 维度）"""
     scores = {
         "valuation": _score_valuation(stock),
         "earnings": _score_earnings(stock),
         "technical": _score_technical(stock),
         "capital": _score_capital(stock),
         "risk": _score_risk(stock),
+        "theme": _score_theme(stock),   # V7.2 新增：同花顺热点题材
     }
 
     total = sum(scores[k] * RECOMMEND_WEIGHTS[k] for k in RECOMMEND_WEIGHTS)
@@ -268,6 +531,28 @@ def _score_valuation(stock: dict) -> int:
             score = 35
         else:
             score = 20
+
+    # 腾讯财经兜底（tushare/研报 PE 为 None 时）
+    if not stock.get("forecast_pe"):
+        try:
+            code = stock.get("code", "")
+            if code:
+                from infra.data_source.providers.tencent_provider import get_stock_quote_tencent
+                q = get_stock_quote_tencent(code)
+                if q and q.get("pe_ttm"):
+                    pe = float(q["pe_ttm"])
+                    if pe < 15:
+                        score = 80
+                    elif pe < 20:
+                        score = 65
+                    elif pe < 30:
+                        score = 50
+                    elif pe < 50:
+                        score = 35
+                    else:
+                        score = 20
+        except Exception:
+            pass
 
     return score
 
@@ -488,7 +773,35 @@ def _score_risk(stock: dict) -> int:
     return score
 
 
-def _generate_reasons(top_items: list):
+def _score_theme(stock: dict) -> int:
+    """题材维度评分 (0-100) — 同花顺热门题材归属
+    V7.2 新增：个股属于越多热门题材，题材热度分越高
+    - 不在任何热门题材中：50（中性）
+    - 命中1个热门题材：65
+    - 命中2个：70
+    - 命中3个及以上：最高 85
+
+    副作用：将 theme_tags 写入 stock dict，供 LLM 生成理由时引用。
+    """
+    code = stock.get("code", "")
+    if not code:
+        return 50
+
+    try:
+        from infra.data_source.alt.ths_concepts import get_stock_theme_tags
+        tags = get_stock_theme_tags(code, top_concepts=20)
+        if not tags:
+            return 50
+        # 命中1个热门题材 +15分，之后每多一个 +5分，上限 85
+        score = min(85, 50 + 15 + (len(tags) - 1) * 5)
+        stock["theme_tags"] = tags  # 供 LLM 生成推荐理由时引用
+        return score
+    except Exception as e:
+        print(f"[RECOMMEND] 题材评分失败 {code}: {e}")
+        return 50
+
+
+def _generate_reasons(top_items: list) -> None:
     """用 R1 批量生成推荐理由"""
     try:
         from config import LLM_API_URL, LLM_API_KEY
@@ -502,8 +815,10 @@ def _generate_reasons(top_items: list):
             f"{i+1}. {item['name']}({item['code']}) 综合{item['total_score']}分 "
             f"估值={item['dimension_scores']['valuation']} "
             f"盈利={item['dimension_scores']['earnings']} "
+            f"题材={item['dimension_scores'].get('theme', 50)} "
             f"PE={item.get('forecast_pe', '?')} ROE={item.get('forecast_roe', '?')}% "
-            f"评级={item.get('rating', '?')}"
+            f"评级={item.get('rating', '?')} "
+            f"热点题材={','.join(item.get('theme_tags', [])[:3]) or '无'}"
             for i, item in enumerate(top_items[:5])
         )
 

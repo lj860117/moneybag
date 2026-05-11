@@ -13,3 +13,4 @@ numpy>=1.24.0
 pandas>=2.0.0
 scipy>=1.10.0
 zhdate>=0.1
+mootdx>=0.7.0

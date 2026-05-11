@@ -25,7 +25,7 @@ import time
 import traceback
 from datetime import datetime, date, timedelta
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 # 确保 import 路径
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
@@ -56,17 +56,17 @@ def _ts() -> str:
     return datetime.now().strftime("%H:%M:%S")
 
 
-def _log(msg: str):
+def _log(msg: str) -> None:
     print(f"[{_ts()}][AUDIT] {msg}")
 
 
 def _check(
     name: str,
-    fn,
+    fn: Callable[[], Any],
     *,
-    validators: list | None = None,
+    validators: list[Any] | None = None,
     warn_age_hours: float = 25.0,   # 超过 25h 认为过期（周末不开盘）
-) -> dict:
+) -> dict[str, Any]:
     """
     执行单项探针检查。
     返回 {"name", "status", "value_summary", "issue", "elapsed_ms"}
@@ -133,13 +133,13 @@ def _check(
 # 1. 数据源探针（规则检查）
 # ============================================================
 
-def run_data_probes() -> list[dict]:
+def run_data_probes() -> list[dict[str, Any]]:
     """逐一探测各数据源，返回检查结果列表"""
     _log("数据源探针开始")
     results = []
 
     # --- 恐贪指数 ---
-    def _check_fgi(val):
+    def _check_fgi(val: Any) -> tuple[bool, str]:
         score = val.get("score", -1) if isinstance(val, dict) else -1
         if not (0 <= score <= 100):
             return False, f"score={score} 不在 0-100 范围"
@@ -147,7 +147,7 @@ def run_data_probes() -> list[dict]:
     results.append(_check("恐贪指数", lambda: __import__("services.market_data", fromlist=["get_fear_greed_index"]).get_fear_greed_index(), validators=[_check_fgi]))
 
     # --- 估值百分位 ---
-    def _check_val(val):
+    def _check_val(val: Any) -> tuple[bool, str]:
         pct = val.get("percentile", -1) if isinstance(val, dict) else -1
         if not (0 <= pct <= 100):
             return False, f"percentile={pct} 超范围"
@@ -155,7 +155,7 @@ def run_data_probes() -> list[dict]:
     results.append(_check("估值百分位", lambda: __import__("services.market_data", fromlist=["get_valuation_percentile"]).get_valuation_percentile(), validators=[_check_val]))
 
     # --- 北向资金 ---
-    def _check_north(val):
+    def _check_north(val: Any) -> tuple[bool, str]:
         if not isinstance(val, dict):
             return False, "非 dict"
         flow = val.get("net_flow_5d", None)
@@ -173,7 +173,7 @@ def run_data_probes() -> list[dict]:
     # --- SHIBOR ---
     try:
         from services.factor_data import get_shibor
-        def _check_shibor(val):
+        def _check_shibor(val: Any) -> tuple[bool, str]:
             rate = val.get("overnight", -1) if isinstance(val, dict) else -1
             if not (0 < rate < 30):
                 return False, f"overnight={rate}% 超范围"
@@ -192,7 +192,7 @@ def run_data_probes() -> list[dict]:
     # --- 行业轮动 ---
     try:
         from services.sector_rotation import get_sector_ranking
-        def _check_sr(val):
+        def _check_sr(val: Any) -> tuple[bool, str]:
             if not val:
                 return False, "返回空"
             return True, ""
@@ -238,7 +238,7 @@ def run_data_probes() -> list[dict]:
     # --- 选股结果（检查缓存文件是否存在且不过期）---
     try:
         cache_file = DATA_DIR / "_cache" / "stock_screen_50.json"
-        def _load_screen():
+        def _load_screen() -> dict[str, Any]:
             if not cache_file.exists():
                 raise FileNotFoundError("缓存文件不存在")
             data = json.loads(cache_file.read_text(encoding="utf-8"))
@@ -259,7 +259,7 @@ def run_data_probes() -> list[dict]:
 # 2. API 功能冒烟测试
 # ============================================================
 
-def run_smoke_tests() -> list[dict]:
+def run_smoke_tests() -> list[dict[str, Any]]:
     """对主要业务逻辑做冒烟检查（直接调用函数，不走 HTTP）"""
     _log("功能冒烟测试开始")
     results = []
@@ -306,7 +306,9 @@ def run_smoke_tests() -> list[dict]:
     try:
         start = time.time()
         from infra.knowledge import get_retriever
-        retriever = get_retriever()
+        from domain.protocols.knowledge_retriever import KnowledgeRetrieverProtocol
+        from typing import cast as _cast
+        retriever: KnowledgeRetrieverProtocol = _cast(KnowledgeRetrieverProtocol, get_retriever())
         total = retriever.total_chunks()
         elapsed = int((time.time() - start) * 1000)
         if total > 0:
@@ -337,7 +339,7 @@ def run_smoke_tests() -> list[dict]:
 # 3. LLM 语义审计（每周精华）
 # ============================================================
 
-def run_llm_audit(probe_results: list[dict], smoke_results: list[dict]) -> dict:
+def run_llm_audit(probe_results: list[dict[str, Any]], smoke_results: list[dict[str, Any]]) -> dict[str, Any]:
     """
     把数据摘要喂给 V4 Max，让 LLM 找：
     - 数据之间的逻辑矛盾（如北向资金净流入但恐贪极度恐慌）
@@ -429,7 +431,7 @@ def run_llm_audit(probe_results: list[dict], smoke_results: list[dict]) -> dict:
 # 4. 汇总 & 落盘
 # ============================================================
 
-def _overall_status(probe: list, smoke: list, llm: dict) -> str:
+def _overall_status(probe: list[dict[str, Any]], smoke: list[dict[str, Any]], llm: dict[str, Any]) -> str:
     all_items = probe + smoke
     fail_count = sum(1 for r in all_items if r["status"] == "fail")
     warn_count = sum(1 for r in all_items if r["status"] == "warn")
@@ -442,7 +444,7 @@ def _overall_status(probe: list, smoke: list, llm: dict) -> str:
     return "healthy"
 
 
-def save_audit_report(report: dict):
+def save_audit_report(report: dict[str, Any]) -> None:
     """写 latest.json 和带日期的历史文件"""
     AUDIT_LATEST.write_text(
         json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8"
@@ -458,7 +460,7 @@ def save_audit_report(report: dict):
 # 5. 企微推送
 # ============================================================
 
-def push_audit_report(report: dict):
+def push_audit_report(report: dict[str, Any]) -> None:
     """把审计摘要推企微（同一天只推一次，防止重复触发）"""
     try:
         from services.wxwork_push import is_configured, send_daily_report_to
@@ -539,7 +541,7 @@ def push_audit_report(report: dict):
 # 主入口
 # ============================================================
 
-def _auto_banner_msg(probe: list, smoke: list) -> str:
+def _auto_banner_msg(probe: list[dict[str, Any]], smoke: list[dict[str, Any]]) -> str:
     """LLM 摘要缺失时，自动生成规则摘要作为 banner_message"""
     fails = [r["name"] for r in probe + smoke if r["status"] == "fail"]
     warns = [r["name"] for r in probe + smoke if r["status"] == "warn"]
@@ -551,7 +553,7 @@ def _auto_banner_msg(probe: list, smoke: list) -> str:
     return "；".join(parts) if parts else ""
 
 
-def run_weekly_audit() -> dict:
+def run_weekly_audit() -> dict[str, Any]:
     """
     执行完整周度自检，返回审计报告 dict。
     预计耗时：2-5 分钟（含 LLM 调用）。

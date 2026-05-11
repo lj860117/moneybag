@@ -123,9 +123,11 @@ ${cr.key_risks?.length?'<div style="margin-top:4px;font-size:12px;color:var(--be
 const reports=lr.reports||[];
 if(reports.length){html+='<div class="dashboard-card"><div class="dashboard-card-title">📄 最新研报</div>';
 reports.slice(0,10).forEach(r=>{
-html+=`<div style="padding:8px 0;border-bottom:1px solid var(--border,rgba(255,255,255,.05))">
-<div style="font-size:13px;font-weight:600">${r.title||'无标题'}</div>
-<div style="font-size:11px;color:var(--text2);margin-top:2px">${r.org||''} · ${r.date||''} ${r.rating?'· 评级:'+r.rating:''}</div>
+// 优先用研报自带 url，否则跳转到东方财富搜索
+const url=r.url||r.link||(r.title?`https://so.eastmoney.com/web/s?keyword=${encodeURIComponent(r.title)}`:'');
+html+=`<div style="padding:8px 0;border-bottom:1px solid var(--border,rgba(255,255,255,.05));cursor:${url?'pointer':'default'}" ${url?`onclick="window.open('${url}','_blank')" title="点击查看研报"`:''}>
+<div style="font-size:13px;font-weight:600;display:flex;align-items:center;gap:4px">${r.title||'无标题'}${url?'<span style="font-size:10px;color:var(--accent)">↗</span>':''}</div>
+<div style="font-size:11px;color:var(--text2);margin-top:2px">${r.org||r.source||''} · ${r.date||''} ${r.rating?'· 评级:'+r.rating:''}</div>
 </div>`});
 html+='</div>'}
 el.innerHTML=html||'<div style="text-align:center;padding:20px;color:var(--text2)">暂无研报数据</div>'}catch(e){el.innerHTML='<div style="text-align:center;padding:20px;color:#ef4444">加载失败: '+e.message+'</div>'}}
@@ -177,12 +179,13 @@ recs.forEach((r,i)=>{
 const ds=r.dimension_scores||{};const sp=r.suggested_position||{};
 const scoreColor=r.total_score>=70?'var(--green)':r.total_score>=50?'var(--accent)':'var(--text2)';
 html+='<div class="dashboard-card" style="padding:12px;margin-bottom:8px"><div style="display:flex;justify-content:space-between;align-items:center"><div><span style="font-size:14px;font-weight:700">'+(i+1)+'. '+r.name+'</span><span style="font-size:11px;color:var(--text2);margin-left:6px">'+r.code+'</span></div><div style="text-align:right"><div style="font-size:18px;font-weight:900;color:'+scoreColor+'">'+r.total_score+'</div><div style="font-size:10px;color:var(--text2)">'+sp.emoji+' '+sp.action+'</div></div></div>';
-html+='<div style="display:flex;gap:6px;margin-top:8px;font-size:11px">'+
-['估值','盈利','技术','资金','风险'].map(k=>{
-const key=k==='估值'?'valuation':k==='盈利'?'earnings':k==='技术'?'technical':k==='资金'?'capital':'risk';
+html+='<div style="display:flex;gap:4px;margin-top:8px;font-size:11px">'+
+['估值','盈利','技术','资金','风险','题材'].map(k=>{
+const key=k==='估值'?'valuation':k==='盈利'?'earnings':k==='技术'?'technical':k==='资金'?'capital':k==='风险'?'risk':'theme';
 const v=ds[key]||50;const c=v>=70?'#10B981':v<=30?'#EF4444':'#94A3B8';
 return '<div style="flex:1;text-align:center;padding:4px;background:var(--bg2);border-radius:6px"><div style="color:var(--text2)">'+k+'</div><div style="font-weight:700;color:'+c+'">'+v+'</div></div>'}).join('')+'</div>';
 if(r.reason)html+='<div style="font-size:12px;color:var(--text2);margin-top:6px;padding:6px 8px;background:var(--bg2);border-radius:6px">'+r.reason+'</div>';
+if(r.theme_tags&&r.theme_tags.length)html+='<div style="display:flex;flex-wrap:wrap;gap:4px;margin-top:6px">'+r.theme_tags.slice(0,4).map(t=>'<span style="font-size:10px;padding:2px 7px;background:rgba(249,115,22,.12);color:#F97316;border-radius:10px;border:1px solid rgba(249,115,22,.2)">🔥 '+t+'</span>').join('')+'</div>';
 html+='</div>'});
 el.innerHTML=html;
 }catch(e){el.innerHTML='<div style="text-align:center;padding:20px;color:var(--text2)">加载超时<br><span style="font-size:12px">'+e.message+'</span><br><button onclick="renderInsight()" style="margin-top:8px;padding:6px 16px;border-radius:8px;border:none;background:var(--accent);color:#fff;cursor:pointer">🔄 重试</button></div>'}}
