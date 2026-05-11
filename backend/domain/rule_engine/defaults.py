@@ -178,6 +178,19 @@ class BehaviorDefaults:
     ANCHORING_MONTHS: ClassVar[int] = 3              # 锚定效应月数阈值
 
 
+# --- Batch 6: 行为干预 ---
+@dataclass(frozen=True)
+class BehaviorInterventionDefaults:
+    """M7+ Batch 6: 行为干预参数"""
+    BEHAVIOR_GUARD_ENABLED: ClassVar[bool] = True       # 全局紧急开关（关闭后所有干预降级为纯报告）
+    COOLDOWN_HOURS: ClassVar[int] = 24                  # 冷静期时长（小时）
+    POSITION_LIMIT_REDUCTION: ClassVar[float] = 0.20    # 仓位上限下调幅度（20%）
+    FOMO_AMOUNT_CAP_PCT: ClassVar[float] = 0.05         # FOMO 金额锁死比例（余额 5%）
+    # TODO: M10+ 迭代 — 若 M3 支持 position_pct_max 运行时临时覆盖，
+    #       取消降级模式，启用实际仓位限制功能
+    #       涉及：cooldown_until 状态存储 + temp_position_pct_max 月末自动恢复
+
+
 # Convenience exports for single-module imports
 __all__ = [
     "AllocationDefaults",
@@ -190,4 +203,5 @@ __all__ = [
     "FundFilterDefaults",
     "IndustryDeviationDefaults",
     "BehaviorDefaults",
+    "BehaviorInterventionDefaults",
 ]
