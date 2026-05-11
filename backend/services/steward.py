@@ -93,7 +93,7 @@ class Steward:
             save_context(user_id, {
                 "last_analysis": ctx.conclusion[:200] if ctx.conclusion else "",
                 "market_phase": ctx.regime,
-                "regime_description": ctx.regime_description,
+                "regime_description": _sanitize_regime_description(ctx),
                 "direction": ctx.direction,
                 "confidence": ctx.final_confidence,
             })
@@ -161,7 +161,7 @@ class Steward:
         # 组装简报
         briefing = {
             "regime": ctx.regime,
-            "regime_description": ctx.regime_description,
+            "regime_description": _sanitize_regime_description(ctx),
             "risk_level": ctx.risk_level or "normal",
             "risk_actions": ctx.risk_actions[:3] if ctx.risk_actions else [],
             "signals_count": len(ctx.modules_results.get("signal_scout", {}).get("signals", [])) if isinstance(ctx.modules_results.get("signal_scout"), dict) else 0,
@@ -273,6 +273,17 @@ class Steward:
 
 # ---- 辅助函数 ----
 
+
+def _sanitize_regime_description(ctx: DecisionContext) -> str:
+    """清理 regime_description 中的技术细节"""
+    desc = ctx.regime_description or ""
+    import re
+    desc = re.sub(r'severity=\d+', '', desc)
+    desc = re.sub(r'→\s*强制\s*\w+', '', desc)
+    desc = re.sub(r'原判定:\s*\w+', '', desc)
+    desc = ' '.join(desc.split()).strip()
+    return desc or "📊 市场状态监测中"
+
 def _get_top_signal(ctx: DecisionContext) -> str:
     """从 ctx 中提取最重要的一条信号"""
     scout = ctx.modules_results.get("signal_scout", {})
@@ -309,7 +320,10 @@ def _generate_one_line(ctx: DecisionContext) -> str:
     }
     risk_text = risk_map.get(risk, "")
     
-    return f"{regime_text}，{risk_text}"
+    parts = [regime_text]
+    if risk_text:
+        parts.append(risk_text)
+    return "，".join(parts)
 
 
 def _extract_stock_code(question: str) -> str:

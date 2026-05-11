@@ -69,7 +69,7 @@ def classify(force: bool = False) -> dict:
                 regime = "high_vol_bear"  # 强制切到 cautious pipeline
                 confidence = max(confidence, 70)
                 geo_cat = geo_data.get("top_category", "地缘风险")
-                desc = f"⚠️ 地缘风险覆盖（{geo_cat} severity={geo_severity}）原判定: {original_regime} → 强制 high_vol_bear"
+                desc = f"⚠️ 地缘风险评估（{geo_cat}），切换谨慎模式"
                 print(f"[REGIME] 地缘覆盖: severity={geo_severity}, {original_regime} → high_vol_bear")
         except Exception as e:
             print(f"[REGIME] 地缘检查失败(不影响原判定): {e}")

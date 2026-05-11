@@ -394,7 +394,7 @@ def step_risk_firewall(ctx: DecisionContext) -> DecisionContext:
         ctx.risk_alerts.append({
             "source": "geo_risk_firewall",
             "level": "danger",
-            "msg": f"🔴 地缘极端风险(severity={geo_severity})，一票否决所有操作建议",
+            "msg": "🔴 地缘极端风险，所有操作建议已拦截",
         })
         print(f"[RISK] 地缘一票否决: severity={geo_severity}")
     elif geo_severity >= 4:
@@ -402,7 +402,7 @@ def step_risk_firewall(ctx: DecisionContext) -> DecisionContext:
         ctx.risk_alerts.append({
             "source": "geo_risk_firewall",
             "level": "warning",
-            "msg": f"⚠️ 地缘高风险(severity={geo_severity})，已切换谨慎管线，建议减少操作",
+            "msg": "⚠️ 地缘高风险，已切换谨慎管线，建议减少操作",
         })
 
     # EV 拦截
