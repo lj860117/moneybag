@@ -634,8 +634,8 @@ async def post_weekly_lesson(req: WeeklyLessonRequest) -> WeeklyLessonResponse:
     trigger = LessonTrigger(req.trigger)
 
     # Load push history
-    push_store = FileStore(collection="education_push_history")
-    raw_history = push_store.load(req.user_id)
+    push_store = FileStore()
+    raw_history = push_store.read("education_push_history", req.user_id)
     push_history: List[LessonPushRecord] = []
     if raw_history and "records" in raw_history:
         push_history = [LessonPushRecord.from_dict(r) for r in raw_history["records"]]
@@ -653,7 +653,47 @@ async def post_weekly_lesson(req: WeeklyLessonRequest) -> WeeklyLessonResponse:
         )
 
     # Build holding context (from request overrides or stored data)
-    from scripts.weekly_education_cron import build_holding_context as _build_ctx
+    def _build_holding_context_from_portfolio(user_id: str) -> HoldingContext:
+        """从用户持仓数据构建 HoldingContext（替代 weekly_education_cron）"""
+        has_fund = False
+        has_stock = False
+        has_gold = False
+        has_real_estate = False
+        total_positions = 0
+        max_dd = None
+        dd_name = None
+        try:
+            from services.stock_monitor import load_stock_holdings
+            from services.fund_monitor import load_fund_holdings
+            stocks = load_stock_holdings(user_id) or []
+            funds = load_fund_holdings(user_id) or []
+            has_stock = len(stocks) > 0
+            has_fund = len(funds) > 0
+            total_positions = len(stocks) + len(funds)
+            # 找最大回撤
+            for s in stocks:
+                pnl = s.get("pnlPct") or s.get("pnl_pct") or 0
+                if pnl < 0 and (max_dd is None or pnl < max_dd):
+                    max_dd = pnl
+                    dd_name = s.get("name", s.get("code", ""))
+        except Exception:
+            pass
+        asset_classes = []
+        if has_stock: asset_classes.append("stock")
+        if has_fund: asset_classes.append("fund")
+        if has_gold: asset_classes.append("gold")
+        if has_real_estate: asset_classes.append("real_estate")
+        return HoldingContext(
+            user_id=user_id,
+            asset_classes=asset_classes,
+            has_fund=has_fund,
+            has_stock=has_stock,
+            has_gold=has_gold,
+            has_real_estate=has_real_estate,
+            max_drawdown_pct=max_dd,
+            drawdown_asset_name=dd_name,
+            total_positions=total_positions,
+        )
 
     if any(v is not None for v in [req.has_fund, req.has_stock, req.has_gold,
                                     req.has_real_estate, req.max_drawdown_pct]):
@@ -670,7 +710,7 @@ async def post_weekly_lesson(req: WeeklyLessonRequest) -> WeeklyLessonResponse:
             total_positions=1,
         )
     else:
-        context = _build_ctx(req.user_id)
+        context = _build_holding_context_from_portfolio(req.user_id)
 
     # Load knowledge articles
     retriever = get_retriever()
@@ -699,7 +739,7 @@ async def post_weekly_lesson(req: WeeklyLessonRequest) -> WeeklyLessonResponse:
     import time as _time
     record = record_lesson_push(lesson)
     push_history.append(record)
-    push_store.save(req.user_id, {
+    push_store.write("education_push_history", req.user_id, {
         "records": [r.to_dict() for r in push_history],
         "updated_at": _time.time(),
     })
@@ -723,8 +763,8 @@ async def get_weekly_lesson_history(user_id: str, limit: int = 8) -> Dict[str, A
     from infra.store.file_store import FileStore
     from domain.models.education import LessonPushRecord
 
-    push_store = FileStore(collection="education_push_history")
-    raw_history = push_store.load(user_id)
+    push_store = FileStore()
+    raw_history = push_store.read("education_push_history", user_id)
     records: List[LessonPushRecord] = []
     if raw_history and "records" in raw_history:
         records = [LessonPushRecord.from_dict(r) for r in raw_history["records"]]

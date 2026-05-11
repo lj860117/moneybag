@@ -123,6 +123,9 @@ def evaluate_holding_conditions(context: HoldingContext) -> List[str]:
     """
     conditions: List[str] = []
 
+    # 通用 condition：无论是否有持仓都能匹配基础金融知识
+    conditions.append("always")
+
     if context.has_fund:
         conditions.append("has_fund")
     if context.has_stock:

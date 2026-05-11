@@ -372,6 +372,49 @@ HOLDING_ARTICLE_MAPPINGS: List[HoldingArticleMapping] = [
         intro_template="72 法则：5 秒钟估算你的投资翻倍需要多少年。",
         priority=2,
     ),
+    # --- 通用课程：无论是否有持仓都可推送 ---
+    HoldingArticleMapping(
+        condition="always",
+        article_id="compound-interest",
+        intro_template="投资第一课：复利是时间送给耐心人的礼物。",
+        priority=1,
+    ),
+    HoldingArticleMapping(
+        condition="always",
+        article_id="emergency-fund-6-months",
+        intro_template="在做任何投资之前，先确保有 6 个月生活费的应急金。",
+        priority=1,
+    ),
+    HoldingArticleMapping(
+        condition="always",
+        article_id="family-pyramid",
+        intro_template="理财从哪开始？家庭金字塔告诉你最优先要解决的事。",
+        priority=1,
+    ),
+    HoldingArticleMapping(
+        condition="always",
+        article_id="72-rule",
+        intro_template="72 法则：5 秒钟估算你的钱翻倍需要多少年。",
+        priority=1,
+    ),
+    HoldingArticleMapping(
+        condition="always",
+        article_id="4pct-rule",
+        intro_template="退休需要多少钱？4% 法则给你一个简单公式。",
+        priority=1,
+    ),
+    HoldingArticleMapping(
+        condition="always",
+        article_id="inflation-real-returns",
+        intro_template="把钱存银行就安全了？通胀每年都在偷走你的购买力。",
+        priority=1,
+    ),
+    HoldingArticleMapping(
+        condition="always",
+        article_id="asset-allocation-basics",
+        intro_template="鸡蛋不要放在一个篮子里——资产配置入门。",
+        priority=1,
+    ),
 ]
 
 
