@@ -644,11 +644,34 @@ async def post_weekly_lesson(req: WeeklyLessonRequest) -> WeeklyLessonResponse:
     fatigue_info = check_push_allowed(push_history, trigger)
 
     if not fatigue_info["allowed"]:
+        # 疲劳控制触发 — 返回本周最近一篇已推送的文章（让用户仍可阅读）
+        # 从知识库获取文章标题
+        from infra.knowledge import get_retriever, load_and_index_articles
+        retriever = get_retriever()
+        if retriever.total_chunks() == 0:
+            load_and_index_articles(retriever)
+        article_map = {a.article_id: a.title for a in retriever.list_articles()}
+
+        last_lesson = None
+        for rec in reversed(push_history):
+            if rec.week_iso == fatigue_info.get("week_iso") and rec.status.value == "delivered":
+                last_lesson = {
+                    "lesson_id": f"{req.user_id}:{rec.week_iso}:{rec.article_id}",
+                    "user_id": req.user_id,
+                    "article_id": rec.article_id,
+                    "article_title": article_map.get(rec.article_id, rec.article_id),
+                    "article_category": "金融知识",
+                    "intro_sentence": "本周小课已推送，点击可重新阅读。",
+                    "trigger": rec.trigger.value if hasattr(rec.trigger, 'value') else str(rec.trigger),
+                    "week_iso": rec.week_iso,
+                    "created_at": rec.pushed_at,
+                }
+                break
         return WeeklyLessonResponse(
             status="ok",
-            lesson=None,
-            delivered=False,
-            reason=fatigue_info["reason"],
+            lesson=last_lesson,
+            delivered=last_lesson is not None,
+            reason=fatigue_info["reason"] if not last_lesson else "",
             fatigue_status=fatigue_info,
         )
 
