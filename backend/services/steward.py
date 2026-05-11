@@ -145,15 +145,15 @@ class Steward:
                 print(f"[STEWARD] 读晨报缓存失败: {e}")
 
         start = time.time()
-        
+
         ctx = DecisionContext(user_id=user_id, question="每日简报")
-        
-        # Regime
+
+        # Regime（轻量级，有缓存通常 <1s）
         regime_result = classify_regime()
         ctx.regime = regime_result["regime"]
         ctx.regime_confidence = regime_result["confidence"]
         ctx.regime_description = regime_result.get("description", "")
-        
+
         # 用 fast 管线（不调 LLM）
         ctx = self.runner.run("fast", ctx)
         ctx.elapsed_seconds = round(time.time() - start, 1)

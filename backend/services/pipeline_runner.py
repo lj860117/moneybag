@@ -73,50 +73,60 @@ def step_regime(ctx: DecisionContext) -> DecisionContext:
 
 
 def step_parallel_modules(ctx: DecisionContext) -> DecisionContext:
-    """Layer2: Registry 发现模块 → 执行所有有 enrich() 的模块"""
+    """Layer2: Registry 发现模块 → 执行所有有 enrich() 的模块（单模块 5s 超时）"""
+    import signal
+
+    class _ModuleTimeout(Exception):
+        pass
+
+    def _timeout_handler(signum, frame):
+        raise _ModuleTimeout("module timeout 5s")
+
     try:
         from services.module_registry import ModuleRegistry
         registry = ModuleRegistry.instance()
         registry.ensure_discovered()
-        
-        # 排除 regime_engine（已在 step_regime 执行过）
-        # 排除 judgment_tracker / weekly_report / portfolio_doctor（在后续 step 执行）
+
         skip_names = {"regime_engine", "judgment_tracker", "weekly_report", "portfolio_doctor"}
-        
+
         for name, entry in registry._modules.items():
             if name in skip_names:
                 continue
             enrich_fn = entry.get("enrich")
             if not enrich_fn:
                 continue
-            
+
             meta = entry.get("meta", {})
-            mod_info = {"name": name, **meta}
-            
-            # FIX 2026-04-19 F14: 把每个模块都登记到 modules_called，
-            # 这样"缺少结果"的情况能在响应里显示出来，避免静默失败
+            scope = meta.get("scope", "public")
+            if scope == "private" and not ctx.user_id:
+                ctx.modules_skipped.append(f"{name}:no_user_id")
+                continue
+
             if name not in ctx.modules_called:
                 ctx.modules_called.append(name)
 
             try:
-                # 检查 scope：private 模块需要 user_id
-                scope = mod_info.get("scope", "public")
-                if scope == "private" and not ctx.user_id:
-                    ctx.modules_skipped.append(f"{name}:no_user_id")
-                    continue
-                
-                ctx = enrich_fn(ctx)
+                # 设置 5 秒单模块超时（仅 Unix 有效）
+                old_handler = signal.signal(signal.SIGALRM, _timeout_handler)
+                signal.alarm(5)
+                try:
+                    ctx = enrich_fn(ctx)
+                finally:
+                    signal.alarm(0)
+                    signal.signal(signal.SIGALRM, old_handler)
+            except _ModuleTimeout:
+                err_msg = "timeout 5s"
+                print(f"[PIPELINE] module {name}.enrich() timeout 5s, skipped")
+                ctx.modules_results[name] = {"available": False, "error": err_msg}
+                ctx.modules_errors[name] = err_msg
             except Exception as e:
                 err_msg = str(e)[:200]
                 print(f"[PIPELINE] module {name}.enrich() failed: {err_msg}")
-                ctx.modules_results[name] = {
-                    "available": False,
-                    "error": err_msg,
-                }
+                ctx.modules_results[name] = {"available": False, "error": err_msg}
                 ctx.modules_errors[name] = err_msg
     except Exception as e:
         print(f"[PIPELINE] step_parallel_modules failed: {e}")
-    
+
     ctx.pipeline_steps.append("parallel_modules")
     return ctx
 
