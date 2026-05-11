@@ -245,7 +245,7 @@ def run_close_review():
             from services.steward import get_steward
             steward = get_steward()
             review = steward.review(uid)
-            review_text = review.get("summary", "")
+            review_text = review.get("conclusion", "") or review.get("summary", "")
             
             # 保存复盘结果（前端 /api/steward/review 可读）
             review_dir = MONITOR_DIR / uid / "reviews"

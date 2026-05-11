@@ -14,6 +14,9 @@ router = APIRouter(tags=["分析历史"])
 def api_analysis_history(userId: str = "", source: str = "", type: str = "", days: int = 30):
     """查询分析历史列表"""
     from services.analysis_history import get_analysis_history
+    # "all" 表示不筛选
+    if source == "all":
+        source = ""
     records = get_analysis_history(userId or "default", source=source, analysis_type=type, days=days)
     return {"records": records, "total": len(records)}
 
