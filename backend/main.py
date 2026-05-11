@@ -117,6 +117,10 @@ app.include_router(advisor_router)
 from api.audit import router as audit_router
 app.include_router(audit_router)
 
+# ---- M7 Batch 1: 券商流水导入（2 路由）----
+from api.broker_import import router as broker_import_router
+app.include_router(broker_import_router)
+
 # ---- 静态文件服务（部署时前后端一体）----
 FRONTEND_DIR = Path(__file__).resolve().parent.parent  # moneybag/
 
