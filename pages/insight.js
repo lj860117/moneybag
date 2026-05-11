@@ -31,7 +31,7 @@ if(insightTab==='doctor'){const el=document.getElementById('insightContent');if(
 if(insightTab==='steward'){const el=document.getElementById('insightContent');if(el)renderSteward(el);return}
 if(insightTab==='weekly'){const el=document.getElementById('insightContent');if(el)renderWeeklyReport(el);return}
 if(insightTab==='policy'){const el=document.getElementById('insightContent');if(el)renderInsightPolicy(el);return}
-if(insightTab==='news'){const el=document.getElementById('insightContent');if(el){el.innerHTML='<div style="text-align:center;padding:20px;color:var(--text2)"><div class="loading-spinner" style="width:24px;height:24px;margin:0 auto 8px;border-width:2px"></div>加载新闻中...</div>';try{let d=getCached('news');if(!d){const r=await fetch(API_BASE+'/news',{signal:AbortSignal.timeout(15000)});if(r.ok){d=await r.json();setCached('news',d);}else{el.innerHTML='<div style="text-align:center;padding:40px;color:var(--text2)">新闻加载失败<br><button onclick="renderInsight()" style="margin-top:8px;padding:6px 16px;border-radius:8px;border:none;background:var(--accent);color:#fff;cursor:pointer">🔄 重试</button></div>';return}}if(d)renderInsightNews(el,{news:d.news||[]});}catch(e){el.innerHTML='<div style="text-align:center;padding:40px;color:var(--text2)">新闻加载超时<br><button onclick="renderInsight()" style="margin-top:8px;padding:6px 16px;border-radius:8px;border:none;background:var(--accent);color:#fff;cursor:pointer">🔄 重试</button></div>';}}return}
+if(insightTab==='news'){const el=document.getElementById('insightContent');if(el){const cached=getCached('news');if(cached){renderInsightNews(el,{news:cached.news||[]});return}el.innerHTML='<div style="text-align:center;padding:20px;color:var(--text2)"><div class="loading-spinner" style="width:24px;height:24px;margin:0 auto 8px;border-width:2px"></div>加载新闻中...</div>';try{const r=await fetch(API_BASE+'/news',{signal:AbortSignal.timeout(15000)});if(r.ok){const d=await r.json();setCached('news',d);renderInsightNews(el,{news:d.news||[]});}else{el.innerHTML='<div style="text-align:center;padding:40px;color:var(--text2)">新闻加载失败<br><button onclick="renderInsight()" style="margin-top:8px;padding:6px 16px;border-radius:8px;border:none;background:var(--accent);color:#fff;cursor:pointer">🔄 重试</button></div>';}}catch(e){el.innerHTML='<div style="text-align:center;padding:40px;color:var(--text2)">新闻加载超时<br><button onclick="renderInsight()" style="margin-top:8px;padding:6px 16px;border-radius:8px;border:none;background:var(--accent);color:#fff;cursor:pointer">🔄 重试</button></div>';}}return}
 // 需要 dashboard 的 tab: overview / tech / macro
 const loadStart=Date.now();const loadTimer=setInterval(()=>{const el=document.getElementById('loadingMsg');if(!el){clearInterval(loadTimer);return}const sec=Math.round((Date.now()-loadStart)/1000);if(sec>=5&&sec<15)el.textContent='正在从数据源抓取实时行情...';else if(sec>=15&&sec<25)el.textContent='数据量较大，还在努力加载中...';else if(sec>=25)el.textContent='快好了，感谢耐心等待 🙏'},3000);
 const dash=await fetchDashboard();clearInterval(loadTimer);if(!dash){document.getElementById('insightContent').innerHTML='<div style="text-align:center;padding:40px;color:var(--text2)">数据加载失败，请稍后再试<br><button onclick="renderInsight()" style="margin-top:12px;padding:8px 20px;border-radius:8px;border:none;background:var(--accent);color:#fff;cursor:pointer">🔄 重新加载</button></div>';return}
@@ -117,7 +117,7 @@ ${renderV45FactorCards(d)}
 // 异步加载资产配置建议
 loadAllocationAdvice();
 // 异步加载事件影响分析
-(async()=>{let data=getCached('news_impact');if(!data){try{const r=await fetch(API_BASE+'/news/impact',{signal:AbortSignal.timeout(30000)});data=await r.json();setCached('news_impact',data);}catch(e){}}if(data&&typeof data==='object'){{const sec=document.getElementById('impactSection');if(!sec||!data.impacts||!data.impacts.length){if(sec)sec.innerHTML='<div class="dashboard-card-title">🔗 事件影响分析</div><div style="padding:12px;font-size:12px;color:var(--text2)">暂无显著影响事件</div>';return}sec.innerHTML='<div class="dashboard-card-title">🔗 事件对你持仓的影响</div>'+data.impacts.map(imp=>{const bull=imp.bullish.length?'<span style="color:var(--green);font-size:11px">📈'+imp.bullish.join(',')+'</span>':'';const bear=imp.bearish.length?'<span style="color:var(--red);font-size:11px">📉'+imp.bearish.join(',')+'</span>':'';return'<div style="padding:8px 0;border-bottom:1px solid rgba(148,163,184,.08)"><div style="display:flex;align-items:center;gap:6px"><span style="background:rgba(245,158,11,.12);color:#F59E0B;font-size:11px;padding:2px 6px;border-radius:4px">'+imp.tag+'</span>'+bull+' '+bear+'</div><div style="font-size:12px;color:var(--text2);margin-top:4px">'+imp.impact+'</div></div>'}).join('')+'<div style="font-size:11px;color:#475569;margin-top:8px;padding-top:8px;border-top:1px solid rgba(148,163,184,.08)">分析了 '+data.total_news_analyzed+' 条新闻 · 基于关键词匹配</div>'}).catch(()=>{})}})()
+fetch(API_BASE+'/news/impact',{signal:AbortSignal.timeout(30000)}).then(r=>r.json()).then(data=>{const sec=document.getElementById('impactSection');if(!sec||!data.impacts||!data.impacts.length){if(sec)sec.innerHTML='<div class="dashboard-card-title">🔗 事件影响分析</div><div style="padding:12px;font-size:12px;color:var(--text2)">暂无显著影响事件</div>';return}sec.innerHTML='<div class="dashboard-card-title">🔗 事件对你持仓的影响</div>'+data.impacts.map(imp=>{const bull=imp.bullish.length?'<span style="color:var(--green);font-size:11px">📈'+imp.bullish.join(',')+'</span>':'';const bear=imp.bearish.length?'<span style="color:var(--red);font-size:11px">📉'+imp.bearish.join(',')+'</span>':'';return'<div style="padding:8px 0;border-bottom:1px solid rgba(148,163,184,.08)"><div style="display:flex;align-items:center;gap:6px"><span style="background:rgba(245,158,11,.12);color:#F59E0B;font-size:11px;padding:2px 6px;border-radius:4px">'+imp.tag+'</span>'+bull+' '+bear+'</div><div style="font-size:12px;color:var(--text2);margin-top:4px">'+imp.impact+'</div></div>'}).join('')+'<div style="font-size:11px;color:#475569;margin-top:8px;padding-top:8px;border-top:1px solid rgba(148,163,184,.08)">分析了 '+data.total_news_analyzed+' 条新闻 · 基于关键词匹配</div>'}).catch(()=>{})}
 
 function renderInsightNews(el,d){
 const news=d.news||[];
@@ -204,26 +204,13 @@ ${macro.length?macro.map((e,i)=>{const mkey=Object.keys(macroKeyMap).find(k=>e.n
 
 // 全球市场数据页
 async function renderInsightGlobal(el){
-// 尝试缓存
-let snap=getCached('global_snap');
-let impact=getCached('global_impact');
-if(snap){
-  // 有缓存，直接渲染
-  _renderGlobalContent(el,snap,impact||{analysis:'',source:'none'});
-  return;
-}
+const _gc=getCached('global');if(_gc){el.innerHTML=_gc;return}
 el.innerHTML='<div style="text-align:center;padding:40px;color:var(--text2)"><div class="loading-spinner" style="width:32px;height:32px;margin:0 auto 12px;border-width:3px"></div>正在加载全球市场数据...</div>';
 try{
-const [snapData,impactData]=await Promise.all([
+const [snap,impact]=await Promise.all([
 fetch(API_BASE+'/global/snapshot').then(r=>r.json()),
 fetch(API_BASE+'/global/impact').then(r=>r.json()).catch(()=>({analysis:'暂不可用',source:'none'}))
 ]);
-setCached('global_snap',snapData);
-setCached('global_impact',impactData);
-_renderGlobalContent(el,snapData,impactData);
-}catch(e){el.innerHTML=`<div style="text-align:center;padding:40px;color:var(--text2)">全球数据加载失败: ${e.message}</div>`}}
-
-function _renderGlobalContent(el,snap,impact){
 const us=snap.us_indices||{};const fx=snap.forex||{};const fed=snap.fed_rate||{};const gpe=snap.global_pe||{};
 let h='<div class="dashboard-card"><div class="dashboard-card-title">🌐 全球市场实时</div>';
 // 美股三大指数
@@ -238,8 +225,8 @@ if(gpe.available&&gpe.us_pe&&gpe.cn_pe)h+=`<div style="display:flex;justify-cont
 h+='</div>';
 // DeepSeek 影响分析
 if(impact.analysis){h+=`<div class="dashboard-card"><div class="dashboard-card-title">🤖 AI 全球→A股影响分析 <span style="font-size:10px;color:var(--text2)">${impact.source==='ai'?'DeepSeek':'数据'}</span></div><div style="font-size:13px;line-height:1.8;white-space:pre-wrap">${impact.analysis}</div></div>`}
-el.innerHTML=h;
-}
+el.innerHTML=h;setCached('global',h);
+}catch(e){el.innerHTML=`<div style="text-align:center;padding:40px;color:var(--text2)">全球数据加载失败: ${e.message}</div>`}}
 
 // 基金智能筛选页
 let fundPickType='all';let fundPickSort='score';
