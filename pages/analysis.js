@@ -586,10 +586,10 @@ let html=`<div style="display:grid;grid-template-columns:repeat(3,1fr);gap:8px;m
 <div style="background:var(--bg2);border-radius:12px;padding:12px;text-align:center"><div style="font-size:11px;color:var(--text2)">置信度</div><div style="font-size:22px;font-weight:900">${d.confidence||0}%</div></div>
 <div style="background:var(--bg2);border-radius:12px;padding:12px;text-align:center"><div style="font-size:11px;color:var(--text2)">管线</div><div style="font-size:14px;font-weight:700">${d.pipeline||'?'}</div></div></div>`;
 if(d.conclusion)html+=`<div style="padding:12px;background:rgba(99,102,241,.06);border-radius:10px;border-left:3px solid ${dirColor};margin-bottom:12px;font-size:13px;line-height:1.8">${d.conclusion}</div>`;
-if(d.regime_description)html+=`<div style="font-size:12px;color:var(--text2);margin-bottom:8px">📊 Regime: ${d.regime_description}</div>`;
+if(d.regime_description)html+=`<div style="font-size:12px;color:var(--text2);margin-bottom:8px">📊 ${d.regime_description}</div>`;
 if(d.gate_decision)html+=`<div style="font-size:12px;color:var(--text2);margin-bottom:8px">🚦 门控: ${d.gate_decision} (${d.gate_reason||''})</div>`;
 if(d.ev_params)html+=`<div style="font-size:12px;color:var(--text2);margin-bottom:8px">📐 EV: ${d.ev_params.ev_pct}% (胜率${d.ev_params.winrate}% 盈${d.ev_params.expected_gain}% 亏${d.ev_params.expected_loss}%)</div>`;
-if(d.risk_level&&d.risk_level!=='normal')html+=`<div style="font-size:12px;padding:8px;background:rgba(239,68,68,.08);border-radius:8px;margin-bottom:8px;color:var(--red)">🛡️ 风控: ${d.risk_level} ${(d.risk_alerts||[]).map(a=>a.msg).join(' · ')}</div>`;
+if(d.risk_level&&d.risk_level!=='normal')html+=`<div style="font-size:12px;padding:8px;background:rgba(239,68,68,.08);border-radius:8px;margin-bottom:8px;color:var(--red)">${{'warning':'⚠️ 有风险提示','danger':'🔴 风控红灯','blocked':'🚫 操作已拦截'}[d.risk_level]||'⚠️ '+d.risk_level} ${(d.risk_alerts||[]).map(a=>a.msg).join(' · ')}</div>`;
 if(d.modules_called?.length)html+=`<div style="font-size:11px;color:var(--text2);margin-bottom:8px">📦 模块: ${d.modules_called.join(', ')} (${d.modules_called.length}个)</div>`;
 html+=`<div style="font-size:11px;color:var(--text3);text-align:center;margin-top:8px">Pipeline ${d.pipeline_steps?.length||0}步 · ${d.elapsed||0}s · LLM调用 ${d.llm_calls||0}次 · ${d.timestamp||''}</div>`;
 el.innerHTML=html;loadRegime();
@@ -606,7 +606,7 @@ let html=`<div style="padding:16px;background:var(--bg2);border-radius:12px;marg
 <div style="font-size:18px;font-weight:800;margin-bottom:8px">${d.one_line||'每日简报'}</div>
 <div style="display:flex;gap:12px;font-size:12px;color:var(--text2)">
 <span>${iconMap[d.regime]||'📊'} ${d.regime_description||d.regime}</span>
-<span>🛡️ ${d.risk_level}</span>
+<span>🛡️ ${{'normal':'正常','warning':'有风险提示','danger':'风控红灯','blocked':'操作已拦截'}[d.risk_level]||d.risk_level}</span>
 <span>📡 ${d.signals_count||0}条信号</span>
 </div>
 ${d.top_signal?`<div style="margin-top:8px;font-size:13px;padding:8px;background:rgba(245,158,11,.06);border-radius:8px">💡 ${d.top_signal}</div>`:''}
@@ -630,7 +630,7 @@ const dateLabel=dateStr.length===8?`${dateStr.slice(0,4)}-${dateStr.slice(4,6)}-
 html+=`<div style="padding:12px;background:var(--bg2);border-radius:12px;margin-bottom:8px">
 <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:4px">
 <span style="font-size:13px;font-weight:700">${iconMap[b.regime]||'📊'} ${dateLabel}</span>
-<span style="font-size:11px;color:var(--text2)">🛡️ ${b.risk_level||'normal'} · ${b.signals_count||0}条信号</span></div>
+<span style="font-size:11px;color:var(--text2)">🛡️ ${{'normal':'正常','warning':'有风险提示','danger':'风控红灯','blocked':'操作已拦截'}[b.risk_level]||b.risk_level||'正常'} · ${b.signals_count||0}条信号</span></div>
 <div style="font-size:12px;color:var(--text1)">${b.one_line||b.regime_description||''}</div>
 ${b.top_signal?`<div style="font-size:12px;color:var(--text2);margin-top:4px">💡 ${b.top_signal}</div>`:''}
 </div>`;});

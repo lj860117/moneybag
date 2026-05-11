@@ -65,7 +65,7 @@ if(!card||!txt||!API_AVAILABLE)return;
 try{const r=await fetch(API_BASE+'/steward/briefing?userId='+getProfileId(),{signal:AbortSignal.timeout(15000)});
 if(r.ok){const d=await r.json();card.style.display='block';
 txt.innerHTML=`<div style="font-size:14px;font-weight:700;margin-bottom:4px">${d.one_line||'暂无'}</div>
-<div style="font-size:12px;color:var(--text2)">${d.regime_description?'📊 '+d.regime_description:''} ${d.risk_level&&d.risk_level!=='normal'?'⚠️'+d.risk_level:''}</div>
+<div style="font-size:12px;color:var(--text2)">${d.regime_description?'📊 '+d.regime_description:''} ${d.risk_level&&d.risk_level!=='normal'?({'warning':'⚠️ 有风险提示','danger':'🔴 风控红灯','blocked':'🚫 操作已拦截'}[d.risk_level]||''):''}</div>
 ${d.top_signal?`<div style="margin-top:6px;padding:6px 10px;background:rgba(99,102,241,.08);border-radius:8px;font-size:12px">🎯 ${d.top_signal}</div>`:''}
 <button onclick="showLatestReview()" style="margin-top:8px;padding:6px 12px;border-radius:8px;border:1px solid rgba(99,102,241,.3);background:transparent;color:#818CF8;font-size:11px;cursor:pointer">📋 查看收盘复盘</button>`}}catch(e){console.warn('briefing:',e)}}
 
@@ -78,12 +78,12 @@ try{const r=await fetch(API_BASE+'/steward/review?userId='+getProfileId(),{signa
 if(r.ok){const d=await r.json();const el=document.getElementById('reviewContent');if(!el)return;
 const concl=d.conclusion||d.summary||'暂无复盘数据';
 let html=`<div style="font-size:14px;font-weight:700;margin-bottom:12px">${concl}</div>`;
-if(d.regime_description)html+=`<div style="font-size:12px;color:var(--text2);margin-bottom:8px">📊 Regime: ${d.regime_description||d.regime}</div>`;
+if(d.regime_description)html+=`<div style="font-size:12px;color:var(--text2);margin-bottom:8px">📊 ${d.regime_description||d.regime}</div>`;
 if(d.modules_called?.length)html+=`<div style="font-size:12px;color:var(--text2);margin-bottom:8px">📦 分析模块: ${d.modules_called.join(', ')} (${d.modules_called.length}个)</div>`;
 if(d.direction)html+=`<div style="font-size:13px;margin-bottom:8px;padding:8px;background:var(--bg2);border-radius:8px">方向: <b>${d.direction}</b> | 置信度: <b>${d.confidence||50}%</b> | 门控: ${d.gate_decision||'?'}</div>`;
 const diagFile=d.diagnosis||'';
 if(diagFile)html+=`<div style="margin-bottom:8px;padding:10px;background:rgba(99,102,241,.06);border-radius:10px;font-size:13px;line-height:1.8;border-left:3px solid #6366F1"><div style="font-weight:700;margin-bottom:4px">🤖 R1 深度诊断</div>${diagFile}</div>`;
-if(d.risk_level&&d.risk_level!=='normal')html+=`<div style="font-size:12px;color:var(--red)">⚠️ 风控: ${d.risk_level}</div>`;
+if(d.risk_level&&d.risk_level!=='normal')html+=`<div style="font-size:12px;color:var(--red)">${{'warning':'⚠️ 有风险提示','danger':'🔴 风控红灯','blocked':'🚫 操作已拦截'}[d.risk_level]||'⚠️ '+d.risk_level}</div>`;
 html+=`<div style="font-size:11px;color:var(--text3);margin-top:12px;text-align:center">${d.elapsed?d.elapsed+'s · ':''}LLM ${d.llm_calls||0}次 · ${d.timestamp||'N/A'}</div>`;
 el.innerHTML=html}}catch(e){const el=document.getElementById('reviewContent');if(el)el.innerHTML=`<div style="color:var(--text2)">加载失败: ${e.message}</div>`}}
 
