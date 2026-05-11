@@ -1,0 +1,220 @@
+╔════════════════════════════════════════════════════════════════════════════╗
+║           MoneyBag 「资讯」页面缓存问题 — 核心发现                            ║
+╚════════════════════════════════════════════════════════════════════════════╝
+
+【问题现象】
+━━━━━━━━━━━
+用户每次点击「总览」「技术」「宏观」等 tab，都看到转圈加载 3-4 秒，
+即使数据几小时都没变化。
+
+【根本原因】
+━━━━━━━━━━━
+
+┌─────────────────────────────────────────────────────────────────────────┐
+│  前端（pages/insight.js + app.js）              │  后端（services）      │
+├─────────────────────────────────────────────────────────────────────────┤
+│                                                                          │
+│  1. renderInsight() 每次 tab 切换都调用      │                        │
+│     ↓                                          │                        │
+│  2. const dash = await fetchDashboard()      │                        │
+│     ↓                                          │  【第1级】新鲜缓存      │
+│  3. fetch(API_BASE + '/dashboard')  ➜ 发送  │  < 500ms  ✅           │
+│     ↓                                          │  （凌晨预算）           │
+│  ❌ 没有客户端缓存！               │          │                        │
+│     每次都 fetch                  │          │  【第2级】过期缓存      │
+│                                   │          │  可能 3-15s  ⚠️        │
+│                                   │          │                        │
+│                                   │          │  【第3级】实时拉取      │
+│                                   │          │  5s 超时               │
+│                                   │          │                        │
+│  4. 等待 3-4 秒...⏳                           │  【第4级】备用缓存      │
+│     用户看到转圈                  │          │                        │
+│                                   │          │  【第5级】空壳          │
+└─────────────────────────────────────────────────────────────────────────┘
+
+【具体数据】
+━━━━━━━━━━━
+
+📊 API 端点调用总结（pages/insight.js）
+
+│ 函数                    │ API 端点              │ 缓存情况 │
+├─────────────────────────┼──────────────────────┼────────┤
+│ renderInsightNews       │ /news                │ ❌ 无  │
+│ renderInsightPolicy     │ /policy/all-topics   │ ❌ 无  │
+│                         │ /policy/impact       │ ❌ 无  │
+│ renderInsightMacro      │ /macro               │ ❌ 无  │
+│ renderInsightGlobal     │ /global/snapshot     │ ❌ 无  │
+│                         │ /global/impact       │ ❌ 无  │
+│ renderFundPickResult    │ /fund-screen         │ ❌ 无  │
+│ renderStockPick         │ /stock-screen        │ ❌ 无  │
+│ fetchDashboard (app.js) │ /dashboard           │ ❌ 无  │
+
+👉 关键发现：app.js 里有 moneybag_market_cache 这个 key 定义（行40），
+   但从未被使用过！
+
+【后端缓存配置】
+━━━━━━━━━━━━━
+
+/ backend/services/precomputed_cache.py
+
+_PRECOMPUTED_TTL = {
+    "factors":        7200,   # 2 小时
+    "fear_greed":     7200,   # 2 小时
+    "valuation":      7200,   # 2 小时
+    "macro":          14400,  # 4 小时
+    "recommendations":14400,  # 4 小时
+    ...
+}
+
+💡 后端缓存策略：
+   ✅ 凌晨 night_worker 预计算并保存到磁盘
+   ✅ 盘中 cache_warmer 每 30 分刷新 factors 和 fear_greed
+   ❌ 但 2 小时后仍会过期，需要实时重算（费时）
+
+【客户端缺口】
+━━━━━━━━━━━
+
+   后端缓存：2-4 小时
+        │
+        ├─ 凌晨-8点：新鲜缓存，秒出 ✅
+        │
+        ├─ 8点-下午：可能过期，重算 3-15s ⚠️
+        │
+        └─ 每次 tab 切换都要等...
+
+   前端缓存：❌ 完全没有
+        │
+        ├─ localStorage：0 条
+        ├─ sessionStorage：0 条
+        ├─ 内存变量：0 条
+        └─ IndexedDB：0 条
+
+【用户体验时间轴】
+━━━━━━━━━━━━━━━
+
+第 1 次访问「总览」tab：
+  0ms    │ 点击
+  50ms   │ renderInsight() 开始
+  100ms  │ UI 显示「正在加载」
+  150ms  │ fetch 发送
+  200ms  │ 网络往返 RTT
+  200-3500ms  │ 后端处理...
+        │ - 新鲜缓存：< 200ms  ✅
+        │ - 过期缓存：3-15s   ⚠️
+  3600ms │ 用户看到数据
+  ─────────────────────────────────
+  ⏱️  等待时间：~3-4 秒
+
+同一 session 内 30 分钟后再看同一 tab：
+  0ms    │ 点击
+  100ms  │ UI 显示「正在加载」
+  150ms  │ 开始 fetch...
+  3600ms │ 用户看到数据
+  ─────────────────────────────────
+  ⏱️  等待时间：~3-4 秒（🔴 重复了！）
+
+【数据更新实际频率】
+━━━━━━━━━━━━━━
+
+| Tab      | 实际更新频率   | 用户需要看最新的？ |
+|----------|───────────────|-────────────────|
+| 总览      | 每 30 分      | 不必实时        |
+| 技术指标  | 每 1 分       | 不必实时        |
+| 宏观数据  | 每天 1-2 次   | 肯定不必实时    |
+| 全球市场  | 每 5-10 分    | 不必实时        |
+| 新闻      | 实时          | 10 分内足够     |
+| 政策      | 每天 1-2 次   | 肯定不必实时    |
+| 选基评分  | 每天 1 次     | 不必实时        |
+| 选股评分  | 每天 1-2 次   | 不必实时        |
+
+👉 结论：大多数数据 30 分钟一次就够了！
+
+【快速修复方案 — 方案 A（推荐，P0）】
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+增加内存缓存（~50 行代码）：
+
+  const INSIGHT_CACHE = {
+    data: {},
+    timestamps: {},
+    TTL: {
+      'overview': 30 * 60 * 1000,  // 30 分钟
+      'tech': 15 * 60 * 1000,      // 15 分钟
+      'macro': 2 * 60 * 60 * 1000, // 2 小时
+      'global': 10 * 60 * 1000,    // 10 分钟
+      // ... 其他
+    },
+
+    get(key) {
+      if (!this.data[key]) return null;
+      const now = Date.now();
+      const age = now - this.timestamps[key];
+      if (age > this.TTL[key]) {
+        delete this.data[key];
+        delete this.timestamps[key];
+        return null;
+      }
+      return this.data[key];
+    },
+
+    set(key, value) {
+      this.data[key] = value;
+      this.timestamps[key] = Date.now();
+    }
+  };
+
+  // 修改 fetchDashboard()
+  async function fetchDashboard() {
+    const cached = INSIGHT_CACHE.get('overview');  // ← 先看缓存
+    if (cached) return cached;
+    
+    const r = await fetch(API_BASE + '/dashboard');
+    if (r.ok) {
+      const data = await r.json();
+      INSIGHT_CACHE.set('overview', data);  // ← 保存缓存
+      return data;
+    }
+  }
+
+【修复效果】
+━━━━━━━━━
+
+修复前：每次都 3-4 秒等待 🐌
+修复后：
+  ✅ 第 1 次：3-4 秒（获取数据）
+  ✅ 30 分内：< 100ms（秒开！）🚀
+  ✅ 切走后再切回来：< 100ms（秒开！）🚀
+
+【代码位置汇总】
+━━━━━━━━━━━━━
+
+需要修改的文件：
+  📄 /app.js
+     - 行 361：fetchDashboard()  ← 加缓存
+     - 行 362-365：其他 fetch 函数  ← 同样加缓存
+
+  📄 /pages/insight.js
+     - 行 34：renderInsightNews()  ← 加缓存
+     - 行 120：fetch /news/impact  ← 加缓存
+     - 行 135-136：renderInsightPolicy()  ← 加缓存
+     - 行 194：renderInsightMacro()  ← 加缓存
+     - 行 210-211：renderInsightGlobal()  ← 加缓存
+     - 行 258：renderFundPickResult()  ← 加缓存
+     - 行 299：renderStockPick()  ← 加缓存
+
+【验证清单】
+━━━━━━━━━
+
+修复后测试项：
+  - [ ] 访问「总览」tab，3-4 秒后显示数据 ✅
+  - [ ] 不离开 tab，30 分钟内再次访问，< 100ms 秒开 ✅
+  - [ ] 离开后再切回来，< 100ms 秒开 ✅
+  - [ ] 30 分钟后再访问，自动刷新数据 ✅
+  - [ ] 刷新页面，缓存清空，重新 fetch ✅
+  - [ ] 浏览器开发工具，Network 标签无重复请求 ✅
+
+╔════════════════════════════════════════════════════════════════════════════╗
+║  💡 立即可做：在 app.js 中添加 INSIGHT_CACHE 对象，改造 fetchDashboard() │
+║  ⏱️  预计改动时间：30 分钟                                                 │
+║  📈 用户体验改进：从「卡顿」→「秒速」                                       │
+╚════════════════════════════════════════════════════════════════════════════╝
