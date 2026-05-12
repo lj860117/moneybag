@@ -77,19 +77,13 @@ def _search_metaso(query: str, limit: int = 5) -> list:
         )
         if resp.status_code == 200:
             data = resp.json()
-            # 秘塔返回结构: {data: {list: [{title, snippet, url}, ...]}}
-            items = data.get("data", {})
-            if isinstance(items, dict):
-                items = items.get("list", []) or items.get("items", []) or items.get("results", [])
-            elif isinstance(items, list):
-                pass
-            else:
-                items = []
+            # 秘塔返回结构: {webpages: [{title, link, snippet, score}, ...]}
+            items = data.get("webpages", [])
             return [
                 {
                     "title": item.get("title", ""),
-                    "snippet": item.get("snippet", item.get("content", item.get("description", "")))[:200],
-                    "url": item.get("url", item.get("link", "")),
+                    "snippet": item.get("snippet", "")[:200],
+                    "url": item.get("link", ""),
                 }
                 for item in items[:limit]
                 if isinstance(item, dict)
