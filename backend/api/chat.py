@@ -189,59 +189,74 @@ async def chat_analysis_stream(req: ChatRequest):
     if not user_msg:
         raise HTTPException(400, "消息不能为空")
 
-    market_ctx = _build_market_context()
     uid = req.userId or "default"
-    portfolio_ctx = _build_portfolio_context(req.portfolio, user_id=uid) if req.portfolio else _build_portfolio_context(user_id=uid)
 
-    # 多用户记忆注入
-    if req.userId:
+    # ★ 意图分类：判断是否理财相关
+    intent = classify_chat_intent(user_msg)
+    is_finance = intent["intent"] != "general"
+
+    # 补充判断：包含股票/基金/市场关键词也算理财
+    _FINANCE_KEYWORDS = ["股", "基金", "A股", "大盘", "牛市", "熊市", "涨", "跌",
+                         "买入", "卖出", "持仓", "仓位", "定投", "理财", "投资",
+                         "收益", "亏", "赚", "ETF", "指数", "板块", "行业"]
+    if not is_finance:
+        is_finance = any(kw in user_msg for kw in _FINANCE_KEYWORDS)
+
+    if is_finance:
+        # ---- 理财模式：注入市场数据 + 完整分析 ----
+        market_ctx = _build_market_context()
+        portfolio_ctx = _build_portfolio_context(req.portfolio, user_id=uid) if req.portfolio else _build_portfolio_context(user_id=uid)
+
+        # 多用户记忆注入
+        if req.userId:
+            try:
+                from services.agent_memory import build_memory_summary, record_emotion
+                record_emotion(req.userId, user_msg)
+                mem = build_memory_summary(req.userId)
+                if mem:
+                    portfolio_ctx += f"\n\n## 用户记忆\n{mem}"
+            except Exception as e:
+                print(f"[CHAT-STREAM] memory inject failed: {e}")
+
+        # 个股/基金新闻注入
         try:
-            from services.agent_memory import build_memory_summary, record_emotion
-            # 2026-04-19 M6: 同步记录情绪
-            record_emotion(req.userId, user_msg)
-            mem = build_memory_summary(req.userId)
-            if mem:
-                portfolio_ctx += f"\n\n## 用户记忆\n{mem}"
+            from services.steward import _extract_stock_name, _extract_fund_name
+            stock_name, stock_code = _extract_stock_name(user_msg)
+            fund_name, fund_code = _extract_fund_name(user_msg)
+
+            if stock_code:
+                from infra.data_source import get_stock_news
+                news = get_stock_news(stock_code, limit=8)
+                if news:
+                    news_text = "\n".join([f"- {n['title']}" for n in news])
+                    market_ctx += f"\n\n## {stock_name}({stock_code})最新新闻\n{news_text}"
+            elif fund_code and fund_code != "余额宝":
+                from services.data_layer import get_fund_news
+                fund_news = get_fund_news(fund_code, 8)
+                valid_news = [n for n in fund_news if n.get("title") and "加载中" not in n.get("title", "")]
+                if valid_news:
+                    news_text = "\n".join([f"- {n['title']}" for n in valid_news[:8]])
+                    market_ctx += f"\n\n## {fund_name}({fund_code})最新新闻\n{news_text}"
         except Exception as e:
-            print(f"[CHAT-STREAM] memory inject failed: {e}")
+            print(f"[CHAT] news inject: {e}")
 
-    # 个股/基金新闻注入（检测到用户提到具体公司/基金时，拉最新新闻给 DS）
-    try:
-        from services.steward import _extract_stock_name, _extract_fund_name
-        stock_name, stock_code = _extract_stock_name(user_msg)
-        fund_name, fund_code = _extract_fund_name(user_msg)
+        # 管家上下文注入
+        try:
+            from services.agent_memory import get_context
+            last_ctx = get_context(uid)
+            if last_ctx.get("last_analysis"):
+                portfolio_ctx += f"\n\n## 管家最近分析结论\n{last_ctx['last_analysis'][:300]}"
+        except Exception:
+            pass
 
-        if stock_code:
-            # 个股新闻 — via infra/data_source (Invariant #6)
-            from infra.data_source import get_stock_news
-            news = get_stock_news(stock_code, limit=8)
-            if news:
-                news_text = "\n".join([f"- {n['title']}" for n in news])
-                market_ctx += f"\n\n## {stock_name}({stock_code})最新新闻\n{news_text}"
-                print(f"[CHAT] 注入 {stock_name} 个股新闻 {len(news)} 条")
-        elif fund_code and fund_code != "余额宝":
-            # 基金新闻
-            from services.data_layer import get_fund_news
-            fund_news = get_fund_news(fund_code, 8)
-            valid_news = [n for n in fund_news if n.get("title") and "加载中" not in n.get("title", "")]
-            if valid_news:
-                news_text = "\n".join([f"- {n['title']}" for n in valid_news[:8]])
-                market_ctx += f"\n\n## {fund_name}({fund_code})最新新闻\n{news_text}"
-                print(f"[CHAT] 注入 {fund_name} 基金新闻 {len(valid_news)} 条")
-    except Exception as e:
-        print(f"[CHAT] news inject: {e}")
+        system_prompt = _build_system_prompt(market_ctx, portfolio_ctx)
+        print(f"[CHAT-STREAM] 理财模式, intent={intent['intent']}")
+    else:
+        # ---- 闲聊模式：轻量 prompt，不注入市场数据（省 token + 快） ----
+        system_prompt = _load_prompt_template()
+        print(f"[CHAT-STREAM] 闲聊模式, msg={user_msg[:30]}")
 
-    # W8: 注入 steward 最近决策上下文（让 DS 知道管家最近分析了什么）
-    try:
-        from services.agent_memory import get_context
-        last_ctx = get_context(uid)
-        if last_ctx.get("last_analysis"):
-            portfolio_ctx += f"\n\n## 管家最近分析结论\n{last_ctx['last_analysis'][:300]}"
-            if last_ctx.get("market_phase"):
-                portfolio_ctx += f"\n市场阶段: {last_ctx['market_phase']}"
-    except Exception as e:
-        print(f"[CHAT-STREAM] steward ctx inject failed: {e}")
-
+    # API key + 模型选择
     api_key = os.environ.get("OPENAI_API_KEY") or os.environ.get("LLM_API_KEY")
     api_base = os.environ.get("LLM_API_BASE", "https://api.deepseek.com/v1")
     model = req.model or os.environ.get("LLM_MODEL", "deepseek-v4-flash")
@@ -250,17 +265,13 @@ async def chat_analysis_stream(req: ChatRequest):
             api_base = m["base"]
             api_key = os.environ.get(m["env_key"], api_key)
             break
-    print(f"[CHAT-STREAM] api_key={'SET' if api_key else 'EMPTY'}, base={api_base}, model={model}")
 
     if not api_key:
-        # 无 API key → 规则引擎降级，一次性返回
-        reply = _rule_based_reply(user_msg, market_ctx, portfolio_ctx)
+        reply = "AI 暂时不可用，请稍后再试~"
         async def rules_gen():
             yield f"data: {json.dumps({'delta': reply, 'source': 'rules', 'done': True}, ensure_ascii=False)}\n\n"
         return StreamingResponse(rules_gen(), media_type="text/event-stream",
                                  headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
-
-    system_prompt = _build_system_prompt(market_ctx, portfolio_ctx)
 
     async def stream_gen():
         import httpx

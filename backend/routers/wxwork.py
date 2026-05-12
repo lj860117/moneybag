@@ -118,25 +118,33 @@ async def callback_receive(
             # 先发一条"思考中"让用户知道没死机
             send_markdown(f"🧠 收到！正在分析「{content[:20]}{'...' if len(content)>20 else ''}」\n预计 10-20 秒回复...", user_id=from_user)
 
-            # 通用问题 → 调 DeepSeek AI 聊天
-            market_ctx = _build_market_context()
-            portfolio_ctx = _build_portfolio_context(user_id=user_id) if user_id else "用户尚未建仓。"
+            # ★ 意图分流：理财相关注入数据，闲聊轻量回答
+            from api.shared_helpers import classify_chat_intent
+            _intent = classify_chat_intent(content)
+            _FINANCE_KW = ["股", "基金", "A股", "大盘", "牛市", "熊市", "涨", "跌",
+                           "买入", "卖出", "持仓", "定投", "理财", "投资", "收益", "ETF"]
+            _is_finance = _intent["intent"] != "general" or any(kw in content for kw in _FINANCE_KW)
 
-            # 注入用户记忆（B1修复：get_memory_summary→build_memory_summary）
-            if user_id:
-                try:
-                    from services.agent_memory import build_memory_summary, record_emotion
-                    # 2026-04-19 M6: 记录本次情绪
-                    record_emotion(user_id, content)
-                    mem = build_memory_summary(user_id)
-                    if mem:
-                        portfolio_ctx += f"\n\n## 用户记忆\n{mem}"
-                except Exception as e:
-                    print(f"[WXWORK] memory inject failed: {e}")
-                    pass
+            if _is_finance:
+                market_ctx = _build_market_context()
+                portfolio_ctx = _build_portfolio_context(user_id=user_id) if user_id else "用户尚未建仓。"
 
-            system_prompt = _load_prompt_template()
-            full_system = f"{system_prompt}\n\n## 实时市场数据\n{market_ctx}\n\n## 用户持仓\n{portfolio_ctx}"
+                # 注入用户记忆
+                if user_id:
+                    try:
+                        from services.agent_memory import build_memory_summary, record_emotion
+                        record_emotion(user_id, content)
+                        mem = build_memory_summary(user_id)
+                        if mem:
+                            portfolio_ctx += f"\n\n## 用户记忆\n{mem}"
+                    except Exception:
+                        pass
+
+                system_prompt = _load_prompt_template()
+                full_system = f"{system_prompt}\n\n## 实时市场数据\n{market_ctx}\n\n## 用户持仓\n{portfolio_ctx}"
+            else:
+                # 闲聊模式：只给基础 prompt，不注入数据（快+省 token）
+                full_system = _load_prompt_template()
 
             # 走 LLMGateway（统一计费+缓存+熔断）
             from services.llm_gateway import LLMGateway
