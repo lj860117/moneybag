@@ -70,7 +70,7 @@ def _call_v3(prompt, max_tokens=500):
             resp = client.post(
                 url,
                 headers={"Authorization": f"Bearer {LLM_API_KEY}", "Content-Type": "application/json"},
-                json={"model": "deepseek-chat", "messages": [{"role": "user", "content": prompt}],
+                json={"model": "deepseek-v4-flash", "messages": [{"role": "user", "content": prompt}],
                       "max_tokens": max_tokens, "temperature": 0.5},
             )
             if resp.status_code == 200:

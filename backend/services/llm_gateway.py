@@ -23,7 +23,7 @@ LLM_API_BASE = os.environ.get("LLM_API_BASE", "https://api.deepseek.com/v1")
 
 # 模型路由
 MODEL_ROUTING = {
-    "llm_light": "deepseek-chat",       # V3: 点评/解读/信号/聊天
+    "llm_light": "deepseek-v4-flash",    # V4 Flash: 聊天/点评/解读/信号
     "llm_heavy": "deepseek-reasoner",    # R1: 仲裁/诊断/因子生成
 }
 

@@ -80,7 +80,8 @@ async def callback_receive(
 
             # 模型切换指令
             MODEL_MAP = {
-                "deepseek-chat": "DeepSeek V3",
+                "deepseek-v4-flash": "DeepSeek V4",
+                "deepseek-v4-pro": "DeepSeek V4 Pro",
                 "deepseek-reasoner": "DeepSeek R1",
             }
             if cmd.startswith("模型"):
@@ -109,9 +110,9 @@ async def callback_receive(
                 return
 
             # 获取用户偏好模型
-            user_model = (user_profile or {}).get("preferredModel", "deepseek-chat")
+            user_model = (user_profile or {}).get("preferredModel", "deepseek-v4-flash")
             if user_model not in MODEL_MAP:
-                user_model = "deepseek-chat"
+                user_model = "deepseek-v4-flash"
             model_label = MODEL_MAP[user_model]
 
             # 先发一条"思考中"让用户知道没死机
