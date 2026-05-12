@@ -144,7 +144,31 @@ async def callback_receive(
                 full_system = f"{system_prompt}\n\n## 实时市场数据\n{market_ctx}\n\n## 用户持仓\n{portfolio_ctx}"
             else:
                 # 闲聊模式：只给基础 prompt，不注入数据（快+省 token）
-                full_system = _load_prompt_template()
+                # 检测是否需要联网（天气等）
+                base_prompt = _load_prompt_template()
+                search_ctx = ""
+                _WEATHER_KW = ["天气", "气温", "下雨", "温度", "预报"]
+                if any(kw in content for kw in _WEATHER_KW):
+                    try:
+                        from services.web_search import search_weather
+                        import re
+                        city_match = re.search(r"([一-龥]{2,4}?)(?:的|这周|今天|明天|本周)?(?:天气|气温|温度|下雨)", content)
+                        city = city_match.group(1) if city_match else "上海"
+                        weather = search_weather(city)
+                        if weather:
+                            search_ctx = f"\n\n## 实时天气数据\n{weather}"
+                    except Exception as e:
+                        print(f"[WXWORK] weather search failed: {e}")
+                elif any(kw in content for kw in ["最新", "最近", "新闻", "热搜"]):
+                    try:
+                        from services.web_search import search_web, format_search_for_prompt
+                        results = search_web(content, limit=3)
+                        if results:
+                            search_ctx = "\n\n" + format_search_for_prompt(results)
+                    except Exception as e:
+                        print(f"[WXWORK] web search failed: {e}")
+
+                full_system = base_prompt + search_ctx
 
             # 走 LLMGateway（统一计费+缓存+熔断）
             from services.llm_gateway import LLMGateway

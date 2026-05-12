@@ -252,9 +252,38 @@ async def chat_analysis_stream(req: ChatRequest):
         system_prompt = _build_system_prompt(market_ctx, portfolio_ctx)
         print(f"[CHAT-STREAM] 理财模式, intent={intent['intent']}")
     else:
-        # ---- 闲聊模式：轻量 prompt，不注入市场数据（省 token + 快） ----
-        system_prompt = _load_prompt_template()
-        print(f"[CHAT-STREAM] 闲聊模式, msg={user_msg[:30]}")
+        # ---- 闲聊模式：轻量 prompt + 联网搜索（如需要） ----
+        base_prompt = _load_prompt_template()
+
+        # 判断是否需要联网（天气/新闻/实时信息等）
+        _NEED_SEARCH_KW = ["天气", "气温", "下雨", "预报", "今天", "明天", "这周",
+                           "最新", "最近", "新闻", "刚刚", "热搜", "发生了什么"]
+        _need_search = any(kw in user_msg for kw in _NEED_SEARCH_KW)
+
+        search_ctx = ""
+        if _need_search:
+            try:
+                from services.web_search import search_web, search_weather, format_search_for_prompt
+                # 天气问题优先用天气 API
+                _WEATHER_KW = ["天气", "气温", "下雨", "温度", "预报"]
+                if any(kw in user_msg for kw in _WEATHER_KW):
+                    # 提取城市名（简单规则）
+                    import re
+                    city_match = re.search(r"([一-龥]{2,4}?)(?:的|这周|今天|明天|本周)?(?:天气|气温|温度|下雨)", user_msg)
+                    city = city_match.group(1) if city_match else "上海"
+                    weather = search_weather(city)
+                    if weather:
+                        search_ctx = f"\n\n## 实时天气数据\n{weather}"
+                else:
+                    # 通用搜索（秘塔）
+                    results = search_web(user_msg, limit=3)
+                    if results:
+                        search_ctx = "\n\n" + format_search_for_prompt(results)
+            except Exception as e:
+                print(f"[CHAT-STREAM] search failed: {e}")
+
+        system_prompt = base_prompt + search_ctx if search_ctx else base_prompt
+        print(f"[CHAT-STREAM] 闲聊模式, search={'有' if search_ctx else '无'}, msg={user_msg[:30]}")
 
     # API key + 模型选择
     api_key = os.environ.get("OPENAI_API_KEY") or os.environ.get("LLM_API_KEY")
