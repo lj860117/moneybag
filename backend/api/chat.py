@@ -276,8 +276,8 @@ async def chat_analysis_stream(req: ChatRequest):
                             {"role": "system", "content": system_prompt},
                             {"role": "user", "content": user_msg},
                         ],
-                        "max_tokens": 800,
-                        "temperature": 0.7,
+                        "max_tokens": 1200,
+                        "temperature": 0.8,
                         "stream": True,
                     },
                 ) as resp:
