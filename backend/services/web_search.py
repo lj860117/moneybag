@@ -62,7 +62,7 @@ def search_weather(city: str) -> str:
 
 
 def _search_metaso(query: str, limit: int = 5) -> list:
-    """秘塔搜索 API"""
+    """秘塔搜索 API（官方: metaso.cn/api/v1/search）"""
     api_key = _get_metaso_key()
     if not api_key:
         print("[SEARCH] METASO_API_KEY 未配置，跳过搜索")
@@ -70,24 +70,32 @@ def _search_metaso(query: str, limit: int = 5) -> list:
 
     try:
         resp = httpx.post(
-            "https://open.metaso.cn/api/v1/search",
+            "https://metaso.cn/api/v1/search",
             headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
-            json={"q": query, "size": limit},
+            json={"q": query, "scope": "webpage", "size": limit},
             timeout=10,
         )
         if resp.status_code == 200:
             data = resp.json()
-            items = data.get("data", {}).get("list", [])
+            # 秘塔返回结构: {data: {list: [{title, snippet, url}, ...]}}
+            items = data.get("data", {})
+            if isinstance(items, dict):
+                items = items.get("list", []) or items.get("items", []) or items.get("results", [])
+            elif isinstance(items, list):
+                pass
+            else:
+                items = []
             return [
                 {
                     "title": item.get("title", ""),
-                    "snippet": item.get("snippet", item.get("content", ""))[:200],
-                    "url": item.get("url", ""),
+                    "snippet": item.get("snippet", item.get("content", item.get("description", "")))[:200],
+                    "url": item.get("url", item.get("link", "")),
                 }
                 for item in items[:limit]
+                if isinstance(item, dict)
             ]
         else:
-            print(f"[SEARCH] Metaso {resp.status_code}: {resp.text[:100]}")
+            print(f"[SEARCH] Metaso {resp.status_code}: {resp.text[:200]}")
     except Exception as e:
         print(f"[SEARCH] Metaso failed: {e}")
 
