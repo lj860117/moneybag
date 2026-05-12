@@ -174,7 +174,7 @@ async def callback_receive(
                 except Exception as e:
                     print(f"[WXWORK] save_context failed: {e}")
 
-            reply_md = f"🤖 AI分析师 ({model_label})\n\n{reply}"
+            reply_md = reply
             send_markdown(reply_md, user_id=from_user)
 
         except Exception as e:
