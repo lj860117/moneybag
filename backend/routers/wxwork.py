@@ -54,7 +54,8 @@ async def callback_receive(
     def async_reply():
         try:
             # 找到用户的 profileId（名字=企微userid）
-            from main import _load_profiles, _build_market_context, _build_portfolio_context, _load_prompt_template
+            from routers.profiles import _load_profiles
+            from api.shared_helpers import _build_market_context, _build_portfolio_context, _load_prompt_template
             profiles = _load_profiles()
             user_profile = None
             for p in profiles:
@@ -90,7 +91,7 @@ async def callback_receive(
                         user_profile["preferredModel"] = model_name
                         _save_profiles = None
                         try:
-                            from main import _load_profiles as _lp
+                            from routers.profiles import _load_profiles as _lp
                             import json
                             from pathlib import Path
                             pf = Path(os.getenv("DATA_DIR", "data")) / "profiles.json"
@@ -270,7 +271,7 @@ def wxwork_daily_report():
     if not wxwork_configured():
         return {"ok": False, "error": "企业微信未配置"}
     try:
-        from main import _build_market_context
+        from api.shared_helpers import _build_market_context
         ctx = _build_market_context()
         # 精简为日报格式
         lines = ["**📊 钱袋子市场日报**\n"]
