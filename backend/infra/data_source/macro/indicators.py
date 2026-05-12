@@ -3,17 +3,34 @@ Macro data bucket -- Chinese/global macroeconomic indicators.
 ==============================================================
 Part of the five-bucket data source taxonomy (12-framework-refactor.md §6).
 
-All akshare calls for macro data are centralized here.
-Each function wraps akshare with:
+降级链: AKShare（免费爬虫，凌晨不稳定）→ Tushare（付费 API，5000积分，稳定）
+Each function wraps data source calls with:
   - try/except (never raises to caller)
   - consistent return type (DataFrame or None)
   - logging on failure
+  - automatic fallback to Tushare when AKShare fails
 
 Invariant #6: All external data through infra/data_source.
 """
 from __future__ import annotations
 
+import os
 from typing import Any
+
+
+# ============================================================
+# Tushare 降级辅助
+# ============================================================
+
+def _tushare_available() -> bool:
+    """检查 Tushare token 是否配置"""
+    return bool(os.environ.get("TUSHARE_TOKEN", ""))
+
+
+def _get_tushare_api() -> Any:
+    """获取 Tushare Pro API 实例"""
+    import tushare as ts
+    return ts.pro_api()
 
 
 # ============================================================
@@ -21,18 +38,40 @@ from typing import Any
 # ============================================================
 
 def get_china_money_supply() -> Any:
-    """Get China M0/M1/M2 money supply (akshare macro_china_money_supply).
+    """Get China M0/M1/M2 money supply.
 
+    降级链: AKShare macro_china_money_supply → Tushare cn_m
     Returns:
         DataFrame with monthly money supply data.
         None on failure.
     """
+    # 第一优先: AKShare
     try:
         import akshare as ak
-        return ak.macro_china_money_supply()
+        df = ak.macro_china_money_supply()
+        if df is not None and len(df) > 0:
+            return df
     except Exception as e:
-        print(f"[DATA_SOURCE/MACRO] get_china_money_supply: {e}")
-        return None
+        print(f"[DATA_SOURCE/MACRO] AKShare get_china_money_supply failed: {e}")
+
+    # 降级: Tushare cn_m
+    if _tushare_available():
+        try:
+            pro = _get_tushare_api()
+            df = pro.cn_m(start_m='202001')
+            if df is not None and len(df) > 0:
+                import pandas as pd
+                result = pd.DataFrame({
+                    '月份': df['month'],
+                    '货币和准货币(M2)-同比增长': df['m2_yoy'],
+                    'M2-数量': df['m2'],
+                })
+                print(f"[DATA_SOURCE/MACRO] M2 降级到 Tushare 成功: {len(result)} rows")
+                return result
+        except Exception as e:
+            print(f"[DATA_SOURCE/MACRO] Tushare cn_m failed: {e}")
+
+    return None
 
 
 def get_china_social_financing() -> Any:
@@ -96,48 +135,109 @@ def get_china_new_house_price() -> Any:
 
 
 def get_china_cpi() -> Any:
-    """Get China CPI data (akshare macro_china_cpi).
+    """Get China CPI data.
 
+    降级链: AKShare macro_china_cpi → Tushare cn_cpi
     Returns:
         DataFrame with CPI history.
         None on failure.
     """
+    # 第一优先: AKShare
     try:
         import akshare as ak
-        return ak.macro_china_cpi()
+        df = ak.macro_china_cpi()
+        if df is not None and len(df) > 0:
+            return df
     except Exception as e:
-        print(f"[DATA_SOURCE/MACRO] get_china_cpi: {e}")
-        return None
+        print(f"[DATA_SOURCE/MACRO] AKShare get_china_cpi failed: {e}")
+
+    # 降级: Tushare cn_cpi
+    if _tushare_available():
+        try:
+            pro = _get_tushare_api()
+            df = pro.cn_cpi(start_m='202001')
+            if df is not None and len(df) > 0:
+                # 统一列名格式，让上层 macro_data.py 能识别
+                df = df.rename(columns={'month': '月份', 'nt_yoy': '全国-同比增长'})
+                print(f"[DATA_SOURCE/MACRO] CPI 降级到 Tushare 成功: {len(df)} rows")
+                return df
+        except Exception as e:
+            print(f"[DATA_SOURCE/MACRO] Tushare cn_cpi failed: {e}")
+
+    return None
 
 
 def get_china_pmi() -> Any:
-    """Get China PMI data (akshare macro_china_pmi).
+    """Get China PMI data.
 
+    降级链: AKShare macro_china_pmi → Tushare cn_pmi
     Returns:
         DataFrame with PMI history.
         None on failure.
     """
+    # 第一优先: AKShare
     try:
         import akshare as ak
-        return ak.macro_china_pmi()
+        df = ak.macro_china_pmi()
+        if df is not None and len(df) > 0:
+            return df
     except Exception as e:
-        print(f"[DATA_SOURCE/MACRO] get_china_pmi: {e}")
-        return None
+        print(f"[DATA_SOURCE/MACRO] AKShare get_china_pmi failed: {e}")
+
+    # 降级: Tushare cn_pmi
+    if _tushare_available():
+        try:
+            pro = _get_tushare_api()
+            df = pro.cn_pmi(start_m='202001')
+            if df is not None and len(df) > 0:
+                # PMI010000 是制造业 PMI 指数
+                import pandas as pd
+                result = pd.DataFrame({
+                    '月份': df['MONTH'],
+                    '制造业-指数': df['PMI010000'],
+                })
+                print(f"[DATA_SOURCE/MACRO] PMI 降级到 Tushare 成功: {len(result)} rows")
+                return result
+        except Exception as e:
+            print(f"[DATA_SOURCE/MACRO] Tushare cn_pmi failed: {e}")
+
+    return None
 
 
 def get_china_ppi() -> Any:
-    """Get China PPI data (akshare macro_china_ppi).
+    """Get China PPI data.
 
+    降级链: AKShare macro_china_ppi → Tushare cn_ppi
     Returns:
         DataFrame with PPI history.
         None on failure.
     """
+    # 第一优先: AKShare
     try:
         import akshare as ak
-        return ak.macro_china_ppi()
+        df = ak.macro_china_ppi()
+        if df is not None and len(df) > 0:
+            return df
     except Exception as e:
-        print(f"[DATA_SOURCE/MACRO] get_china_ppi: {e}")
-        return None
+        print(f"[DATA_SOURCE/MACRO] AKShare get_china_ppi failed: {e}")
+
+    # 降级: Tushare cn_ppi
+    if _tushare_available():
+        try:
+            pro = _get_tushare_api()
+            df = pro.cn_ppi(start_m='202001')
+            if df is not None and len(df) > 0:
+                import pandas as pd
+                result = pd.DataFrame({
+                    '月份': df['month'],
+                    '当月同比增长': df['ppi_yoy'],
+                })
+                print(f"[DATA_SOURCE/MACRO] PPI 降级到 Tushare 成功: {len(result)} rows")
+                return result
+        except Exception as e:
+            print(f"[DATA_SOURCE/MACRO] Tushare cn_ppi failed: {e}")
+
+    return None
 
 
 def get_china_gdp() -> Any:

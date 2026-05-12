@@ -380,17 +380,26 @@ def data_audit():
     # 1. 宏观数据新鲜度检查
     try:
         macro = get_macro_calendar()
+        # get_macro_calendar 返回 [{name, date, value, impact, icon}, ...]
+        # 按 name 中包含的关键词匹配到 cpi/pmi/m2/ppi
         macro_dict = {}
         if isinstance(macro, list):
             for item in macro:
-                if isinstance(item, dict):
-                    macro_dict[item.get("key", "")] = item
-        else:
-            macro_dict = macro if isinstance(macro, dict) else {}
+                if not isinstance(item, dict):
+                    continue
+                name = item.get("name", "").upper()
+                if "CPI" in name:
+                    macro_dict["cpi"] = item
+                elif "PMI" in name:
+                    macro_dict["pmi"] = item
+                elif "M2" in name:
+                    macro_dict["m2"] = item
+                elif "PPI" in name:
+                    macro_dict["ppi"] = item
         for key, label in [("cpi", "CPI"), ("pmi", "PMI"), ("m2", "M2"), ("ppi", "PPI")]:
             item = macro_dict.get(key, {})
             val = item.get("value")
-            period = item.get("period", "")
+            period = item.get("date", "")
             if val is None or val == "N/A":
                 checks.append({"name": f"宏观·{label}", "status": "error", "msg": "数据缺失", "value": None})
                 overall_ok = False
@@ -416,9 +425,9 @@ def data_audit():
     # 2. 估值数据检查
     try:
         val = get_valuation_percentile()
-        pe = val.get("pe_ttm")
+        pe = val.get("current_pe") or val.get("pe_ttm")
         pct = val.get("percentile")
-        source = val.get("source", "未知")
+        source = val.get("source", val.get("metric", "未知"))
         if pe and 5 < pe < 50 and pct is not None:
             checks.append({"name": "估值·PE-TTM", "status": "ok", "msg": f"PE={pe} 百分位={pct}% ({source})", "value": pe})
         else:
@@ -429,7 +438,7 @@ def data_audit():
         overall_ok = False
 
     # 3. 基金净值新鲜度检查
-    fund_codes = ["110020", "050025", "217022", "000216", "008114"]
+    fund_codes = ["110020", "050025", "217022", "518880", "008114"]
     for code in fund_codes:
         try:
             nav = get_fund_nav(code)

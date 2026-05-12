@@ -135,9 +135,9 @@ else
             # 在 [Service] 段的 Environment= 行后追加（或新增）
             if grep -q 'Environment=' \"\$SERVICE_FILE\"; then
                 # 追加到现有 Environment= 行后
-                sed -i \"/^Environment=/a Environment=TUSHARE_TOKEN=\$TUSHARE\" \"\$SERVICE_FILE\"
+                sudo sed -i \"/^Environment=/a Environment=TUSHARE_TOKEN=\$TUSHARE\" \"\$SERVICE_FILE\"
             else
-                sed -i \"/^\[Service\]/a Environment=TUSHARE_TOKEN=\$TUSHARE\" \"\$SERVICE_FILE\"
+                sudo sed -i \"/^\[Service\]/a Environment=TUSHARE_TOKEN=\$TUSHARE\" \"\$SERVICE_FILE\"
             fi
             echo '  ✅ TUSHARE_TOKEN 已添加到 systemd'
         fi
@@ -146,9 +146,9 @@ else
             echo '  ✅ DATA_DIR 已在 systemd 中配置'
         else
             if grep -q 'Environment=' \"\$SERVICE_FILE\"; then
-                sed -i \"/^Environment=/a Environment=DATA_DIR=$REMOTE_PATH/data\" \"\$SERVICE_FILE\"
+                sudo sed -i \"/^Environment=/a Environment=DATA_DIR=$REMOTE_PATH/data\" \"\$SERVICE_FILE\"
             else
-                sed -i \"/^\[Service\]/a Environment=DATA_DIR=$REMOTE_PATH/data\" \"\$SERVICE_FILE\"
+                sudo sed -i \"/^\[Service\]/a Environment=DATA_DIR=$REMOTE_PATH/data\" \"\$SERVICE_FILE\"
             fi
             echo '  ✅ DATA_DIR 已添加到 systemd'
         fi
@@ -170,7 +170,7 @@ if [ "$USE_PASSWORD_LOGIN" = true ]; then
     echo "     sudo systemctl restart moneybag"
     echo "     sudo systemctl status moneybag"
 else
-    $SSH "systemctl restart moneybag 2>/dev/null || \
+    $SSH "sudo systemctl restart moneybag 2>/dev/null || \
         (pkill -f 'uvicorn main:app' 2>/dev/null; sleep 2; \
          cd $REMOTE_PATH/backend && nohup /opt/moneybag/venv/bin/uvicorn main:app \
          --host 0.0.0.0 --port 8000 --workers 2 \
@@ -186,13 +186,22 @@ if [ "$USE_PASSWORD_LOGIN" = true ]; then
 else
     $SSH "
 CRON_LINE='0 1 * * * cd $REMOTE_PATH/backend && /opt/moneybag/venv/bin/python scripts/night_worker.py >> /opt/moneybag/logs/night.log 2>&1'
+PUSH_CRON_LINE='30 8 * * 1-5 cd $REMOTE_PATH/backend && /opt/moneybag/venv/bin/python scripts/night_worker.py --push-only >> /opt/moneybag/logs/night.log 2>&1'
 EXISTING=\$(crontab -l 2>/dev/null | grep -c 'night_worker' || echo 0)
 if [ \"\$EXISTING\" -eq 0 ]; then
     echo '  [MB-004] 添加 night_worker cron...'
-    (crontab -l 2>/dev/null; echo \"\$CRON_LINE\") | crontab -
-    echo '  ✅ cron 已添加'
+    (crontab -l 2>/dev/null; echo \"\$CRON_LINE\"; echo \"\$PUSH_CRON_LINE\") | crontab -
+    echo '  ✅ cron 已添加（含 08:30 兜底推送）'
 else
-    echo '  ✅ night_worker cron 已存在'
+    # 检查是否有 --push-only 兜底 cron
+    PUSH_EXISTING=\$(crontab -l 2>/dev/null | grep -c 'push-only' || echo 0)
+    if [ \"\$PUSH_EXISTING\" -eq 0 ]; then
+        echo '  [MB-004] 补充 08:30 兜底推送 cron...'
+        (crontab -l 2>/dev/null; echo \"\$PUSH_CRON_LINE\") | crontab -
+        echo '  ✅ 兜底推送 cron 已添加'
+    else
+        echo '  ✅ night_worker cron 已存在（含兜底推送）'
+    fi
 fi
 crontab -l | grep -E 'night_worker|stock_monitor|cache_warmer' || echo '  (无相关 cron 条目)'
 "

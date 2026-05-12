@@ -62,15 +62,21 @@ def _call_v3(prompt, max_tokens=500):
         return ""
     try:
         import httpx
+        # 兼容 LLM_API_URL 是否包含 /chat/completions
+        url = LLM_API_URL.rstrip("/")
+        if not url.endswith("/chat/completions"):
+            url = f"{url}/chat/completions"
         with httpx.Client(timeout=30) as client:
             resp = client.post(
-                f"{LLM_API_URL}/chat/completions",
+                url,
                 headers={"Authorization": f"Bearer {LLM_API_KEY}", "Content-Type": "application/json"},
                 json={"model": "deepseek-chat", "messages": [{"role": "user", "content": prompt}],
                       "max_tokens": max_tokens, "temperature": 0.5},
             )
             if resp.status_code == 200:
                 return resp.json()["choices"][0]["message"]["content"]
+            else:
+                log(f"  V3 HTTP {resp.status_code}: {resp.text[:100]}")
     except Exception as e:
         log(f"  V3 调用失败: {e}")
     return ""
@@ -168,42 +174,97 @@ def step_r1_phase1():
     log("🧠 02:00 R1 Phase 1: 全局市场分析")
     results = {}
 
-    # 收集数据
+    # 逐个收集数据（单个失败不影响其他）
+    fgi = {"score": 50, "level": "中性"}
+    val = {"percentile": 50, "level": ""}
+    north = {"net_flow_5d": 0, "trend": "中性"}
+    geo = {"level": "低", "severity": 0}
+    sr = {"available": False}
+    br = {"consensus": "未知"}
+    margin = {"balance": 0, "change_5d_pct": 0}
+    shibor = {"overnight": 0, "trend": ""}
+
     try:
         from services.market_data import get_fear_greed_index, get_valuation_percentile
+        fgi = get_fear_greed_index() or fgi
+        val = get_valuation_percentile() or val
+        log(f"  恐贪={fgi.get('score')}, 估值百分位={val.get('percentile')}%")
+    except Exception as e:
+        log(f"  ⚠️ 恐贪/估值失败: {e}")
+
+    try:
         from services.factor_data import get_northbound_flow, get_shibor, get_margin_trading
+        north = get_northbound_flow() or north
+        shibor = get_shibor() or shibor
+        margin = get_margin_trading() or margin
+        log(f"  北向5日={north.get('net_flow_5d', 0):.1f}亿, SHIBOR={shibor.get('overnight', 0)}")
+    except Exception as e:
+        log(f"  ⚠️ 因子数据失败: {e}")
+
+    try:
         from services.geopolitical import get_geopolitical_risk_score
+        geo = get_geopolitical_risk_score() or geo
+    except Exception as e:
+        log(f"  ⚠️ 地缘风险失败: {e}")
+
+    try:
         from services.sector_rotation import get_sector_ranking
+        sr = get_sector_ranking() or sr
+    except Exception as e:
+        log(f"  ⚠️ 行业轮动失败: {e}")
+
+    try:
         from services.broker_research import get_broker_consensus
+        br = get_broker_consensus() or br
+    except Exception as e:
+        log(f"  ⚠️ 研报共识失败: {e}")
 
-        fgi = get_fear_greed_index()
-        val = get_valuation_percentile()
-        north = get_northbound_flow()
-        geo = get_geopolitical_risk_score()
-        sr = get_sector_ranking()
-        br = get_broker_consensus()
+    # 保存原始数据供 step_generate_products 使用
+    results["raw"] = {
+        "fgi": fgi, "val": val, "north": north,
+        "geo": geo, "sr": sr, "br": br,
+        "margin": margin, "shibor": shibor,
+    }
 
-        data_text = f"""宏观数据快照:
+    # 收集新闻
+    news_titles = []
+    try:
+        from services.news_data import get_market_news
+        news = get_market_news(limit=5)
+        news_titles = [n.get("title", "") for n in news[:5]]
+        results["news"] = news_titles
+        log(f"  新闻: {len(news_titles)}条")
+    except Exception as e:
+        log(f"  ⚠️ 新闻获取失败: {e}")
+
+    # 拼接数据文本用于 LLM 研判
+    sector_text = ','.join([s.get('name', '') for s in sr.get('top_gainers', [])[:5]]) if sr.get('available') else '暂无'
+    data_text = f"""宏观数据快照:
 - 恐贪指数: {fgi.get('score', 50)} ({fgi.get('level', '中性')})
 - 估值百分位: {val.get('percentile', 50)}% ({val.get('level', '')})
 - 北向资金: 5日{north.get('net_flow_5d', 0):.1f}亿 ({north.get('trend', '中性')})
+- SHIBOR隔夜: {shibor.get('overnight', 0)}% ({shibor.get('trend', '')})
+- 融资余额5日变化: {margin.get('change_5d_pct', 0):.1f}%
 - 地缘风险: {geo.get('level', '低')} (severity={geo.get('severity', 0)})
-- 行业热点: {','.join([s.get('name', '') for s in sr.get('top_gainers', [])[:5]]) if sr.get('available') else '暂无'}
-- 机构共识: {br.get('consensus', '未知')}"""
+- 行业热点: {sector_text}
+- 机构共识: {br.get('consensus', '未知')}
+- 今日要闻: {'; '.join(news_titles[:3]) if news_titles else '暂无'}"""
 
-        # R1 宏观研判（用 V3 省钱，凌晨不需要深度推理所有都用 V3 也行）
-        prompt = f"""你是 A 股宏观策略分析师，请基于以下数据写一段 200 字以内的市场研判。
+    # LLM 研判（可选，失败也不影响简报生成）
+    prompt = f"""你是 A 股宏观策略分析师，请基于以下数据写一段 200 字以内的市场研判。
 
 {data_text}
 
 要求: 1句话结论 + 3个要点 + 风险提示"""
 
-        analysis = _call_v3(prompt, 400)
+    analysis = _call_v3(prompt, 400)
+    if analysis:
         results["macro_analysis"] = analysis
         log(f"  ✅ 宏观研判: {len(analysis)}字")
-
-    except Exception as e:
-        log(f"  ❌ Phase 1 失败: {e}")
+    else:
+        # LLM 不可用，生成纯数据版研判
+        results["macro_analysis"] = f"恐贪{fgi.get('score', 50)}({fgi.get('level', '中性')}), 北向5日{north.get('net_flow_5d', 0):.1f}亿, 行业热点:{sector_text}"
+        log(f"  ⚠️ LLM 不可用，使用纯数据版")
 
     return results
 
@@ -323,44 +384,123 @@ def _get_fund_recommendations(top_n=5, category="stock"):
         return []
 
 
+def _fix_stock_names(recs):
+    """批量补全推荐列表中缺失的股票名称"""
+    need_fix = [r for r in recs if not r.get('name') or r.get('name') == r.get('code', '')]
+    if not need_fix:
+        return recs
+    try:
+        from services.tushare_data import _call_tushare, is_configured
+        if is_configured():
+            codes = [f"{r.get('code', '')}.SH" if r.get('code', '').startswith('6')
+                     else f"{r.get('code', '')}.SZ" for r in need_fix]
+            name_rows = _call_tushare("stock_basic",
+                                      {"ts_code": ",".join(codes), "list_status": "L"},
+                                      "ts_code,name")
+            name_map = {nr["ts_code"].split(".")[0]: nr["name"]
+                        for nr in (name_rows or []) if nr.get("name")}
+            for r in recs:
+                code = r.get("code", "")
+                if code in name_map:
+                    r["name"] = name_map[code]
+    except Exception as e:
+        log(f"  补名称失败: {e}")
+    return recs
+
+
 def step_generate_products(phase1, phase2, phase3):
     log("📝 04:00 生成分析产物")
 
     products = {}
     today = date.today().isoformat()
 
-    # 综合简报（市场面 + 推荐）
-    macro = phase1.get("macro_analysis", "暂无宏观分析")
-    recs = phase3.get("recommendations", [])
-    rec_text = "\n".join(f"  {i+1}. {r.get('name', '')} 评分{r.get('total_score', 0)}"
-                         for i, r in enumerate(recs[:5])) if recs else "  暂无推荐"
+    # ---- 从 Phase1 提取原始数据 ----
+    raw = phase1.get("raw", {})
+    fgi = raw.get("fgi", {})
+    north = raw.get("north", {})
+    margin = raw.get("margin", {})
+    shibor = raw.get("shibor", {})
+    sr = raw.get("sr", {})
+    geo = raw.get("geo", {})
+    news_titles = phase1.get("news", [])
+    macro = phase1.get("macro_analysis", "")
 
-    # V7.7: 基金推荐（给空仓小白，直接用 Tushare 排行榜已评分的 Top）
-    fund_recs = _get_fund_recommendations(top_n=5, category="stock")
+    # ---- 股票推荐（补名称）----
+    recs = phase3.get("recommendations", [])
+    recs = _fix_stock_names(recs)
+    rec_text = "\n".join(
+        f"  {i+1}. {r.get('name', r.get('code', '?'))}({r.get('code', '')}) 评分{r.get('total_score', 0)}"
+        for i, r in enumerate(recs[:3])
+    ) if recs else "  暂无推荐"
+
+    # ---- 基金推荐 ----
+    fund_recs = _get_fund_recommendations(top_n=3, category="stock")
     fund_rec_text = "\n".join(
-        f"  {i+1}. {f.get('name', '')}（{f.get('code', '')}）近1年{f.get('return_1y', '?')}%"
-        for i, f in enumerate(fund_recs[:5])
+        f"  {i+1}. {f.get('name', '')}（{f.get('code', '')}）近1年+{f.get('return_1y', '?')}%"
+        for i, f in enumerate(fund_recs[:3])
     ) if fund_recs else "  暂无基金推荐"
 
-    briefing = f"""📊 {today} AI 投研日报
+    # ---- 市场温度 ----
+    temp_parts = []
+    temp_parts.append(f"恐贪指数: {fgi.get('score', '?')}({fgi.get('level', '?')})")
+    if north.get("net_flow_5d"):
+        temp_parts.append(f"北向5日: {north['net_flow_5d']:+.1f}亿")
+    if margin.get("change_5d_pct"):
+        temp_parts.append(f"融资5日: {margin['change_5d_pct']:+.1f}%")
+    if shibor.get("overnight"):
+        temp_parts.append(f"SHIBOR: {shibor['overnight']}%")
+    temp_text = " | ".join(temp_parts) if temp_parts else "数据获取中"
 
-【宏观研判】
-{macro}
+    # ---- 行业热点 ----
+    if sr.get("available") and sr.get("top_gainers"):
+        sector_items = sr["top_gainers"][:3]
+        sector_text = " | ".join(
+            f"{s.get('name', '?')} {s.get('change_pct', 0):+.1f}%"
+            for s in sector_items
+        )
+    else:
+        sector_text = "暂无行业数据"
 
-【今日股票推荐 Top 5】
+    # ---- 新闻 ----
+    news_text = "\n".join(f"  • {t[:40]}" for t in news_titles[:3]) if news_titles else "  • 暂无新闻"
+
+    # ---- 地缘风险 ----
+    geo_level_map = {"normal": "低", "elevated": "中", "high": "高", "extreme": "极高", "critical": "极高"}
+    geo_cn = geo_level_map.get(geo.get('level', ''), geo.get('level', '低'))
+    geo_text = f"地缘风险: {geo_cn}"
+    if geo.get('severity', 0) >= 3:
+        geo_text += " ⚠️"
+
+    # ---- 组装核心简报 ----
+    briefing = f"""📊 {today} 钱袋子晨报
+
+📊 【市场温度】
+{temp_text}
+
+🏭 【行业热点】
+{sector_text}
+
+📰 【今日要闻】
+{news_text}
+
+🌍 【风险提示】
+{geo_text}
+
+{'📝 【AI研判】' + chr(10) + macro + chr(10) if macro else ''}
+📈 【股票推荐 Top 3】
 {rec_text}
 
-【今日基金推荐 Top 5】
+💰 【基金推荐 Top 3】
 {fund_rec_text}
-"""
 
-    # 逐用户简报
+⚠️ AI建议仅供参考，不构成投资建议"""
+
+    # ---- 逐用户简报 ----
     profiles = _load_profiles()
     for p in profiles:
         uid = p["id"]
         name = p.get("name", uid)
 
-        # V7.7: 判断是否空仓（phase2 里没 diagnosis 或 stock_count+fund_count=0）
         user_phase2 = phase2.get(uid, {})
         is_empty = (
             not user_phase2 or
@@ -368,15 +508,8 @@ def step_generate_products(phase1, phase2, phase3):
         )
 
         if is_empty:
-            # ✨ V7.7 空仓版：只有市场概况 + 推荐，不做诊断、不给操作建议
-            user_briefing = f"""{briefing}
-👋 {name}，今天还没买任何股票或基金。
-
-下面几条推荐可以参考，想试的话先小额定投，别一次梭哈。
-
-⚠️ AI建议仅供参考，不构成投资建议"""
+            user_briefing = briefing
         else:
-            # 持仓版（原有逻辑）
             diag = user_phase2.get("diagnosis", "暂无诊断")
             dec = phase3.get(f"decisions_{uid}", {})
             dec_text = ""
@@ -386,24 +519,17 @@ def step_generate_products(phase1, phase2, phase3):
                                                                        d.get("action", ""))
                 dec_text += f"  {d.get('name', '')} → {action_label}: {d.get('reason', '')}\n"
 
-            scenarios = dec.get("scenarios", {})
             user_briefing = f"""{briefing}
-【{name} 持仓诊断】
+
+📋 【{name} 持仓诊断】
 {diag}
 
-【操作建议】
-{dec_text or '  暂无操作建议'}
-
-【三情景】
-  🟢 乐观: {scenarios.get('optimistic', '待分析')}
-  🟡 中性: {scenarios.get('neutral', '待分析')}
-  🔴 悲观: {scenarios.get('pessimistic', '待分析')}
-
+{'📌 【操作建议】' + chr(10) + dec_text if dec_text else ''}
 ⚠️ AI建议仅供参考，不构成投资建议"""
 
         products[uid] = user_briefing
 
-        # 存档到 analysis_history
+        # 存档
         try:
             from services.analysis_history import save_analysis
             save_analysis(uid, "night_worker", "AI凌晨自动分析", "full",
@@ -478,18 +604,58 @@ def step_maintenance():
 
 def step_overnight_check():
     log("🌍 07:00 外盘+事件检查")
+    parts = []
+
+    # 尝试获取美股数据
     try:
+        from infra.data_source.macro.indicators import get_us_index
+        dji = get_us_index(".DJI")
+        if dji is not None and len(dji) > 1:
+            last = dji.iloc[-1]
+            prev = dji.iloc[-2]
+            close_col = next((c for c in dji.columns if "close" in c.lower() or "收盘" in c), dji.columns[-2])
+            change = (float(last[close_col]) - float(prev[close_col])) / float(prev[close_col]) * 100
+            parts.append(f"道指{'↑' if change > 0 else '↓'}{abs(change):.1f}%")
+    except Exception as e:
+        log(f"  美股数据失败: {e}")
+
+    # 尝试获取汇率
+    try:
+        from infra.data_source.macro.indicators import get_fx_spot_quote
+        fx = get_fx_spot_quote()
+        if fx is not None and len(fx) > 0:
+            usd_col = next((c for c in fx.columns if "美元" in c or "USD" in c.upper()), None)
+            if usd_col is None:
+                # 找包含 "美元/人民币" 的行
+                name_col = fx.columns[0]
+                usd_row = fx[fx[name_col].str.contains("美元", na=False)]
+                if len(usd_row) > 0:
+                    val_col = next((c for c in fx.columns if "买入" in c or "卖出" in c), fx.columns[1])
+                    parts.append(f"美元/人民币: {usd_row.iloc[0][val_col]}")
+    except Exception as e:
+        log(f"  汇率数据失败: {e}")
+
+    # LLM 增强（如果可用）
+    if parts:
+        data_summary = "，".join(parts)
+        prompt = f"""基于以下数据，用3句话总结今日A股开盘前需关注的事项：
+{data_summary}
+要求：简洁，关注对A股的影响"""
+        llm_result = _call_v3(prompt, 200)
+        if llm_result:
+            result = llm_result
+        else:
+            result = f"外盘速览: {data_summary}"
+    else:
+        # 纯 LLM 兜底
         prompt = """请用3句话总结今日A股开盘前需要关注的事项（基于常识和近期市场趋势）：
 1. 隔夜美股表现对A股的影响
 2. 今日有无重要经济数据发布
 3. 需要关注的风险/机会"""
+        result = _call_v3(prompt, 200) or "外盘数据暂不可用"
 
-        result = _call_v3(prompt, 200)
-        log(f"  ✅ 外盘检查: {len(result)}字")
-        return result
-    except Exception as e:
-        log(f"  ❌ 外盘检查失败: {e}")
-        return ""
+    log(f"  ✅ 外盘检查: {len(result)}字")
+    return result
 
 
 # ============================================================
@@ -508,16 +674,23 @@ def step_morning_briefing(products, overnight):
         full_product = products.get(uid, "暂无分析")
 
         if is_pro:
-            # Pro 版：完整分析
+            # Pro 版：完整内容 + 外盘
             briefing = f"☀️ 早安，{name}！\n\n{full_product}"
             if overnight:
-                briefing += f"\n\n【外盘速览】\n{overnight}"
+                briefing += f"\n\n🌍 【外盘速览】\n{overnight}"
         else:
-            # Simple 版：精简大白话
-            prompt = f"""把以下投资分析报告改写成大白话版本，给不懂金融的人看，200字以内，用emoji让它更亲切：
+            # Simple 版：精简要点（不调 LLM，直接提取核心数据）
+            # 从产物中提取恐贪指数和推荐（不浪费 LLM 调用）
+            simple = f"☀️ 早安！\n\n"
+            # 尝试 LLM 简化，失败就用纯文本
+            prompt = f"""把以下投资报告改写成大白话，给不懂金融的人看，150字以内，亲切友好：
 
-{full_product[:500]}"""
-            simple = _call_v3(prompt, 300) or f"☀️ 早安！今天市场整体还好，不用太担心~ 😊"
+{full_product[:400]}"""
+            llm_simple = _call_v3(prompt, 250)
+            if llm_simple:
+                simple = llm_simple
+            else:
+                simple += "今天市场整体还好，不用太担心~ 有好的推荐看看Pro版简报哦 😊"
             briefing = simple
 
         briefings[uid] = briefing
@@ -542,11 +715,22 @@ def step_push_briefing(briefings):
         for p in profiles:
             uid = p["id"]
             wxid = p.get("wxworkUserId", "")
-            if wxid and uid in briefings:
-                # 企微限制字数，截断
-                msg = briefings[uid][:2000]
-                send_daily_report_to(wxid, msg)
+            if not wxid or uid not in briefings:
+                continue
+            # 企微限制字数，截断
+            msg = briefings[uid][:2000]
+            # wxworkUserId 无效时降级为 @all
+            result = send_daily_report_to(wxid, msg)
+            if result.get("ok"):
                 log(f"  ✅ {p.get('name', uid)}: 已推企微")
+            else:
+                # 推送失败（如 userId 不存在），尝试 @all
+                err = result.get("data", {}).get("errcode", 0)
+                if err == 81013:
+                    log(f"  ⚠️ {p.get('name', uid)}: userId无效，改用@all")
+                    send_daily_report_to("@all", msg)
+                else:
+                    log(f"  ❌ {p.get('name', uid)}: 推送失败 {result}")
     except Exception as e:
         log(f"  ❌ 推送失败: {e}")
 
@@ -603,8 +787,8 @@ def run_night_worker():
     # ★ 保存 13 维信号预计算
     try:
         from services.precomputed_cache import save_precomputed
-        from services.signal import calculate_daily_signal
-        signal = calculate_daily_signal()
+        from services.signal import generate_daily_signal
+        signal = generate_daily_signal()
         save_precomputed("daily_signal", signal)
         log("  ★ 13维信号预计算缓存已保存")
     except Exception as e:
@@ -655,25 +839,35 @@ def run_night_worker():
     # 07:30 早安简报
     briefings = step_morning_briefing(products, overnight)
 
-    # 保存简报（等 08:30 推送）
+    # 保存简报文件（08:30 由 --push-only 推送）
     briefing_file = NIGHT_LOG_DIR / f"briefings_{date.today()}.json"
     briefing_file.write_text(json.dumps(briefings, ensure_ascii=False, indent=2), encoding="utf-8")
 
     elapsed = time.time() - start
-    log(f"✅ AI 凌晨工作完成，耗时 {elapsed:.0f}秒，等待 08:30 推送")
+    log(f"✅ AI 凌晨工作完成，耗时 {elapsed:.0f}秒，简报已就绪等待 08:30 推送")
 
     return briefings
 
 
 def push_morning():
-    """08:30 推送早安简报（独立调用）"""
-    log("📤 08:30 推送早安简报（独立调用）")
+    """08:30 推送早安简报（独立 cron 调用）
+
+    由 crontab '30 8 * * 1-5' 触发，读取凌晨生成的简报文件并推送。
+    """
+    log("📤 08:30 推送早安简报")
     briefing_file = NIGHT_LOG_DIR / f"briefings_{date.today()}.json"
     if briefing_file.exists():
         briefings = json.loads(briefing_file.read_text(encoding="utf-8"))
         step_push_briefing(briefings)
     else:
-        log("  ⚠️ 无简报文件，跳过")
+        log("  ⚠️ 无简报文件，凌晨流程可能未执行")
+        # 推送异常通知给 LeiJiang
+        try:
+            from services.wxwork_push import is_configured, send_daily_report_to
+            if is_configured():
+                send_daily_report_to("LeiJiang", "⚠️ 今日晨报未生成，凌晨流程可能失败，请检查 night.log")
+        except Exception:
+            pass
 
 
 if __name__ == "__main__":

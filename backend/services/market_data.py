@@ -166,18 +166,21 @@ def get_fear_greed_index() -> dict:
             composite = (dim1_score * FGI_DIM_WEIGHTS["momentum"] +
                          dim2_score * FGI_DIM_WEIGHTS["volatility"] +
                          dim3_score * FGI_DIM_WEIGHTS["volume"])
-            result["score"] = round(composite, 1)
 
-            if composite >= 75:
-                result["level"] = "极度恐惧"
-            elif composite >= 60:
-                result["level"] = "恐惧"
-            elif composite >= 40:
-                result["level"] = "中性"
-            elif composite >= 25:
-                result["level"] = "贪婪"
-            else:
+            # 翻转为「贪婪分」: 0=极度恐惧, 100=极度贪婪（符合 CNN FGI 直觉）
+            greed_score = round(100 - composite, 1)
+            result["score"] = greed_score
+
+            if greed_score >= 75:
                 result["level"] = "极度贪婪"
+            elif greed_score >= 60:
+                result["level"] = "贪婪"
+            elif greed_score >= 40:
+                result["level"] = "中性"
+            elif greed_score >= 25:
+                result["level"] = "恐惧"
+            else:
+                result["level"] = "极度恐惧"
 
     except Exception as e:
         print(f"[FGI] Failed: {e}")

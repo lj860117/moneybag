@@ -297,18 +297,19 @@ def generate_daily_signal() -> dict:
     # ===== 情绪面因子 (权重合计 15%) =====
 
     # --- 10. 恐惧贪婪指数 (8%) ---
+    # score 现在是「贪婪分」: 0=极度恐惧, 100=极度贪婪
     fgi_data = get_fear_greed_index()
     fgi = fgi_data.get("score", 50)
-    if fgi >= 80:
-        fgi_score, fgi_detail = 80, f"恐惧指数{fgi:.0f}（极度恐惧），别人恐惧时贪婪"
-    elif fgi >= 65:
-        fgi_score, fgi_detail = 40, f"恐惧指数{fgi:.0f}（恐惧），市场偏悲观"
-    elif fgi >= 40:
-        fgi_score, fgi_detail = 0, f"恐惧指数{fgi:.0f}（中性）"
-    elif fgi >= 25:
-        fgi_score, fgi_detail = -40, f"恐惧指数{fgi:.0f}（贪婪），市场偏乐观"
+    if fgi <= 20:
+        fgi_score, fgi_detail = 80, f"恐贪指数{fgi:.0f}（极度恐惧），别人恐惧时贪婪"
+    elif fgi <= 35:
+        fgi_score, fgi_detail = 40, f"恐贪指数{fgi:.0f}（恐惧），市场偏悲观"
+    elif fgi <= 60:
+        fgi_score, fgi_detail = 0, f"恐贪指数{fgi:.0f}（中性）"
+    elif fgi <= 75:
+        fgi_score, fgi_detail = -40, f"恐贪指数{fgi:.0f}（贪婪），市场偏乐观"
     else:
-        fgi_score, fgi_detail = -80, f"恐惧指数{fgi:.0f}（极度贪婪），别人贪婪时恐惧"
+        fgi_score, fgi_detail = -80, f"恐贪指数{fgi:.0f}（极度贪婪），别人贪婪时恐惧"
     scores.append((fgi_score, _w["恐贪指数"], "恐贪指数", fgi_detail, "情绪面"))
 
     # --- 11. LLM新闻情绪 (7%) --- NEW 核心创新
@@ -466,8 +467,8 @@ def _apply_master_strategies(val: dict, fgi_data: dict, tech: dict) -> list:
         buffett_signal = "SELL"
         buffett_msg = f"⚠️ 极度高估({vp}%)！巴菲特会说\"无论市场情绪如何，这个价格不值得持有\"。建议减仓或暂停买入。"
     elif vp > 70:
-        buffett_signal = "SELL" if fgi < 40 else "HOLD"
-        buffett_msg = f"⚠️ 估值偏高({vp}%){'+ 市场贪婪(' + str(round(fgi)) + ')' if fgi < 40 else ''}，巴菲特会谨慎——\"别人贪婪时我恐惧\"。" if fgi < 40 else f"估值偏高({vp}%)但市场情绪({fgi:.0f})未极端贪婪，巴菲特会持仓观望但不再加仓。"
+        buffett_signal = "SELL" if fgi > 60 else "HOLD"
+        buffett_msg = f"⚠️ 估值偏高({vp}%){'+ 市场贪婪(' + str(round(fgi)) + ')' if fgi > 60 else ''}，巴菲特会谨慎——\"别人贪婪时我恐惧\"。" if fgi > 60 else f"估值偏高({vp}%)但市场情绪({fgi:.0f})未极端贪婪，巴菲特会持仓观望但不再加仓。"
     else:
         buffett_msg = f"估值{vp}%处于中间区域，巴菲特会说\"价格合理但不便宜\"，保持耐心等待。"
     strategies.append({

@@ -83,19 +83,19 @@ def get_sector_ranking() -> dict:
             cl = c.lower().strip()
             if "板块" in c or "行业" in c or cl == "板块":
                 col_map["name"] = c
-            elif "涨跌幅" in c:
+            elif c == "涨跌幅":
                 col_map["change_pct"] = c
             elif "净流入" in c:
                 col_map["net_inflow"] = c
-            elif "总成交额" in c or "成交额" in c:
+            elif "总成交额" in c or (c == "成交额"):
                 col_map["turnover"] = c
-            elif "总成交量" in c or "成交量" in c:
+            elif "总成交量" in c or (c == "成交量"):
                 col_map["volume"] = c
-            elif "上涨家数" in c:
+            elif c == "上涨家数":
                 col_map["up_count"] = c
-            elif "下跌家数" in c:
+            elif c == "下跌家数":
                 col_map["down_count"] = c
-            elif "领涨股" == c:
+            elif c == "领涨股":
                 col_map["leader"] = c
             elif "领涨股-涨跌幅" in c:
                 col_map["leader_chg"] = c
