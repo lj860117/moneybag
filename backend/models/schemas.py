@@ -84,7 +84,7 @@ class UserData(BaseModel):
 class ChatRequest(BaseModel):
     message: str
     portfolio: Optional[Portfolio] = None
-    model: Optional[str] = None  # 前端可指定模型，如 "deepseek-chat"
+    model: Optional[str] = None  # 前端可指定模型，如 "deepseek-v4-flash"
     userId: Optional[str] = None  # 多用户隔离
 
 class LedgerEntry(BaseModel):

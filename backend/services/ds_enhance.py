@@ -60,7 +60,7 @@ def _call_deepseek(prompt: str, system: str = "", max_tokens: int = 300, cache_k
                 "https://api.deepseek.com/v1/chat/completions",
                 headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
                 json={
-                    "model": "deepseek-chat",
+                    "model": "deepseek-v4-flash",
                     "messages": messages,
                     "max_tokens": max_tokens,
                     "temperature": 0.7,

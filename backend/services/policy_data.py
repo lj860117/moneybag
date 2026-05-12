@@ -260,7 +260,7 @@ def analyze_policy_impact_ds() -> dict:
                 "https://api.deepseek.com/v1/chat/completions",
                 headers={"Authorization": f"Bearer {api_key}"},
                 json={
-                    "model": "deepseek-chat",
+                    "model": "deepseek-v4-flash",
                     "messages": [{"role": "user", "content": prompt}],
                     "max_tokens": 400,
                     "temperature": 0.7,

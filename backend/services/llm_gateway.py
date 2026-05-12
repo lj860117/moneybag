@@ -149,7 +149,7 @@ class LLMGateway:
             }
 
         # 4. 选模型
-        model = MODEL_ROUTING.get(model_tier, "deepseek-chat")
+        model = MODEL_ROUTING.get(model_tier, "deepseek-v4-flash")
 
         # 5. 构建 messages
         messages = []

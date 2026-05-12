@@ -60,7 +60,7 @@ class DecisionContext:
 
     # ━━ Layer3.5: LLM 仲裁（仅 gate_decision == llm_arbitration 时有值）━━
     llm_called: bool = False
-    llm_model: str = ""                 # deepseek-chat / deepseek-reasoner
+    llm_model: str = ""                 # deepseek-v4-flash / deepseek-reasoner
     llm_input_tokens: int = 0           # 送给 DS 的 token 数
     llm_output_tokens: int = 0
     llm_result: dict = field(default_factory=dict)  # {conclusion, direction, confidence, reasoning}

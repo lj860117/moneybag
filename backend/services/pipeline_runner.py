@@ -236,7 +236,7 @@ Regime: {ctx.regime} ({ctx.regime_description})
         )
 
         ctx.llm_called = True
-        ctx.llm_model = result.get("model", "deepseek-chat")
+        ctx.llm_model = result.get("model", "deepseek-v4-flash")
         ctx.llm_calls_count += 1
 
         content = result.get("content", "")

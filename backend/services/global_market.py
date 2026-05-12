@@ -392,7 +392,7 @@ def analyze_global_impact_on_a_shares() -> dict:
                 "https://api.deepseek.com/v1/chat/completions",
                 headers={"Authorization": f"Bearer {api_key}"},
                 json={
-                    "model": "deepseek-chat",
+                    "model": "deepseek-v4-flash",
                     "messages": [
                         {"role": "system", "content": "你是全球宏观分析师，专注分析国际市场对中国A股的传导效应。简洁、有数据支撑。"},
                         {"role": "user", "content": prompt},

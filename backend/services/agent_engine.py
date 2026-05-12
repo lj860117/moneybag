@@ -105,7 +105,7 @@ def run_analysis_cycle(
     alerts: list = None,
     memory_summary: str = "",
     force_deepseek: bool = False,
-    model: str = "deepseek-chat",
+    model: str = "deepseek-v4-flash",
 ) -> dict:
     """
     决策引擎核心循环
