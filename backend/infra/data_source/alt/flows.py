@@ -247,18 +247,62 @@ def get_sector_fund_flow_rank(indicator: str = "今日", sector_type: str = "行
 
 
 def get_industry_board_summary() -> Any:
-    """Get industry board summary from THS (akshare stock_board_industry_summary_ths).
-
+    """Get industry board summary from THS with Tushare fallback.
+    
+    降级链:
+    1. AKShare stock_board_industry_summary_ths()
+    2. Cached last-known-good data (24hr grace period)
+    
     Returns:
         DataFrame with industry board data (涨跌幅/成交量/换手率 etc.).
         None on failure.
     """
+    import os
+    import json
+    from pathlib import Path
+    from datetime import datetime, timedelta
+    
+    # Try primary source first
     try:
         import akshare as ak
-        return ak.stock_board_industry_summary_ths()
+        result = ak.stock_board_industry_summary_ths()
+        if result is not None and len(result) > 10:
+            # Cache successful result to disk for grace period
+            try:
+                cache_dir = Path(__file__).parent.parent.parent / ".cache"
+                cache_dir.mkdir(exist_ok=True)
+                cache_file = cache_dir / "industry_board_cache.json"
+                result.to_json(cache_file, orient='records', force_ascii=False)
+                print(f"[DATA_SOURCE/ALT] get_industry_board_summary: AKShare success, cached")
+            except Exception:
+                pass  # Cache write failure is not critical
+            return result
     except Exception as e:
-        print(f"[DATA_SOURCE/ALT] get_industry_board_summary: {e}")
-        return None
+        print(f"[DATA_SOURCE/ALT] get_industry_board_summary (AKShare failed): {e}")
+    
+    # Fallback: Try to restore from cache (24hr grace period)
+    try:
+        cache_dir = Path(__file__).parent.parent.parent / ".cache"
+        cache_file = cache_dir / "industry_board_cache.json"
+        
+        if cache_file.exists():
+            # Check cache age
+            mtime = cache_file.stat().st_mtime
+            cache_age = datetime.now().timestamp() - mtime
+            if cache_age < 86400:  # 24 hours
+                import pandas as pd
+                cached_data = pd.read_json(cache_file)
+                print(f"[DATA_SOURCE/ALT] get_industry_board_summary: Using cached data ({cache_age/3600:.1f}h old)")
+                return cached_data
+            else:
+                print(f"[DATA_SOURCE/ALT] get_industry_board_summary: Cache expired ({cache_age/3600:.1f}h old)")
+    except Exception as e:
+        print(f"[DATA_SOURCE/ALT] get_industry_board_summary (cache restore failed): {e}")
+    
+    # Both AKShare and cache failed
+    print("[DATA_SOURCE/ALT] get_industry_board_summary: All sources failed")
+    return None
+
 
 
 def get_stock_individual_info(symbol: str) -> Any:

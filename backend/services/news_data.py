@@ -83,8 +83,9 @@ def get_fund_news(code: str, limit: int = 3) -> list:
         print(f"[NEWS] Failed: {e}")
 
     # 如果 AKShare 新闻不可用，返回默认提示
+    # Return empty instead of fake "loading..." message
     if not news_list:
-        news_list = [{"title": f"{keyword}市场动态获取中...", "time": "", "source": "系统"}]
+        news_list = []
 
     _news_cache.set(cache_key, news_list)
     return news_list
@@ -161,8 +162,9 @@ def get_market_news(limit: int = 30) -> list:
     except Exception as e:
         print(f"[NEWS] import failed: {e}")
 
+    # Return empty instead of fake "loading..." message
     if not all_news:
-        all_news = [{"title": "市场资讯加载中...", "time": "", "source": "系统"}]
+        all_news = []
 
     # 全量缓存（_MAX_FETCH 条），limit 仅在返回时切片
     _news_cache.set(cache_key, all_news)
@@ -243,8 +245,9 @@ def get_policy_news(limit: int = 20) -> list:
     except Exception as e:
         print(f"[POLICY_NEWS] Fatal: {e}")
 
+    # Return empty instead of fake "loading..." message
     if not all_news:
-        all_news = [{"title": "政策资讯加载中...", "time": "", "source": "系统", "category": "policy"}]
+        all_news = []
 
     print(f"[POLICY_NEWS] Got {len(all_news)} items")
     _news_cache.set(cache_key, all_news)

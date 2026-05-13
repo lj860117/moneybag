@@ -165,7 +165,18 @@ def get_stock_code_name_list() -> Any:
 # ============================================================
 
 def get_index_daily(symbol: str = "sh000300") -> Any:
-    """Get index daily K-line (akshare stock_zh_index_daily).
+    """Get index daily K-line with Tushare fallback.
+    
+    降级链:
+    1. AKShare stock_zh_index_daily(symbol)
+    2. Tushare pro.index_daily() - maps symbol to Tushare ts_code
+    
+    Symbol mapping:
+    - sh000300 / 000300 → 399300.SZ (沪深300)
+    - sh000001 / 000001 → 000001.SH (上证指数)
+    - sz399001 / 399001 → 399001.SZ (深证成指)
+    - sz399005 / 399005 → 399005.SZ (中小板指)
+    - sh000016 / 000016 → 000016.SH (上证50)
 
     Args:
         symbol: index symbol e.g. "sh000300" (沪深300)
@@ -174,12 +185,89 @@ def get_index_daily(symbol: str = "sh000300") -> Any:
         DataFrame with date/open/high/low/close/volume.
         None on failure.
     """
+    # Primary: AKShare
     try:
         import akshare as ak
-        return ak.stock_zh_index_daily(symbol=symbol)
+        result = ak.stock_zh_index_daily(symbol=symbol)
+        if result is not None and len(result) > 0:
+            print(f"[DATA_SOURCE/MARKET] get_index_daily({symbol}): AKShare success")
+            return result
     except Exception as e:
-        print(f"[DATA_SOURCE/MARKET] get_index_daily({symbol}): {e}")
+        print(f"[DATA_SOURCE/MARKET] get_index_daily({symbol}) AKShare failed: {e}")
+    
+    # Fallback: Tushare
+    try:
+        import os
+        import pandas as pd
+        
+        token = os.environ.get("TUSHARE_TOKEN", "")
+        if not token:
+            print(f"[DATA_SOURCE/MARKET] get_index_daily({symbol}): Tushare token not configured")
+            return None
+        
+        # Map AKShare symbol to Tushare ts_code
+        symbol_map = {
+            "sh000300": "399300.SZ",  # 沪深300
+            "000300": "399300.SZ",
+            "sh000001": "000001.SH",  # 上证指数
+            "000001": "000001.SH",
+            "sz399001": "399001.SZ",  # 深证成指
+            "399001": "399001.SZ",
+            "sz399005": "399005.SZ",  # 中小板指
+            "399005": "399005.SZ",
+            "sh000016": "000016.SH",  # 上证50
+            "000016": "000016.SH",
+            "sz399006": "399006.SZ",  # 创业板指
+            "399006": "399006.SZ",
+        }
+        
+        ts_code = symbol_map.get(symbol.lower())
+        if not ts_code:
+            print(f"[DATA_SOURCE/MARKET] get_index_daily({symbol}): Unknown symbol, cannot map to Tushare")
+            return None
+        
+        import tushare as ts
+        ts.set_token(token)
+        pro = ts.pro_api()
+        
+        # Get latest day's data
+        from datetime import datetime, timedelta
+        trade_date = datetime.now().strftime("%Y%m%d")
+        
+        # Try today first, then go back looking for data
+        for days_back in range(5):
+            try_date = (datetime.now() - timedelta(days=days_back)).strftime("%Y%m%d")
+            try:
+                df = pro.index_daily(
+                    ts_code=ts_code,
+                    start_date=try_date,
+                    end_date=trade_date,
+                    fields="trade_date,ts_code,open,high,low,close,vol"
+                )
+                if df is not None and len(df) > 0:
+                    # Normalize column names to match AKShare format
+                    df_normalized = pd.DataFrame({
+                        "date": df["trade_date"],
+                        "open": df["open"].astype(float),
+                        "high": df["high"].astype(float),
+                        "low": df["low"].astype(float),
+                        "close": df["close"].astype(float),
+                        "volume": df["vol"].astype(float),
+                    })
+                    print(f"[DATA_SOURCE/MARKET] get_index_daily({symbol}): Tushare fallback success ({len(df_normalized)} rows)")
+                    return df_normalized
+            except Exception as e:
+                continue
+        
+        print(f"[DATA_SOURCE/MARKET] get_index_daily({symbol}): Tushare fallback no data found")
         return None
+        
+    except Exception as e:
+        print(f"[DATA_SOURCE/MARKET] get_index_daily({symbol}) Tushare fallback error: {e}")
+        import traceback
+        traceback.print_exc()
+        return None
+
 
 
 def get_index_pe(symbol: str = "沪深300") -> Any:
