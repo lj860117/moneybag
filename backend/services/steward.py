@@ -11,7 +11,7 @@
 import json
 import os
 import time
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 
 from services.decision_context import DecisionContext
@@ -33,6 +33,29 @@ MODULE_META = {
 
 # 晨报缓存目录
 _BRIEF_DIR = Path(os.environ.get("DATA_DIR", Path(__file__).parent.parent / "data")) / "briefings"
+
+
+def _check_date_consistency() -> bool:
+    """验证系统日期是否在合理范围内"""
+    from datetime import datetime
+    today = datetime.now().date()
+    # 允许范围：2020-2050
+    if today.year < 2020 or today.year > 2050:
+        print(f"[STEWARD] ⚠️  系统日期异常: {today}")
+        return False
+    return True
+
+
+def _extract_cache_date(filename: str) -> str:
+    """
+    从缓存文件名中提取日期
+    格式: {user_id}_{YYYYMMDD}
+    返回: YYYYMMDD 或空字符串
+    """
+    parts = filename.replace('.json', '').split('_')
+    if len(parts) >= 2:
+        return parts[-1]
+    return ""
 
 
 class Steward:
@@ -139,8 +162,19 @@ class Steward:
         if cache_fp.exists():
             try:
                 cached = json.loads(cache_fp.read_text(encoding="utf-8"))
-                cached["from_cache"] = True
-                return cached
+                # 关键修复：验证缓存日期与当前日期匹配
+                cache_date = _extract_cache_date(cache_fp.stem)
+                
+                if cache_date == today:
+                    cached["from_cache"] = True
+                    return cached
+                else:
+                    # 日期不匹配，删除过期缓存
+                    try:
+                        cache_fp.unlink()
+                        print(f"[STEWARD] 删除过期缓存: {cache_fp.name}")
+                    except Exception as e:
+                        print(f"[STEWARD] 删除缓存失败: {e}")
             except Exception as e:
                 print(f"[STEWARD] 读晨报缓存失败: {e}")
 
@@ -254,20 +288,46 @@ class Steward:
     def briefing_history(self, user_id: str, days: int = 7) -> list:
         """
         返回最近 N 天的晨报缓存列表（MB-005 往期晨报）
+        关键修复：过滤掉日期在未来或超过 N 天的缓存
         """
         if not _BRIEF_DIR.exists():
             return []
         files = sorted(_BRIEF_DIR.glob(f"{user_id}_*.json"), reverse=True)
         result = []
-        for fp in files[:days]:
+        
+        today_dt = datetime.now().date()
+        today_str = today_dt.strftime("%Y%m%d")
+        cutoff_date = (today_dt - timedelta(days=days)).strftime("%Y%m%d")
+        
+        for fp in files[:days * 2]:  # 扫描范围稍大一些，防止文件缺失
             try:
+                # 关键修复：提取并验证日期
                 data = json.loads(fp.read_text(encoding="utf-8"))
                 # fp.stem 格式：{user_id}_{YYYYMMDD}
                 date_str = fp.stem.replace(f"{user_id}_", "")
+                
+                # 跳过格式不符的文件
+                if len(date_str) != 8 or not date_str.isdigit():
+                    continue
+                
+                # 跳过未来的日期
+                if date_str > today_str:
+                    print(f"[STEWARD] 跳过未来的缓存: {fp.name}")
+                    continue
+                
+                # 跳过太旧的日期（超过 N 天）
+                if date_str < cutoff_date:
+                    break
+                
                 data["date"] = date_str
                 result.append(data)
+                
+                if len(result) >= days:
+                    break
+                    
             except Exception as e:
                 print(f"[STEWARD] 读往期晨报失败 {fp}: {e}")
+        
         return result
 
 
