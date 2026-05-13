@@ -336,22 +336,33 @@ class TushareProvider:
 
     def _normalize_code(self, code: str, asset_type: str = "stock") -> str:
         """Convert 6-digit A-share code to Tushare format.
-        
+
         Examples:
             "000001" + "stock" → "000001.SZ"
             "600519" + "stock" → "600519.SH"
             "399001" + "index" → "399001.SZ"
-            
+            "sh000300" + "index" → "000300.SH"
+            "sz399001" + "index" → "399001.SZ"
+
         Args:
-            code: 6-digit code or already-formatted code
+            code: 6-digit code, sh/sz prefixed code, or already-formatted code
             asset_type: "stock", "index", or "fund"
-        
+
         Returns:
             Tushare-formatted code
         """
         # If already formatted (contains dot), return as-is
         if "." in code:
             return code
+
+        # 处理 sh/sz 前缀（如 "sh000300" → "000300"，保留交易所信息）
+        exchange_hint = ""
+        if code.startswith("sh"):
+            exchange_hint = "SH"
+            code = code[2:]
+        elif code.startswith("sz"):
+            exchange_hint = "SZ"
+            code = code[2:]
 
         if len(code) == 6 and code.isdigit():
             if asset_type == "stock":
@@ -362,6 +373,9 @@ class TushareProvider:
                 elif code.startswith(("8", "4")):
                     return f"{code}.BJ"
             elif asset_type == "index":
+                # 如果有 exchange_hint，直接用
+                if exchange_hint:
+                    return f"{code}.{exchange_hint}"
                 # Index codes: 399001, 000001, etc. follow different conventions
                 if code.startswith("399"):
                     return f"{code}.SZ"  # 深证指数
@@ -375,6 +389,8 @@ class TushareProvider:
                     return f"{code}.SZ"
                 elif code.startswith("5"):
                     return f"{code}.SH"
-        
-        # Already formatted or unknown - pass through
+
+        # Already formatted or unknown - use exchange hint if available
+        if exchange_hint:
+            return f"{code}.{exchange_hint}"
         return code

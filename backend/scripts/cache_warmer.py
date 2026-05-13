@@ -4,13 +4,16 @@
 用法: 加入 crontab，在用户使用前跑好缓存
   # 收盘后预热（最重要，用户晚上打开秒出）
   35 15 * * 1-5 cd /opt/moneybag/backend && /opt/moneybag/venv/bin/python scripts/cache_warmer.py --after-close
-  
+
+  # 16:00 收盘后数据收割（把只有盘中/收盘后才有的数据存 precomputed，供凌晨 night_worker 使用）
+  0 16 * * 1-5 cd /opt/moneybag/backend && set -a && . .env && set +a && /opt/moneybag/venv/bin/python scripts/cache_warmer.py --harvest
+
   # 早盘前预热（用户早上看之前跑好）
   15 9 * * 1-5 cd /opt/moneybag/backend && /opt/moneybag/venv/bin/python scripts/cache_warmer.py --morning
-  
+
   # 午间预热（午休看一眼用）
   5 13 * * 1-5 cd /opt/moneybag/backend && /opt/moneybag/venv/bin/python scripts/cache_warmer.py --midday
-  
+
   # 周末预热（低频数据刷新）
   0 10 * * 6 cd /opt/moneybag/backend && /opt/moneybag/venv/bin/python scripts/cache_warmer.py --weekend
 
@@ -460,19 +463,130 @@ def warm_weekend():
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
+def warm_harvest():
+    """收盘后数据收割 — 把只有盘中/收盘后才有的数据存到 precomputed_cache
+
+    凌晨 night_worker 直接读 precomputed，不再试图实时抓（凌晨很多数据源没数据）。
+    运行时间：16:00（收盘后30分钟，确保数据已更新）
+
+    收割清单：
+    1. 北向资金（Tushare, 收盘后才有今日数据）
+    2. 融资融券（Tushare, T+1 结算后才有）
+    3. SHIBOR（每天更新一次）
+    4. 恐贪指数（需要当日收盘价算）
+    5. 估值百分位（需要当日 PE）
+    6. 行业轮动（AKShare, 盘中才能抓到实时资金流）
+    7. 研报共识（Tushare）
+    """
+    from datetime import datetime
+    print(f"[HARVEST] 📦 收盘后数据收割 {datetime.now().strftime('%H:%M')}")
+
+    if not _is_trading_day():
+        print("[HARVEST] 非交易日，跳过")
+        return
+
+    from services.precomputed_cache import save_precomputed
+    harvested = []
+
+    # 1. 因子三件套：北向 + SHIBOR + 融资融券
+    print("  📊 因子数据...")
+    try:
+        from services.factor_data import get_northbound_flow, get_shibor, get_margin_trading
+        factors = {
+            "northbound": get_northbound_flow(),
+            "shibor": get_shibor(),
+            "margin": get_margin_trading(),
+        }
+        save_precomputed("factors", factors)
+        harvested.append("因子")
+        north = factors.get("northbound", {})
+        print(f"    北向: {north.get('net_flow_today', '?')}亿, "
+              f"SHIBOR: {factors.get('shibor', {}).get('overnight', '?')}%")
+    except Exception as e:
+        print(f"  ❌ 因子: {e}")
+
+    # 2. 恐贪指数（需要当日收盘价）
+    print("  📊 恐贪指数...")
+    try:
+        from services.market_data import get_fear_greed_index
+        fgi = get_fear_greed_index()
+        if fgi.get("score", 50) != 50 or fgi.get("dimensions"):
+            save_precomputed("fear_greed", fgi)
+            harvested.append(f"恐贪({fgi['score']})")
+        else:
+            print("    ⚠️ 恐贪=50（可能计算失败），不覆盖缓存")
+    except Exception as e:
+        print(f"  ❌ 恐贪: {e}")
+
+    # 3. 估值百分位（需要当日 PE）
+    print("  📊 估值百分位...")
+    try:
+        from services.market_data import get_valuation_percentile
+        val = get_valuation_percentile()
+        if val.get("percentile", 50) != 50 or val.get("current_pe"):
+            save_precomputed("valuation", val)
+            harvested.append(f"估值({val['percentile']}%)")
+        else:
+            print("    ⚠️ 估值=50%（可能默认值），不覆盖缓存")
+    except Exception as e:
+        print(f"  ❌ 估值: {e}")
+
+    # 4. 行业轮动（AKShare 盘中/收盘后抓板块资金流）
+    print("  📊 行业轮动...")
+    try:
+        from services.sector_rotation import get_sector_ranking
+        sr = get_sector_ranking()
+        if sr.get("available"):
+            save_precomputed("sector_rotation", sr)
+            top = sr.get("top_gainers", [{}])[:3]
+            names = [s.get("name", "?") for s in top]
+            harvested.append(f"轮动({','.join(names)})")
+        else:
+            print(f"    ⚠️ 行业轮动不可用: {sr.get('error', '')}")
+    except Exception as e:
+        print(f"  ❌ 轮动: {e}")
+
+    # 5. 研报共识
+    print("  📊 研报共识...")
+    try:
+        from services.broker_research import get_broker_consensus
+        br = get_broker_consensus()
+        if br.get("available"):
+            save_precomputed("broker_consensus", br)
+            harvested.append(f"研报({br.get('consensus', '?')})")
+    except Exception as e:
+        print(f"  ❌ 研报: {e}")
+
+    # 6. 13 维每日信号
+    print("  📊 每日信号...")
+    try:
+        from services.signal import generate_daily_signal
+        signal = generate_daily_signal()
+        save_precomputed("daily_signal", signal)
+        harvested.append("信号")
+    except Exception as e:
+        print(f"  ❌ 信号: {e}")
+
+    print(f"\n[HARVEST] ✅ 收割完成: {', '.join(harvested)} ({len(harvested)} 项)")
+    print(f"[HARVEST] 凌晨 night_worker 将直接读取这些 precomputed 数据")
+
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--after-close", action="store_true", help="收盘后预热")
+    parser.add_argument("--harvest", action="store_true", help="收盘后数据收割（存 precomputed 供凌晨 night_worker）")
     parser.add_argument("--morning", action="store_true", help="早盘前预热")
     parser.add_argument("--midday", action="store_true", help="午间预热")
     parser.add_argument("--weekend", action="store_true", help="周末预热")
     parser.add_argument("--all", action="store_true", help="全部预热")
     args = parser.parse_args()
-    
+
     if args.all:
         warm_after_close()
         warm_morning()
         warm_weekend()
+    elif args.harvest:
+        warm_harvest()
     elif args.after_close:
         warm_after_close()
     elif args.morning:

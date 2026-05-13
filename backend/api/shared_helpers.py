@@ -595,7 +595,7 @@ _alert_cooldown = {}  # {alert_key: last_alert_time}
 # 用户偏好默认值
 # ========================================================
 USER_DEFAULTS = {
-    "display_mode": "simple",
+    "display_mode": "pro",
     "risk_profile": "balanced",
     "push_preferences": {
         "morning_brief": True,
@@ -624,7 +624,7 @@ USER_OVERRIDES = {
         },
     },
     "BuLuoGeLi": {
-        "display_mode": "simple",
+        "display_mode": "pro",
         "risk_profile": "balanced",
         "push_preferences": {
             "morning_brief": True, "closing_review": False,

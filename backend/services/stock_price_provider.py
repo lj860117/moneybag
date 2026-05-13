@@ -63,7 +63,7 @@ def _from_akshare(code: str, days: int, adjust: str = "qfq") -> pd.DataFrame:
     """AKShare 降级路径"""
     try:
         from infra.data_source.market.stocks import get_stock_daily_hist
-        df = get_stock_daily_hist(symbol=code, period="daily", adjust=adjust)
+        df = get_stock_daily_hist(code=code, period="daily", adjust=adjust)
         if df is None or len(df) == 0:
             return pd.DataFrame()
         if len(df) > days:

@@ -112,7 +112,12 @@ def get_technical_indicators(symbol: str = "sh000300") -> dict:
         from infra.data_source.market.stocks import get_index_daily
         df = get_index_daily(symbol=symbol)
         if df is not None and len(df) >= 60:
-            closes = [float(c) for c in df.tail(120)["close"].values]
+            # 列名兼容（Tushare=close, BaoStock=收盘, AKShare=close）
+            close_col = next((c for c in df.columns if c in ("close", "收盘")), None)
+            if not close_col:
+                raise ValueError(f"无法识别收盘价列: {list(df.columns)}")
+            import pandas as _pd
+            closes = [float(c) for c in _pd.to_numeric(df.tail(120)[close_col], errors="coerce").dropna().values]
             result = {
                 "rsi": calc_rsi(closes),
                 "macd": calc_macd(closes),

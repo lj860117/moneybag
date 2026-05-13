@@ -178,7 +178,19 @@ def get_sector_ranking() -> dict:
 
     except Exception as e:
         print(f"[SECTOR] get_sector_ranking 失败: {e}")
-        return {"available": False, "error": str(e), "source": "ths"}
+
+    # 降级: precomputed_cache（night_worker 凌晨已存 sector_rotation）
+    try:
+        from services.precomputed_cache import get_precomputed
+        cached = get_precomputed("sector_rotation")
+        if cached and cached.get("available"):
+            cached["_degraded"] = "precomputed_cache"
+            print(f"[SECTOR] 降级至 precomputed_cache")
+            return cached
+    except Exception:
+        pass
+
+    return {"available": False, "error": "所有数据源失败", "source": "none"}
 
 
 def _safe_float_series(series):

@@ -670,27 +670,26 @@ def step_morning_briefing(products, overnight):
     for p in profiles:
         uid = p["id"]
         name = p.get("name", uid)
-        is_pro = (uid == "LeiJiang")
+        # 默认全部 Pro 版；用户 profile 里 display_mode="simple" 时才切简洁版
+        display_mode = p.get("display_mode", "pro")
         full_product = products.get(uid, "暂无分析")
 
-        if is_pro:
-            # Pro 版：完整内容 + 外盘
+        if display_mode != "simple":
+            # Pro 版（默认）：完整内容 + 外盘
             briefing = f"☀️ 早安，{name}！\n\n{full_product}"
             if overnight:
                 briefing += f"\n\n🌍 【外盘速览】\n{overnight}"
         else:
-            # Simple 版：精简要点（不调 LLM，直接提取核心数据）
-            # 从产物中提取恐贪指数和推荐（不浪费 LLM 调用）
-            simple = f"☀️ 早安！\n\n"
-            # 尝试 LLM 简化，失败就用纯文本
+            # Simple 版：精简要点（用户主动切换时才走这里）
+            simple = f"☀️ 早安，{name}！\n\n"
             prompt = f"""把以下投资报告改写成大白话，给不懂金融的人看，150字以内，亲切友好：
 
 {full_product[:400]}"""
             llm_simple = _call_v3(prompt, 250)
             if llm_simple:
-                simple = llm_simple
+                simple += llm_simple
             else:
-                simple += "今天市场整体还好，不用太担心~ 有好的推荐看看Pro版简报哦 😊"
+                simple += full_product[:500]
             briefing = simple
 
         briefings[uid] = briefing

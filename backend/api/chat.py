@@ -17,7 +17,7 @@ from fastapi.responses import StreamingResponse
 from models.schemas import ChatRequest
 from api.shared_helpers import (
     _build_market_context, _build_portfolio_context,
-    _build_system_prompt, _rule_based_reply,
+    _build_system_prompt, _load_prompt_template, _rule_based_reply,
     classify_chat_intent, AVAILABLE_MODELS,
 )
 
@@ -198,7 +198,11 @@ async def chat_analysis_stream(req: ChatRequest):
     # 补充判断：包含股票/基金/市场关键词也算理财
     _FINANCE_KEYWORDS = ["股", "基金", "A股", "大盘", "牛市", "熊市", "涨", "跌",
                          "买入", "卖出", "持仓", "仓位", "定投", "理财", "投资",
-                         "收益", "亏", "赚", "ETF", "指数", "板块", "行业"]
+                         "收益", "亏", "赚", "ETF", "指数", "板块", "行业",
+                         # 地缘/政策事件（对市场有直接影响，需注入市场上下文）
+                         "特朗普", "拜登", "普京", "关税", "制裁", "贸易战",
+                         "访华", "峰会", "降息", "加息", "降准", "央行",
+                         "战争", "冲突", "停火", "地缘", "芯片禁令"]
     if not is_finance:
         is_finance = any(kw in user_msg for kw in _FINANCE_KEYWORDS)
 
@@ -206,6 +210,21 @@ async def chat_analysis_stream(req: ChatRequest):
         # ---- 理财模式：注入市场数据 + 完整分析 ----
         market_ctx = _build_market_context()
         portfolio_ctx = _build_portfolio_context(req.portfolio, user_id=uid) if req.portfolio else _build_portfolio_context(user_id=uid)
+
+        # ★ 规则优先：明确意图且规则引擎能精准回答的，直接用规则（快+准+用真实数据）
+        # 这些意图的规则回答比 LLM 更好：用真实估值/恐贪/北向数据计算出具体建议
+        _RULES_FIRST_INTENTS = {"timing", "smart_dca", "take_profit", "allocation",
+                                "news", "macro", "valuation", "northbound"}
+        if intent["intent"] in _RULES_FIRST_INTENTS:
+            rule_reply = _rule_based_reply(user_msg, market_ctx, portfolio_ctx)
+            if rule_reply and len(rule_reply) > 50:
+                # 规则引擎给出了有效回答，直接流式返回（模拟 SSE 格式）
+                print(f"[CHAT-STREAM] ★ 规则优先命中: intent={intent['intent']}, len={len(rule_reply)}")
+                async def _rule_stream():
+                    # 一次性发出（规则引擎已经格式化好了）
+                    yield f"data: {json.dumps({'delta': rule_reply, 'source': 'rules'})}\n\n"
+                    yield f"data: {json.dumps({'delta': '', 'source': 'rules', 'done': True})}\n\n"
+                return StreamingResponse(_rule_stream(), media_type="text/event-stream")
 
         # 多用户记忆注入
         if req.userId:
@@ -255,9 +274,20 @@ async def chat_analysis_stream(req: ChatRequest):
         # ---- 闲聊模式：轻量 prompt + 联网搜索（如需要） ----
         base_prompt = _load_prompt_template()
 
-        # 判断是否需要联网（天气/新闻/实时信息等）
-        _NEED_SEARCH_KW = ["天气", "气温", "下雨", "预报", "今天", "明天", "这周",
-                           "最新", "最近", "新闻", "刚刚", "热搜", "发生了什么"]
+        # 判断是否需要联网（时事、事件、实时信息等）
+        # 原则：LLM 训练数据有截止日期，凡是可能涉及"最近发生的事"都应联网
+        _NEED_SEARCH_KW = [
+            # 时间相关
+            "天气", "气温", "下雨", "预报", "今天", "明天", "这周", "本周", "昨天",
+            "最新", "最近", "新闻", "刚刚", "热搜", "发生了什么",
+            # 时事/事件类（LLM 训练数据过期，必须联网）
+            "了吗", "了没", "了么", "是真的吗", "怎么回事", "什么时候",
+            "访华", "访问", "峰会", "制裁", "开战", "停火", "选举", "当选",
+            "发布会", "声明", "政策", "降息", "加息", "降准",
+            # 人物（可能有最新动态）
+            "特朗普", "拜登", "普京", "泽连斯基", "马斯克", "任正非",
+            "习近平", "李强", "耶伦",
+        ]
         _need_search = any(kw in user_msg for kw in _NEED_SEARCH_KW)
 
         search_ctx = ""

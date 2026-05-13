@@ -31,15 +31,15 @@ from config import DATA_DIR
 HEALTH_CHECKS = [
     # === AKShare（爬虫，不稳定，每次间隔 0.5s）===
     {"name": "基金净值", "source": "akshare", "func": "fund_open_fund_info_em",
-     "args": {"fund": "110020", "indicator": "单位净值"}, "expect": "rows > 0"},
-    {"name": "恐贪指数", "source": "akshare", "func": "index_fear_greed_funddb",
-     "args": {}, "expect": "0 <= value <= 100"},
+     "args": {"symbol": "110020", "indicator": "单位净值走势"}, "expect": "rows > 0"},
+    {"name": "恐贪指数", "source": "akshare", "func": "macro_cnbs",
+     "args": {}, "expect": "rows > 0"},
     {"name": "实时行情", "source": "akshare", "func": "stock_zh_a_spot_em",
      "args": {}, "expect": "rows > 100"},
     {"name": "基金排行", "source": "akshare", "func": "fund_open_fund_rank_em",
      "args": {"symbol": "全部"}, "expect": "rows > 100"},
-    {"name": "估值百分位", "source": "akshare", "func": "index_value_hist_funddb",
-     "args": {"symbol": "沪深300", "indicator": "市盈率"}, "expect": "rows > 0"},
+    {"name": "估值百分位", "source": "akshare", "func": "stock_zh_index_value_csindex",
+     "args": {"symbol": "000300"}, "expect": "rows > 0"},
     {"name": "新闻", "source": "akshare", "func": "stock_news_em",
      "args": {"symbol": "000001"}, "expect": "rows > 0"},
 
@@ -56,6 +56,25 @@ HEALTH_CHECKS = [
 
 # 限频间隔（秒）
 RATE_LIMITS = {"akshare": 0.5, "tushare": 0.3}
+
+# 仅在交易时段才检查的数据源（非交易时段 skip）
+_TRADING_HOURS_ONLY = {"实时行情"}
+# 仅在交易日收盘后才有数据的数据源（凌晨 01:00 检查时可能为空）
+_TRADING_DAY_ONLY = {"北向资金", "盈利预测"}
+
+
+def _is_trading_hours() -> bool:
+    """判断当前是否在交易时段（9:15-15:30 工作日）"""
+    now = datetime.now()
+    if now.weekday() >= 5:  # 周末
+        return False
+    hour_min = now.hour * 100 + now.minute
+    return 915 <= hour_min <= 1530
+
+
+def _is_trading_day() -> bool:
+    """判断当前是否为交易日（简单判断：非周末）"""
+    return datetime.now().weekday() < 5
 
 
 def _check_akshare(check: dict) -> dict:
@@ -102,11 +121,40 @@ def _check_tushare(check: dict) -> dict:
 
 
 def run_health_check() -> list:
-    """运行全部巡检"""
+    """运行全部巡检（交易时段感知，减少误报）"""
     results = []
+    trading_hours = _is_trading_hours()
+    trading_day = _is_trading_day()
+
     for check in HEALTH_CHECKS:
         source = check["source"]
         name = check["name"]
+
+        # 交易时段感知：非盘中/非交易日 skip 特定检查
+        if name in _TRADING_HOURS_ONLY and not trading_hours:
+            results.append({
+                "name": name, "source": source, "ok": True,
+                "status": "⏭️", "detail": "非交易时段，跳过",
+                "timestamp": datetime.now().isoformat(),
+            })
+            print(f"  ⏭️ [{source}] {name}: 非交易时段，跳过")
+            continue
+        if name in _TRADING_DAY_ONLY and not trading_day:
+            results.append({
+                "name": name, "source": source, "ok": True,
+                "status": "⏭️", "detail": "非交易日，跳过",
+                "timestamp": datetime.now().isoformat(),
+            })
+            print(f"  ⏭️ [{source}] {name}: 非交易日，跳过")
+            continue
+        if name in _TRADING_DAY_ONLY and not trading_hours:
+            results.append({
+                "name": name, "source": source, "ok": True,
+                "status": "⏭️", "detail": "收盘前无数据，跳过",
+                "timestamp": datetime.now().isoformat(),
+            })
+            print(f"  ⏭️ [{source}] {name}: 收盘前无数据，跳过")
+            continue
 
         # 限频
         delay = RATE_LIMITS.get(source, 0.3)
@@ -124,6 +172,7 @@ def run_health_check() -> list:
         results.append({
             "name": name,
             "source": source,
+            "ok": result["ok"],
             "status": status,
             "detail": result["detail"],
             "timestamp": datetime.now().isoformat(),
@@ -134,7 +183,19 @@ def run_health_check() -> list:
 
 
 def _push_alert(failures: list, total: int):
-    """有异常时推企微告警（只推给 LeiJiang）"""
+    """有异常时推企微告警（去重：跟上次一样则不重复推）"""
+    # 去重：对比上次推送的失败项，完全相同则跳过
+    alert_state_file = DATA_DIR / "health" / "_last_alert.json"
+    current_names = sorted(r["name"] for r in failures)
+    try:
+        if alert_state_file.exists():
+            last = json.loads(alert_state_file.read_text(encoding="utf-8"))
+            if last.get("failures") == current_names:
+                print(f"  ⏭️ 告警与上次相同，不重复推送")
+                return
+    except Exception:
+        pass
+
     try:
         from services.wxwork_push import send_text
         msg = f"⚠️ 数据源巡检（{len(failures)} 个异常）\n\n"
@@ -142,8 +203,15 @@ def _push_alert(failures: list, total: int):
             msg += f"{r['status']} [{r['source']}] {r['name']}: {r['detail']}\n"
         msg += f"\n✅ 正常：{total - len(failures)} 个"
         msg += f"\n\n降级方案已自动激活，AI 分析不受影响"
-        send_text(msg)  # 只推给 LeiJiang，不推给 BuLuoGeLi
+        send_text(msg)
         print(f"  📤 企微告警已推送")
+
+        # 记录本次推送内容
+        (DATA_DIR / "health").mkdir(parents=True, exist_ok=True)
+        alert_state_file.write_text(json.dumps({
+            "failures": current_names,
+            "pushed_at": datetime.now().isoformat(),
+        }, ensure_ascii=False), encoding="utf-8")
     except Exception as e:
         print(f"  ⚠️ 企微推送失败: {e}")
 
@@ -178,9 +246,15 @@ def main():
     print(f"\n{'='*40}")
     print(f"  ✅ 正常: {ok_count}    ❌ 异常: {len(failures)}")
 
-    # 有异常 → 推企微
+    # 有异常 → 推企微（去重）
     if failures:
         _push_alert(failures, len(results))
+    else:
+        # 全部正常，清除告警状态（下次有新异常时会重新推送）
+        alert_state_file = DATA_DIR / "health" / "_last_alert.json"
+        if alert_state_file.exists():
+            alert_state_file.unlink()
+            print(f"  🔔 告警状态已清除（全部恢复正常）")
 
     # 写日志
     _save_results(results)

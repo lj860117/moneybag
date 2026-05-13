@@ -164,7 +164,35 @@ def get_market_news(limit: int = 30) -> list:
 
     # Return empty instead of fake "loading..." message
     if not all_news:
+        # 降级: 读取上次成功获取的新闻文件缓存
+        try:
+            from config import DATA_DIR
+            news_cache_file = DATA_DIR / "cache" / "news_latest.json"
+            if news_cache_file.exists():
+                import json
+                cached_news = json.loads(news_cache_file.read_text(encoding="utf-8"))
+                if cached_news and isinstance(cached_news, list):
+                    # 标注为旧数据
+                    for n in cached_news:
+                        n["_stale"] = True
+                    print(f"[NEWS] 降级至文件缓存: {len(cached_news)} 条旧新闻")
+                    _news_cache.set(cache_key, cached_news)
+                    return cached_news[:limit]
+        except Exception:
+            pass
         all_news = []
+    else:
+        # 成功获取，写入文件缓存供降级使用
+        try:
+            from config import DATA_DIR
+            import json
+            cache_dir = DATA_DIR / "cache"
+            cache_dir.mkdir(parents=True, exist_ok=True)
+            (cache_dir / "news_latest.json").write_text(
+                json.dumps(all_news, ensure_ascii=False), encoding="utf-8"
+            )
+        except Exception:
+            pass
 
     # 全量缓存（_MAX_FETCH 条），limit 仅在返回时切片
     _news_cache.set(cache_key, all_news)

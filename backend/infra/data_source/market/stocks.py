@@ -92,6 +92,85 @@ def get_stock_realtime_quotes_em() -> Any:
         return None
 
 
+def get_stock_realtime_single(code: str) -> dict | None:
+    """单只股票实时行情（三级降级：AKShare → 腾讯 → Tushare 昨收）
+
+    Args:
+        code: 6位股票代码，如 "600519"
+
+    Returns:
+        dict with keys: code, name, price, change_pct, volume, amount, pe, pb, market_cap, source
+        None if all sources fail.
+    """
+    # 降级1: AKShare 个股行情
+    try:
+        import akshare as ak
+        df = ak.stock_zh_a_spot_em()
+        if df is not None and len(df) > 0:
+            row = df[df["代码"] == code]
+            if len(row) > 0:
+                r = row.iloc[0]
+                return {
+                    "code": code,
+                    "name": r.get("名称", ""),
+                    "price": float(r.get("最新价", 0)),
+                    "change_pct": float(r.get("涨跌幅", 0)),
+                    "volume": float(r.get("成交量", 0)),
+                    "amount": float(r.get("成交额", 0)),
+                    "pe": float(r.get("市盈率-动态", 0)),
+                    "pb": float(r.get("市净率", 0)),
+                    "market_cap": float(r.get("总市值", 0)),
+                    "source": "akshare",
+                }
+    except Exception as e:
+        print(f"[DATA_SOURCE/MARKET] get_stock_realtime_single({code}) AKShare 失败: {e}")
+
+    # 降级2: 腾讯行情（免费、稳定、24小时可用）
+    try:
+        from infra.data_source.providers.tencent_provider import get_stock_quote_tencent
+        q = get_stock_quote_tencent(code)
+        if q and q.get("price"):
+            return {
+                "code": code,
+                "name": q.get("name", ""),
+                "price": q["price"],
+                "change_pct": q.get("change_pct", 0),
+                "volume": q.get("volume", 0),
+                "amount": q.get("amount", 0),
+                "pe": q.get("pe", 0),
+                "pb": q.get("pb", 0),
+                "market_cap": q.get("market_cap", 0),
+                "source": "tencent",
+            }
+    except Exception as e:
+        print(f"[DATA_SOURCE/MARKET] get_stock_realtime_single({code}) 腾讯降级失败: {e}")
+
+    # 降级3: Tushare 昨收（有延迟但总比没有强）
+    try:
+        from infra.data_source.providers.tushare_provider import TushareProvider
+        provider = TushareProvider()
+        if provider.is_available():
+            df = provider.fetch("stock_price", symbol=code)
+            if df is not None and len(df) > 0:
+                latest = df.iloc[0]  # Tushare daily 默认按日期降序
+                return {
+                    "code": code,
+                    "name": "",
+                    "price": float(latest.get("close", 0)),
+                    "change_pct": float(latest.get("pct_chg", 0)),
+                    "volume": float(latest.get("vol", 0)),
+                    "amount": float(latest.get("amount", 0)),
+                    "pe": 0,
+                    "pb": 0,
+                    "market_cap": 0,
+                    "source": "tushare_daily",
+                }
+    except Exception as e:
+        print(f"[DATA_SOURCE/MARKET] get_stock_realtime_single({code}) Tushare降级失败: {e}")
+
+    return None
+
+
 def get_stock_realtime_quotes() -> Any:
     """Get all A-share realtime quotes - legacy API (akshare stock_zh_a_spot).
 

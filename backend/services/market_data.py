@@ -99,17 +99,30 @@ def get_fund_nav(code: str) -> dict:
 def get_fear_greed_index() -> dict:
     """增强版恐惧贪婪指数（3维：涨跌幅+波动率+成交量偏离）
     返回 dict 包含综合分数和各维度明细，兼容旧代码（可用 result["score"]）
+
+    数据来源：FallbackRunner 三级降级（Tushare→BaoStock→AKShare）
+    AKShare 的 index_fear_greed_funddb 已永久删除，完全不依赖。
     """
     result = {"score": 50, "level": "中性", "dimensions": {}}
     try:
         from infra.data_source.market.stocks import get_index_daily
         df = get_index_daily(symbol="sh000300")
         if df is not None and len(df) >= 60:
+            # 列名兼容：不同数据源列名不同（AKShare=英文, BaoStock=中文, Tushare=trade_date）
+            close_col = next((c for c in df.columns if c in ("close", "收盘")), None)
+            vol_col = next((c for c in df.columns if c in ("volume", "成交量", "vol")), None)
+            if not close_col:
+                raise ValueError(f"无法识别收盘价列，列名: {list(df.columns)}")
+
             recent_60 = df.tail(60)
             recent_20 = df.tail(20)
 
-            close_20 = recent_20["close"].values
-            close_60 = recent_60["close"].values
+            import pandas as _pd
+            close_20 = _pd.to_numeric(recent_20[close_col], errors="coerce").dropna().values
+            close_60 = _pd.to_numeric(recent_60[close_col], errors="coerce").dropna().values
+
+            if len(close_20) < 10 or len(close_60) < 30:
+                raise ValueError(f"数据不足: close_20={len(close_20)}, close_60={len(close_60)}")
 
             # 维度1: 20日涨跌幅 → 恐惧/贪婪 (权重 40%)
             change_20d = (close_20[-1] - close_20[0]) / close_20[0] * 100
@@ -146,9 +159,10 @@ def get_fear_greed_index() -> dict:
             result["dimensions"]["volatility"] = {"value": round(volatility, 3), "score": dim2_score, "label": "波动率"}
 
             # 维度3: 成交量偏离（近5日 vs 近60日均量）(权重 30%)
-            if "volume" in df.columns:
-                vol_5 = df.tail(5)["volume"].mean()
-                vol_60 = recent_60["volume"].mean()
+            if vol_col and vol_col in df.columns:
+                vol_series = _pd.to_numeric(df[vol_col], errors="coerce").fillna(0)
+                vol_5 = vol_series.tail(5).mean()
+                vol_60 = vol_series.tail(60).mean()
                 vol_ratio = vol_5 / vol_60 if vol_60 > 0 else 1
                 # 缩量下跌=恐惧，放量上涨=贪婪
                 if change_20d < 0:  # 下跌中
@@ -183,7 +197,20 @@ def get_fear_greed_index() -> dict:
                 result["level"] = "极度恐惧"
 
     except Exception as e:
-        print(f"[FGI] Failed: {e}")
+        print(f"[FGI] 实时计算失败: {e}")
+
+    # 降级: precomputed_cache（night_worker 凌晨已算好）
+    if result["score"] == 50 and not result.get("dimensions"):
+        try:
+            from services.precomputed_cache import get_precomputed
+            cached = get_precomputed("fear_greed")
+            if cached and "score" in cached:
+                cached["_degraded"] = "precomputed_cache"
+                print(f"[FGI] 降级至 precomputed_cache: score={cached['score']}")
+                return cached
+        except Exception:
+            pass
+
     return result
 
 def get_valuation_percentile() -> dict:
@@ -327,6 +354,18 @@ def get_valuation_percentile() -> dict:
 
     except Exception as e:
         print(f"[VAL] Failed: {e}")
+
+    # 降级: precomputed_cache（night_worker 凌晨已算好）
+    try:
+        from services.precomputed_cache import get_precomputed
+        cached = get_precomputed("valuation")
+        if cached and "percentile" in cached:
+            cached["_degraded"] = "precomputed_cache"
+            print(f"[VAL] 降级至 precomputed_cache: pct={cached['percentile']}%")
+            return cached
+    except Exception:
+        pass
+
     return {"index": "沪深300", "percentile": 50, "level": "适中", "current_pe": 0, "metric": "默认"}
 
 # ---- 技术指标 ----
