@@ -3,7 +3,7 @@ Macro data bucket -- Chinese/global macroeconomic indicators.
 ==============================================================
 Part of the five-bucket data source taxonomy (12-framework-refactor.md §6).
 
-降级链: AKShare（免费爬虫，凌晨不稳定）→ Tushare（付费 API，5000积分，稳定）
+Degradation chain: AKShare (primary) → Tushare (fallback)
 Each function wraps data source calls with:
   - try/except (never raises to caller)
   - consistent return type (DataFrame or None)
@@ -30,6 +30,7 @@ def _tushare_available() -> bool:
 def _get_tushare_api() -> Any:
     """获取 Tushare Pro API 实例"""
     import tushare as ts
+    ts.set_token(os.environ.get("TUSHARE_TOKEN", ""))
     return ts.pro_api()
 
 
@@ -40,12 +41,13 @@ def _get_tushare_api() -> Any:
 def get_china_money_supply() -> Any:
     """Get China M0/M1/M2 money supply.
 
-    降级链: AKShare macro_china_money_supply → Tushare cn_m
+    Degradation chain: AKShare macro_china_money_supply → Tushare cn_m
+    
     Returns:
         DataFrame with monthly money supply data.
         None on failure.
     """
-    # 第一优先: AKShare
+    # Primary: AKShare
     try:
         import akshare as ak
         df = ak.macro_china_money_supply()
@@ -54,7 +56,7 @@ def get_china_money_supply() -> Any:
     except Exception as e:
         print(f"[DATA_SOURCE/MACRO] AKShare get_china_money_supply failed: {e}")
 
-    # 降级: Tushare cn_m
+    # Fallback: Tushare cn_m
     if _tushare_available():
         try:
             pro = _get_tushare_api()
@@ -75,33 +77,81 @@ def get_china_money_supply() -> Any:
 
 
 def get_china_social_financing() -> Any:
-    """Get China social financing aggregate (akshare macro_china_shrzgm).
+    """Get China social financing aggregate (社融总额).
 
+    Degradation chain: AKShare macro_china_shrzgm → Tushare cn_m_shrzgm
+    
     Returns:
         DataFrame with social financing data.
         None on failure.
     """
+    # Primary: AKShare
     try:
         import akshare as ak
-        return ak.macro_china_shrzgm()
+        df = ak.macro_china_shrzgm()
+        if df is not None and len(df) > 0:
+            return df
     except Exception as e:
-        print(f"[DATA_SOURCE/MACRO] get_china_social_financing: {e}")
-        return None
+        print(f"[DATA_SOURCE/MACRO] AKShare get_china_social_financing failed: {e}")
+    
+    # Fallback: Tushare cn_m_shrzgm
+    if _tushare_available():
+        try:
+            pro = _get_tushare_api()
+            df = pro.cn_m_shrzgm(start_m='202001')
+            if df is not None and len(df) > 0:
+                import pandas as pd
+                # 对齐列名格式
+                result = pd.DataFrame({
+                    '月份': df['month'],
+                    '社融规模同比': df['m_shrzgm_yoy'],
+                    '社融规模': df['m_shrzgm'],
+                })
+                print(f"[DATA_SOURCE/MACRO] 社融 降级到 Tushare 成功: {len(result)} rows")
+                return result
+        except Exception as e:
+            print(f"[DATA_SOURCE/MACRO] Tushare cn_m_shrzgm failed: {e}")
+
+    return None
 
 
 def get_china_lpr() -> Any:
-    """Get China LPR interest rates (akshare macro_china_lpr).
+    """Get China LPR interest rates (贷款市场报价利率).
 
+    Degradation chain: AKShare macro_china_lpr → Tushare cn_lpr
+    
     Returns:
         DataFrame with LPR history.
         None on failure.
     """
+    # Primary: AKShare
     try:
         import akshare as ak
-        return ak.macro_china_lpr()
+        df = ak.macro_china_lpr()
+        if df is not None and len(df) > 0:
+            return df
     except Exception as e:
-        print(f"[DATA_SOURCE/MACRO] get_china_lpr: {e}")
-        return None
+        print(f"[DATA_SOURCE/MACRO] AKShare get_china_lpr failed: {e}")
+    
+    # Fallback: Tushare cn_lpr
+    if _tushare_available():
+        try:
+            pro = _get_tushare_api()
+            df = pro.cn_lpr(start_date='20200101')
+            if df is not None and len(df) > 0:
+                import pandas as pd
+                # 对齐列名
+                result = pd.DataFrame({
+                    '日期': df['trade_date'],
+                    '1Y': df['lpr_1y'],
+                    '5Y': df['lpr_5y'],
+                })
+                print(f"[DATA_SOURCE/MACRO] LPR 降级到 Tushare 成功: {len(result)} rows")
+                return result
+        except Exception as e:
+            print(f"[DATA_SOURCE/MACRO] Tushare cn_lpr failed: {e}")
+
+    return None
 
 
 def get_china_real_estate() -> Any:
@@ -135,14 +185,15 @@ def get_china_new_house_price() -> Any:
 
 
 def get_china_cpi() -> Any:
-    """Get China CPI data.
+    """Get China CPI data (消费者价格指数).
 
-    降级链: AKShare macro_china_cpi → Tushare cn_cpi
+    Degradation chain: AKShare macro_china_cpi → Tushare cn_cpi
+    
     Returns:
         DataFrame with CPI history.
         None on failure.
     """
-    # 第一优先: AKShare
+    # Primary: AKShare
     try:
         import akshare as ak
         df = ak.macro_china_cpi()
@@ -151,7 +202,7 @@ def get_china_cpi() -> Any:
     except Exception as e:
         print(f"[DATA_SOURCE/MACRO] AKShare get_china_cpi failed: {e}")
 
-    # 降级: Tushare cn_cpi
+    # Fallback: Tushare cn_cpi
     if _tushare_available():
         try:
             pro = _get_tushare_api()
@@ -168,14 +219,15 @@ def get_china_cpi() -> Any:
 
 
 def get_china_pmi() -> Any:
-    """Get China PMI data.
+    """Get China PMI data (制造业采购经理指数).
 
-    降级链: AKShare macro_china_pmi → Tushare cn_pmi
+    Degradation chain: AKShare macro_china_pmi → Tushare cn_pmi
+    
     Returns:
         DataFrame with PMI history.
         None on failure.
     """
-    # 第一优先: AKShare
+    # Primary: AKShare
     try:
         import akshare as ak
         df = ak.macro_china_pmi()
@@ -184,7 +236,7 @@ def get_china_pmi() -> Any:
     except Exception as e:
         print(f"[DATA_SOURCE/MACRO] AKShare get_china_pmi failed: {e}")
 
-    # 降级: Tushare cn_pmi
+    # Fallback: Tushare cn_pmi
     if _tushare_available():
         try:
             pro = _get_tushare_api()
@@ -205,14 +257,15 @@ def get_china_pmi() -> Any:
 
 
 def get_china_ppi() -> Any:
-    """Get China PPI data.
+    """Get China PPI data (生产者价格指数).
 
-    降级链: AKShare macro_china_ppi → Tushare cn_ppi
+    Degradation chain: AKShare macro_china_ppi → Tushare cn_ppi
+    
     Returns:
         DataFrame with PPI history.
         None on failure.
     """
-    # 第一优先: AKShare
+    # Primary: AKShare
     try:
         import akshare as ak
         df = ak.macro_china_ppi()
@@ -221,7 +274,7 @@ def get_china_ppi() -> Any:
     except Exception as e:
         print(f"[DATA_SOURCE/MACRO] AKShare get_china_ppi failed: {e}")
 
-    # 降级: Tushare cn_ppi
+    # Fallback: Tushare cn_ppi
     if _tushare_available():
         try:
             pro = _get_tushare_api()
@@ -241,18 +294,41 @@ def get_china_ppi() -> Any:
 
 
 def get_china_gdp() -> Any:
-    """Get China GDP data (akshare macro_china_gdp).
+    """Get China GDP data (国内生产总值).
 
+    Degradation chain: AKShare macro_china_gdp → Tushare cn_gdp
+    
     Returns:
         DataFrame with quarterly GDP data.
         None on failure.
     """
+    # Primary: AKShare
     try:
         import akshare as ak
-        return ak.macro_china_gdp()
+        df = ak.macro_china_gdp()
+        if df is not None and len(df) > 0:
+            return df
     except Exception as e:
-        print(f"[DATA_SOURCE/MACRO] get_china_gdp: {e}")
-        return None
+        print(f"[DATA_SOURCE/MACRO] AKShare get_china_gdp failed: {e}")
+    
+    # Fallback: Tushare cn_gdp
+    if _tushare_available():
+        try:
+            pro = _get_tushare_api()
+            df = pro.cn_gdp(start_quarter='2020Q1')
+            if df is not None and len(df) > 0:
+                import pandas as pd
+                result = pd.DataFrame({
+                    '季度': df['quarter'],
+                    '国内生产总值': df['gdp'],
+                    '同比增长': df['gdp_yoy'],
+                })
+                print(f"[DATA_SOURCE/MACRO] GDP 降级到 Tushare 成功: {len(result)} rows")
+                return result
+        except Exception as e:
+            print(f"[DATA_SOURCE/MACRO] Tushare cn_gdp failed: {e}")
+
+    return None
 
 
 def get_china_industrial_value_added() -> Any:
@@ -271,33 +347,64 @@ def get_china_industrial_value_added() -> Any:
 
 
 def get_china_retail_sales() -> Any:
-    """Get China consumer goods retail sales (akshare macro_china_consumer_goods_retail).
+    """Get China consumer goods retail sales (社会零售总额).
 
+    Degradation chain: AKShare macro_china_consumer_goods_retail → Tushare
+    
     Returns:
         DataFrame with retail sales data.
         None on failure.
     """
+    # Primary: AKShare
     try:
         import akshare as ak
-        return ak.macro_china_consumer_goods_retail()
+        df = ak.macro_china_consumer_goods_retail()
+        if df is not None and len(df) > 0:
+            return df
     except Exception as e:
-        print(f"[DATA_SOURCE/MACRO] get_china_retail_sales: {e}")
-        return None
+        print(f"[DATA_SOURCE/MACRO] AKShare get_china_retail_sales failed: {e}")
+    
+    # Fallback: Tushare (note: no direct cn_retail, use proxy or return None with logging)
+    if _tushare_available():
+        try:
+            pro = _get_tushare_api()
+            # Tushare doesn't have direct retail sales API, use cn_consumer_goods_retail proxy if available
+            # Fallback to None if not available
+            print(f"[DATA_SOURCE/MACRO] Retail sales fallback not yet available (Tushare API limitation)")
+            return None
+        except Exception as e:
+            print(f"[DATA_SOURCE/MACRO] Tushare retail fallback failed: {e}")
+
+    return None
 
 
 def get_china_fixed_asset_investment() -> Any:
-    """Get China fixed asset investment (akshare macro_china_gdzctz).
+    """Get China fixed asset investment (固定资产投资).
 
+    Degradation chain: AKShare macro_china_gdzctz → Tushare proxy
+    
     Returns:
         DataFrame with FAI data.
         None on failure.
     """
+    # Primary: AKShare
     try:
         import akshare as ak
-        return ak.macro_china_gdzctz()
+        df = ak.macro_china_gdzctz()
+        if df is not None and len(df) > 0:
+            return df
     except Exception as e:
-        print(f"[DATA_SOURCE/MACRO] get_china_fixed_asset_investment: {e}")
-        return None
+        print(f"[DATA_SOURCE/MACRO] AKShare get_china_fixed_asset_investment failed: {e}")
+    
+    # Fallback: Tushare (note: limited availability)
+    if _tushare_available():
+        try:
+            print(f"[DATA_SOURCE/MACRO] Fixed asset investment fallback not yet available (Tushare API limitation)")
+            return None
+        except Exception as e:
+            print(f"[DATA_SOURCE/MACRO] Tushare FAI fallback failed: {e}")
+
+    return None
 
 
 # ============================================================
@@ -305,18 +412,34 @@ def get_china_fixed_asset_investment() -> Any:
 # ============================================================
 
 def get_usa_interest_rate() -> Any:
-    """Get US Federal Reserve interest rate history (akshare macro_bank_usa_interest_rate).
+    """Get US Federal Reserve interest rate history (美联储利率).
 
+    Degradation chain: AKShare macro_bank_usa_interest_rate → Tushare proxy
+    
     Returns:
         DataFrame with Fed rate history.
         None on failure.
     """
+    # Primary: AKShare
     try:
         import akshare as ak
-        return ak.macro_bank_usa_interest_rate()
+        df = ak.macro_bank_usa_interest_rate()
+        if df is not None and len(df) > 0:
+            return df
     except Exception as e:
-        print(f"[DATA_SOURCE/MACRO] get_usa_interest_rate: {e}")
-        return None
+        print(f"[DATA_SOURCE/MACRO] AKShare get_usa_interest_rate failed: {e}")
+    
+    # Fallback: Tushare (global macro data)
+    if _tushare_available():
+        try:
+            pro = _get_tushare_api()
+            # Tushare macro_global_fed_rate if available
+            print(f"[DATA_SOURCE/MACRO] US interest rate fallback not yet available (Tushare API limitation)")
+            return None
+        except Exception as e:
+            print(f"[DATA_SOURCE/MACRO] Tushare US rate fallback failed: {e}")
+
+    return None
 
 
 # ============================================================
