@@ -3,11 +3,12 @@ Market data bucket -- stock prices, K-lines, indices, fund NAV, futures.
 =========================================================================
 Part of the five-bucket data source taxonomy (12-framework-refactor.md §6).
 
-All akshare calls for market data are centralized here.
-Each function wraps akshare with:
+All external data calls are centralized here.
+Each function wraps data source providers with:
   - try/except (never raises to caller)
   - consistent return type (DataFrame or None)
   - logging on failure
+  - FallbackRunner orchestration for multi-source resilience
 
 Invariant #6: All external data through infra/data_source.
 """
@@ -27,11 +28,12 @@ def get_stock_daily_hist(
     end_date: str = "",
     adjust: str = "qfq",
 ) -> Any:
-    """Get stock daily OHLCV history (akshare stock_zh_a_hist).
+    """Get stock daily OHLCV history.
 
-    降级链（K 线）：AKShare（东财 HTTP）→ mootdx（通达信 TCP，不封 IP）
-    第三降级 mootdx 由 stock_price_provider 的 baostock 路径触发；
-    此处直接处理 AKShare → mootdx 两级。
+    Degradation chain (K-lines):
+    - AKShare (primary) → Baostock (fallback) → mootdx (fallback)
+    
+    Using FallbackRunner for orchestrated multi-source fallback.
 
     Args:
         code: stock code e.g. "000001"
@@ -44,39 +46,34 @@ def get_stock_daily_hist(
         DataFrame with columns: 日期,开盘,收盘,最高,最低,成交量,成交额,振幅,涨跌幅,涨跌额,换手率
         None on failure.
     """
-    # 降级 1: AKShare（东财 HTTP）
     try:
-        import akshare as ak
-        kwargs: Dict[str, Any] = {"symbol": code, "period": period, "adjust": adjust}
-        if start_date:
-            kwargs["start_date"] = start_date
-        if end_date:
-            kwargs["end_date"] = end_date
-        df = ak.stock_zh_a_hist(**kwargs)
-        if df is not None and len(df) > 0:
-            return df
+        from infra.data_source.fallback import FallbackRunner
+        
+        # Build parameters for provider calls
+        params = {
+            "symbol": code,
+            "start_date": start_date,
+            "end_date": end_date,
+            "adjust": adjust,
+        }
+        
+        # Custom chain for K-line compatibility: AKShare → Baostock
+        chain = ["akshare", "baostock"]
+        
+        runner = FallbackRunner(metric="stock_price", chain=chain, **params)
+        data, metadata = runner.fetch()
+        
+        if data is not None:
+            if metadata["source"] != "akshare":
+                print(f"[DATA_SOURCE/MARKET] get_stock_daily_hist({code}) 已降级至 {metadata['source']} "
+                      f"({metadata['elapsed']}s, {metadata['attempts']} attempts)")
+            return data
+        else:
+            # All providers in fallback chain failed
+            print(f"[DATA_SOURCE/MARKET] get_stock_daily_hist({code}) 所有降级链都失败: {metadata.get('error', 'unknown')}")
     except Exception as e:
-        print(f"[DATA_SOURCE/MARKET] get_stock_daily_hist({code}) AKShare 失败: {e}")
-
-    # 降级 2: mootdx（通达信 TCP，不走东财，不封 IP）
-    try:
-        from infra.data_source.providers.mootdx_provider import get_daily_hist_mootdx
-        from datetime import datetime as _dt, timedelta as _td
-        # 根据 start_date/end_date 估算天数
-        days = 90  # 默认
-        if start_date:
-            try:
-                delta = _dt.now() - _dt.strptime(start_date, "%Y%m%d")
-                days = max(30, delta.days + 10)
-            except Exception:
-                pass
-        df = get_daily_hist_mootdx(code=code, days=days)
-        if df is not None and len(df) > 0:
-            print(f"[DATA_SOURCE/MARKET] get_stock_daily_hist({code}) 已降级至 mootdx")
-            return df
-    except Exception as e:
-        print(f"[DATA_SOURCE/MARKET] get_stock_daily_hist({code}) mootdx 降级也失败: {e}")
-
+        print(f"[DATA_SOURCE/MARKET] get_stock_daily_hist({code}) FallbackRunner异常: {e}")
+    
     return None
 
 
@@ -165,18 +162,19 @@ def get_stock_code_name_list() -> Any:
 # ============================================================
 
 def get_index_daily(symbol: str = "sh000300") -> Any:
-    """Get index daily K-line with Tushare fallback.
+    """Get index daily K-line with multi-source fallback.
     
-    降级链:
-    1. AKShare stock_zh_index_daily(symbol)
-    2. Tushare pro.index_daily() - maps symbol to Tushare ts_code
+    Degradation chain:
+    1. Tushare (most recent data, enterprise-grade)
+    2. Baostock (free, stable, no API limits)
+    3. AKShare (always available)
     
-    Symbol mapping:
-    - sh000300 / 000300 → 399300.SZ (沪深300)
-    - sh000001 / 000001 → 000001.SH (上证指数)
-    - sz399001 / 399001 → 399001.SZ (深证成指)
-    - sz399005 / 399005 → 399005.SZ (中小板指)
-    - sh000016 / 000016 → 000016.SH (上证50)
+    Using FallbackRunner for orchestrated multi-source fallback.
+    
+    Symbol mapping examples:
+    - sh000300 / 000300 → Tushare: 399300.SZ (沪深300)
+    - sh000001 / 000001 → Tushare: 000001.SH (上证指数)
+    - sz399001 / 399001 → Tushare: 399001.SZ (深证成指)
 
     Args:
         symbol: index symbol e.g. "sh000300" (沪深300)
@@ -185,89 +183,29 @@ def get_index_daily(symbol: str = "sh000300") -> Any:
         DataFrame with date/open/high/low/close/volume.
         None on failure.
     """
-    # Primary: AKShare
     try:
-        import akshare as ak
-        result = ak.stock_zh_index_daily(symbol=symbol)
-        if result is not None and len(result) > 0:
-            print(f"[DATA_SOURCE/MARKET] get_index_daily({symbol}): AKShare success")
-            return result
+        from infra.data_source.fallback import FallbackRunner
+        
+        params = {"symbol": symbol}
+        
+        # Chain: Tushare (preferred) → Baostock → AKShare
+        # Tushare has best data freshness, Baostock is free & stable, AKShare is fallback
+        chain = ["tushare", "baostock", "akshare"]
+        
+        runner = FallbackRunner(metric="index_daily", chain=chain, **params)
+        data, metadata = runner.fetch()
+        
+        if data is not None:
+            if metadata["source"] != "tushare":
+                print(f"[DATA_SOURCE/MARKET] get_index_daily({symbol}) 已降级至 {metadata['source']} "
+                      f"({metadata['elapsed']}s, {metadata['attempts']} attempts)")
+            return data
+        else:
+            print(f"[DATA_SOURCE/MARKET] get_index_daily({symbol}) 所有降级链都失败: {metadata.get('error', 'unknown')}")
     except Exception as e:
-        print(f"[DATA_SOURCE/MARKET] get_index_daily({symbol}) AKShare failed: {e}")
+        print(f"[DATA_SOURCE/MARKET] get_index_daily({symbol}) FallbackRunner异常: {e}")
     
-    # Fallback: Tushare
-    try:
-        import os
-        import pandas as pd
-        
-        token = os.environ.get("TUSHARE_TOKEN", "")
-        if not token:
-            print(f"[DATA_SOURCE/MARKET] get_index_daily({symbol}): Tushare token not configured")
-            return None
-        
-        # Map AKShare symbol to Tushare ts_code
-        symbol_map = {
-            "sh000300": "399300.SZ",  # 沪深300
-            "000300": "399300.SZ",
-            "sh000001": "000001.SH",  # 上证指数
-            "000001": "000001.SH",
-            "sz399001": "399001.SZ",  # 深证成指
-            "399001": "399001.SZ",
-            "sz399005": "399005.SZ",  # 中小板指
-            "399005": "399005.SZ",
-            "sh000016": "000016.SH",  # 上证50
-            "000016": "000016.SH",
-            "sz399006": "399006.SZ",  # 创业板指
-            "399006": "399006.SZ",
-        }
-        
-        ts_code = symbol_map.get(symbol.lower())
-        if not ts_code:
-            print(f"[DATA_SOURCE/MARKET] get_index_daily({symbol}): Unknown symbol, cannot map to Tushare")
-            return None
-        
-        import tushare as ts
-        ts.set_token(token)
-        pro = ts.pro_api()
-        
-        # Get latest day's data
-        from datetime import datetime, timedelta
-        trade_date = datetime.now().strftime("%Y%m%d")
-        
-        # Try today first, then go back looking for data
-        for days_back in range(5):
-            try_date = (datetime.now() - timedelta(days=days_back)).strftime("%Y%m%d")
-            try:
-                df = pro.index_daily(
-                    ts_code=ts_code,
-                    start_date=try_date,
-                    end_date=trade_date,
-                    fields="trade_date,ts_code,open,high,low,close,vol"
-                )
-                if df is not None and len(df) > 0:
-                    # Normalize column names to match AKShare format
-                    df_normalized = pd.DataFrame({
-                        "date": df["trade_date"],
-                        "open": df["open"].astype(float),
-                        "high": df["high"].astype(float),
-                        "low": df["low"].astype(float),
-                        "close": df["close"].astype(float),
-                        "volume": df["vol"].astype(float),
-                    })
-                    print(f"[DATA_SOURCE/MARKET] get_index_daily({symbol}): Tushare fallback success ({len(df_normalized)} rows)")
-                    return df_normalized
-            except Exception as e:
-                continue
-        
-        print(f"[DATA_SOURCE/MARKET] get_index_daily({symbol}): Tushare fallback no data found")
-        return None
-        
-    except Exception as e:
-        print(f"[DATA_SOURCE/MARKET] get_index_daily({symbol}) Tushare fallback error: {e}")
-        import traceback
-        traceback.print_exc()
-        return None
-
+    return None
 
 
 def get_index_pe(symbol: str = "沪深300") -> Any:
@@ -311,7 +249,13 @@ def get_index_valuation_csindex(symbol: str = "000300") -> Any:
 # ============================================================
 
 def get_fund_nav_history(code: str, indicator: str = "单位净值走势") -> Any:
-    """Get fund NAV history (akshare fund_open_fund_info_em).
+    """Get fund NAV history with multi-source fallback.
+    
+    Degradation chain:
+    1. AKShare (primary source for fund NAV)
+    2. Tushare (fallback - 5000积分接口)
+    
+    Using FallbackRunner for orchestrated multi-source fallback.
 
     Args:
         code: fund code e.g. "110011"
@@ -322,11 +266,27 @@ def get_fund_nav_history(code: str, indicator: str = "单位净值走势") -> An
         None on failure.
     """
     try:
-        import akshare as ak
-        return ak.fund_open_fund_info_em(symbol=code, indicator=indicator)
+        from infra.data_source.fallback import FallbackRunner
+        
+        params = {"symbol": code, "indicator": indicator}
+        
+        # Chain: AKShare (primary) → Tushare (fallback)
+        chain = ["akshare", "tushare"]
+        
+        runner = FallbackRunner(metric="fund_nav", chain=chain, **params)
+        data, metadata = runner.fetch()
+        
+        if data is not None:
+            if metadata["source"] != "akshare":
+                print(f"[DATA_SOURCE/MARKET] get_fund_nav_history({code}) 已降级至 {metadata['source']} "
+                      f"({metadata['elapsed']}s)")
+            return data
+        else:
+            print(f"[DATA_SOURCE/MARKET] get_fund_nav_history({code}) 所有降级链都失败: {metadata.get('error', 'unknown')}")
     except Exception as e:
-        print(f"[DATA_SOURCE/MARKET] get_fund_nav_history({code}): {e}")
-        return None
+        print(f"[DATA_SOURCE/MARKET] get_fund_nav_history({code}) FallbackRunner异常: {e}")
+    
+    return None
 
 
 def get_fund_name_list() -> Any:
