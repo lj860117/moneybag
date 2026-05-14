@@ -21,7 +21,7 @@ Invariant #5: 外部数据源走 infra/data_source
 from __future__ import annotations
 
 import logging
-from typing import Optional
+from typing import Any, Optional
 
 import httpx
 
@@ -102,4 +102,28 @@ def get_stock_quote_tencent(code: str) -> Optional[dict]:
 
     except Exception as e:
         _logger.warning("[TENCENT] get_stock_quote(%s) 失败: %s", code, e)
+        return None
+
+
+class TencentProvider:
+    """DataSourceProtocol 适配器，包装腾讯财经函数接口。"""
+
+    @property
+    def provider_name(self) -> str:
+        return "tencent"
+
+    def is_available(self) -> bool:
+        """腾讯财经无鉴权，默认可用。"""
+        return True
+
+    def fetch(self, metric: str, **params: Any) -> dict[str, Any] | list[Any] | None:
+        """通过 metric 路由到对应函数。
+
+        目前仅支持 stock_quote（实时报价/PE/PB）。
+        """
+        if metric == "stock_quote":
+            code = params.get("symbol", params.get("code", ""))
+            if not code:
+                return None
+            return get_stock_quote_tencent(code)
         return None

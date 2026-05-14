@@ -208,23 +208,19 @@ async def analyze_stock_holdings(req: dict = {}):
 4. 📌 **数据说明**（本次使用什么数据、有哪些缺失）"""
 
     try:
-        import httpx
-        async with httpx.AsyncClient(timeout=60) as client:
-            resp = await client.post(
-                "https://api.deepseek.com/v1/chat/completions",
-                headers={"Authorization": f"Bearer {api_key}"},
-                json={
-                    "model": req.get("model", "deepseek-v4-flash"),
-                    "messages": [
-                        {"role": "system", "content": system_prompt},
-                        {"role": "user", "content": user_prompt},
-                    ],
-                    "max_tokens": 2000,
-                    "temperature": 0.3,
-                },
-            )
-            resp.raise_for_status()
-            reply = resp.json()["choices"][0]["message"]["content"]
+        from services.llm_gateway import LLMGateway
+        gw = LLMGateway.instance()
+        result = gw.call_sync(
+            user_prompt,
+            system=system_prompt,
+            model_tier="llm_heavy",
+            user_id=uid,
+            module="stock_analyze",
+            max_tokens=2000,
+        )
+        if result.get("fallback"):
+            return {"analysis": stock_ctx, "source": "data_only", "scan": scan, "data_quality": data_quality_str}
+        reply = result["content"]
         try:
             from services.analysis_history import save_analysis
             save_analysis(uid, "deepseek", "DeepSeek V4", "stock", reply, direction="auto")
@@ -238,7 +234,7 @@ async def analyze_stock_holdings(req: dict = {}):
             "is_trading_day": trading_day,
         }
     except Exception as e:
-        print(f"[STOCK_ANALYZE] DeepSeek fail: {e}")
+        print(f"[STOCK_ANALYZE] LLM Gateway fail: {e}")
 
     return {"analysis": stock_ctx, "source": "data_only", "scan": scan, "data_quality": data_quality_str}
 
@@ -343,23 +339,19 @@ async def analyze_fund_holdings(req: dict = {}):
 3. 🛡️ 风控经理总结（组合风险+配置调整建议）"""
 
     try:
-        import httpx
-        async with httpx.AsyncClient(timeout=60) as client:
-            resp = await client.post(
-                "https://api.deepseek.com/v1/chat/completions",
-                headers={"Authorization": f"Bearer {api_key}"},
-                json={
-                    "model": req.get("model", "deepseek-v4-flash"),
-                    "messages": [
-                        {"role": "system", "content": system_prompt},
-                        {"role": "user", "content": user_prompt},
-                    ],
-                    "max_tokens": 2000,
-                    "temperature": 0.3,
-                },
-            )
-            resp.raise_for_status()
-            reply = resp.json()["choices"][0]["message"]["content"]
+        from services.llm_gateway import LLMGateway
+        gw = LLMGateway.instance()
+        result = gw.call_sync(
+            user_prompt,
+            system=system_prompt,
+            model_tier="llm_heavy",
+            user_id=uid,
+            module="fund_analyze",
+            max_tokens=2000,
+        )
+        if result.get("fallback"):
+            return {"analysis": fund_ctx, "source": "data_only", "scan": scan}
+        reply = result["content"]
         try:
             from services.analysis_history import save_analysis
             save_analysis(uid, "deepseek", "DeepSeek V4", "fund", reply, direction="auto")
@@ -371,7 +363,7 @@ async def analyze_fund_holdings(req: dict = {}):
             "scan": scan,
         }
     except Exception as e:
-        print(f"[FUND_ANALYZE] DeepSeek fail: {e}")
+        print(f"[FUND_ANALYZE] LLM Gateway fail: {e}")
 
     return {"analysis": fund_ctx, "source": "data_only", "scan": scan}
 

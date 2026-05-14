@@ -19,7 +19,7 @@ Invariant #3: All LLM calls through infra/llm/gateway.
 """
 from __future__ import annotations
 
-from typing import Dict, Protocol, runtime_checkable
+from typing import Any, Dict, Generator, List, Protocol, runtime_checkable
 
 from domain.models import LLMResponse
 
@@ -46,6 +46,45 @@ class LLMClientProtocol(Protocol):
           - Cache identical prompts (1h TTL)
           - Return a fallback LLMResponse (fallback=True) on failure, never raise
           - Record usage for billing/monitoring
+        """
+        ...
+
+    def stream(
+        self,
+        prompt: str,
+        *,
+        system: str = ...,
+        model_tier: str = ...,
+        user_id: str = ...,
+        module: str = ...,
+        max_tokens: int = ...,
+    ) -> Generator[Dict[str, Any], None, None]:
+        """Stream LLM response as incremental chunks.
+
+        Yields dicts: {"delta": str, "phase": "thinking"|"answering", "done": bool}
+        Final chunk: {"delta": "", "done": True, "model": str, "tokens": int}
+        Error: {"delta": "", "done": True, "error": str, "fallback": True}
+
+        Does NOT cache (streaming is inherently non-cacheable).
+        DOES apply rate limiting and cost recording.
+        """
+        ...
+
+    def call_multimodal(
+        self,
+        messages: List[Dict[str, Any]],
+        *,
+        model: str = ...,
+        user_id: str = ...,
+        module: str = ...,
+        max_tokens: int = ...,
+    ) -> Dict[str, Any]:
+        """Call LLM with pre-assembled multimodal messages (vision/image).
+
+        Messages may contain image_url content blocks.
+        Returns same dict format as call_sync: {content, source, model, tokens, fallback}.
+        Does NOT cache (image content not hashable).
+        DOES apply rate limiting and cost recording.
         """
         ...
 

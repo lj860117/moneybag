@@ -29,7 +29,7 @@ def get_hot_concepts(limit: int = 30) -> list[dict[str, Any]]:
     """
     cached = _cache.get("hot_concepts")
     if cached is not None:
-        return cached  # type: ignore[return-value]
+        return cached  # type: ignore[no-any-return]
     try:
         import akshare as ak  # noqa: delayed import
 
@@ -51,7 +51,7 @@ def get_concept_stocks(concept_name: str) -> list[str]:
     key = f"concept_stocks_{concept_name}"
     cached = _cache.get(key)
     if cached is not None:
-        return cached  # type: ignore[return-value]
+        return cached  # type: ignore[no-any-return]
     try:
         import akshare as ak  # noqa: delayed import
 
@@ -83,7 +83,7 @@ def get_stock_theme_tags(code: str, top_concepts: int = 20) -> list[str]:
     key = f"theme_tags_{code}"
     cached = _cache.get(key)
     if cached is not None:
-        return cached  # type: ignore[return-value]
+        return cached  # type: ignore[no-any-return]
 
     tags: list[str] = []
     try:

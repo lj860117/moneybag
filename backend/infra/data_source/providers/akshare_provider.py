@@ -15,7 +15,7 @@ Invariant #6: All external data through infra/data_source.
 from __future__ import annotations
 
 import logging
-from typing import Any, Dict, List, Union
+from typing import Any, Dict, List, Union, cast
 
 from infra.cache import MemoryCache
 
@@ -81,30 +81,32 @@ class AkshareProvider:
             return None
 
         try:
+            result: dict[str, Any] | list[Any] | None = None
             if metric == "macro_gdp":
-                return self._fetch_macro_gdp(**params)
+                result = self._fetch_macro_gdp(**params)
             elif metric == "macro_cpi":
-                return self._fetch_macro_cpi(**params)
+                result = self._fetch_macro_cpi(**params)
             elif metric == "macro_pmi":
-                return self._fetch_macro_pmi(**params)
+                result = self._fetch_macro_pmi(**params)
             elif metric == "macro_shibor":
-                return self._fetch_macro_shibor(**params)
+                result = self._fetch_macro_shibor(**params)
             elif metric == "macro_lpr":
-                return self._fetch_macro_lpr(**params)
+                result = self._fetch_macro_lpr(**params)
             elif metric == "macro_m1_m2":
-                return self._fetch_macro_m1_m2(**params)
+                result = self._fetch_macro_m1_m2(**params)
             elif metric == "stock_news":
-                return self._fetch_stock_news(**params)
+                result = self._fetch_stock_news(**params)
             elif metric == "northbound_flow":
-                return self._fetch_northbound_flow(**params)
+                result = self._fetch_northbound_flow(**params)
             elif metric == "margin_detail":
-                return self._fetch_margin_detail(**params)
+                result = self._fetch_margin_detail(**params)
             elif metric == "block_trade":
-                return self._fetch_block_trade(**params)
+                result = self._fetch_block_trade(**params)
             elif metric == "fund_name":
-                return self._fetch_fund_name(**params)
+                result = self._fetch_fund_name(**params)
             elif metric == "fund_rank":
-                return self._fetch_fund_rank(**params)
+                result = self._fetch_fund_rank(**params)
+            return result
         except Exception as e:
             logger.debug(f"AkshareProvider.fetch({metric}) failed: {e}")
 

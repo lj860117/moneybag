@@ -386,27 +386,21 @@ def analyze_global_impact_on_a_shares() -> dict:
 6. 用 emoji 标注利好/利空"""
 
     try:
-        import httpx
-        with httpx.Client(timeout=20) as client:
-            resp = client.post(
-                "https://api.deepseek.com/v1/chat/completions",
-                headers={"Authorization": f"Bearer {api_key}"},
-                json={
-                    "model": "deepseek-v4-flash",
-                    "messages": [
-                        {"role": "system", "content": "你是全球宏观分析师，专注分析国际市场对中国A股的传导效应。简洁、有数据支撑。"},
-                        {"role": "user", "content": prompt},
-                    ],
-                    "max_tokens": 500,
-                    "temperature": 0.5,
-                },
-            )
-            if resp.status_code == 200:
-                data = resp.json()
-                result["analysis"] = data["choices"][0]["message"]["content"]
-                result["source"] = "ai"
+        from services.llm_gateway import LLMGateway
+        gw = LLMGateway.instance()
+        llm_result = gw.call_sync(
+            prompt,
+            system="你是全球宏观分析师，专注分析国际市场对中国A股的传导效应。简洁、有数据支撑。",
+            model_tier="llm_light",
+            user_id="",
+            module="global_impact",
+            max_tokens=500,
+        )
+        if not llm_result.get("fallback") and llm_result.get("content"):
+            result["analysis"] = llm_result["content"]
+            result["source"] = "ai"
     except Exception as e:
-        print(f"[GLOBAL_IMPACT] DeepSeek failed: {e}")
+        print(f"[GLOBAL_IMPACT] LLM Gateway failed: {e}")
         result["analysis"] = snapshot.get("summary", "分析暂不可用")
         result["source"] = "data_only"
 

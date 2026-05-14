@@ -469,28 +469,20 @@ def _rule_based_reply(msg: str, market_ctx: str, portfolio_ctx: str) -> str:
 # ========================================================
 
 async def _do_ocr(file_path: Path, content: bytes) -> dict:
-    """执行 OCR，优先用 LLM 多模态，降级用本地 OCR"""
-    api_key = os.environ.get("OPENAI_API_KEY") or os.environ.get("LLM_API_KEY")
-    api_base = os.environ.get("LLM_API_BASE", "https://api.openai.com/v1")
+    """执行 OCR，优先用 LLM 多模态（通过 gateway），降级用本地 OCR"""
+    from services.llm_gateway import LLMGateway
+    gw = LLMGateway.instance()
     vision_model = os.environ.get("LLM_VISION_MODEL", "gpt-4o-mini")
 
-    if api_key:
-        try:
-            import base64
-            import httpx
-            b64 = base64.b64encode(content).decode()
-            mime = "image/jpeg"
-            if str(file_path).endswith(".png"):
-                mime = "image/png"
+    try:
+        import base64
+        b64 = base64.b64encode(content).decode()
+        mime = "image/jpeg"
+        if str(file_path).endswith(".png"):
+            mime = "image/png"
 
-            async with httpx.AsyncClient(timeout=30) as client:
-                resp = await client.post(
-                    f"{api_base}/chat/completions",
-                    headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
-                    json={
-                        "model": vision_model,
-                        "messages": [
-                            {"role": "system", "content": """你是一个金融记录识别助手。请识别截图类型并提取信息。
+        messages = [
+            {"role": "system", "content": """你是一个金融记录识别助手。请识别截图类型并提取信息。
 
 支持的截图类型：
 1. 支付宝/微信消费记录 → 提取: 金额(amount), 商家(merchant), 分类(category:餐饮/交通/购物/娱乐/医疗/教育/其他), 备注(note)
@@ -516,41 +508,46 @@ async def _do_ocr(file_path: Path, content: bytes) -> dict:
   "records": [多条记录(如有)],
   "confidence": 0.95
 }"""},
-                            {"role": "user", "content": [
-                                {"type": "image_url", "image_url": {"url": f"data:{mime};base64,{b64}"}},
-                                {"type": "text", "text": "请识别这张截图的信息，返回 JSON。"},
-                            ]},
-                        ],
-                        "max_tokens": 800,
-                    },
-                )
-                if resp.status_code == 200:
-                    data = resp.json()
-                    text = data["choices"][0]["message"]["content"]
-                    import re
-                    json_match = re.search(r'\{[^}]+\}', text, re.DOTALL)
-                    if json_match:
-                        parsed = json.loads(json_match.group())
-                        result = {
-                            "amount": float(parsed.get("amount", 0)),
-                            "merchant": parsed.get("merchant", ""),
-                            "category": parsed.get("category", "其他"),
-                            "note": parsed.get("note", ""),
-                            "source": "llm_vision",
-                            "screenshot_type": parsed.get("screenshot_type", "consumption"),
-                            "fund_code": parsed.get("fund_code", ""),
-                            "fund_name": parsed.get("fund_name", ""),
-                            "shares": float(parsed.get("shares", 0)),
-                            "nav": float(parsed.get("nav", 0)),
-                            "date": parsed.get("date", ""),
-                            "bank_balance": float(parsed.get("bank_balance", 0)),
-                            "records": parsed.get("records", []),
-                            "confidence": float(parsed.get("confidence", 0)),
-                            "raw": text,
-                        }
-                        return result
-        except Exception as e:
-            print(f"[OCR] LLM vision failed: {e}")
+            {"role": "user", "content": [
+                {"type": "image_url", "image_url": {"url": f"data:{mime};base64,{b64}"}},
+                {"type": "text", "text": "请识别这张截图的信息，返回 JSON。"},
+            ]},
+        ]
+
+        llm_result = gw.call_multimodal(
+            messages,
+            model=vision_model,
+            user_id="",
+            module="ocr_vision",
+            max_tokens=800,
+        )
+
+        if not llm_result.get("fallback") and llm_result.get("content"):
+            text = llm_result["content"]
+            import re
+            json_match = re.search(r'\{[^}]+\}', text, re.DOTALL)
+            if json_match:
+                parsed = json.loads(json_match.group())
+                result = {
+                    "amount": float(parsed.get("amount", 0)),
+                    "merchant": parsed.get("merchant", ""),
+                    "category": parsed.get("category", "其他"),
+                    "note": parsed.get("note", ""),
+                    "source": "llm_vision",
+                    "screenshot_type": parsed.get("screenshot_type", "consumption"),
+                    "fund_code": parsed.get("fund_code", ""),
+                    "fund_name": parsed.get("fund_name", ""),
+                    "shares": float(parsed.get("shares", 0)),
+                    "nav": float(parsed.get("nav", 0)),
+                    "date": parsed.get("date", ""),
+                    "bank_balance": float(parsed.get("bank_balance", 0)),
+                    "records": parsed.get("records", []),
+                    "confidence": float(parsed.get("confidence", 0)),
+                    "raw": text,
+                }
+                return result
+    except Exception as e:
+        print(f"[OCR] LLM vision failed: {e}")
 
     # 方案2：本地 OCR（pytesseract）
     try:

@@ -105,29 +105,24 @@ async def chat_analysis(req: ChatRequest):
                 print(f"[CHAT] RAG injection failed (non-blocking): {e}")
                 rag_context = {"has_rag": False, "further_reading": []}
 
-            async with httpx.AsyncClient(timeout=30) as client:
-                resp = await client.post(
-                    f"{api_base}/chat/completions",
-                    headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
-                    json={
-                        "model": model,
-                        "messages": [
-                            {"role": "system", "content": system_prompt},
-                            {"role": "user", "content": user_msg},
-                        ],
-                        "max_tokens": 800,
-                        "temperature": 0.7,
-                    },
-                )
-                print(f"[CHAT] DeepSeek status={resp.status_code}")
-                if resp.status_code == 200:
-                    data = resp.json()
-                    reply = data["choices"][0]["message"]["content"]
+            from services.llm_gateway import LLMGateway
+            gw = LLMGateway.instance()
+            gw_result = gw.call_sync(
+                user_msg,
+                system=system_prompt,
+                model_tier="llm_light",
+                user_id=uid,
+                module="chat",
+                max_tokens=800,
+            )
+            print(f"[CHAT] Gateway result source={gw_result.get('source')}")
+            if gw_result.get("content") and not gw_result.get("fallback"):
+                    reply = gw_result["content"]
                     print(f"[CHAT] LLM reply OK, len={len(reply)}")
                     # Phase 0 (3.7): 记录决策日志
                     try:
                         from services.decision_log import log_decision
-                        log_decision(user_id=uid, question=user_msg, advice=reply, source="chat", intent=intent.get("intent", "general"), model=model)
+                        log_decision(user_id=uid, question=user_msg, advice=reply, source="chat", intent=intent.get("intent", "general"), model=gw_result.get("model", ""))
                     except Exception as e:
                         print(f"[CHAT] Decision log failed: {e}")
 
@@ -164,8 +159,6 @@ async def chat_analysis(req: ChatRequest):
                         "source": "ai",
                         "further_reading": rag_context.get("further_reading", []),
                     }
-                else:
-                    print(f"[CHAT] DeepSeek error: {resp.text[:200]}")
         except Exception as e:
             import traceback
             print(f"[CHAT] LLM call failed: {e}")
@@ -315,66 +308,49 @@ async def chat_analysis_stream(req: ChatRequest):
         system_prompt = base_prompt + search_ctx if search_ctx else base_prompt
         print(f"[CHAT-STREAM] 闲聊模式, search={'有' if search_ctx else '无'}, msg={user_msg[:30]}")
 
-    # API key + 模型选择
-    api_key = os.environ.get("OPENAI_API_KEY") or os.environ.get("LLM_API_KEY")
-    api_base = os.environ.get("LLM_API_BASE", "https://api.deepseek.com/v1")
-    model = req.model or os.environ.get("LLM_MODEL", "deepseek-v4-flash")
+    # API key + 模型选择（通过 gateway 统一获取配置）
+    from services.llm_gateway import LLMGateway
+    gw = LLMGateway.instance()
+    api_cfg = gw.get_api_config()
+    api_key = api_cfg["api_key"]
+    api_base = api_cfg["api_base"]
+    model = req.model or api_cfg["model"]
     for m in AVAILABLE_MODELS:
         if m["id"] == model:
             api_base = m["base"]
             api_key = os.environ.get(m["env_key"], api_key)
             break
 
-    if not api_key:
-        reply = "AI 暂时不可用，请稍后再试~"
+    if not api_key or not gw.pre_check():
+        reply = "AI 暂时不可用，请稍后再试~" if not api_key else _rule_based_reply(user_msg, market_ctx, portfolio_ctx)
         async def rules_gen():
             yield f"data: {json.dumps({'delta': reply, 'source': 'rules', 'done': True}, ensure_ascii=False)}\n\n"
         return StreamingResponse(rules_gen(), media_type="text/event-stream",
                                  headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
 
     async def stream_gen():
-        import httpx
         try:
-            async with httpx.AsyncClient(timeout=120) as client:
-                async with client.stream(
-                    "POST",
-                    f"{api_base}/chat/completions",
-                    headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
-                    json={
-                        "model": model,
-                        "messages": [
-                            {"role": "system", "content": system_prompt},
-                            {"role": "user", "content": user_msg},
-                        ],
-                        "max_tokens": 1200,
-                        "temperature": 0.8,
-                        "stream": True,
-                    },
-                ) as resp:
-                    if resp.status_code != 200:
-                        # LLM 返回错误 → 降级规则引擎
-                        reply = _rule_based_reply(user_msg, market_ctx, portfolio_ctx)
-                        yield f"data: {json.dumps({'delta': reply, 'source': 'rules', 'done': True}, ensure_ascii=False)}\n\n"
-                        return
-                    async for line in resp.aiter_lines():
-                        if not line.startswith("data: "):
-                            continue
-                        payload = line[6:]
-                        if payload.strip() == "[DONE]":
-                            yield f"data: {json.dumps({'delta': '', 'source': 'ai', 'done': True}, ensure_ascii=False)}\n\n"
-                            return
-                        try:
-                            chunk = json.loads(payload)
-                            delta_obj = chunk.get("choices", [{}])[0].get("delta", {})
-                            # R1 模型：先输出 reasoning_content（思考过程），再输出 content（正式回答）
-                            reasoning = delta_obj.get("reasoning_content", "")
-                            content = delta_obj.get("content", "")
-                            if reasoning:
-                                yield f"data: {json.dumps({'delta': reasoning, 'source': 'ai', 'done': False, 'phase': 'thinking'}, ensure_ascii=False)}\n\n"
-                            elif content:
-                                yield f"data: {json.dumps({'delta': content, 'source': 'ai', 'done': False, 'phase': 'answering'}, ensure_ascii=False)}\n\n"
-                        except (json.JSONDecodeError, IndexError, KeyError):
-                            continue
+            for chunk in gw.stream_sync(
+                user_msg,
+                system=system_prompt,
+                model_tier="llm_light" if "reasoner" not in model else "llm_heavy",
+                user_id=uid,
+                module="chat_stream",
+                max_tokens=1200,
+            ):
+                if chunk.get("fallback"):
+                    # gateway 限流/错误 → 降级规则引擎
+                    reply = _rule_based_reply(user_msg, market_ctx, portfolio_ctx)
+                    yield f"data: {json.dumps({'delta': reply, 'source': 'rules', 'done': True}, ensure_ascii=False)}\n\n"
+                    return
+                if chunk.get("done"):
+                    yield f"data: {json.dumps({'delta': '', 'source': 'ai', 'done': True}, ensure_ascii=False)}\n\n"
+                    return
+                # 正常 chunk（thinking / answering）
+                delta = chunk.get("delta", "")
+                phase = chunk.get("phase", "answering")
+                if delta:
+                    yield f"data: {json.dumps({'delta': delta, 'source': 'ai', 'done': False, 'phase': phase}, ensure_ascii=False)}\n\n"
         except Exception as e:
             print(f"[CHAT-STREAM] LLM stream failed: {e}")
             reply = _rule_based_reply(user_msg, market_ctx, portfolio_ctx)

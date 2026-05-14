@@ -115,29 +115,27 @@ def _get_dynamic_weights() -> dict:
 {{"value":0.20,"growth":0.15,"quality":0.18,"momentum":0.15,"risk":0.12,"liquidity":0.10,"sentiment":0.10,"regime":"牛市/熊市/震荡","reason":"一句话说明"}}
 只返回 JSON。"""
 
-        import httpx
-        with httpx.Client(timeout=15) as client:
-            resp = client.post(
-                LLM_API_URL,
-                headers={"Authorization": f"Bearer {LLM_API_KEY}", "Content-Type": "application/json"},
-                json={
-                    "model": LLM_MODEL,
-                    "messages": [{"role": "user", "content": prompt}],
-                    "max_tokens": 300,
-                    "temperature": 0.2,
-                },
-            )
-            if resp.status_code != 200:
-                print(f"[DYN_WEIGHT] LLM failed: {resp.status_code}")
-                return DEFAULT_DIM_WEIGHTS
+        from services.llm_gateway import LLMGateway
+        gw = LLMGateway.instance()
+        result = gw.call_sync(
+            prompt,
+            system="",
+            model_tier="llm_light",
+            user_id="",
+            module="dyn_weight",
+            max_tokens=300,
+        )
+        if result.get("fallback") or not result.get("content"):
+            print(f"[DYN_WEIGHT] LLM gateway fallback: {result.get('source')}")
+            return DEFAULT_DIM_WEIGHTS
 
-            text = resp.json()["choices"][0]["message"]["content"]
-            import re
-            json_match = re.search(r'\{[^}]+\}', text, re.DOTALL)
-            if not json_match:
-                return DEFAULT_DIM_WEIGHTS
+        text = result["content"]
+        import re
+        json_match = re.search(r'\{[^}]+\}', text, re.DOTALL)
+        if not json_match:
+            return DEFAULT_DIM_WEIGHTS
 
-            parsed = json.loads(json_match.group())
+        parsed = json.loads(json_match.group())
 
         # 验证权重合法性
         weights = {}

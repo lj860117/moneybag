@@ -44,32 +44,22 @@ _LLM_CACHE_TTL = 86400  # 24 小时
 # ============================================================
 
 def _call_llm(prompt: str, system: str = "") -> str:
-    """调用 DeepSeek LLM"""
-    import httpx
-
-    headers = {
-        "Content-Type": "application/json",
-        "Authorization": f"Bearer {LLM_API_KEY}",
-    }
-
-    messages = []
-    if system:
-        messages.append({"role": "system", "content": system})
-    messages.append({"role": "user", "content": prompt})
-
-    body = {
-        "model": LLM_MODEL,
-        "messages": messages,
-        "temperature": 0.7,
-        "max_tokens": 2000,
-    }
+    """调用 DeepSeek LLM（通过 gateway 统一管理）"""
+    from services.llm_gateway import LLMGateway
 
     try:
-        with httpx.Client(timeout=30) as client:
-            resp = client.post(LLM_API_URL, headers=headers, json=body)
-            resp.raise_for_status()
-            data = resp.json()
-            return data["choices"][0]["message"]["content"]
+        gw = LLMGateway.instance()
+        result = gw.call_sync(
+            prompt,
+            system=system,
+            model_tier="llm_light",
+            user_id="",
+            module="factor_gen",
+            max_tokens=2000,
+        )
+        if result.get("fallback"):
+            return "LLM 调用失败: 限流或无 API Key"
+        return result.get("content", "")
     except Exception as e:
         return f"LLM 调用失败: {str(e)}"
 

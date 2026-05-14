@@ -391,29 +391,26 @@ def run_llm_audit(probe_results: list[dict[str, Any]], smoke_results: list[dict[
 }}"""
 
     try:
-        import httpx
-        api_base = os.environ.get("LLM_API_BASE", "https://api.deepseek.com/v1")
-        with httpx.Client(timeout=60) as client:
-            resp = client.post(
-                f"{api_base}/chat/completions",
-                headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
-                json={
-                    "model": "deepseek-v4-pro",
-                    "messages": [{"role": "user", "content": prompt}],
-                    "max_tokens": 1000,
-                    "temperature": 0.3,
-                },
-            )
-            if resp.status_code == 200:
-                content = resp.json()["choices"][0]["message"]["content"].strip()
-                # 去掉可能的 markdown 代码块包裹
-                if content.startswith("```"):
-                    content = content.split("\n", 1)[1].rsplit("```", 1)[0].strip()
-                parsed = json.loads(content)
-                _log(f"  LLM 审计完成: score={parsed.get('health_score')}, issues={len(parsed.get('issues', []))}")
-                return {"available": True, **parsed}
-            else:
-                _log(f"  LLM 返回错误: {resp.status_code} {resp.text[:100]}")
+        from services.llm_gateway import LLMGateway
+        gw = LLMGateway.instance()
+        llm_result = gw.call_sync(
+            prompt,
+            system="",
+            model_tier="llm_heavy",
+            user_id="",
+            module="self_audit",
+            max_tokens=1000,
+        )
+        if not llm_result.get("fallback") and llm_result.get("content"):
+            content = llm_result["content"].strip()
+            # 去掉可能的 markdown 代码块包裹
+            if content.startswith("```"):
+                content = content.split("\n", 1)[1].rsplit("```", 1)[0].strip()
+            parsed = json.loads(content)
+            _log(f"  LLM 审计完成: score={parsed.get('health_score')}, issues={len(parsed.get('issues', []))}")
+            return {"available": True, **parsed}
+        else:
+            _log(f"  LLM gateway fallback: {llm_result.get('source')}")
     except json.JSONDecodeError as e:
         _log(f"  LLM 输出 JSON 解析失败: {e}")
     except Exception as e:

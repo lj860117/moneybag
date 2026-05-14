@@ -77,18 +77,20 @@ class FallbackRunner:
         metric: str,
         chain: Optional[List[str]] = None,
         timeout_per_provider: float = 5.0,
+        params: Optional[Dict[str, Any]] = None,
         **kwargs: Any
     ) -> None:
         """Initialize FallbackRunner.
-        
+
         Args:
             metric: Metric name (e.g. "stock_price", "macro_gdp")
             chain: Optional custom chain, otherwise uses DEFAULT_CHAINS
             timeout_per_provider: Seconds to wait per provider attempt
-            **kwargs: Parameters to pass to each provider (symbol, start_date, etc.)
+            params: Parameters to pass to each provider (symbol, start_date, etc.)
+            **kwargs: Alternative way to pass provider parameters (merged with params)
         """
         self.metric = metric
-        self.kwargs = kwargs
+        self.kwargs = {**(params or {}), **kwargs}
         self.timeout_per_provider = timeout_per_provider
         
         # Use custom chain or default

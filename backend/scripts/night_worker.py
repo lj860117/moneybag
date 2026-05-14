@@ -57,26 +57,26 @@ def _load_profiles():
 
 
 def _call_v3(prompt, max_tokens=500):
-    """调用 DeepSeek V3（轻量）"""
+    """调用 DeepSeek V3（通过 gateway 统一管理）"""
     if not LLM_API_KEY:
         return ""
     try:
-        import httpx
-        # 兼容 LLM_API_URL 是否包含 /chat/completions
-        url = LLM_API_URL.rstrip("/")
-        if not url.endswith("/chat/completions"):
-            url = f"{url}/chat/completions"
-        with httpx.Client(timeout=30) as client:
-            resp = client.post(
-                url,
-                headers={"Authorization": f"Bearer {LLM_API_KEY}", "Content-Type": "application/json"},
-                json={"model": "deepseek-v4-flash", "messages": [{"role": "user", "content": prompt}],
-                      "max_tokens": max_tokens, "temperature": 0.5},
-            )
-            if resp.status_code == 200:
-                return resp.json()["choices"][0]["message"]["content"]
-            else:
-                log(f"  V3 HTTP {resp.status_code}: {resp.text[:100]}")
+        import sys, os
+        sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+        from services.llm_gateway import LLMGateway
+        gw = LLMGateway.instance()
+        result = gw.call_sync(
+            prompt,
+            system="",
+            model_tier="llm_light",
+            user_id="",
+            module="night_worker",
+            max_tokens=max_tokens,
+        )
+        if result.get("fallback") or not result.get("content"):
+            log(f"  V3 gateway fallback: {result.get('source')}")
+            return ""
+        return result["content"]
     except Exception as e:
         log(f"  V3 调用失败: {e}")
     return ""

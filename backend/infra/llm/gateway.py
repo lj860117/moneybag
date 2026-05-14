@@ -17,7 +17,7 @@ Invariant #3: All LLM calls through infra/llm/gateway.
 """
 from __future__ import annotations
 
-from typing import Any, Dict
+from typing import Any, Dict, Generator, List
 
 from domain.models import LLMResponse
 
@@ -51,6 +51,47 @@ class LLMClient:
             max_tokens=max_tokens,
         )
         return LLMResponse.from_dict(raw)
+
+    def stream(
+        self,
+        prompt: str,
+        *,
+        system: str = "",
+        model_tier: str = "llm_light",
+        user_id: str = "",
+        module: str = "",
+        max_tokens: int = 1200,
+    ) -> Generator[Dict[str, Any], None, None]:
+        """Delegate to LLMGateway.stream_sync(), yield chunk dicts."""
+        gw = self._gateway()
+        yield from gw.stream_sync(
+            prompt,
+            system=system,
+            model_tier=model_tier,
+            user_id=user_id,
+            module=module,
+            max_tokens=max_tokens,
+        )
+
+    def call_multimodal(
+        self,
+        messages: List[Dict[str, Any]],
+        *,
+        model: str = "",
+        user_id: str = "",
+        module: str = "",
+        max_tokens: int = 800,
+    ) -> Dict[str, Any]:
+        """Delegate to LLMGateway.call_multimodal()."""
+        gw = self._gateway()
+        result: Dict[str, Any] = gw.call_multimodal(
+            messages,
+            model=model,
+            user_id=user_id,
+            module=module,
+            max_tokens=max_tokens,
+        )
+        return result
 
     def get_usage(self, user_id: str = "") -> Dict[str, object]:
         """Delegate to LLMGateway usage tracking."""

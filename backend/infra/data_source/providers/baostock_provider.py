@@ -71,12 +71,14 @@ class BaostockProvider:
             return None
 
         try:
+            result: dict[str, Any] | list[Any] | None = None
             if metric == "stock_price":
-                return self._fetch_stock_price(**params)
+                result = self._fetch_stock_price(**params)
             elif metric == "index_daily":
-                return self._fetch_index_daily(**params)
+                result = self._fetch_index_daily(**params)
             elif metric == "stock_industry":
-                return self._fetch_stock_industry(**params)
+                result = self._fetch_stock_industry(**params)
+            return result
         except Exception as e:
             logger.debug(f"BaostockProvider.fetch({metric}) failed: {e}")
 

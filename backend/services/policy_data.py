@@ -255,25 +255,23 @@ def analyze_policy_impact_ds() -> dict:
 2. 利好板块和利空板块
 3. 对普通投资者的操作建议"""
 
-        with httpx.Client(timeout=15) as client:
-            resp = client.post(
-                "https://api.deepseek.com/v1/chat/completions",
-                headers={"Authorization": f"Bearer {api_key}"},
-                json={
-                    "model": "deepseek-v4-flash",
-                    "messages": [{"role": "user", "content": prompt}],
-                    "max_tokens": 400,
-                    "temperature": 0.7,
-                },
-            )
-            if resp.status_code == 200:
-                data = resp.json()
-                analysis = data["choices"][0]["message"]["content"]
-                result = {"analysis": analysis, "source": "ai", "newsCount": len(news_lines)}
-                _policy_cache.set(cache_key, result)
-                return result
+        from services.llm_gateway import LLMGateway
+        gw = LLMGateway.instance()
+        llm_result = gw.call_sync(
+            prompt,
+            system="",
+            model_tier="llm_light",
+            user_id="",
+            module="policy_analysis",
+            max_tokens=400,
+        )
+        if not llm_result.get("fallback") and llm_result.get("content"):
+            analysis = llm_result["content"]
+            result = {"analysis": analysis, "source": "ai", "newsCount": len(news_lines)}
+            _policy_cache.set(cache_key, result)
+            return result
     except Exception as e:
-        print(f"[POLICY] DeepSeek analysis fail: {e}")
+        print(f"[POLICY] LLM Gateway analysis fail: {e}")
 
     result = {"analysis": "\n".join(news_lines), "source": "data_only"}
     _policy_cache.set(cache_key, result)

@@ -401,32 +401,29 @@ def get_news_sentiment_score() -> dict:
 - 日常资讯/无明确方向 → 0附近(-10~+10)
 只返回JSON，不要其他内容。"""
 
-                # 同步调用（在后台线程中）
-                import httpx
-                with httpx.Client(timeout=15) as client:
-                    resp = client.post(
-                        f"{api_base}/chat/completions",
-                        headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
-                        json={
-                            "model": model,
-                            "messages": [{"role": "user", "content": prompt}],
-                            "max_tokens": 200,
-                            "temperature": 0.3,
-                        },
-                    )
-                    if resp.status_code == 200:
-                        data = resp.json()
-                        text = data["choices"][0]["message"]["content"]
-                        import re
-                        json_match = re.search(r'\{[^}]+\}', text, re.DOTALL)
-                        if json_match:
-                            parsed = json.loads(json_match.group())
-                            result["score"] = max(-100, min(100, int(parsed.get("score", 0))))
-                            result["level"] = parsed.get("level", "中性")
-                            result["reason"] = parsed.get("reason", "")
-                            result["available"] = True
-                            result["source"] = "llm"
-                            print(f"[SENTIMENT] LLM score={result['score']}, level={result['level']}")
+                # 同步调用（通过 gateway 管理）
+                from services.llm_gateway import LLMGateway
+                gw = LLMGateway.instance()
+                llm_result = gw.call_sync(
+                    prompt,
+                    system="",
+                    model_tier="llm_light",
+                    user_id="",
+                    module="sentiment_score",
+                    max_tokens=200,
+                )
+                if not llm_result.get("fallback") and llm_result.get("content"):
+                    text = llm_result["content"]
+                    import re
+                    json_match = re.search(r'\{[^}]+\}', text, re.DOTALL)
+                    if json_match:
+                        parsed = json.loads(json_match.group())
+                        result["score"] = max(-100, min(100, int(parsed.get("score", 0))))
+                        result["level"] = parsed.get("level", "中性")
+                        result["reason"] = parsed.get("reason", "")
+                        result["available"] = True
+                        result["source"] = "llm"
+                        print(f"[SENTIMENT] LLM score={result['score']}, level={result['level']}")
             except Exception as e:
                 print(f"[SENTIMENT] LLM failed: {e}")
 

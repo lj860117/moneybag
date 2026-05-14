@@ -240,6 +240,210 @@ class LLMGateway:
                 "error": str(e),
             }
 
+    def stream_sync(self, prompt: str, *, system: str = "",
+                    model_tier: str = "llm_light",
+                    user_id: str = "", module: str = "",
+                    max_tokens: int = 1200):
+        """流式调用 LLM，yield 标准化的 chunk dict。
+
+        返回同步 Generator[dict, None, None]。
+        每个 chunk: {"delta": str, "phase": "thinking"|"answering", "done": bool}
+        最后一个 chunk: {"delta": "", "done": True, "usage": {...}}
+        错误时: {"delta": "", "done": True, "error": str, "fallback": True}
+
+        不走缓存（streaming 场景缓存无意义），但走限流和计费。
+        """
+        # 0. 日期重置
+        self._check_daily_reset()
+
+        # 1. 熔断检查
+        if not self._check_limits():
+            print(f"[LLM_GATEWAY] ⚠️ stream 熔断！daily={self._daily_count}/{DAILY_LIMIT}")
+            yield {"delta": "", "done": True, "error": "rate_limited", "fallback": True}
+            return
+
+        # 2. API key
+        api_key = os.environ.get("LLM_API_KEY", "") or os.environ.get("OPENAI_API_KEY", "")
+        if not api_key:
+            yield {"delta": "", "done": True, "error": "no_key", "fallback": True}
+            return
+
+        # 3. 模型选择
+        model = MODEL_ROUTING.get(model_tier, "deepseek-v4-flash")
+        api_base = os.environ.get("LLM_API_BASE", "https://api.deepseek.com/v1")
+
+        # 4. 构建 messages
+        messages = []
+        if system:
+            messages.append({"role": "system", "content": system})
+        messages.append({"role": "user", "content": prompt})
+
+        # 5. 流式调用
+        try:
+            import httpx
+            timeout = 120 if model == "deepseek-reasoner" else 60
+            with httpx.Client(timeout=timeout) as client:
+                with client.stream(
+                    "POST",
+                    f"{api_base}/chat/completions",
+                    headers={
+                        "Authorization": f"Bearer {api_key}",
+                        "Content-Type": "application/json",
+                    },
+                    json={
+                        "model": model,
+                        "messages": messages,
+                        "max_tokens": max_tokens,
+                        "temperature": 0.7,
+                        "stream": True,
+                    },
+                ) as resp:
+                    if resp.status_code != 200:
+                        print(f"[LLM_GATEWAY] stream API error: {resp.status_code}")
+                        yield {"delta": "", "done": True, "error": f"HTTP {resp.status_code}", "fallback": True}
+                        return
+
+                    total_content = ""
+                    total_reasoning = ""
+                    for line in resp.iter_lines():
+                        if not line.startswith("data: "):
+                            continue
+                        payload = line[6:]
+                        if payload.strip() == "[DONE]":
+                            break
+                        try:
+                            chunk = json.loads(payload)
+                            delta_obj = chunk.get("choices", [{}])[0].get("delta", {})
+                            reasoning = delta_obj.get("reasoning_content", "")
+                            content = delta_obj.get("content", "")
+
+                            if reasoning:
+                                total_reasoning += reasoning
+                                yield {"delta": reasoning, "phase": "thinking", "done": False}
+                            elif content:
+                                total_content += content
+                                yield {"delta": content, "phase": "answering", "done": False}
+
+                            # 检查最后一个 chunk 是否含 usage（DeepSeek stream 在最后一个 chunk 返回）
+                            if chunk.get("usage"):
+                                usage = chunk["usage"]
+                        except (json.JSONDecodeError, IndexError, KeyError):
+                            continue
+
+            # 6. 流结束 — 计费
+            # DeepSeek streaming 在最后的 chunk 或 [DONE] 前返回 usage
+            # 如果没拿到 usage，按内容长度估算
+            estimated_tokens = len(total_content + total_reasoning) // 2 + len(prompt) // 3
+            actual_usage = locals().get("usage", {})
+            total_tokens = actual_usage.get("total_tokens", estimated_tokens)
+            input_tk = actual_usage.get("prompt_tokens", len(prompt) // 3)
+            output_tk = actual_usage.get("completion_tokens", len(total_content + total_reasoning) // 2)
+            cache_hit_tk = actual_usage.get("prompt_cache_hit_tokens", 0)
+            cache_miss_tk = actual_usage.get("prompt_cache_miss_tokens", 0)
+
+            self._record_usage(user_id, module, model, total_tokens)
+            self._record_token_cost(user_id, model, input_tk, output_tk,
+                                    cache_hit_tokens=cache_hit_tk,
+                                    cache_miss_tokens=cache_miss_tk)
+
+            # 最终完成 chunk
+            yield {
+                "delta": "", "done": True,
+                "model": model,
+                "tokens": total_tokens,
+                "content_length": len(total_content),
+            }
+
+        except Exception as e:
+            print(f"[LLM_GATEWAY] stream 调用失败: {e}")
+            yield {"delta": "", "done": True, "error": str(e), "fallback": True}
+
+    def call_multimodal(self, messages: list, *, model: str = "",
+                        user_id: str = "", module: str = "",
+                        max_tokens: int = 800) -> dict:
+        """多模态调用（视觉/图片识别等），接受预组装的 messages。
+
+        与 call_sync 的区别：
+        1. 不走 MODEL_ROUTING（vision 模型直接由 model 参数指定）
+        2. messages 由调用方完整构造（包含 image_url 等复杂结构）
+        3. 不走缓存（图片内容无法稳定 hash）
+
+        返回格式与 call_sync 一致。
+        """
+        # 0. 日期重置
+        self._check_daily_reset()
+
+        # 1. 熔断检查
+        if not self._check_limits():
+            print(f"[LLM_GATEWAY] ⚠️ multimodal 熔断！daily={self._daily_count}/{DAILY_LIMIT}")
+            return {"content": "", "source": "rate_limited", "fallback": True, "model": "", "tokens": 0}
+
+        # 2. API key
+        api_key = os.environ.get("LLM_API_KEY", "") or os.environ.get("OPENAI_API_KEY", "")
+        if not api_key:
+            return {"content": "", "source": "no_key", "fallback": True, "model": "", "tokens": 0}
+
+        # 3. 模型（vision 模型不在 MODEL_ROUTING 中，直接用参数或环境变量）
+        if not model:
+            model = os.environ.get("LLM_VISION_MODEL", "gpt-4o-mini")
+        api_base = os.environ.get("LLM_API_BASE", "https://api.deepseek.com/v1")
+
+        # 4. 调用
+        try:
+            import httpx
+            with httpx.Client(timeout=30) as client:
+                resp = client.post(
+                    f"{api_base}/chat/completions",
+                    headers={
+                        "Authorization": f"Bearer {api_key}",
+                        "Content-Type": "application/json",
+                    },
+                    json={
+                        "model": model,
+                        "messages": messages,
+                        "max_tokens": max_tokens,
+                    },
+                )
+                if resp.status_code == 200:
+                    data = resp.json()
+                    content = data["choices"][0]["message"].get("content", "")
+                    usage = data.get("usage", {})
+                    total_tokens = usage.get("total_tokens", 0)
+                    input_tk = usage.get("prompt_tokens", 0)
+                    output_tk = usage.get("completion_tokens", 0)
+
+                    # 计费
+                    self._record_usage(user_id, module, model, total_tokens)
+                    self._record_token_cost(user_id, model, input_tk, output_tk)
+
+                    return {
+                        "content": content,
+                        "source": "ai",
+                        "model": model,
+                        "tokens": total_tokens,
+                        "fallback": False,
+                    }
+                else:
+                    print(f"[LLM_GATEWAY] multimodal API error: {resp.status_code} {resp.text[:200]}")
+                    return {
+                        "content": "",
+                        "source": "api_error",
+                        "fallback": True,
+                        "model": model,
+                        "tokens": 0,
+                        "error": f"HTTP {resp.status_code}",
+                    }
+        except Exception as e:
+            print(f"[LLM_GATEWAY] multimodal 调用失败: {e}")
+            return {
+                "content": "",
+                "source": "error",
+                "fallback": True,
+                "model": model,
+                "tokens": 0,
+                "error": str(e),
+            }
+
     # ---- 缓存 ----
 
     def _cache_key(self, user_id: str, module: str, prompt: str, system: str = "") -> str:
@@ -282,6 +486,27 @@ class LLMGateway:
         self._daily_count += 1
         self._burst_window.append(now)
         return True
+
+    def pre_check(self) -> bool:
+        """流式调用前的限流检查，通过返回 True 并消耗一次配额。
+
+        用于 streaming 场景：调用者先 pre_check()，再自行发 httpx stream 请求。
+        这样 stream 也纳入日限/突发限控制。
+        """
+        self._check_daily_reset()
+        return self._check_limits()
+
+    def get_api_config(self) -> dict:
+        """返回 LLM API 配置（key/base/model），供流式/视觉等无法走 call_sync 的场景使用。
+
+        调用者应先 pre_check()，再用返回的配置发请求。
+        这确保所有 LLM 调用的配置来源统一。
+        """
+        import os as _os
+        api_key = _os.environ.get("LLM_API_KEY", "") or _os.environ.get("OPENAI_API_KEY", "")
+        api_base = _os.environ.get("LLM_API_BASE", "https://api.deepseek.com/v1")
+        model = _os.environ.get("LLM_MODEL", "deepseek-v4-flash")
+        return {"api_key": api_key, "api_base": api_base, "model": model}
 
     # ---- 计费 ----
 

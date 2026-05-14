@@ -54,7 +54,7 @@ async function _loadChartData() {
         return;
     }
     try {
-        const url = `${API_BASE}/api/chart/${_chartFundCode}?period=${_chartPeriod}&${getProfileParam()}`;
+        const url = `${API_BASE}/chart/${_chartFundCode}?period=${_chartPeriod}&${getProfileParam()}`;
         const r = await fetch(url, { signal: AbortSignal.timeout(15000) });
         if (!r.ok) throw new Error('HTTP ' + r.status);
         const d = await r.json();

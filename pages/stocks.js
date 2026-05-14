@@ -49,7 +49,7 @@ ${ov.healthIssues&&ov.healthIssues.length?`<div style="margin-top:8px;padding:8p
 
 async function loadBehaviorGuardBar(){
 const el=document.getElementById('behaviorGuardBar');if(!el)return;
-try{const r=await fetch(API_BASE+'/api/behavior/guard-status?'+getProfileParam(),{signal:AbortSignal.timeout(5000)});
+try{const r=await fetch(API_BASE+'/behavior/guard-status?'+getProfileParam(),{signal:AbortSignal.timeout(5000)});
 if(!r.ok){el.innerHTML='';return}
 const d=await r.json();
 const icon=d.enabled?'🟢':'🔴';const color=d.enabled?'rgba(16,185,129,.1)':'rgba(239,68,68,.1)';
@@ -66,8 +66,8 @@ document.body.appendChild(o);_loadGuardPanel()}
 async function _loadGuardPanel(){
 const el=document.getElementById('guardContent');if(!el)return;
 try{const[statusRes,intRes]=await Promise.all([
-fetch(API_BASE+'/api/behavior/guard-status?'+getProfileParam(),{signal:AbortSignal.timeout(5000)}),
-fetch(API_BASE+'/api/behavior/active-interventions?'+getProfileParam(),{signal:AbortSignal.timeout(5000)})]);
+fetch(API_BASE+'/behavior/guard-status?'+getProfileParam(),{signal:AbortSignal.timeout(5000)}),
+fetch(API_BASE+'/behavior/active-interventions?'+getProfileParam(),{signal:AbortSignal.timeout(5000)})]);
 const status=await statusRes.json();const intData=await intRes.json();
 const toggleColor=status.enabled?'var(--green)':'var(--red)';
 const toggleText=status.enabled?'已启用':'已关闭';
@@ -79,12 +79,12 @@ el.innerHTML=`<div style="display:flex;justify-content:space-between;align-items
 }catch(e){el.innerHTML='<div style="color:var(--red);font-size:12px">加载失败</div>'}}
 
 async function _toggleGuard(enabled){
-try{await fetch(API_BASE+'/api/behavior/guard-toggle?'+getProfileParam(),{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({enabled,reason:'用户手动切换'})});
+try{await fetch(API_BASE+'/behavior/guard-toggle?'+getProfileParam(),{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({enabled,reason:'用户手动切换'})});
 _loadGuardPanel();loadBehaviorGuardBar()}catch(e){alert('切换失败')}}
 
 async function _overrideIntervention(idx){
 if(!confirm('确认覆盖此干预？覆盖后该限制立即解除。'))return;
-try{await fetch(API_BASE+'/api/behavior/override/'+idx+'?'+getProfileParam(),{method:'POST'});
+try{await fetch(API_BASE+'/behavior/override/'+idx+'?'+getProfileParam(),{method:'POST'});
 _loadGuardPanel();loadBehaviorGuardBar()}catch(e){alert('覆盖失败')}}
 
 async function renderStocksContent(){

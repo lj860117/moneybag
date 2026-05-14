@@ -14,6 +14,7 @@ Invariant #6: All external data through infra/data_source.
 """
 from __future__ import annotations
 
+import pandas as pd
 from typing import Any, Dict, List, Optional
 
 
@@ -60,7 +61,7 @@ def get_stock_daily_hist(
         # Custom chain for K-line compatibility: AKShare → Baostock
         chain = ["akshare", "baostock"]
         
-        runner = FallbackRunner(metric="stock_price", chain=chain, **params)
+        runner = FallbackRunner(metric="stock_price", chain=chain, params=params)
         data, metadata = runner.fetch()
         
         if data is not None:
@@ -151,7 +152,7 @@ def get_stock_realtime_single(code: str) -> dict | None:
         provider = TushareProvider()
         if provider.is_available():
             df = provider.fetch("stock_price", symbol=code)
-            if df is not None and len(df) > 0:
+            if df is not None and isinstance(df, pd.DataFrame) and len(df) > 0:
                 latest = df.iloc[0]  # Tushare daily 默认按日期降序
                 return {
                     "code": code,
@@ -271,7 +272,7 @@ def get_index_daily(symbol: str = "sh000300") -> Any:
         # Tushare has best data freshness, Baostock is free & stable, AKShare is fallback
         chain = ["tushare", "baostock", "akshare"]
         
-        runner = FallbackRunner(metric="index_daily", chain=chain, **params)
+        runner = FallbackRunner(metric="index_daily", chain=chain, params=params)
         data, metadata = runner.fetch()
         
         if data is not None:
@@ -352,7 +353,7 @@ def get_fund_nav_history(code: str, indicator: str = "单位净值走势") -> An
         # Chain: AKShare (primary) → Tushare (fallback)
         chain = ["akshare", "tushare"]
         
-        runner = FallbackRunner(metric="fund_nav", chain=chain, **params)
+        runner = FallbackRunner(metric="fund_nav", chain=chain, params=params)
         data, metadata = runner.fetch()
         
         if data is not None:

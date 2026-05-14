@@ -39,40 +39,29 @@ _DS_CACHE_TTL = 600  # 10 分钟
 
 
 def _call_deepseek(prompt: str, system: str = "", max_tokens: int = 300, cache_key: str = "") -> str | None:
-    """统一的 DeepSeek 同步调用（短文本场景，非聊天）"""
+    """统一的 DeepSeek 同步调用（通过 gateway 管理）"""
     if cache_key:
         now = time.time()
         if cache_key in _DS_CACHE and now - _DS_CACHE[cache_key]["ts"] < _DS_CACHE_TTL:
             return _DS_CACHE[cache_key]["text"]
 
-    api_key = os.environ.get("LLM_API_KEY") or os.environ.get("OPENAI_API_KEY")
-    if not api_key:
-        return None
-
-    messages = []
-    if system:
-        messages.append({"role": "system", "content": system})
-    messages.append({"role": "user", "content": prompt})
-
     try:
-        with httpx.Client(timeout=20) as client:
-            resp = client.post(
-                "https://api.deepseek.com/v1/chat/completions",
-                headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
-                json={
-                    "model": "deepseek-v4-flash",
-                    "messages": messages,
-                    "max_tokens": max_tokens,
-                    "temperature": 0.7,
-                },
-            )
-            if resp.status_code == 200:
-                text = resp.json()["choices"][0]["message"]["content"]
-                if cache_key:
-                    _DS_CACHE[cache_key] = {"text": text, "ts": time.time()}
-                return text
-            else:
-                print(f"[DS_ENHANCE] API error: {resp.status_code} {resp.text[:100]}")
+        from services.llm_gateway import LLMGateway
+        gw = LLMGateway.instance()
+        result = gw.call_sync(
+            prompt,
+            system=system,
+            model_tier="llm_light",
+            user_id="",
+            module="ds_enhance",
+            max_tokens=max_tokens,
+        )
+        if result.get("fallback") or not result.get("content"):
+            return None
+        text = result["content"]
+        if cache_key:
+            _DS_CACHE[cache_key] = {"text": text, "ts": time.time()}
+        return text
     except Exception as e:
         print(f"[DS_ENHANCE] Call failed: {e}")
     return None
