@@ -18,10 +18,14 @@ from models.schemas import ChatRequest
 from api.shared_helpers import (
     _build_market_context, _build_portfolio_context,
     _build_system_prompt, _load_prompt_template, _rule_based_reply,
-    classify_chat_intent, AVAILABLE_MODELS,
+    _rule_based_reply_structured, classify_chat_intent, AVAILABLE_MODELS,
 )
 
 router = APIRouter()
+
+# 快速路径意图 — 这些 intent 优先走规则引擎（毫秒级），不命中再 fall through 到 LLM
+FAST_PATH_INTENTS = {"timing", "take_profit", "dca", "sentiment", "macro_summary",
+                     "smart_dca", "news", "macro", "valuation", "northbound"}
 
 
 @router.get("/api/models")
@@ -49,6 +53,21 @@ async def chat_analysis(req: ChatRequest):
     market_ctx = _build_market_context()
     uid = req.userId or "default"
     portfolio_ctx = _build_portfolio_context(req.portfolio, user_id=uid) if req.portfolio else _build_portfolio_context(user_id=uid)
+
+    # ★ 规则优先：快速路径（<1s，用真实数据计算，比 LLM 编造更可靠）
+    if intent["intent"] in FAST_PATH_INTENTS:
+        rule_result = _rule_based_reply_structured(user_msg, market_ctx, portfolio_ctx)
+        if rule_result and rule_result["confidence"] >= 0.7:
+            print(f"[CHAT] ★ 规则优先命中: intent={rule_result['intent']}, confidence={rule_result['confidence']}")
+            # 记录决策日志
+            try:
+                from services.decision_log import log_decision
+                log_decision(user_id=uid, question=user_msg, advice=rule_result["text"],
+                             source="rules", intent=rule_result["intent"], model="rules")
+            except Exception:
+                pass
+            return {"reply": rule_result["text"], "source": "rules", "served_by": "rules"}
+        # 不命中 → fall through 到 LLM
 
     # 多用户记忆注入（B1修复：get_memory_summary→build_memory_summary）
     if req.userId:
@@ -157,6 +176,7 @@ async def chat_analysis(req: ChatRequest):
                     return {
                         "reply": reply,
                         "source": "ai",
+                        "served_by": "llm",
                         "further_reading": rag_context.get("further_reading", []),
                     }
         except Exception as e:
@@ -172,7 +192,7 @@ async def chat_analysis(req: ChatRequest):
         log_decision(user_id=uid, question=user_msg, advice=reply, source="rules", intent=intent.get("intent", "general"), model="rules")
     except Exception:
         pass
-    return {"reply": reply, "source": "rules"}
+    return {"reply": reply, "source": "rules", "served_by": "rules"}
 
 
 @router.post("/api/chat/stream")
@@ -205,19 +225,22 @@ async def chat_analysis_stream(req: ChatRequest):
         portfolio_ctx = _build_portfolio_context(req.portfolio, user_id=uid) if req.portfolio else _build_portfolio_context(user_id=uid)
 
         # ★ 规则优先：明确意图且规则引擎能精准回答的，直接用规则（快+准+用真实数据）
-        # 这些意图的规则回答比 LLM 更好：用真实估值/恐贪/北向数据计算出具体建议
-        _RULES_FIRST_INTENTS = {"timing", "smart_dca", "take_profit", "allocation",
-                                "news", "macro", "valuation", "northbound"}
-        if intent["intent"] in _RULES_FIRST_INTENTS:
-            rule_reply = _rule_based_reply(user_msg, market_ctx, portfolio_ctx)
-            if rule_reply and len(rule_reply) > 50:
-                # 规则引擎给出了有效回答，直接流式返回（模拟 SSE 格式）
-                print(f"[CHAT-STREAM] ★ 规则优先命中: intent={intent['intent']}, len={len(rule_reply)}")
+        if intent["intent"] in FAST_PATH_INTENTS:
+            rule_result = _rule_based_reply_structured(user_msg, market_ctx, portfolio_ctx)
+            if rule_result and rule_result["confidence"] >= 0.7:
+                # 规则引擎给出了有效回答，模拟打字逐段流式返回
+                print(f"[CHAT-STREAM] ★ 规则优先命中: intent={rule_result['intent']}, confidence={rule_result['confidence']}")
                 async def _rule_stream():
-                    # 一次性发出（规则引擎已经格式化好了）
-                    yield f"data: {json.dumps({'delta': rule_reply, 'source': 'rules'})}\n\n"
-                    yield f"data: {json.dumps({'delta': '', 'source': 'rules', 'done': True})}\n\n"
-                return StreamingResponse(_rule_stream(), media_type="text/event-stream")
+                    # 按段落分块模拟打字效果
+                    text = rule_result["text"]
+                    chunks = text.split("\n\n")
+                    for i, chunk in enumerate(chunks):
+                        piece = chunk + ("\n\n" if i < len(chunks) - 1 else "")
+                        yield f"data: {json.dumps({'delta': piece, 'source': 'rules', 'done': False, 'phase': 'answering'}, ensure_ascii=False)}\n\n"
+                    # 最终 meta event
+                    yield f"data: {json.dumps({'delta': '', 'source': 'rules', 'done': True, 'served_by': 'rules'}, ensure_ascii=False)}\n\n"
+                return StreamingResponse(_rule_stream(), media_type="text/event-stream",
+                                         headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
 
         # 多用户记忆注入
         if req.userId:
@@ -344,7 +367,7 @@ async def chat_analysis_stream(req: ChatRequest):
                     yield f"data: {json.dumps({'delta': reply, 'source': 'rules', 'done': True}, ensure_ascii=False)}\n\n"
                     return
                 if chunk.get("done"):
-                    yield f"data: {json.dumps({'delta': '', 'source': 'ai', 'done': True}, ensure_ascii=False)}\n\n"
+                    yield f"data: {json.dumps({'delta': '', 'source': 'ai', 'done': True, 'served_by': 'llm'}, ensure_ascii=False)}\n\n"
                     return
                 # 正常 chunk（thinking / answering）
                 delta = chunk.get("delta", "")

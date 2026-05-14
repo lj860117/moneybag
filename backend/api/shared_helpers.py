@@ -329,16 +329,17 @@ def _build_system_prompt(market_ctx: str, portfolio_ctx: str) -> str:
 # ========================================================
 
 _INTENT_RULES = [
-    (["入场", "时机", "现在适合买", "该买吗", "能买吗", "进场"], "timing", "/api/timing"),
-    (["定投", "DCA", "每月投", "定投多少"], "smart_dca", "/api/smart-dca"),
-    (["止盈", "止损", "卖出", "该卖吗", "减仓"], "take_profit", None),
+    (["入场", "时机", "现在适合买", "该买吗", "能买吗", "进场", "能进场", "抄底"], "timing", "/api/timing"),
+    (["定投", "DCA", "每月投", "定投多少", "怎么投", "投多少"], "smart_dca", "/api/smart-dca"),
+    (["止盈", "止损", "卖出", "该卖吗", "减仓", "该出", "锁定利润"], "take_profit", None),
     (["持仓分析", "诊断", "体检", "检查持仓"], "portfolio_doctor", "/api/portfolio-doctor/diagnose"),
     (["配置建议", "资产配置", "怎么分配"], "allocation", None),
     (["新闻", "今天发生", "消息面", "市场怎么样"], "news", None),
-    (["宏观", "GDP", "CPI", "利率", "经济"], "macro", None),
+    (["宏观", "GDP", "CPI", "利率", "经济", "PMI", "通胀", "M2"], "macro", None),
     (["估值", "PE", "PB", "贵不贵"], "valuation", None),
     (["基金", "选基", "推荐基金"], "fund", None),
     (["北向", "外资", "净流入"], "northbound", None),
+    (["情绪", "恐惧", "贪婪", "恐慌", "市场情绪", "散户情绪"], "sentiment", None),
 ]
 
 
@@ -356,12 +357,15 @@ def classify_chat_intent(msg: str) -> dict:
 # 规则引擎降级回答
 # ========================================================
 
-def _rule_based_reply(msg: str, market_ctx: str, portfolio_ctx: str) -> str:
-    """规则引擎降级回答"""
+def _rule_based_reply_structured(msg: str, market_ctx: str, portfolio_ctx: str) -> dict | None:
+    """规则引擎结构化回答 — 命中返回 {text, confidence, intent}，不命中返回 None。
+
+    confidence=0.85 表示规则精准匹配（用真实数据计算），比 LLM 编造更可靠。
+    """
     msg_lower = msg.lower()
 
     # 入场时机
-    if any(k in msg_lower for k in ["什么时候买", "入手", "入场", "时机", "现在能买", "适合买", "抄底"]):
+    if any(k in msg_lower for k in ["什么时候买", "入手", "入场", "时机", "现在能买", "适合买", "抄底", "能进场"]):
         val = get_valuation_percentile()
         fgi_data = get_fear_greed_index()
         fgi = fgi_data["score"]
@@ -374,51 +378,70 @@ def _rule_based_reply(msg: str, market_ctx: str, portfolio_ctx: str) -> str:
             tip = "🟠 **谨慎入场。** 估值偏高，建议降低金额或等回调。"
         else:
             tip = "🔴 **不建议大额入场。** 估值高+市场贪婪，建议等待。"
-        return f"📊 入场时机分析：\n\n{tip}\n\n{val['index']}估值百分位：{val['percentile']}%（{val['level']}）\n恐惧贪婪指数：{fgi:.0f}\n\n💡 建议：不管时机好坏，定投永远是对的。定投的精髓就是穿越牛熊，低估时多买、高估时少买。\n\n⚠️ 以上仅供参考，不构成投资建议。"
+        text = f"📊 入场时机分析：\n\n{tip}\n\n{val['index']}估值百分位：{val['percentile']}%（{val['level']}）\n恐惧贪婪指数：{fgi:.0f}\n\n💡 建议：不管时机好坏，定投永远是对的。定投的精髓就是穿越牛熊，低估时多买、高估时少买。\n\n⚠️ 以上仅供参考，不构成投资建议。"
+        return {"text": text, "confidence": 0.85, "intent": "timing"}
 
     # 止盈止损
     if any(k in msg_lower for k in ["卖", "止盈", "止损", "价位", "该出", "什么时候出", "锁定利润", "减仓", "到了多少"]):
-        return f"🔔 止盈止损策略：\n\n钱袋子采用**分批止盈法**，根据你的风险类型自动设定目标：\n\n🐢 保守型：+15% 止盈 / -8% 止损\n🐰 稳健型：+20% 止盈 / -10% 止损\n🦊 平衡型：+30% 止盈 / -15% 止损\n🦁 进取型：+50% 止盈 / -20% 止损\n🦅 激进型：+80% 止盈 / -25% 止损\n\n📌 操作建议：\n1️⃣ **到了止盈线，不用全卖** — 卖 1/3 锁利润，剩余继续持有\n2️⃣ **到了止损线，先看原因** — 如果基金基本面没变，可能反而是加仓机会\n3️⃣ **不设绝对卖点** — 结合估值百分位综合判断\n\n你可以在首页的 AI 信号里实时看到自己的止盈止损状态 📊\n\n⚠️ 以上仅供参考，不构成投资建议。"
+        text = "🔔 止盈止损策略：\n\n钱袋子采用**分批止盈法**，根据你的风险类型自动设定目标：\n\n🐢 保守型：+15% 止盈 / -8% 止损\n🐰 稳健型：+20% 止盈 / -10% 止损\n🦊 平衡型：+30% 止盈 / -15% 止损\n🦁 进取型：+50% 止盈 / -20% 止损\n🦅 激进型：+80% 止盈 / -25% 止损\n\n📌 操作建议：\n1️⃣ **到了止盈线，不用全卖** — 卖 1/3 锁利润，剩余继续持有\n2️⃣ **到了止损线，先看原因** — 如果基金基本面没变，可能反而是加仓机会\n3️⃣ **不设绝对卖点** — 结合估值百分位综合判断\n\n你可以在首页的 AI 信号里实时看到自己的止盈止损状态 📊\n\n⚠️ 以上仅供参考，不构成投资建议。"
+        return {"text": text, "confidence": 0.85, "intent": "take_profit"}
 
     # 智能定投
-    if any(k in msg_lower for k in ["定投", "智能", "固定还是", "怎么投", "投多少", "每月投"]):
+    if any(k in msg_lower for k in ["定投", "智能", "固定还是", "怎么投", "投多少", "每月投", "dca"]):
         val = get_valuation_percentile()
         smart = calc_smart_dca(1000, val["percentile"])
-        return f"🧠 智能定投 vs 固定定投：\n\n**固定定投**：每月投相同金额，简单省心，长期有效。\n**智能定投**：根据市场估值动态调整 — 低估多买、高估少买。\n\n钱袋子的智能定投策略：\n\n| 估值百分位 | 倍率 | 说明 |\n|-----------|------|------|\n| < 20% | 1.5x | 极度低估，多买 |\n| 20-30% | 1.3x | 低估，适当多买 |\n| 30-50% | 1.1x | 偏低，略多 |\n| 50-70% | 1.0x | 正常，标准额 |\n| 70-85% | 0.7x | 偏高，少买 |\n| > 85% | 0.3x | 高估，大幅减少 |\n\n📊 当前{val['index']}估值：{val['percentile']}%（{val['level']}）\n💡 建议本月倍率：{smart['multiplier']}x — {smart['advice']}\n\n智能定投比固定定投长期多赚约 15-20%，但需要坚持 3 年以上才能看到效果。\n\n⚠️ 以上仅供参考，不构成投资建议。"
+        text = f"🧠 智能定投 vs 固定定投：\n\n**固定定投**：每月投相同金额，简单省心，长期有效。\n**智能定投**：根据市场估值动态调整 — 低估多买、高估少买。\n\n钱袋子的智能定投策略：\n\n| 估值百分位 | 倍率 | 说明 |\n|-----------|------|------|\n| < 20% | 1.5x | 极度低估，多买 |\n| 20-30% | 1.3x | 低估，适当多买 |\n| 30-50% | 1.1x | 偏低，略多 |\n| 50-70% | 1.0x | 正常，标准额 |\n| 70-85% | 0.7x | 偏高，少买 |\n| > 85% | 0.3x | 高估，大幅减少 |\n\n📊 当前{val['index']}估值：{val['percentile']}%（{val['level']}）\n💡 建议本月倍率：{smart['multiplier']}x — {smart['advice']}\n\n智能定投比固定定投长期多赚约 15-20%，但需要坚持 3 年以上才能看到效果。\n\n⚠️ 以上仅供参考，不构成投资建议。"
+        return {"text": text, "confidence": 0.85, "intent": "dca"}
 
-    if any(k in msg_lower for k in ["跌", "亏", "赔", "绿", "下跌"]):
-        return f"📉 市场波动是正常现象。\n\n{market_ctx}\n\n长期投资（3年+）能大幅平滑短期波动。如果你的资产配比还在目标范围内，建议保持定投节奏，不要恐慌卖出。记住投资铁律：跌了别卖，越跌越该买。\n\n⚠️ 以上仅供参考，不构成投资建议。"
+    # 市场情绪 / 恐惧贪婪
+    if any(k in msg_lower for k in ["情绪", "恐惧", "贪婪", "恐慌", "fgi", "市场情绪", "散户情绪"]):
+        fgi_data = get_fear_greed_index()
+        fgi = fgi_data["score"]
+        if fgi < 25:
+            level = "极度恐惧 😱"
+            advice = "历史上极度恐惧时买入，半年后大概率盈利。"
+        elif fgi < 40:
+            level = "恐惧 😰"
+            advice = "市场悲观情绪浓，适合逆向加仓。"
+        elif fgi < 60:
+            level = "中性 😐"
+            advice = "情绪平稳，按计划操作即可。"
+        elif fgi < 75:
+            level = "贪婪 😊"
+            advice = "市场乐观，注意控制仓位。"
+        else:
+            level = "极度贪婪 🤑"
+            advice = "市场过热，考虑适当减仓锁利。"
+        text = f"🎭 市场情绪分析：\n\n恐惧贪婪指数：**{fgi:.0f}** — {level}\n\n{advice}\n\n{market_ctx}\n\n💡 「别人恐惧时我贪婪」说的容易做起来难，但数据不会骗人。\n\n⚠️ 以上仅供参考，不构成投资建议。"
+        return {"text": text, "confidence": 0.85, "intent": "sentiment"}
 
-    if any(k in msg_lower for k in ["涨", "赚", "红", "上涨", "牛"]):
-        return f"📈 恭喜！不过也别过于乐观。\n\n{market_ctx}\n\n赚钱时更要冷静，检查一下各资产的占比是否偏离目标太多。如果某类资产涨太多导致占比过高，可以考虑再平衡——卖掉一点涨多的，买入涨少的。\n\n⚠️ 以上仅供参考，不构成投资建议。"
+    # 宏观经济
+    if any(k in msg_lower for k in ["宏观", "经济", "cpi", "pmi", "通胀", "利率", "货币", "m2", "gdp"]):
+        events = get_macro_calendar()
+        macro_text = "\n".join([f"{e['icon']} {e['name']}：{e['value']}（{e['date']}）\n  └ {e['impact']}" for e in events])
+        text = f"🏛️ 宏观经济数据：\n\n{macro_text}\n\n💡 宏观数据影响市场整体方向。CPI低+PMI>50+M2宽松 = 对股市友好的环境。\n\n⚠️ 以上仅供参考，不构成投资建议。"
+        return {"text": text, "confidence": 0.85, "intent": "macro_summary"}
 
-    # 特定资产类问题
-    if any(k in msg_lower for k in ["黄金", "gold"]):
-        nav = get_fund_nav("000216")
-        news = get_fund_news("000216", 3)
-        news_text = "\n".join([f"📰 {n['title']}" for n in news if n["title"] != "黄金市场动态获取中..."])
-        return f"🪙 黄金近况：净值 {nav['nav']}，日涨跌 {nav['change']}%。\n\n{news_text}\n\n黄金是经典避险资产，近年全球央行持续增持。在你的配置中作为分散风险的角色，建议保持目标占比即可，不用频繁操作。\n\n⚠️ 以上仅供参考，不构成投资建议。"
+    # 新闻/资讯
+    if any(k in msg_lower for k in ["新闻", "资讯", "消息", "发生", "怎么了", "什么情况", "为什么"]):
+        news = get_market_news(5)
+        news_lines = []
+        for n in news[:5]:
+            if n.get("url"):
+                news_lines.append(f'📰 <a href="{n["url"]}" target="_blank" style="color:#F59E0B;text-decoration:underline">{n["title"]}</a>（{n["source"]}）')
+            else:
+                news_lines.append(f"📰 {n['title']}（{n['source']}）")
+        news_text = "\n".join(news_lines)
+        text = f"📰 最新市场资讯：\n\n{news_text}\n\n💡 建议：关注大趋势，不要因为单条新闻做决定。投资看的是长期逻辑。\n\n⚠️ 以上仅供参考，不构成投资建议。"
+        return {"text": text, "confidence": 0.85, "intent": "news"}
 
-    if any(k in msg_lower for k in ["标普", "美股", "s&p", "sp500"]):
-        nav = get_fund_nav("050025")
-        news = get_fund_news("050025", 3)
-        news_text = "\n".join([f"📰 {n['title']}" for n in news if "获取中" not in n["title"]])
-        return f"🇺🇸 标普500近况：净值 {nav['nav']}，日涨跌 {nav['change']}%。\n\n{news_text}\n\n标普500追踪美国500强企业，过去30年年化约10%。分散地域风险的核心配置。\n\n⚠️ 以上仅供参考，不构成投资建议。"
+    # 技术分析
+    if any(k in msg_lower for k in ["技术", "rsi", "macd", "布林", "超买", "超卖", "指标"]):
+        tech = get_technical_indicators()
+        text = f"📊 沪深300技术指标：\n\n📈 RSI(14)：{tech['rsi']}（{tech['rsi_signal']}）\n  └ >70 超买区，<30 超卖区\n\n📉 MACD：{tech['macd']['trend']}\n  └ DIF:{tech['macd']['dif']:.4f} DEA:{tech['macd']['dea']:.4f}\n\n📐 布林带：{tech['bollinger']['position']}\n  └ 上轨:{tech['bollinger']['upper']} 中轨:{tech['bollinger']['middle']} 下轨:{tech['bollinger']['lower']}\n\n💡 技术指标是辅助参考，不能单独作为买卖依据。结合估值+基本面综合判断更靠谱。\n\n⚠️ 以上仅供参考，不构成投资建议。"
+        return {"text": text, "confidence": 0.85, "intent": "technicals"}
 
-    if any(k in msg_lower for k in ["沪深", "a股", "300", "大盘"]):
-        nav = get_fund_nav("110020")
-        news = get_fund_news("110020", 3)
-        news_text = "\n".join([f"📰 {n['title']}" for n in news if "获取中" not in n["title"]])
-        return f"📊 沪深300近况：净值 {nav['nav']}，日涨跌 {nav['change']}%。\n\n{news_text}\n\n沪深300覆盖A股市值最大的300家公司，是A股的核心指数。\n\n⚠️ 以上仅供参考，不构成投资建议。"
-
-    if any(k in msg_lower for k in ["债券", "债基", "纯债"]):
-        nav = get_fund_nav("217022")
-        return f"🏦 债券近况：招商产业债A 净值 {nav['nav']}，日涨跌 {nav['change']}%。\n\n纯债基金是组合的\"稳定器\"，历史几乎没有亏过年度。适合保守资金配置。\n\n⚠️ 以上仅供参考，不构成投资建议。"
-
-    if any(k in msg_lower for k in ["买", "加仓", "什么时候"]):
-        return f"💰 关于买入时机：\n\n{market_ctx}\n\n定投的精髓就是「不择时」——每月固定日期买入，无论涨跌。这样长期下来会自动实现低买多、高买少。如果恐惧指数很高（市场极度悲观），可以适当多买一点。\n\n⚠️ 以上仅供参考，不构成投资建议。"
-
-    # 政策/大宗商品/行业影响分析
+    # 政策/地缘/影响
     if any(k in msg_lower for k in ["政策", "降息", "降准", "关税", "贸易战", "制裁", "战争", "地缘",
                                      "大宗", "油价", "原油", "opec", "影响", "利好", "利空",
                                      "行业", "板块", "半导体", "芯片", "基建"]):
@@ -432,35 +455,32 @@ def _rule_based_reply(msg: str, market_ctx: str, portfolio_ctx: str) -> str:
                     bear = "📉利空：" + "、".join(imp["bearish"]) if imp["bearish"] else ""
                     impact_lines.append(f"🏷️ **{imp['tag']}**\n{imp['impact']}\n{bull} {bear}\n涉及行业：{', '.join(imp['sectors'])}")
                 impact_text = "\n\n".join(impact_lines)
-                return f"🏛️ 当前事件对你持仓的影响分析：\n\n{impact_text}\n\n💡 建议：关注事件发展趋势，短期波动不改长期逻辑。如果你是定投模式，保持节奏即可。\n\n⚠️ 以上基于关键词匹配的初步分析，仅供参考，不构成投资建议。"
-            else:
-                return "🏛️ 当前暂未检测到对你持仓有显著影响的政策/事件。\n\n💡 保持定投节奏，不需要每天看新闻做决定。\n\n⚠️ 以上仅供参考，不构成投资建议。"
+                text = f"🏛️ 当前事件对你持仓的影响分析：\n\n{impact_text}\n\n💡 建议：关注事件发展趋势，短期波动不改长期逻辑。如果你是定投模式，保持节奏即可。\n\n⚠️ 以上基于关键词匹配的初步分析，仅供参考，不构成投资建议。"
+                return {"text": text, "confidence": 0.85, "intent": "macro_impact"}
         except Exception:
-            return "🏛️ 政策影响分析暂时无法获取，请稍后再试。"
+            pass
+        return None
 
-    # 新闻/资讯
-    if any(k in msg_lower for k in ["新闻", "资讯", "消息", "发生", "怎么了", "什么情况", "为什么"]):
-        news = get_market_news(5)
-        news_lines = []
-        for n in news[:5]:
-            if n.get("url"):
-                news_lines.append(f'📰 <a href="{n["url"]}" target="_blank" style="color:#F59E0B;text-decoration:underline">{n["title"]}</a>（{n["source"]}）')
-            else:
-                news_lines.append(f"📰 {n['title']}（{n['source']}）")
-        news_text = "\n".join(news_lines)
-        return f"📰 最新市场资讯：\n\n{news_text}\n\n💡 建议：关注大趋势，不要因为单条新闻做决定。投资看的是长期逻辑。\n\n⚠️ 以上仅供参考，不构成投资建议。"
+    # 市场下跌安慰
+    if any(k in msg_lower for k in ["跌", "亏", "赔", "绿", "下跌"]):
+        text = f"📉 市场波动是正常现象。\n\n{market_ctx}\n\n长期投资（3年+）能大幅平滑短期波动。如果你的资产配比还在目标范围内，建议保持定投节奏，不要恐慌卖出。记住投资铁律：跌了别卖，越跌越该买。\n\n⚠️ 以上仅供参考，不构成投资建议。"
+        return {"text": text, "confidence": 0.85, "intent": "market_down"}
 
-    # 技术分析
-    if any(k in msg_lower for k in ["技术", "rsi", "macd", "布林", "超买", "超卖", "指标"]):
-        tech = get_technical_indicators()
-        return f"📊 沪深300技术指标：\n\n📈 RSI(14)：{tech['rsi']}（{tech['rsi_signal']}）\n  └ >70 超买区，<30 超卖区\n\n📉 MACD：{tech['macd']['trend']}\n  └ DIF:{tech['macd']['dif']:.4f} DEA:{tech['macd']['dea']:.4f}\n\n📐 布林带：{tech['bollinger']['position']}\n  └ 上轨:{tech['bollinger']['upper']} 中轨:{tech['bollinger']['middle']} 下轨:{tech['bollinger']['lower']}\n\n💡 技术指标是辅助参考，不能单独作为买卖依据。结合估值+基本面综合判断更靠谱。\n\n⚠️ 以上仅供参考，不构成投资建议。"
+    # 市场上涨
+    if any(k in msg_lower for k in ["涨", "赚", "红", "上涨", "牛"]):
+        text = f"📈 恭喜！不过也别过于乐观。\n\n{market_ctx}\n\n赚钱时更要冷静，检查一下各资产的占比是否偏离目标太多。如果某类资产涨太多导致占比过高，可以考虑再平衡——卖掉一点涨多的，买入涨少的。\n\n⚠️ 以上仅供参考，不构成投资建议。"
+        return {"text": text, "confidence": 0.85, "intent": "market_up"}
 
-    # 宏观
-    if any(k in msg_lower for k in ["宏观", "经济", "cpi", "pmi", "通胀", "利率", "货币", "m2"]):
-        events = get_macro_calendar()
-        macro_text = "\n".join([f"{e['icon']} {e['name']}：{e['value']}（{e['date']}）\n  └ {e['impact']}" for e in events])
-        return f"🏛️ 宏观经济数据：\n\n{macro_text}\n\n💡 宏观数据影响市场整体方向。CPI低+PMI>50+M2宽松 = 对股市友好的环境。\n\n⚠️ 以上仅供参考，不构成投资建议。"
+    # 不命中 → 返回 None，交给 LLM
+    return None
 
+
+def _rule_based_reply(msg: str, market_ctx: str, portfolio_ctx: str) -> str:
+    """规则引擎降级回答（兼容旧调用方）"""
+    result = _rule_based_reply_structured(msg, market_ctx, portfolio_ctx)
+    if result:
+        return result["text"]
+    # 兜底回复
     return f"🤔 关于你的问题：\n\n当前市场概况：\n{market_ctx}\n\n{portfolio_ctx}\n\n你可以问我：\n📰 「最近有什么新闻？」\n📊 「技术指标怎么样？」\n🏛️ 「宏观经济怎么样？」\n🎯 「现在适合入场吗？」\n💰 「什么时候该卖？」\n🧠 「定投多少合适？」\n\n⚠️ 以上仅供参考，不构成投资建议。"
 
 
