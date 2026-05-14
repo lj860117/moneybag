@@ -62,6 +62,15 @@ const API_BASE = (() => {
   if (h === 'localhost' || h === '127.0.0.1' || h.startsWith('192.168.')) return 'http://localhost:8000/api';
   return '/api'; // 同源，自动匹配当前协议和域名
 })();
+
+// 全局 API 路径工具 — 防止 /api/api/ 双前缀
+function api(path) {
+  if (!path.startsWith('/')) path = '/' + path;
+  if (path.startsWith('/api/') && API_BASE.endsWith('/api')) path = path.slice(4);
+  return API_BASE + path;
+}
+window.api = api;
+
 let API_AVAILABLE = false;
 
 function getUserId() {
