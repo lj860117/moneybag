@@ -1,0 +1,528 @@
+[
+  {
+    "type": "news_market",
+    "title": "最高增长3773.77%！A股业绩利好来了",
+    "content": "最高增长3773.77%！A股业绩利好来了",
+    "codes": [],
+    "source": "中国证券报",
+    "time": "2026-04-19 12:57:00",
+    "level": "info",
+    "tags": [
+      "利好"
+    ],
+    "url": "http://finance.eastmoney.com/a/202604193709834324.html",
+    "relevance": 50,
+    "related_holding": ""
+  },
+  {
+    "type": "unlock",
+    "title": "解禁预警: 301428.SZ 解禁34.9966%",
+    "content": "解禁日: 20260519, 解禁数量: 34530000.0万股",
+    "codes": [
+      "301428"
+    ],
+    "source": "Tushare",
+    "time": "20260519",
+    "level": "danger",
+    "tags": [
+      "解禁"
+    ],
+    "relevance": 30,
+    "related_holding": ""
+  },
+  {
+    "type": "unlock",
+    "title": "解禁预警: 688581.SH 解禁32.6466%",
+    "content": "解禁日: 20260519, 解禁数量: 18892898.0万股",
+    "codes": [
+      "688581"
+    ],
+    "source": "Tushare",
+    "time": "20260519",
+    "level": "danger",
+    "tags": [
+      "解禁"
+    ],
+    "relevance": 30,
+    "related_holding": ""
+  },
+  {
+    "type": "unlock",
+    "title": "解禁预警: 688361.SH 解禁11.8128%",
+    "content": "解禁日: 20260519, 解禁数量: 37800963.0万股",
+    "codes": [
+      "688361"
+    ],
+    "source": "Tushare",
+    "time": "20260519",
+    "level": "danger",
+    "tags": [
+      "解禁"
+    ],
+    "relevance": 30,
+    "related_holding": ""
+  },
+  {
+    "type": "unlock",
+    "title": "解禁预警: 688361.SH 解禁11.7543%",
+    "content": "解禁日: 20260519, 解禁数量: 37800963.0万股",
+    "codes": [
+      "688361"
+    ],
+    "source": "Tushare",
+    "time": "20260519",
+    "level": "danger",
+    "tags": [
+      "解禁"
+    ],
+    "relevance": 30,
+    "related_holding": ""
+  },
+  {
+    "type": "unlock",
+    "title": "解禁预警: 688361.SH 解禁10.7952%",
+    "content": "解禁日: 20260519, 解禁数量: 37800963.0万股",
+    "codes": [
+      "688361"
+    ],
+    "source": "Tushare",
+    "time": "20260519",
+    "level": "danger",
+    "tags": [
+      "解禁"
+    ],
+    "relevance": 30,
+    "related_holding": ""
+  },
+  {
+    "type": "unlock",
+    "title": "解禁预警: 688581.SH 解禁7.14%",
+    "content": "解禁日: 20260519, 解禁数量: 4131963.0万股",
+    "codes": [
+      "688581"
+    ],
+    "source": "Tushare",
+    "time": "20260519",
+    "level": "danger",
+    "tags": [
+      "解禁"
+    ],
+    "relevance": 30,
+    "related_holding": ""
+  },
+  {
+    "type": "unlock",
+    "title": "解禁预警: 688361.SH 解禁5.8925%",
+    "content": "解禁日: 20260519, 解禁数量: 18855937.0万股",
+    "codes": [
+      "688361"
+    ],
+    "source": "Tushare",
+    "time": "20260519",
+    "level": "danger",
+    "tags": [
+      "解禁"
+    ],
+    "relevance": 30,
+    "related_holding": ""
+  },
+  {
+    "type": "unlock",
+    "title": "解禁预警: 688361.SH 解禁5.8633%",
+    "content": "解禁日: 20260519, 解禁数量: 18855937.0万股",
+    "codes": [
+      "688361"
+    ],
+    "source": "Tushare",
+    "time": "20260519",
+    "level": "danger",
+    "tags": [
+      "解禁"
+    ],
+    "relevance": 30,
+    "related_holding": ""
+  },
+  {
+    "type": "unlock",
+    "title": "解禁预警: 688581.SH 解禁5.7369%",
+    "content": "解禁日: 20260519, 解禁数量: 3319998.0万股",
+    "codes": [
+      "688581"
+    ],
+    "source": "Tushare",
+    "time": "20260519",
+    "level": "danger",
+    "tags": [
+      "解禁"
+    ],
+    "relevance": 30,
+    "related_holding": ""
+  },
+  {
+    "type": "unlock",
+    "title": "解禁预警: 300084.SZ 解禁22.4751%",
+    "content": "解禁日: 20260518, 解禁数量: 114260979.0万股",
+    "codes": [
+      "300084"
+    ],
+    "source": "Tushare",
+    "time": "20260518",
+    "level": "danger",
+    "tags": [
+      "解禁"
+    ],
+    "relevance": 30,
+    "related_holding": ""
+  },
+  {
+    "type": "holder_change",
+    "title": "佳都科技集团股份有限公司2024年员工持股计划 减持 20260418",
+    "content": "变动股数: 3745000.0万股, 变动金额: 0万元",
+    "codes": [
+      "600728"
+    ],
+    "source": "Tushare",
+    "time": "20260418",
+    "level": "warning",
+    "tags": [
+      "减持",
+      "股东"
+    ],
+    "relevance": 30,
+    "related_holding": ""
+  },
+  {
+    "type": "holder_change",
+    "title": "叶磊 减持 20260418",
+    "content": "变动股数: 4600000.0万股, 变动金额: 0万元",
+    "codes": [
+      "920599"
+    ],
+    "source": "Tushare",
+    "time": "20260418",
+    "level": "warning",
+    "tags": [
+      "减持",
+      "股东"
+    ],
+    "relevance": 30,
+    "related_holding": ""
+  },
+  {
+    "type": "holder_change",
+    "title": "胡啸宇 减持 20260418",
+    "content": "变动股数: 800800.0万股, 变动金额: 0万元",
+    "codes": [
+      "920357"
+    ],
+    "source": "Tushare",
+    "time": "20260418",
+    "level": "warning",
+    "tags": [
+      "减持",
+      "股东"
+    ],
+    "relevance": 30,
+    "related_holding": ""
+  },
+  {
+    "type": "holder_change",
+    "title": "湖南湘投高科技创业投资有限公司 减持 20260418",
+    "content": "变动股数: 4072000.0万股, 变动金额: 0万元",
+    "codes": [
+      "002297"
+    ],
+    "source": "Tushare",
+    "time": "20260418",
+    "level": "warning",
+    "tags": [
+      "减持",
+      "股东"
+    ],
+    "relevance": 30,
+    "related_holding": ""
+  },
+  {
+    "type": "holder_change",
+    "title": "深圳市平安置业投资有限公司 减持 20260418",
+    "content": "变动股数: 3839000.0万股, 变动金额: 0万元",
+    "codes": [
+      "000035"
+    ],
+    "source": "Tushare",
+    "time": "20260418",
+    "level": "warning",
+    "tags": [
+      "减持",
+      "股东"
+    ],
+    "relevance": 30,
+    "related_holding": ""
+  },
+  {
+    "type": "holder_change",
+    "title": "中国平安人寿保险股份有限公司 减持 20260418",
+    "content": "变动股数: 18197300.0万股, 变动金额: 0万元",
+    "codes": [
+      "000035"
+    ],
+    "source": "Tushare",
+    "time": "20260418",
+    "level": "warning",
+    "tags": [
+      "减持",
+      "股东"
+    ],
+    "relevance": 30,
+    "related_holding": ""
+  },
+  {
+    "type": "holder_change",
+    "title": "中节能华禹基金管理有限公司-中节能华禹(镇江)绿色产业并购投资基金(有限合伙) 减持 20260418",
+    "content": "变动股数: 20205100.0万股, 变动金额: 0万元",
+    "codes": [
+      "000035"
+    ],
+    "source": "Tushare",
+    "time": "20260418",
+    "level": "warning",
+    "tags": [
+      "减持",
+      "股东"
+    ],
+    "relevance": 30,
+    "related_holding": ""
+  },
+  {
+    "type": "holder_change",
+    "title": "山东华岳汇盈机械设备有限公司 减持 20260418",
+    "content": "变动股数: 897000.0万股, 变动金额: 0万元",
+    "codes": [
+      "920599"
+    ],
+    "source": "Tushare",
+    "time": "20260418",
+    "level": "warning",
+    "tags": [
+      "减持",
+      "股东"
+    ],
+    "relevance": 30,
+    "related_holding": ""
+  },
+  {
+    "type": "holder_change",
+    "title": "北京普润平方股权投资中心(有限合伙) 减持 20260418",
+    "content": "变动股数: 5507400.0万股, 变动金额: 0万元",
+    "codes": [
+      "603876"
+    ],
+    "source": "Tushare",
+    "time": "20260418",
+    "level": "warning",
+    "tags": [
+      "减持",
+      "股东"
+    ],
+    "relevance": 30,
+    "related_holding": ""
+  },
+  {
+    "type": "holder_change",
+    "title": "北京普润平方壹号股权投资中心(有限合伙) 减持 20260418",
+    "content": "变动股数: 2000000.0万股, 变动金额: 0万元",
+    "codes": [
+      "603876"
+    ],
+    "source": "Tushare",
+    "time": "20260418",
+    "level": "warning",
+    "tags": [
+      "减持",
+      "股东"
+    ],
+    "relevance": 30,
+    "related_holding": ""
+  },
+  {
+    "type": "holder_change",
+    "title": "北京智诚广宜投资管理中心(有限合伙) 减持 20260418",
+    "content": "变动股数: 1118100.0万股, 变动金额: 0万元",
+    "codes": [
+      "688292"
+    ],
+    "source": "Tushare",
+    "time": "20260418",
+    "level": "warning",
+    "tags": [
+      "减持",
+      "股东"
+    ],
+    "relevance": 30,
+    "related_holding": ""
+  },
+  {
+    "type": "holder_change",
+    "title": "李明崽 减持 20260418",
+    "content": "变动股数: 137000.0万股, 变动金额: 0万元",
+    "codes": [
+      "605366"
+    ],
+    "source": "Tushare",
+    "time": "20260418",
+    "level": "warning",
+    "tags": [
+      "减持",
+      "股东"
+    ],
+    "relevance": 30,
+    "related_holding": ""
+  },
+  {
+    "type": "holder_change",
+    "title": "中外运集装箱运输有限公司 减持 20260418",
+    "content": "变动股数: 42315291.0万股, 变动金额: 0万元",
+    "codes": [
+      "600179"
+    ],
+    "source": "Tushare",
+    "time": "20260418",
+    "level": "warning",
+    "tags": [
+      "减持",
+      "股东"
+    ],
+    "relevance": 30,
+    "related_holding": ""
+  },
+  {
+    "type": "holder_change",
+    "title": "安乐工程集团有限公司 减持 20260418",
+    "content": "变动股数: 5901900.0万股, 变动金额: 0万元",
+    "codes": [
+      "603912"
+    ],
+    "source": "Tushare",
+    "time": "20260418",
+    "level": "warning",
+    "tags": [
+      "减持",
+      "股东"
+    ],
+    "relevance": 30,
+    "related_holding": ""
+  },
+  {
+    "type": "holder_change",
+    "title": "秦大乾 减持 20260418",
+    "content": "变动股数: 1603520.0万股, 变动金额: 0万元",
+    "codes": [
+      "603031"
+    ],
+    "source": "Tushare",
+    "time": "20260418",
+    "level": "warning",
+    "tags": [
+      "减持",
+      "股东"
+    ],
+    "relevance": 30,
+    "related_holding": ""
+  },
+  {
+    "type": "holder_change",
+    "title": "宁波泽奥创业投资合伙企业(有限合伙) 减持 20260418",
+    "content": "变动股数: 1520540.0万股, 变动金额: 0万元",
+    "codes": [
+      "688266"
+    ],
+    "source": "Tushare",
+    "time": "20260418",
+    "level": "warning",
+    "tags": [
+      "减持",
+      "股东"
+    ],
+    "relevance": 30,
+    "related_holding": ""
+  },
+  {
+    "type": "holder_change",
+    "title": "ZELIN SHENG 减持 20260418",
+    "content": "变动股数: 273907.0万股, 变动金额: 0万元",
+    "codes": [
+      "688266"
+    ],
+    "source": "Tushare",
+    "time": "20260418",
+    "level": "warning",
+    "tags": [
+      "减持",
+      "股东"
+    ],
+    "relevance": 30,
+    "related_holding": ""
+  },
+  {
+    "type": "holder_change",
+    "title": "张顼 减持 20260417",
+    "content": "变动股数: 10198627.0万股, 变动金额: 0万元",
+    "codes": [
+      "688556"
+    ],
+    "source": "Tushare",
+    "time": "20260417",
+    "level": "warning",
+    "tags": [
+      "减持",
+      "股东"
+    ],
+    "relevance": 30,
+    "related_holding": ""
+  },
+  {
+    "type": "holder_change",
+    "title": "长江晨道(湖北)新能源产业投资合伙企业(有限合伙) 减持 20260417",
+    "content": "变动股数: 645300.0万股, 变动金额: 0万元",
+    "codes": [
+      "301631"
+    ],
+    "source": "Tushare",
+    "time": "20260417",
+    "level": "warning",
+    "tags": [
+      "减持",
+      "股东"
+    ],
+    "relevance": 30,
+    "related_holding": ""
+  },
+  {
+    "type": "news_policy",
+    "title": "【环球财经】美国延长暂时放松对俄石油制裁措施",
+    "content": "【环球财经】美国延长暂时放松对俄石油制裁措施",
+    "codes": [],
+    "source": "新华财经",
+    "time": "2026-04-18 09:49:22",
+    "level": "warning",
+    "tags": [],
+    "url": "http://finance.eastmoney.com/a/202604183709703720.html",
+    "relevance": 30,
+    "related_holding": ""
+  },
+  {
+    "type": "technical",
+    "title": "今日涨停 71 只",
+    "content": "涨停家数: 71",
+    "codes": [],
+    "source": "东财",
+    "time": "13:41",
+    "level": "warning",
+    "tags": [
+      "涨停",
+      "情绪"
+    ],
+    "relevance": 30,
+    "related_holding": ""
+  }
+]

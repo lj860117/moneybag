@@ -1,0 +1,85 @@
+{
+  "holdings": [
+    {
+      "code": "510300",
+      "name": "沪深300ETF",
+      "costNav": 4.12,
+      "shares": 5000,
+      "realtime": null,
+      "risk": {
+        "maxDrawdown": 0.0609,
+        "volatility": 19.7723,
+        "downDays": 1,
+        "weekReturn": 1.98
+      },
+      "alerts": [
+        {
+          "type": "drawdown",
+          "level": "warning",
+          "msg": "🔻 近期最大回撤 6.1%，注意风险",
+          "fund": "沪深300ETF(510300)"
+        }
+      ],
+      "pnl": null,
+      "pnlPct": null
+    },
+    {
+      "code": "519736",
+      "name": "交银裕隆纯债A",
+      "costNav": 1.185,
+      "shares": 10000,
+      "realtime": {
+        "code": "519736",
+        "estNav": 3.4611,
+        "estRate": -0.63,
+        "nav": 3.44,
+        "navRate": -1.23,
+        "prevNav": 3.483,
+        "estDeviation": 0.6
+      },
+      "risk": {
+        "maxDrawdown": 0.0449,
+        "volatility": 16.6252,
+        "downDays": 1,
+        "weekReturn": 0.63
+      },
+      "alerts": [
+        {
+          "type": "deviation",
+          "level": "info",
+          "msg": "⚠️ 估算偏差 +0.60%（实际净值可能与估算差距较大）",
+          "fund": "交银裕隆纯债A(519736)"
+        },
+        {
+          "type": "drawdown",
+          "level": "warning",
+          "msg": "🔻 近期最大回撤 4.5%，注意风险",
+          "fund": "交银裕隆纯债A(519736)"
+        }
+      ],
+      "pnl": 22761.0,
+      "pnlPct": 192.08
+    }
+  ],
+  "alerts": [
+    {
+      "type": "deviation",
+      "level": "info",
+      "msg": "⚠️ 估算偏差 +0.60%（实际净值可能与估算差距较大）",
+      "fund": "交银裕隆纯债A(519736)"
+    },
+    {
+      "type": "drawdown",
+      "level": "warning",
+      "msg": "🔻 近期最大回撤 4.5%，注意风险",
+      "fund": "交银裕隆纯债A(519736)"
+    },
+    {
+      "type": "drawdown",
+      "level": "warning",
+      "msg": "🔻 近期最大回撤 6.1%，注意风险",
+      "fund": "沪深300ETF(510300)"
+    }
+  ],
+  "scannedAt": "2026-04-19T12:04:25.032186"
+}

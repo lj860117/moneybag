@@ -1,0 +1,70 @@
+╔════════════════════════════════════════════════════════════════════════════════════════════════════════════════════╗
+║                                    MYPY STRICT CHECK - 21 ERRORS BREAKDOWN                                        ║
+╠════════════════════════════════════════════════════════════════════════════════════════════════════════════════════╣
+║ ERROR TYPE                                  │ COUNT │ FILES                                  │ ROOT CAUSE           ║
+╠════════════════════════════════════════════════════════════════════════════════════════════════════════════════════╣
+║ 1. Provider Helper Returns Any              │  12   │ akshare_provider.py (lines 85-107)     │ Untyped external lib ║
+║    [no-any-return]                          │       │ Lines: 85,87,89,91,93,95,97,99,101,103 │ (akshare module)     ║
+║                                             │       │ ,105,107                               │                      ║
+╠════════════════════════════════════════════════════════════════════════════════════════════════════════════════════╣
+║ 2. Provider Helper Returns Any              │   3   │ baostock_provider.py (lines 75-79)     │ Untyped external lib ║
+║    [no-any-return]                          │       │ Lines: 75,77,79                        │ (baostock module)    ║
+╠════════════════════════════════════════════════════════════════════════════════════════════════════════════════════╣
+║ 3. Missing TencentProvider Class            │   1   │ fallback.py (line 232)                 │ Incomplete refactor  ║
+║    [attr-defined]                           │       │ Dynamic import but class doesn't exist │ tencent is functions ║
+║                                             │       │                                        │ not class            ║
+╠════════════════════════════════════════════════════════════════════════════════════════════════════════════════════╣
+║ 4. FallbackRunner Type Mismatch             │   3   │ market/stocks.py (lines 63, 274, 355) │ Signature design flaw║
+║    [arg-type]                               │       │ Argument 3: expected float got dict    │ timeout_per_provider ║
+║    dict[str,str] instead of float           │       │                                        │ not explicitly passed║
+╠════════════════════════════════════════════════════════════════════════════════════════════════════════════════════╣
+║ 5. Union Type Has No .iloc Attribute        │   2   │ market/stocks.py (line 155)            │ Type not narrowed    ║
+║    [union-attr]                             │       │ dict | list | Any has no .iloc         │ Need isinstance check║
+║    (pandas DataFrame only)                  │       │                                        │ or better return type║
+╠════════════════════════════════════════════════════════════════════════════════════════════════════════════════════╣
+║ TOTAL                                       │  21   │ 4 files in infra/data_source/          │                      ║
+╚════════════════════════════════════════════════════════════════════════════════════════════════════════════════════╝
+
+FIX PRIORITY ORDER
+═══════════════════════════════════════════════════════════════════════════════════════════════════════════════════════
+
+[1] TencentProvider (1 error)  ⏱️ ~15 min  🎯 Creates TencentProvider class or removes from fallback
+    └─ File: infra/data_source/providers/tencent_provider.py
+    └─ Creates blocking issue for other imports
+
+[2] Provider Return Types (15 errors)  ⏱️ ~30 min  🎯 Annotate helpers or use cast()
+    ├─ File: infra/data_source/providers/akshare_provider.py (12 errors)
+    └─ File: infra/data_source/providers/baostock_provider.py (3 errors)
+
+[3] FallbackRunner Calls (3 errors)  ⏱️ ~20 min  🎯 Explicit timeout_per_provider or restructure
+    └─ File: infra/data_source/market/stocks.py (lines 63, 274, 355)
+
+[4] Union Type Narrowing (2 errors)  ⏱️ ~10 min  🎯 Add isinstance(df, pd.DataFrame) checks
+    └─ File: infra/data_source/market/stocks.py (line 155)
+
+═══════════════════════════════════════════════════════════════════════════════════════════════════════════════════════
+
+KEY FINDINGS
+═══════════════════════════════════════════════════════════════════════════════════════════════════════════════════════
+
+✅ GOOD NEWS:
+  • domain/ → 0 errors ✓
+  • infra/cache/ → 0 errors ✓
+  • infra/store/ → 0 errors ✓
+  • infra/llm/ → 0 errors ✓
+  • use_cases/ → 0 errors ✓
+
+  ⇒ New architecture layers are healthy! Only infra/data_source (legacy integration layer) has issues.
+
+🔴 PROBLEM:
+  • All 21 errors are in infra/data_source/ (integration layer calling untyped external libraries)
+  • Not in the new core architecture layers
+  • Issue: Some code wasn't fully refactored when moving to strict mode
+
+🛠️ ROOT CAUSE:
+  • External libraries (akshare, baostock) have NO type stubs → return Any
+  • Providers promise specific return types but call untyped libraries
+  • Config has ignore_missing_imports=true for these libraries (correct)
+  • But helper methods weren't annotated to bridge the gap
+
+═══════════════════════════════════════════════════════════════════════════════════════════════════════════════════════

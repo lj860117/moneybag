@@ -1,0 +1,330 @@
+================================================================================
+                   DeepSeek Model Configuration Analysis
+                           MoneyBag Project
+                            2026-05-14
+================================================================================
+
+EXECUTIVE SUMMARY
+================================================================================
+Found and documented ALL DeepSeek model selection and configuration code across
+the MoneyBag project. Created 4 comprehensive documentation files (1507 lines)
+with exact code locations, data flows, and quick references.
+
+DISCOVERED MODELS (3 Production)
+================================================================================
+
+1. deepseek-v4-flash
+   Display Name:  "DeepSeek V4"
+   Use Case:      Fast chat/analysis (default)
+   Speed:         ⚡ 1-2 seconds
+   Where Used:    Frontend dropdown (default), chat endpoints
+   Cost:          💰 Low
+
+2. deepseek-v4-max
+   Display Name:  "DeepSeek V4 Max"
+   Use Case:      Advanced analysis, agent decisions
+   Speed:         🐢 3-5 seconds
+   Where Used:    Agent analysis (/api/agent/analyze), intelligent routing
+   Cost:          💰💰 Medium
+
+3. deepseek-reasoner
+   Display Name:  "DeepSeek R1 (深度思考)"
+   Use Case:      Deep reasoning, complex decisions
+   Speed:         🐌 15-30 seconds (user is warned)
+   Where Used:    Chat endpoint (user selectable), heavy analysis
+   Special:       Shows "thinking process" in collapsible <details> block
+   Cost:          💰💰💰 High
+
+Note: "deepseek-v4-pro" is mentioned in code but NOT in AVAILABLE_MODELS (legacy?)
+
+KEY LOCATIONS - BACKEND
+================================================================================
+
+📍 Model Definitions (Source of Truth)
+   File: backend/api/shared_helpers.py
+   Lines: 650-654
+   AVAILABLE_MODELS list with id, name, provider, base URL, env key
+
+📍 Backend Configuration
+   File: backend/config.py
+   Lines: 109-142
+   LLM_API_URL, LLM_API_KEY, LLM_MODEL, DEEPSEEK_PRICING
+
+📍 Chat Endpoints (Model Selection)
+   File: backend/api/chat.py
+   - Lines 27-35: GET /api/models endpoint
+   - Lines 38-75: POST /api/chat endpoint
+   - Lines 185-320: POST /api/chat/stream endpoint (SSE streaming)
+   Logic: Look up model in AVAILABLE_MODELS → get API key → call DeepSeek
+
+📍 LLM Gateway (Smart Routing)
+   File: backend/services/llm_gateway.py
+   Lines: 22-27
+   MODEL_ROUTING maps tiers to models:
+   - "llm_light" → deepseek-v4-flash (fast responses)
+   - "llm_heavy" → deepseek-reasoner (deep thinking)
+
+📍 WeChat Integration (Model Switching)
+   File: backend/routers/wxwork.py
+   Lines: 84-119
+   - User sends: "模型 deepseek-v4-flash" → model switches
+   - Stored in user profile: preferredModel field
+   - Auto-used on next message
+
+📍 Agent Analysis
+   File: backend/api/agent.py
+   Lines: 195-237
+   Defaults to "deepseek-v4-max"
+
+KEY LOCATIONS - FRONTEND
+================================================================================
+
+📍 Chat Page & Dropdown
+   File: pages/chat.js
+   Lines: 1-6
+   - let chatModel='deepseek-v4-flash' (default)
+   - let chatModelList=[] (fetched from /api/models)
+   - Dropdown selector with onChange handler
+
+📍 Model Persistence
+   localStorage.setItem('chatModel', model_id)
+   Restores on page reload
+
+📍 R1 Special Handling (Thinking Display)
+   File: pages/chat.js
+   Lines: 20-50
+   - Detect R1: chatModel.includes('reasoner')
+   - Show progress: "R1 深度思考需要 15-30 秒，请耐心等待"
+   - Parse SSE: reasoning_content (phase=thinking) vs content (phase=answering)
+   - Render: <details> block with collapsible thinking process
+
+MODEL SWITCHING FLOW
+================================================================================
+
+1. FRONTEND USER SELECTION
+   User clicks dropdown in chat page → selects model
+   ↓
+   localStorage.setItem('chatModel', 'deepseek-reasoner')
+
+2. USER SENDS MESSAGE
+   sendChat() function called
+   ↓
+   POST /api/chat/stream with:
+   {
+     "message": "...",
+     "model": "deepseek-reasoner",     ← User's choice
+     "portfolio": {...},
+     "userId": "user123"
+   }
+
+3. BACKEND PROCESSING
+   backend/api/chat.py receives request
+   ↓
+   model = req.model or os.environ.get("LLM_MODEL", "deepseek-v4-flash")
+   ↓
+   Look up in AVAILABLE_MODELS:
+   {
+     "id": "deepseek-reasoner",
+     "name": "DeepSeek R1 (深度思考)",
+     "base": "https://api.deepseek.com/v1",
+     "env_key": "LLM_API_KEY"
+   }
+   ↓
+   Get API key from environment
+   ↓
+   Call DeepSeek API:
+   POST https://api.deepseek.com/v1/chat/completions
+   {
+     "model": "deepseek-reasoner",
+     "messages": [...],
+     "stream": true
+   }
+
+4. DEEPSEEK RESPONSE STREAMING
+   SSE stream with chunks:
+   - reasoning_content (thinking process)
+   - content (actual answer)
+
+5. FRONTEND RENDERING
+   Parse SSE chunks
+   ↓
+   If phase="thinking": accumulate thinkText
+   ↓
+   If phase="answering": accumulate fullText
+   ↓
+   Render with <details> block for thinking
+
+API ENDPOINTS
+================================================================================
+
+GET /api/models
+  Returns: {"models": [...], "default": "deepseek-v4-flash"}
+  Includes: All available models with id/name/provider
+  From: backend/api/chat.py lines 27-35
+
+POST /api/chat
+  Accepts: {"message", "model", "portfolio", "userId"}
+  Returns: {"reply", "source", "further_reading"}
+  From: backend/api/chat.py lines 38-75
+
+POST /api/chat/stream
+  Accepts: {"message", "model", "portfolio", "userId"}
+  Returns: SSE stream (text/event-stream)
+  Special: Detects R1 thinking and streams separately
+  From: backend/api/chat.py lines 185-320
+
+ENVIRONMENT VARIABLES
+================================================================================
+
+REQUIRED:
+  LLM_API_KEY       API key for DeepSeek (no default)
+  
+OPTIONAL (with defaults):
+  LLM_MODEL         Default model (deepseek-v4-flash)
+  LLM_API_BASE      API base URL (https://api.deepseek.com/v1)
+  LLM_API_URL       Completion endpoint (https://api.deepseek.com/v1/chat/completions)
+
+PRICING (2026-04, ¥ per million tokens)
+================================================================================
+  Cache Hit:   ¥0.20  (best!)
+  Cache Miss:  ¥2.03
+  Output:      ¥3.04
+
+DOCUMENTATION FILES CREATED
+================================================================================
+
+1. README_DEEPSEEK_MODELS.md (Navigation Guide)
+   - Quick answers to common questions
+   - Key locations map
+   - Model comparison table
+   - Common tasks & checklist
+   - Testing procedures
+
+2. DEEPSEEK_MODEL_ANALYSIS.md (Comprehensive Reference)
+   - Full technical analysis (500 lines)
+   - All backend configuration
+   - LLM Gateway routing
+   - Frontend implementation
+   - API endpoints
+   - WeChat integration
+   - Environment setup
+   - How to add new models
+
+3. DEEPSEEK_MODELS_QUICKREF.md (Quick Lookup)
+   - Model comparison table
+   - Where each component is located
+   - API endpoints summary
+   - Model routing table
+   - Configuration checklist
+   - Code search map
+   - Known issues
+
+4. DEEPSEEK_DATAFLOW.md (Visual Flows)
+   - ASCII diagrams showing:
+     * Frontend selection flow
+     * Backend routing flow
+     * WeChat model switching flow
+     * R1 thinking display flow
+     * Agent analysis flow
+     * Storage locations
+     * Model lookup tree
+     * API response sequence
+
+QUICK REFERENCE - CODE LOCATIONS
+================================================================================
+
+Model definitions?            → shared_helpers.py lines 650-654
+Model API endpoint?           → chat.py lines 27-35
+Chat with model selection?    → chat.py lines 38-75
+Stream chat?                  → chat.py lines 185-320
+Frontend dropdown?            → pages/chat.js lines 1-6
+R1 thinking display?          → pages/chat.js lines 38-46
+WeChat model switch?          → wxwork.py lines 84-119
+Smart routing?                → llm_gateway.py lines 22-27
+Agent model?                  → agent.py line 200
+Default config?               → config.py lines 109-142
+
+COMMON QUESTIONS ANSWERED
+================================================================================
+
+Q: What models are available?
+A: deepseek-v4-flash (V4), deepseek-v4-max (V4 Max), deepseek-reasoner (R1)
+
+Q: Where is frontend dropdown?
+A: pages/chat.js lines 1-6 (in chat page header)
+
+Q: How do users switch models?
+A: Frontend: click dropdown | WeChat: send "模型 model-id"
+
+Q: What's special about R1?
+A: Shows thinking process, 15-30s wait, collapsible in UI
+
+Q: Which model for agent analysis?
+A: deepseek-v4-max (can be overridden)
+
+Q: How to add new model?
+A: 1) Update AVAILABLE_MODELS in shared_helpers.py
+   2) Add to MODEL_ROUTING in llm_gateway.py (optional)
+   3) Add to MODEL_MAP in wxwork.py (for WeChat)
+
+Q: What environment variables needed?
+A: LLM_API_KEY (required), LLM_MODEL, LLM_API_BASE (optional)
+
+Q: What about "V4 Pro"?
+A: Mentioned in code but not in AVAILABLE_MODELS (likely legacy)
+
+KNOWN ISSUES
+================================================================================
+
+1. deepseek-v4-pro is mentioned in wxwork.py line 87 but not in AVAILABLE_MODELS
+   → Won't appear in frontend dropdown
+   → Likely legacy or testing model
+
+2. Model tier system (llm_light/llm_heavy) is separate from direct model selection
+   → Chat endpoints: can select any model
+   → WeChat/internal: uses tier system
+
+3. No fallback if selected model's API key is missing
+   → Only models with env_key configured appear
+
+TESTING RECOMMENDATIONS
+================================================================================
+
+Test 1: Check available models
+  curl http://localhost:8000/api/models
+
+Test 2: Chat with V4 Flash
+  curl -X POST http://localhost:8000/api/chat/stream \
+    -H "Content-Type: application/json" \
+    -d '{"message": "你好", "model": "deepseek-v4-flash"}'
+
+Test 3: Chat with R1
+  curl -X POST http://localhost:8000/api/chat/stream \
+    -H "Content-Type: application/json" \
+    -d '{"message": "分析一下市场", "model": "deepseek-reasoner"}'
+  (Watch for thinking_content in SSE response)
+
+Test 4: Frontend dropdown
+  Open chat page → check dropdown shows all three models
+  Select R1 → send message → check progress shows "15-30 秒"
+  Check thinking in <details> block
+
+Test 5: WeChat commands (if configured)
+  Send: "模型"            → shows available models
+  Send: "模型 deepseek-reasoner" → switches to R1
+  Send: "hello"           → uses R1 model
+
+NEXT STEPS
+================================================================================
+
+1. Review all four documentation files for complete understanding
+2. Use quick reference for daily lookups
+3. Follow data flow diagrams to understand system
+4. Use code locations map for precise edits
+5. Follow checklist before production deployment
+
+================================================================================
+                        Documentation Complete ✅
+                    Files: 4 | Total Lines: 1507
+                    Last Updated: 2026-05-14
+================================================================================

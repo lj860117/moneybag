@@ -1,0 +1,109 @@
+{
+  "userId": "qa_test_20260419",
+  "portfolio": {
+    "transactions": [
+      {
+        "id": "68adf8bfa3d5",
+        "type": "BUY",
+        "code": "600519",
+        "name": "贵州茅台",
+        "amount": 20000,
+        "shares": 12,
+        "nav": 1666.67,
+        "fee": 6.0,
+        "date": "2026-03-20",
+        "source": "qa_seed",
+        "note": "打磨模式 QA 测试数据"
+      },
+      {
+        "id": "bce98b25388e",
+        "type": "BUY",
+        "code": "600519",
+        "name": "贵州茅台",
+        "amount": 15000,
+        "shares": 9,
+        "nav": 1666.67,
+        "fee": 4.5,
+        "date": "2026-04-05",
+        "source": "qa_seed",
+        "note": "打磨模式 QA 测试数据"
+      },
+      {
+        "id": "f77e8690088e",
+        "type": "BUY",
+        "code": "000858",
+        "name": "五粮液",
+        "amount": 12000,
+        "shares": 80,
+        "nav": 150.0,
+        "fee": 3.6,
+        "date": "2026-03-25",
+        "source": "qa_seed",
+        "note": "打磨模式 QA 测试数据"
+      },
+      {
+        "id": "80d8a2b12a15",
+        "type": "BUY",
+        "code": "300750",
+        "name": "宁德时代",
+        "amount": 18000,
+        "shares": 70,
+        "nav": 257.14,
+        "fee": 5.4,
+        "date": "2026-04-01",
+        "source": "qa_seed",
+        "note": "打磨模式 QA 测试数据"
+      },
+      {
+        "id": "fcd24b659fbc",
+        "type": "BUY",
+        "code": "510300",
+        "name": "沪深300ETF",
+        "amount": 30000,
+        "shares": 7500,
+        "nav": 4.0,
+        "fee": 9.0,
+        "date": "2026-03-15",
+        "source": "qa_seed",
+        "note": "打磨模式 QA 测试数据"
+      },
+      {
+        "id": "142ab5384930",
+        "type": "BUY",
+        "code": "519736",
+        "name": "交银裕隆纯债",
+        "amount": 20000,
+        "shares": 16700,
+        "nav": 1.198,
+        "fee": 6.0,
+        "date": "2026-03-18",
+        "source": "qa_seed",
+        "note": "打磨模式 QA 测试数据"
+      }
+    ],
+    "assets": [
+      {
+        "id": "02f316785e5a",
+        "type": "cash",
+        "name": "工行活期",
+        "value": 50000,
+        "balance": 50000,
+        "updated": "2026-04-19T11:47:16.903236"
+      },
+      {
+        "id": "5be2e9fb3603",
+        "type": "cash",
+        "name": "余额宝",
+        "value": 30000,
+        "balance": 30000,
+        "updated": "2026-04-19T11:47:16.903247"
+      }
+    ],
+    "profile": "平衡型",
+    "history": [],
+    "version": 4
+  },
+  "ledger": [],
+  "createdAt": "2026-04-19T11:47:16.903249",
+  "updatedAt": "2026-04-19T11:47:16.903251"
+}

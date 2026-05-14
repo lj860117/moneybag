@@ -1,0 +1,476 @@
+[
+  {
+    "id": "j_1776571252_qa_test_",
+    "user_id": "qa_test_20260419",
+    "recorded_at": "2026-04-19T12:00:52.480087",
+    "verify_at": "2026-04-24",
+    "verified": false,
+    "verdict": null,
+    "actual_return": null,
+    "direction": "neutral",
+    "confidence": 55,
+    "regime": "trending_bull",
+    "weighted_score": 0.55,
+    "divergence": 0.41666666666666663,
+    "gate_decision": "llm_arbitration",
+    "ev_result": null,
+    "risk_blocked": false,
+    "module_snapshots": {
+      "ai_predictor": {
+        "direction": "neutral",
+        "confidence": 50,
+        "summary": ""
+      },
+      "broker_research": {
+        "direction": "bullish",
+        "confidence": 55,
+        "summary": ""
+      },
+      "factor_data": {
+        "direction": "bullish",
+        "confidence": 65,
+        "summary": ""
+      },
+      "geopolitical": {
+        "direction": "bearish",
+        "confidence": 80,
+        "summary": ""
+      },
+      "market_factors": {
+        "direction": "neutral",
+        "confidence": 60,
+        "summary": ""
+      },
+      "monte_carlo": {
+        "direction": "neutral",
+        "confidence": 56.0,
+        "summary": ""
+      },
+      "news_data": {
+        "direction": "neutral",
+        "confidence": 40,
+        "summary": ""
+      },
+      "risk": {
+        "direction": "neutral",
+        "confidence": 50,
+        "summary": ""
+      },
+      "sector_rotation": {
+        "direction": "neutral",
+        "confidence": 70,
+        "summary": ""
+      },
+      "signal": {
+        "direction": "neutral",
+        "confidence": 50,
+        "summary": ""
+      },
+      "signal_scout": {
+        "direction": "bearish",
+        "confidence": 0.8,
+        "summary": ""
+      },
+      "stock_screen": {
+        "direction": "bullish",
+        "confidence": 70.0,
+        "summary": ""
+      }
+    }
+  },
+  {
+    "id": "j_1776573400_qa_test_",
+    "user_id": "qa_test_20260419",
+    "recorded_at": "2026-04-19T12:36:40.892243",
+    "verify_at": "2026-04-24",
+    "verified": false,
+    "verdict": null,
+    "actual_return": null,
+    "direction": "bullish",
+    "confidence": 60,
+    "regime": "trending_bull",
+    "weighted_score": 0.6,
+    "divergence": 0.41666666666666663,
+    "gate_decision": "llm_arbitration",
+    "ev_result": null,
+    "risk_blocked": false,
+    "module_snapshots": {
+      "ai_predictor": {
+        "direction": "neutral",
+        "confidence": 50,
+        "summary": ""
+      },
+      "broker_research": {
+        "direction": "bullish",
+        "confidence": 55,
+        "summary": ""
+      },
+      "factor_data": {
+        "direction": "bullish",
+        "confidence": 65,
+        "summary": ""
+      },
+      "geopolitical": {
+        "direction": "bearish",
+        "confidence": 80,
+        "summary": ""
+      },
+      "market_factors": {
+        "direction": "neutral",
+        "confidence": 60,
+        "summary": ""
+      },
+      "monte_carlo": {
+        "direction": "neutral",
+        "confidence": 59.2,
+        "summary": ""
+      },
+      "news_data": {
+        "direction": "neutral",
+        "confidence": 40,
+        "summary": ""
+      },
+      "risk": {
+        "direction": "neutral",
+        "confidence": 50,
+        "summary": ""
+      },
+      "sector_rotation": {
+        "direction": "neutral",
+        "confidence": 70,
+        "summary": ""
+      },
+      "signal": {
+        "direction": "neutral",
+        "confidence": 50,
+        "summary": ""
+      },
+      "signal_scout": {
+        "direction": "bearish",
+        "confidence": 0.8,
+        "summary": ""
+      },
+      "stock_screen": {
+        "direction": "bullish",
+        "confidence": 70.3,
+        "summary": ""
+      }
+    }
+  },
+  {
+    "id": "j_1776577345_qa_test_",
+    "user_id": "qa_test_20260419",
+    "recorded_at": "2026-04-19T13:42:25.860025",
+    "verify_at": "2026-04-24",
+    "verified": false,
+    "verdict": null,
+    "actual_return": null,
+    "direction": "neutral",
+    "confidence": 50,
+    "regime": "trending_bull",
+    "weighted_score": 0.5,
+    "divergence": 0.5,
+    "gate_decision": "llm_arbitration",
+    "ev_result": null,
+    "risk_blocked": false,
+    "module_snapshots": {
+      "ai_predictor": {
+        "direction": "neutral",
+        "confidence": 50,
+        "summary": ""
+      },
+      "broker_research": {
+        "direction": "bullish",
+        "confidence": 55,
+        "summary": ""
+      },
+      "factor_data": {
+        "direction": "bullish",
+        "confidence": 65,
+        "summary": ""
+      },
+      "geopolitical": {
+        "direction": "bearish",
+        "confidence": 80,
+        "summary": ""
+      },
+      "market_factors": {
+        "direction": "neutral",
+        "confidence": 60,
+        "summary": ""
+      },
+      "news_data": {
+        "direction": "neutral",
+        "confidence": 40,
+        "summary": ""
+      },
+      "risk": {
+        "direction": "neutral",
+        "confidence": 50,
+        "summary": ""
+      },
+      "rl_position": {
+        "direction": "bearish",
+        "confidence": 55,
+        "summary": ""
+      },
+      "sector_rotation": {
+        "direction": "neutral",
+        "confidence": 70,
+        "summary": ""
+      },
+      "signal": {
+        "direction": "neutral",
+        "confidence": 50,
+        "summary": ""
+      },
+      "signal_scout": {
+        "direction": "bearish",
+        "confidence": 0.8,
+        "summary": ""
+      },
+      "stock_screen": {
+        "direction": "bullish",
+        "confidence": 71.5,
+        "summary": ""
+      }
+    }
+  },
+  {
+    "id": "j_1776577775_qa_test_",
+    "user_id": "qa_test_20260419",
+    "recorded_at": "2026-04-19T13:49:35.037008",
+    "verify_at": "2026-04-24",
+    "verified": false,
+    "verdict": null,
+    "actual_return": null,
+    "direction": "neutral",
+    "confidence": 50,
+    "regime": "trending_bull",
+    "weighted_score": 0.5,
+    "divergence": 0.5,
+    "gate_decision": "llm_arbitration",
+    "ev_result": null,
+    "risk_blocked": false,
+    "module_snapshots": {
+      "ai_predictor": {
+        "direction": "neutral",
+        "confidence": 50,
+        "summary": ""
+      },
+      "broker_research": {
+        "direction": "bullish",
+        "confidence": 55,
+        "summary": ""
+      },
+      "factor_data": {
+        "direction": "bullish",
+        "confidence": 65,
+        "summary": ""
+      },
+      "geopolitical": {
+        "direction": "bearish",
+        "confidence": 80,
+        "summary": ""
+      },
+      "market_factors": {
+        "direction": "neutral",
+        "confidence": 60,
+        "summary": ""
+      },
+      "news_data": {
+        "direction": "neutral",
+        "confidence": 40,
+        "summary": ""
+      },
+      "risk": {
+        "direction": "neutral",
+        "confidence": 50,
+        "summary": ""
+      },
+      "rl_position": {
+        "direction": "bearish",
+        "confidence": 55,
+        "summary": ""
+      },
+      "sector_rotation": {
+        "direction": "neutral",
+        "confidence": 70,
+        "summary": ""
+      },
+      "signal": {
+        "direction": "neutral",
+        "confidence": 50,
+        "summary": ""
+      },
+      "signal_scout": {
+        "direction": "bearish",
+        "confidence": 0.8,
+        "summary": ""
+      },
+      "stock_screen": {
+        "direction": "bullish",
+        "confidence": 71.5,
+        "summary": ""
+      }
+    }
+  },
+  {
+    "id": "j_1776578281_qa_test_",
+    "user_id": "qa_test_20260419",
+    "recorded_at": "2026-04-19T13:58:01.787400",
+    "verify_at": "2026-04-24",
+    "verified": false,
+    "verdict": null,
+    "actual_return": null,
+    "direction": "neutral",
+    "confidence": 50,
+    "regime": "trending_bull",
+    "weighted_score": 0.5,
+    "divergence": 0.5,
+    "gate_decision": "llm_arbitration",
+    "ev_result": null,
+    "risk_blocked": false,
+    "module_snapshots": {
+      "ai_predictor": {
+        "direction": "neutral",
+        "confidence": 50,
+        "summary": ""
+      },
+      "broker_research": {
+        "direction": "bullish",
+        "confidence": 55,
+        "summary": ""
+      },
+      "factor_data": {
+        "direction": "bullish",
+        "confidence": 65,
+        "summary": ""
+      },
+      "geopolitical": {
+        "direction": "bearish",
+        "confidence": 80,
+        "summary": ""
+      },
+      "market_factors": {
+        "direction": "neutral",
+        "confidence": 60,
+        "summary": ""
+      },
+      "news_data": {
+        "direction": "neutral",
+        "confidence": 40,
+        "summary": ""
+      },
+      "risk": {
+        "direction": "neutral",
+        "confidence": 50,
+        "summary": ""
+      },
+      "rl_position": {
+        "direction": "bearish",
+        "confidence": 55,
+        "summary": ""
+      },
+      "sector_rotation": {
+        "direction": "neutral",
+        "confidence": 70,
+        "summary": ""
+      },
+      "signal": {
+        "direction": "neutral",
+        "confidence": 50,
+        "summary": ""
+      },
+      "signal_scout": {
+        "direction": "bearish",
+        "confidence": 0.8,
+        "summary": ""
+      },
+      "stock_screen": {
+        "direction": "bullish",
+        "confidence": 71.5,
+        "summary": ""
+      }
+    }
+  },
+  {
+    "id": "j_1776578730_qa_test_",
+    "user_id": "qa_test_20260419",
+    "recorded_at": "2026-04-19T14:05:30.075686",
+    "verify_at": "2026-04-24",
+    "verified": false,
+    "verdict": null,
+    "actual_return": null,
+    "direction": "neutral",
+    "confidence": 50,
+    "regime": "trending_bull",
+    "weighted_score": 0.5,
+    "divergence": 0.5,
+    "gate_decision": "llm_arbitration",
+    "ev_result": null,
+    "risk_blocked": false,
+    "module_snapshots": {
+      "ai_predictor": {
+        "direction": "neutral",
+        "confidence": 50,
+        "summary": ""
+      },
+      "broker_research": {
+        "direction": "bullish",
+        "confidence": 55,
+        "summary": ""
+      },
+      "factor_data": {
+        "direction": "bullish",
+        "confidence": 65,
+        "summary": ""
+      },
+      "geopolitical": {
+        "direction": "bearish",
+        "confidence": 80,
+        "summary": ""
+      },
+      "market_factors": {
+        "direction": "neutral",
+        "confidence": 60,
+        "summary": ""
+      },
+      "news_data": {
+        "direction": "neutral",
+        "confidence": 40,
+        "summary": ""
+      },
+      "risk": {
+        "direction": "neutral",
+        "confidence": 50,
+        "summary": ""
+      },
+      "rl_position": {
+        "direction": "bearish",
+        "confidence": 55,
+        "summary": ""
+      },
+      "sector_rotation": {
+        "direction": "neutral",
+        "confidence": 70,
+        "summary": ""
+      },
+      "signal": {
+        "direction": "neutral",
+        "confidence": 50,
+        "summary": ""
+      },
+      "signal_scout": {
+        "direction": "bearish",
+        "confidence": 0.8,
+        "summary": ""
+      },
+      "stock_screen": {
+        "direction": "bullish",
+        "confidence": 71.5,
+        "summary": ""
+      }
+    }
+  }
+]

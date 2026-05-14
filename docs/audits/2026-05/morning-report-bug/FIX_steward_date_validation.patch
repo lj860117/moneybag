@@ -1,0 +1,110 @@
+--- a/backend/services/steward.py
++++ b/backend/services/steward.py
+@@ -130,10 +130,27 @@ class Steward:
+     def briefing(self, user_id: str) -> dict:
+         """
+         每日简报（精简版）
+-        不问具体问题，只看大盘状态+持仓风险+信号
++        ✅ 修复: 添加缓存日期验证，防止返回过期缓存
+         优先读取当日缓存（night_worker 07:30 预生成），避免重复计算
+         """
+-        # ---- 每日文件缓存（当日命中直接返回）----
++        # ✅ 系统日期检查
++        if not _check_date_consistency():
++            print("[STEWARD] 警告: 系统日期可能异常，继续执行但标记警告")
++        
++        # ---- 每日文件缓存（当日命中直接返回）----
+         today = datetime.now().strftime("%Y%m%d")
+         cache_fp = _BRIEF_DIR / f"{user_id}_{today}.json"
++        
+         if cache_fp.exists():
+             try:
+                 cached = json.loads(cache_fp.read_text(encoding="utf-8"))
++                
++                # ✅ 验证缓存文件日期与当前日期是否匹配
++                cached_date = cache_fp.stem.replace(f"{user_id}_", "")
++                if cached_date != today:
++                    print(f"[STEWARD] 缓存日期不匹配: {cached_date} != {today}，忽略缓存")
++                else:
++                    cached["from_cache"] = True
++                    return cached
++                
++            except Exception as e:
++                print(f"[STEWARD] 读晨报缓存失败: {e}")
++        
++        # 缓存不存在或已过期，继续生成
+         
+@@ -254,17 +271,70 @@ class Steward:
+     def briefing_history(self, user_id: str, days: int = 7) -> list:
+         """
+-        返回最近 N 天的晨报缓存列表（MB-005 往期晨报）
++        返回最近 N 天的晨报缓存列表（MB-005 往期晨报）
++        ✅ 修复: 添加日期验证，防止返回未来日期或过期缓存
+         """
++        from datetime import timedelta
++        
+         if not _BRIEF_DIR.exists():
+             return []
++        
++        today = datetime.now().date()
++        cutoff_date = today - timedelta(days=days)
++        
+         files = sorted(_BRIEF_DIR.glob(f"{user_id}_*.json"), reverse=True)
+         result = []
+-        for fp in files[:days]:
++        
++        for fp in files[:days * 2]:  # 读取2倍的文件数以确保获足够的有效缓存
+             try:
+                 data = json.loads(fp.read_text(encoding="utf-8"))
+                 # fp.stem 格式：{user_id}_{YYYYMMDD}
+                 date_str = fp.stem.replace(f"{user_id}_", "")
++                
++                # ✅ 日期验证: 解析日期并检查是否在合理范围内
++                if len(date_str) == 8 and date_str.isdigit():
++                    try:
++                        cache_date = datetime.strptime(date_str, "%Y%m%d").date()
++                        
++                        # 检查是否不超过今天，且不超过days天前
++                        if cache_date > today:
++                            print(f"[STEWARD] 跳过未来日期缓存: {fp.name} (date={cache_date} > today={today})")
++                            continue
++                        
++                        if cache_date < cutoff_date:
++                            print(f"[STEWARD] 跳过过期缓存: {fp.name} (date={cache_date} < cutoff={cutoff_date})")
++                            continue
++                        
++                        data["date"] = date_str
++                        result.append(data)
++                        
++                        if len(result) >= days:
++                            break
++                            
++                    except ValueError as e:
++                        print(f"[STEWARD] 日期解析失败 {date_str}: {e}")
++                        continue
++                else:
++                    print(f"[STEWARD] 跳过无效日期格式: {date_str}")
++                    
+             except Exception as e:
+                 print(f"[STEWARD] 读往期晨报失败 {fp}: {e}")
++        
+         return result
++
++
++def _check_date_consistency():
++    """
++    ✅ 新增: 定期检查日期一致性（在 ask() 和 briefing() 开始时调用）
++    """
++    import warnings
++    
++    today = date.today()
++    
++    # 检查系统时间是否异常
++    year = today.year
++    if year < 2020 or year > 2050:
++        msg = f"[ALERT] 系统日期异常: {today}"
++        print(msg)
++        warnings.warn(msg, RuntimeWarning)
++        return False
++    
++    return True

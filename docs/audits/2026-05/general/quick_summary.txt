@@ -1,0 +1,222 @@
+╔════════════════════════════════════════════════════════════════════════════╗
+║                 LLM GATEWAY ARCHITECTURE QUICK REFERENCE                   ║
+║                    For stream_sync() & Multimodal Planning                 ║
+╚════════════════════════════════════════════════════════════════════════════╝
+
+█ FILE SIZES & STRUCTURE
+├─ services/llm_gateway.py       537 lines    ← MAIN IMPLEMENTATION
+├─ infra/llm/gateway.py          71 lines     ← ADAPTER (strangler fig)
+├─ domain/protocols/llm_client.py 63 lines    ← INTERFACE
+├─ domain/models/__init__.py     196 lines    ← LLMResponse dataclass
+├─ infra/cache/memory_cache.py   132 lines    ← CACHE ENGINE
+└─ config.py                     259 lines    ← ALL CONSTANTS
+
+█ CORE SINGLETON: LLMGateway (services/llm_gateway.py:49-537)
+├─ __init__()          lines 60-67     Initialize: cache, usage, limits, load from disk
+├─ call_sync()         lines 115-241   MAIN METHOD: prompt→LLM→response (127 lines!)
+├─ _cache_key()        lines 245-247   Generate MD5(user_id:module:system:prompt)
+├─ _get_cache()        line 249-250    Lookup from MemoryCache
+├─ _set_cache()        lines 252-261   Write + trigger persist every 5 writes
+├─ _load_cache_from_disk()  lines 73-89   Startup recovery (ignore expired)
+├─ _persist_cache_to_disk() lines 91-111  Atomic write (temp + fsync + rename)
+├─ _check_daily_reset()     lines 265-270 Detect midnight boundary
+├─ _check_limits()          lines 272-284 Dual rate limit: daily(100) + burst(10/5min)
+├─ pre_check()              lines 286-293 Public: check limits before streaming
+├─ get_api_config()         lines 295-305 Return {api_key, api_base, model}
+├─ _record_usage()          lines 309-321 In-memory: {calls, tokens, models}
+├─ _record_token_cost()     lines 325-410 Disk: daily + per-user RMB cost tracking
+├─ check_budget()           lines 412-442 Health: status + usage%
+├─ get_usage()              lines 444-459 Query usage stats
+├─ get_daily_remaining()    lines 461-464 Query remaining quota (int)
+└─ get_cache_stats()        lines 466-525 Query N-day cache hit ratio
+
+█ CALL_SYNC() FLOW (127 lines: 115-241)
+  1. Line 121:       _check_daily_reset() → detect midnight
+  2. Lines 124-127:  Cache lookup: MD5 hash key → hit? return {source: "cache"}
+  3. Line 130:       _check_limits() → within daily+burst? else return fallback
+  4. Lines 140-149:  API key check → LLM_API_KEY or OPENAI_API_KEY
+  5. Line 152:       MODEL_ROUTING.get(model_tier) → select model
+  6. Lines 155-158:  Build messages array with system prompt
+  7. Lines 161-231:  HTTP POST (httpx) to DeepSeek API
+     ├─ Timeout: 120s for R1, 60s for V4
+     ├─ Status 200: parse response
+     ├─ Extract: content + reasoning_content (R1 fallback)
+     ├─ Extract: total_tokens + cache_hit_tokens + cache_miss_tokens (V7.6)
+  8. Line 207:       _set_cache() + auto-persist every 5 writes
+  9. Lines 210-219:  _record_usage() + _record_token_cost()
+  10. Return:        {content, reasoning, source, model, tokens, ...fallback info...}
+
+█ RESPONSE DICT STRUCTURE (lines 195-204, also LLMResponse dataclass)
+  {
+    "content": str              ← Generated text (empty on error)
+    "reasoning": str            ← R1 chain-of-thought (empty for V4)
+    "source": str               ← "ai"|"cache"|"rate_limited"|"no_key"|"api_error"|"error"
+    "model": str                ← "deepseek-v4-flash"|"deepseek-reasoner"
+    "tokens": int               ← Total tokens consumed
+    "cache_hit_tokens": int     ← DeepSeek provider cache hit (V7.6+)
+    "cache_miss_tokens": int    ← DeepSeek provider cache miss (V7.6+)
+    "fallback": bool            ← True if degraded response
+    "error": str                ← Error message (if applicable)
+  }
+
+█ MODEL ROUTING DICT (lines 25-28)
+  MODEL_ROUTING = {
+    "llm_light": "deepseek-v4-flash",    ← V4: commentary, scoring, signals
+    "llm_heavy": "deepseek-reasoner",    ← R1: arbitration, diagnosis
+  }
+  [Extension: add "llm_vision": "deepseek-vision-model" for multimodal]
+
+█ RATE LIMITS (lines 30-33)
+  DAILY_LIMIT = 100           ← Per 24h, reset at midnight
+  BURST_LIMIT = 10            ← Max within 5-minute window
+  BURST_WINDOW = 300          ← 5 minutes
+  CACHE_TTL = 3600            ← Response cache 1 hour
+
+█ CACHE PERSISTENCE FLOW
+  Startup:
+    _load_cache_from_disk() → read ./data/cache/llm_cache.json
+                           → restore non-expired entries
+  
+  Every 5 writes (in _set_cache):
+    _persist_cache_to_disk() → snapshot _cache._data (with lock)
+                            → write temp file + fsync + atomic rename
+                            → reset _cache_dirty counter
+
+█ COST TRACKING FILES
+  Daily global:   ./data/llm_usage/{TODAY}.json
+    {input_tokens, output_tokens, cache_hit_tokens, cache_miss_tokens,
+     cost_rmb, calls}
+  
+  Per-user:       ./data/llm_usage/by_user/{user_id}_{TODAY}.json
+    {user_id, cost_rmb, calls}
+
+█ PRICING (config.py: DEEPSEEK_PRICING)
+  input_cache_hit:  ¥0.20 per M tokens   (10× cheaper!)
+  input_cache_miss: ¥2.03 per M tokens
+  output:           ¥3.04 per M tokens
+
+█ TOKEN BUDGET (config.py: TOKEN_BUDGET)
+  daily_budget_rmb: ¥3/day              (¥0.5 typical, 6× safety margin)
+  alert_threshold:  0.7                 (warn at 70%)
+  critical_threshold: 0.9               (degrade at 90%)
+  max_input_per_call: 50_000            (50K tokens max)
+  max_output_per_call: 30_000           (30K tokens max)
+
+█ ADAPTER LAYER (infra/llm/gateway.py: LLMClient)
+  Purpose: Strangler fig pattern (M1 temporary, M2 merges into this)
+  
+  call() → wraps LLMGateway.instance().call_sync()
+        → returns typed LLMResponse (not dict)
+  
+  _gateway() → lazy import to avoid circular deps
+            → return LLMGateway.instance()
+
+█ DOMAIN PROTOCOL (domain/protocols/llm_client.py: @runtime_checkable)
+  LLMClientProtocol:
+  ├─ call(prompt, *, system, model_tier, user_id, module, max_tokens) → LLMResponse
+  ├─ get_usage(user_id="") → Dict[str, object]
+  └─ get_daily_remaining() → int
+
+█ MEMORY CACHE (infra/cache/memory_cache.py: MemoryCache)
+  Thread-safe with threading.Lock()
+  
+  __init__(default_ttl=3600)
+  get(key) → value or None (auto-prunes expired)
+  set(key, value, ttl=0) → ttl=0 uses default, ttl<0 never expires
+  delete(key), clear(), has(key), size(), keys()
+
+█ ATOMIC WRITE PATTERN (services/persistence.py: atomic_write_json)
+  1. tempfile.mkstemp() in same directory
+  2. Write JSON + f.flush() + os.fsync()
+  3. os.replace() for atomic rename (POSIX)
+  → Prevents corruption on power loss / crash
+
+█ FALLBACK RESPONSES (Lines 132-240)
+  Rate limited:    {source: "rate_limited", fallback: True}
+  No API key:      {source: "no_key", fallback: True}
+  API error:       {source: "api_error", fallback: True, error: "HTTP 429"}
+  Exception:       {source: "error", fallback: True, error: str(e)}
+  [All have: content="", model="", tokens=0, error=""]
+
+█ ENVIRONMENT VARIABLES (Runtime)
+  LLM_API_KEY             ← Primary API key
+  OPENAI_API_KEY          ← Fallback API key
+  LLM_API_BASE            ← Base URL (default: https://api.deepseek.com/v1)
+  LLM_MODEL               ← Default model (not used in call_sync)
+  DATA_DIR                ← Root for cache + usage (default: ./data)
+
+█ THREAD SAFETY ⚠️
+  Current: NOT thread-safe (single-worker only)
+  Problem: _daily_count & _burst_window shared state
+  Design: Assumes uvicorn --workers 1
+  Future: Add threading.Lock or use Redis for multi-worker
+
+█ KEY IMPLEMENTATION DETAILS FOR EXTENSIONS
+
+  ▸ Model Routing Extension (line 25-28):
+    Add "llm_vision" → "deepseek-vision-model"
+  
+  ▸ Cache Key Extension (line 245-247):
+    Include image_hashes: f"{user_id}:{module}:...:{image_hash}"
+  
+  ▸ Message Construction for Vision (line 155-158):
+    {role: "user", content: [{type: "text", text: prompt},
+                             {type: "image_url", image_url: url}]}
+  
+  ▸ Streaming Response Handling:
+    Use httpx.stream() → iterate chunks
+    Call pre_check() before starting stream
+    Don't cache partial streaming responses
+  
+  ▸ Cost Model for Vision:
+    May have different pricing (configure in DEEPSEEK_PRICING)
+    Extend _record_token_cost() to handle vision tokens
+
+█ KNOWN LIMITATIONS & EDGE CASES
+  1. NOT thread-safe for multi-worker (race condition on _daily_count)
+  2. Can't cache streaming responses (only full responses)
+  3. Cache key doesn't include temperature/top_p (hardcoded at 0.7)
+  4. R1 content sometimes in reasoning_content (workaround lines 184-187)
+  5. Budget enforcement is soft (logs warnings, doesn't stop)
+  6. Disk persist delay: max 4 calls lost if crash (every 5 writes)
+
+█ TESTING EXTENSION POINTS
+  ✓ test_call_sync_cache_hit()    ← verify caching works
+  ✓ test_daily_reset()            ← verify midnight boundary
+  ✓ test_rate_limit_burst()       ← verify burst limiting
+  ✓ test_stream_sync_quota()      ← verify streaming uses pre_check()
+  ✓ test_vision_call_multimodal() ← verify vision routing
+
+█ PERFORMANCE BASELINES
+  Cache hit:           ~1ms (memory)
+  Rate limit check:    ~1ms (timestamp scan)
+  API call (V4):       2-8s
+  API call (R1):       5-30s
+  Disk persist:        10-50ms (every 5 writes)
+  Memory overhead:     <10MB for 200 cached responses
+
+█ FILES TO MODIFY FOR stream_sync() & MULTIMODAL
+
+  ✎ services/llm_gateway.py
+    ├─ Add stream_sync(prompt, ...) → Iterator[str]
+    ├─ Add call_with_images(prompt, images, ...) → dict
+    ├─ Extend MODEL_ROUTING for vision
+    ├─ Extend _cache_key() for images
+    └─ Extend message construction for vision format
+  
+  ✎ domain/protocols/llm_client.py
+    ├─ Add stream_sync() signature
+    └─ Add call_with_images() signature
+  
+  ✎ infra/llm/gateway.py
+    ├─ Add stream_sync() wrapper
+    └─ Add call_with_images() wrapper
+  
+  ✎ config.py
+    ├─ Add "llm_vision" to MODEL_ROUTING
+    └─ Add vision pricing to DEEPSEEK_PRICING (if different)
+
+╔════════════════════════════════════════════════════════════════════════════╗
+║  FULL DOCUMENTATION AVAILABLE AT:                                         ║
+║  /tmp/llm_gateway_architecture.md (44KB, 16 sections)                     ║
+╚════════════════════════════════════════════════════════════════════════════╝

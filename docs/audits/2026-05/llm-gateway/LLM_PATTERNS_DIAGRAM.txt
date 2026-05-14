@@ -1,0 +1,265 @@
+╔═══════════════════════════════════════════════════════════════════════════════╗
+║                   LLM CALL PATTERNS - ARCHITECTURE OVERVIEW                   ║
+╚═══════════════════════════════════════════════════════════════════════════════╝
+
+┌───────────────────────────────────────────────────────────────────────────────┐
+│                         UNIFIED GATEWAY LAYER                                 │
+│                      (backend/services/llm_gateway.py)                        │
+│                                                                               │
+│  • Config: get_api_config() → {api_key, api_base, model}                    │
+│  • Rate Limit: pre_check() → returns bool (100/day, 10/5min)                │
+│  • Caching: MemoryCache (1hr TTL) + disk persistence                        │
+│  • Token Tracking: per-user, per-module cost recording                      │
+│  • Fallback: rules_based_reply() when LLM unavailable                       │
+└───────────────────────────────────────────────────────────────────────────────┘
+     △                              △                           △
+     │                              │                           │
+     └──────────────────────────────┼───────────────────────────┘
+                   (singleton instance)                
+
+           Pattern 1: Streaming          │          Pattern 2: Multimodal
+           (chat.py:178-380)             │          (shared_helpers.py:471-589)
+
+    ┌─────────────────────────────┐     │     ┌──────────────────────────────┐
+    │   POST /api/chat/stream     │     │     │  async _do_ocr()             │
+    │   ⬇                         │     │     │  ⬇                           │
+    │ ┌─────────────────────────┐ │     │     │ ┌────────────────────────┐  │
+    │ │ 1. Get LLMGateway       │ │     │     │ │ 1. Get LLMGateway      │  │
+    │ │ 2. pre_check()          │ │     │     │ │ 2. pre_check()         │  │
+    │ │ 3. Select model         │ │     │     │ │ 3. Get vision_model    │  │
+    │ │    (from list)          │ │     │     │ │    (from env)          │  │
+    │ │ 4. Build system prompt  │ │     │     │ │ 4. Base64 encode img   │  │
+    │ │ 5. Build user message   │ │     │     │ │ 5. Build multimodal    │  │
+    │ │                         │ │     │     │ │    message             │  │
+    │ └─────────────────────────┘ │     │     │ └────────────────────────┘  │
+    │          ⬇                   │     │     │          ⬇                  │
+    │ ┌─────────────────────────┐ │     │     │ ┌────────────────────────┐  │
+    │ │ httpx.AsyncClient       │ │     │     │ │ httpx.AsyncClient      │  │
+    │ │ .stream(POST)           │ │     │     │ │ .post()                │  │
+    │ │ /chat/completions       │ │     │     │ │ /chat/completions      │  │
+    │ │                         │ │     │     │ │                        │  │
+    │ │ Headers:                │ │     │     │ │ Headers:               │  │
+    │ │  Authorization: Bearer  │ │     │     │ │  Authorization: Bearer │  │
+    │ │                         │ │     │     │ │                        │  │
+    │ │ Body:                   │ │     │     │ │ Body:                  │  │
+    │ │  {                      │ │     │     │ │  {                     │  │
+    │ │    model: "deepseek...", │ │     │     │ │    model: "gpt-4o.." │  │
+    │ │    messages: [          │ │     │     │ │    messages: [         │  │
+    │ │      {role: system},    │ │     │     │ │      {role: system},   │  │
+    │ │      {role: user}       │ │     │     │ │      {role: user,      │  │
+    │ │    ],                   │ │     │     │ │       content: [       │  │
+    │ │    stream: true,        │ │     │     │ │         image_url,     │  │
+    │ │    max_tokens: 1200,    │ │     │     │ │         text           │  │
+    │ │    temperature: 0.8     │ │     │     │ │       ]                │  │
+    │ │  }                      │ │     │     │ │    ],                  │  │
+    │ │                         │ │     │     │ │    max_tokens: 800     │  │
+    │ │ Timeout: 120s           │ │     │     │ │  }                     │  │
+    │ │                         │ │     │     │ │                        │  │
+    │ │ Stream: YES             │ │     │     │ │ Stream: NO             │  │
+    │ └─────────────────────────┘ │     │     │ └────────────────────────┘  │
+    │          ⬇                   │     │     │          ⬇                  │
+    │ ┌─────────────────────────┐ │     │     │ ┌────────────────────────┐  │
+    │ │ SSE Chunk Processing    │ │     │     │ │ Response Parsing       │  │
+    │ │                         │ │     │     │ │                        │  │
+    │ │ aiter_lines():          │ │     │     │ │ choices[0].message     │  │
+    │ │  • Skip if not "data: " │ │     │     │ │ .content               │  │
+    │ │  • Check [DONE]         │ │     │     │ │                        │  │
+    │ │  • Parse JSON chunk     │ │     │     │ │ Regex extract JSON:    │  │
+    │ │  • Extract delta        │ │     │     │ │ r'\{[^}]+\}'           │  │
+    │ │  • Check for            │ │     │     │ │                        │  │
+    │ │    reasoning_content    │ │     │     │ │ Map fields to dict     │  │
+    │ │    (R1 thinking)        │ │     │     │ │                        │  │
+    │ │  • Emit phase:          │ │     │     │ │ source: "llm_vision"   │  │
+    │ │    "thinking" or        │ │     │     │ │                        │  │
+    │ │    "answering"          │ │     │     │ │                        │  │
+    │ │                         │ │     │     │ │ If fail → Tesseract    │  │
+    │ └─────────────────────────┘ │     │     │ └────────────────────────┘  │
+    │          ⬇                   │     │     │          ⬇                  │
+    │ ┌─────────────────────────┐ │     │     │ ┌────────────────────────┐  │
+    │ │ ERROR HANDLING          │ │     │     │ │ ERROR HANDLING         │  │
+    │ │                         │ │     │     │ │                        │  │
+    │ │ • HTTP error (non-200)  │ │     │     │ │ • LLM fails            │  │
+    │ │   → rules_based_reply() │ │     │     │ │   → Tesseract OCR      │  │
+    │ │                         │ │     │     │ │ • Tesseract fails      │  │
+    │ │ • JSON parse error      │ │     │     │ │   → return {amount:0}  │  │
+    │ │   → skip chunk,         │ │     │     │ │                        │  │
+    │ │      continue           │ │     │     │ │ source: "tesseract"    │  │
+    │ │                         │ │     │     │ │ or "none"              │  │
+    │ │ • Exception             │ │     │     │ │                        │  │
+    │ │   → rules_based_reply() │ │     │     │ │                        │  │
+    │ │                         │ │     │     │ │                        │  │
+    │ └─────────────────────────┘ │     │     │ └────────────────────────┘  │
+    │          ⬇                   │     │     │          ⬇                  │
+    │ ┌─────────────────────────┐ │     │     │ ┌────────────────────────┐  │
+    │ │ Custom SSE Format:      │ │     │     │ │ Return Dict:           │  │
+    │ │                         │ │     │     │ │                        │  │
+    │ │ data: {                 │ │     │     │ │ {                      │  │
+    │ │   delta: "...",         │ │     │     │ │   amount: 123.45,      │  │
+    │ │   source: "ai",         │ │     │     │ │   merchant: "...",     │  │
+    │ │   done: false,          │ │     │     │ │   category: "...",     │  │
+    │ │   phase: "answering"    │ │     │     │ │   source: "llm_vi...", │  │
+    │ │ }                       │ │     │     │ │   confidence: 0.95,    │  │
+    │ │                         │ │     │     │ │   date: "2026-05-15",  │  │
+    │ │ Terminal:               │ │     │     │ │   raw: "...full..."    │  │
+    │ │ data: {                 │ │     │     │ │ }                      │  │
+    │ │   delta: "",            │ │     │     │ └────────────────────────┘  │
+    │ │   source: "ai",         │ │     │     │                             │
+    │ │   done: true            │ │     │     │                             │
+    │ │ }                       │ │     │     │                             │
+    │ │                         │ │     │     │                             │
+    │ └─────────────────────────┘ │     │     │                             │
+    │          ⬇                   │     │     │                             │
+    │ ┌─────────────────────────┐ │     │     │                             │
+    │ │ Browser (EventSource)   │ │     │     │                             │
+    │ │                         │ │     │     │                             │
+    │ │ Receives:               │ │     │     │                             │
+    │ │ {delta, source, done,   │ │     │     │                             │
+    │ │  phase}                 │ │     │     │                             │
+    │ │                         │ │     │     │                             │
+    │ │ Renders progressively   │ │     │     │                             │
+    │ │                         │ │     │     │                             │
+    │ └─────────────────────────┘ │     │     │                             │
+    └─────────────────────────────┘     │     └──────────────────────────────┘
+
+
+╔═══════════════════════════════════════════════════════════════════════════════╗
+║                            MODEL CONFIGURATION                                ║
+╚═══════════════════════════════════════════════════════════════════════════════╝
+
+STREAMING MODELS (from AVAILABLE_MODELS):
+┌─────────────────────────┬──────────────────┬──────────────────────────────┐
+│ Model ID                │ Provider         │ API Base                     │
+├─────────────────────────┼──────────────────┼──────────────────────────────┤
+│ deepseek-v4-flash       │ deepseek         │ https://api.deepseek.com/v1  │
+│ deepseek-v4-pro         │ deepseek         │ https://api.deepseek.com/v1  │
+│ deepseek-reasoner (R1)  │ deepseek         │ https://api.deepseek.com/v1  │
+└─────────────────────────┴──────────────────┴──────────────────────────────┘
+
+VISION MODEL (from env):
+┌──────────────────────────────────────────────────────────────────────────┐
+│ LLM_VISION_MODEL = "gpt-4o-mini" (default)                              │
+│ LLM_API_BASE = "https://api.openai.com/v1" (for vision, default)        │
+└──────────────────────────────────────────────────────────────────────────┘
+
+
+╔═══════════════════════════════════════════════════════════════════════════════╗
+║                          REQUEST SIGNATURE COMPARISON                         ║
+╚═══════════════════════════════════════════════════════════════════════════════╝
+
+STREAMING REQUEST:
+  Headers:
+    Authorization: Bearer {api_key}
+    Content-Type: application/json
+
+  Body:
+    {
+      "model": "deepseek-v4-flash",
+      "messages": [
+        {"role": "system", "content": "{system_prompt}"},
+        {"role": "user", "content": "{user_message}"}
+      ],
+      "max_tokens": 1200,
+      "temperature": 0.8,
+      "stream": true
+    }
+
+
+MULTIMODAL REQUEST:
+  Headers:
+    Authorization: Bearer {api_key}
+    Content-Type: application/json
+
+  Body:
+    {
+      "model": "gpt-4o-mini",
+      "messages": [
+        {
+          "role": "system",
+          "content": "{financial_ocr_system_prompt}"
+        },
+        {
+          "role": "user",
+          "content": [
+            {
+              "type": "image_url",
+              "image_url": {
+                "url": "data:image/jpeg;base64,{base64_encoded_image}"
+              }
+            },
+            {
+              "type": "text",
+              "text": "请识别这张截图的信息，返回 JSON。"
+            }
+          ]
+        }
+      ],
+      "max_tokens": 800
+    }
+
+
+╔═══════════════════════════════════════════════════════════════════════════════╗
+║                          RESPONSE SIGNATURE COMPARISON                        ║
+╚═══════════════════════════════════════════════════════════════════════════════╝
+
+STREAMING RESPONSE (SSE chunks):
+  data: {"choices":[{"delta":{"content":"Hello"}}]}
+  data: {"choices":[{"delta":{"content":" world"}}]}
+  data: {"choices":[{"delta":{"reasoning_content":"Let me think..."}}]}  ← R1 only
+  data: [DONE]
+
+  ↓ Transformed to:
+
+  data: {"delta":"Hello","source":"ai","done":false,"phase":"answering"}
+  data: {"delta":" world","source":"ai","done":false,"phase":"answering"}
+  data: {"delta":"Let me think...","source":"ai","done":false,"phase":"thinking"}
+  data: {"delta":"","source":"ai","done":true}
+
+
+MULTIMODAL RESPONSE (single response):
+  {
+    "choices": [{
+      "message": {
+        "content": "{\n  \"screenshot_type\": \"consumption\",\n  \"amount\": 123.45,\n  \"merchant\": \"星巴克\",\n  \"category\": \"餐饮\",\n  \"confidence\": 0.95\n}"
+      }
+    }],
+    "usage": {...}
+  }
+
+  ↓ Parsed to:
+
+  {
+    "amount": 123.45,
+    "merchant": "星巴克",
+    "category": "餐饮",
+    "source": "llm_vision",
+    "screenshot_type": "consumption",
+    "confidence": 0.95,
+    "raw": "{full_response_text}"
+  }
+
+
+╔═══════════════════════════════════════════════════════════════════════════════╗
+║                        INTEGRATION QUICK REFERENCE                            ║
+╚═══════════════════════════════════════════════════════════════════════════════╝
+
+To add new streaming patterns:
+  1. Import: from services.llm_gateway import LLMGateway
+  2. Get config: gw = LLMGateway.instance(); cfg = gw.get_api_config()
+  3. Check quota: if not gw.pre_check(): return fallback
+  4. Make request: async with httpx.AsyncClient() as client: ...
+  5. Process SSE: async for line in resp.aiter_lines(): ...
+  6. Check for reasoning_content (R1 models only)
+  7. Emit with source tag and phase for state tracking
+
+To add new multimodal patterns:
+  1. Import: from services.llm_gateway import LLMGateway
+  2. Get config: gw = LLMGateway.instance(); cfg = gw.get_api_config()
+  3. Check quota: if not gw.pre_check(): return fallback
+  4. Base64 encode: b64 = base64.b64encode(content).decode()
+  5. Build messages with {"type": "image_url", "image_url": {"url": "data:...;base64,..."}}
+  6. Make request: resp = await client.post(...)
+  7. Parse: text = resp.json()["choices"][0]["message"]["content"]
+  8. Extract JSON: json_match = re.search(r'\{[^}]+\}', text)
+  9. Map fields to output schema
+  10. Fallback to Tesseract if LLM fails
+

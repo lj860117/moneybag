@@ -1,7 +1,7 @@
 {
-  "name": "钱袋子 — AI智能理财助手",
+  "name": "钱袋子 — AI 家庭资产管家",
   "short_name": "钱袋子",
-  "description": "AI驱动的智能资产配置工具，让你的钱放对地方",
+  "description": "AI 做管家整理信息，人做 CFO 决策",
   "start_url": "/",
   "display": "standalone",
   "background_color": "#0F172A",

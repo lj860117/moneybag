@@ -1,0 +1,11 @@
+{
+  "timestamp": "2026-05-14T00:25:07.756642",
+  "system_date": "2026-05-14",
+  "total_cache_files": 0,
+  "code_issues": [
+    "缺少 _check_date_consistency() 函数",
+    "briefing_history() 缺少未来日期检查",
+    "briefing_history() 缺少过期缓存检查"
+  ],
+  "status": "NEEDS_FIX"
+}

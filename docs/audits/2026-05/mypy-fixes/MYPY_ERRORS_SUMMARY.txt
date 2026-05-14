@@ -1,0 +1,125 @@
+================================================================================
+MYPY STRICT CHECK FAILURE SUMMARY — 21 ERRORS ACROSS 4 FILES
+================================================================================
+
+MYPY CONFIGURATION:
+  • File: pyproject.toml
+  • Python: 3.11
+  • Strict modules: domain.*, infra.cache.*, infra.store.*, infra.llm.*,
+                    infra.data_source, use_cases.*
+  • Enforcement: disallow_untyped_defs, disallow_any_generics, strict_equality
+
+CI WORKFLOW:
+  • Job: mypy-strict
+  • Invokes: python -m mypy domain/ infra/cache/ infra/store/ infra/llm/
+                                infra/data_source/__init__.py use_cases/
+  • Transitively checks: providers/ (via __init__.py imports)
+
+================================================================================
+ERROR BREAKDOWN:
+================================================================================
+
+File                                              Errors  Root Cause
+────────────────────────────────────────────────  ──────  ──────────────────
+akshare_provider.py (lines 85-107)               12      Any return in typed fn
+baostock_provider.py (lines 75-79)               3       Any return in typed fn
+fallback.py (line 232)                           1       Missing TencentProvider
+market/stocks.py (lines 63,155,274,355)          5       Kwargs type mismatch + union narrowing
+
+TOTAL: 21 ERRORS
+
+================================================================================
+DETAILED ERROR PATTERNS:
+================================================================================
+
+❌ PATTERN 1: Provider "Any" Return Types (15 errors)
+  
+  def fetch(self, metric: str, **params: Any) -> dict[str, Any] | list[Any] | None:
+      # ...
+      return self._fetch_macro_gdp(**params)  # ERROR: returns Any, not dict|list|None
+  
+  def _fetch_macro_gdp(self, **params: Any) -> Any:  # Problem: declared as Any!
+      # ...
+      return df  # Could be DF or None, but Any hides this
+
+  Affected:
+    • akshare_provider.py: 12 instances of _fetch_* returning Any
+    • baostock_provider.py: 3 instances of _fetch_* returning Any
+
+
+❌ PATTERN 2: Missing TencentProvider Class (1 error)
+
+  fallback.py line 232:
+    from infra.data_source.providers.tencent_provider import TencentProvider
+    return TencentProvider()
+
+  Issue: tencent_provider.py exports function get_stock_quote_tencent(), NOT class
+  Fallback.py expects: TencentProvider class (like AkshareProvider, BaostockProvider)
+
+
+❌ PATTERN 3: FallbackRunner Kwargs Type Mismatch (3 errors)
+
+  market/stocks.py lines 63, 274, 355:
+    params = {"symbol": code, "start_date": start_date, "end_date": end_date}
+    runner = FallbackRunner(metric="stock_price", chain=chain, **params)
+  
+  FallbackRunner.__init__ signature:
+    def __init__(self, metric: str, chain: Optional[List[str]] = None,
+                 timeout_per_provider: float = 5.0, **kwargs: Any) -> None:
+  
+  Issue: Mypy sees **params as dict[str, str], conflicts with float param type
+
+
+❌ PATTERN 4: Union Type Narrowing Failure (2 errors)
+
+  market/stocks.py line 155:
+    df = provider.fetch("stock_price", symbol=code)  # Returns dict|list|Any
+    if df is not None and len(df) > 0:
+        latest = df.iloc[0]  # ERROR: dict/list don't have .iloc
+  
+  Issue: Type narrows to dict|list|Any after None check, but .iloc only exists on DataFrame
+
+================================================================================
+RECOMMENDED FIXES (by priority):
+================================================================================
+
+[1] HIGH IMPACT — Fix provider return types (eliminates 15 errors)
+    ├─ akshare_provider.py: Change _fetch_* methods to return explicit types
+    │  OLD: def _fetch_macro_gdp(self, **params: Any) -> Any:
+    │  NEW: def _fetch_macro_gdp(self, **params: Any) -> pd.DataFrame | None:
+    │
+    └─ baostock_provider.py: Same pattern
+
+[2] MEDIUM IMPACT — Create TencentProvider class wrapper (eliminates 1 error)
+    ├─ Option A: Wrap function-based API in class
+    │  • Create class TencentProvider with fetch() method
+    │  • Implement DataSourceProtocol interface
+    │
+    └─ Option B: Update fallback.py to handle function-based providers
+
+[3] MEDIUM IMPACT — Fix FallbackRunner kwargs typing (eliminates 3 errors)
+    ├─ Option A: Explicit parameter passing (avoid **kwargs)
+    │  OLD: runner = FallbackRunner(metric="stock_price", chain=chain, **params)
+    │  NEW: runner = FallbackRunner(metric="stock_price", chain=chain,
+    │                               symbol=code, start_date=start_date, ...)
+    │
+    └─ Option B: Make timeout_per_provider Optional, move to kwargs
+
+[4] LOW IMPACT — Add union type narrowing guards (eliminates 2 errors)
+    └─ Add isinstance(df, pd.DataFrame) check before using .iloc
+
+================================================================================
+KEY FACTS:
+================================================================================
+
+✓ Other architecture layers (domain/, use_cases/, infra/cache/store/llm/) 
+  have 0 mypy errors — only data_source layer has issues
+
+✓ Configuration is correct — the strict mode is working as intended
+
+✓ Issue is NOT configuration; it's incomplete type annotations in data providers
+
+✓ mypy.ini vs pyproject.toml: Using pyproject.toml (modern approach)
+
+✓ Python 3.11 supports modern syntax: X | Y (instead of Union[X, Y])
+
