@@ -649,7 +649,7 @@ NICKNAMES = {"LeiJiang": "厉害了哥", "BuLuoGeLi": "部落格里"}
 # ========================================================
 AVAILABLE_MODELS = [
     {"id": "deepseek-v4-flash", "name": "DeepSeek V4", "provider": "deepseek", "base": "https://api.deepseek.com/v1", "env_key": "LLM_API_KEY"},
-    {"id": "deepseek-v4-max", "name": "DeepSeek V4 Max", "provider": "deepseek", "base": "https://api.deepseek.com/v1", "env_key": "LLM_API_KEY"},
+    {"id": "deepseek-v4-pro", "name": "DeepSeek V4 Pro", "provider": "deepseek", "base": "https://api.deepseek.com/v1", "env_key": "LLM_API_KEY"},
     {"id": "deepseek-reasoner", "name": "DeepSeek R1 (深度思考)", "provider": "deepseek", "base": "https://api.deepseek.com/v1", "env_key": "LLM_API_KEY"},
 ]
 

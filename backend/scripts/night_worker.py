@@ -237,15 +237,18 @@ def step_r1_phase1():
     except Exception as e:
         log(f"  ⚠️ 新闻获取失败: {e}")
 
-    # 拼接数据文本用于 LLM 研判
+    # 拼接数据文本用于 LLM 研判（全中文，防止 LLM 照搬英文术语）
     sector_text = ','.join([s.get('name', '') for s in sr.get('top_gainers', [])[:5]]) if sr.get('available') else '暂无'
+    _geo_level_map = {"low": "低", "normal": "低", "moderate": "中等",
+                      "elevated": "偏高", "high": "高", "extreme": "极高", "critical": "极高"}
+    geo_cn_for_llm = _geo_level_map.get(geo.get('level', ''), geo.get('level', '低'))
     data_text = f"""宏观数据快照:
 - 恐贪指数: {fgi.get('score', 50)} ({fgi.get('level', '中性')})
 - 估值百分位: {val.get('percentile', 50)}% ({val.get('level', '')})
 - 北向资金: 5日{north.get('net_flow_5d', 0):.1f}亿 ({north.get('trend', '中性')})
-- SHIBOR隔夜: {shibor.get('overnight', 0)}% ({shibor.get('trend', '')})
+- 资金面(银行间利率): {shibor.get('overnight', 0)}% ({shibor.get('trend', '')})
 - 融资余额5日变化: {margin.get('change_5d_pct', 0):.1f}%
-- 地缘风险: {geo.get('level', '低')} (severity={geo.get('severity', 0)})
+- 地缘风险: {geo_cn_for_llm}（严重度{geo.get('severity', 0)}/5）
 - 行业热点: {sector_text}
 - 机构共识: {br.get('consensus', '未知')}
 - 今日要闻: {'; '.join(news_titles[:3]) if news_titles else '暂无'}"""
@@ -255,7 +258,8 @@ def step_r1_phase1():
 
 {data_text}
 
-要求: 1句话结论 + 3个要点 + 风险提示"""
+要求: 1句话结论 + 3个要点 + 风险提示
+语言: 用普通人能看懂的大白话，不要英文术语和专业缩写"""
 
     analysis = _call_v3(prompt, 400)
     if analysis:
@@ -442,13 +446,21 @@ def step_generate_products(phase1, phase2, phase3):
 
     # ---- 市场温度 ----
     temp_parts = []
-    temp_parts.append(f"恐贪指数: {fgi.get('score', '?')}({fgi.get('level', '?')})")
+    temp_parts.append(f"恐贪指数: {fgi.get('score', '?')}({fgi.get('level', '中性')})")
     if north.get("net_flow_5d"):
         temp_parts.append(f"北向5日: {north['net_flow_5d']:+.1f}亿")
     if margin.get("change_5d_pct"):
         temp_parts.append(f"融资5日: {margin['change_5d_pct']:+.1f}%")
     if shibor.get("overnight"):
-        temp_parts.append(f"SHIBOR: {shibor['overnight']}%")
+        # SHIBOR = 银行间隔夜拆借利率，普通人看不懂，翻译为「资金面」
+        rate = shibor['overnight']
+        if rate > 2.5:
+            shibor_desc = "偏紧"
+        elif rate < 1.5:
+            shibor_desc = "宽松"
+        else:
+            shibor_desc = "正常"
+        temp_parts.append(f"资金面: {shibor_desc}({rate}%)")
     temp_text = " | ".join(temp_parts) if temp_parts else "数据获取中"
 
     # ---- 行业热点 ----
@@ -459,17 +471,24 @@ def step_generate_products(phase1, phase2, phase3):
             for s in sector_items
         )
     else:
-        sector_text = "暂无行业数据"
+        sector_text = "今日暂无明显热点板块"
 
     # ---- 新闻 ----
     news_text = "\n".join(f"  • {t[:40]}" for t in news_titles[:3]) if news_titles else "  • 暂无新闻"
 
     # ---- 地缘风险 ----
-    geo_level_map = {"normal": "低", "elevated": "中", "high": "高", "extreme": "极高", "critical": "极高"}
+    geo_level_map = {"low": "低", "normal": "低", "moderate": "中等",
+                     "elevated": "偏高", "high": "高", "extreme": "极高", "critical": "极高"}
     geo_cn = geo_level_map.get(geo.get('level', ''), geo.get('level', '低'))
     geo_text = f"地缘风险: {geo_cn}"
     if geo.get('severity', 0) >= 3:
         geo_text += " ⚠️"
+    # 附上具体事件摘要（有的话）
+    top_events = geo.get("top_events", [])
+    if top_events:
+        event_titles = [e.get("title", "")[:30] for e in top_events[:2] if e.get("title")]
+        if event_titles:
+            geo_text += f"\n  关注: {'、'.join(event_titles)}"
 
     # ---- 组装核心简报 ----
     briefing = f"""📊 {today} 钱袋子晨报

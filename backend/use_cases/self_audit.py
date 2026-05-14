@@ -4,7 +4,7 @@
 每周日凌晨 2 点由 systemd timer 触发，对：
   1. 各数据源做探针采样（规则检查，不花 token）
   2. 主要 API 端点做冒烟测试（本地调用，不走网络）
-  3. 把采样摘要喂给 DeepSeek V4 Max，让 LLM 找逻辑矛盾和异常
+  3. 把采样摘要喂给 DeepSeek V4 Pro，让 LLM 找逻辑矛盾和异常
   4. 结果写入 data/audit/latest.json
   5. 企微推送审计摘要
 
@@ -15,7 +15,7 @@
 
 设计约束：
   - 凌晨不开盘 → 不检查实时行情，只检查"上次收盘缓存是否有效"
-  - 每周只跑一次 → LLM 审计用 V4 Max，不心疼 token
+  - 每周只跑一次 → LLM 审计用 V4 Pro，不心疼 token
   - 结果落盘 → 前端启动时轮询 /api/audit/latest，有新报告显示 banner
 """
 from __future__ import annotations
@@ -342,7 +342,7 @@ def run_smoke_tests() -> list[dict[str, Any]]:
 
 def run_llm_audit(probe_results: list[dict[str, Any]], smoke_results: list[dict[str, Any]]) -> dict[str, Any]:
     """
-    把数据摘要喂给 V4 Max，让 LLM 找：
+    把数据摘要喂给 V4 Pro，让 LLM 找：
     - 数据之间的逻辑矛盾（如北向资金净流入但恐贪极度恐慌）
     - 疑似数据失效（数值长期不变、全部为 0 等）
     - 功能逻辑 bug（信号打分与 Regime 判断方向相反等）
@@ -398,7 +398,7 @@ def run_llm_audit(probe_results: list[dict[str, Any]], smoke_results: list[dict[
                 f"{api_base}/chat/completions",
                 headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
                 json={
-                    "model": "deepseek-v4-max",
+                    "model": "deepseek-v4-pro",
                     "messages": [{"role": "user", "content": prompt}],
                     "max_tokens": 1000,
                     "temperature": 0.3,

@@ -226,6 +226,86 @@ def run_scan():
     cleanup_old_snapshots()
 
 
+def _format_review_for_push(review: dict) -> str:
+    """把 steward review 结构化结果翻译成人话，避免推送原始 JSON"""
+    direction_map = {"bullish": "偏多", "bearish": "偏空", "neutral": "中性"}
+    direction = review.get("direction", "neutral")
+    confidence = review.get("confidence", 0)
+    conclusion = review.get("conclusion", "")
+    reasoning = review.get("reasoning", "")
+
+    # 方向 emoji
+    emoji = "📈" if direction == "bullish" else "📉" if direction == "bearish" else "⚖️"
+
+    parts = []
+    if conclusion:
+        parts.append(f"{emoji} {_humanize_terms(conclusion)}")
+    parts.append(f"方向：{direction_map.get(direction, direction)}｜置信度：{confidence}%")
+    if reasoning:
+        # reasoning 可能很长，截取关键部分，翻译术语
+        parts.append(f"依据：{_humanize_terms(reasoning[:150])}")
+    return "\n".join(parts)
+
+
+# 模块/技术术语 → 中文映射（用于推送文本人话化）
+_TERM_MAP = {
+    "sector_rotation": "板块轮动",
+    "factor_data": "多因子数据",
+    "factor_ic": "因子IC",
+    "macro_data": "宏观数据",
+    "macro_extended": "扩展宏观",
+    "macro_v8": "宏观V8",
+    "market_data": "大盘数据",
+    "market_factors": "市场因子",
+    "news_data": "新闻舆情",
+    "policy_data": "政策数据",
+    "technical": "技术面",
+    "signal": "信号模块",
+    "signal_scout": "信号侦察",
+    "risk": "风控模块",
+    "regime_engine": "市场状态",
+    "global_market": "全球市场",
+    "geopolitical": "地缘政治",
+    "northbound": "北向资金",
+    "breadth": "市场广度",
+    "momentum": "动量",
+    "volatility": "波动率",
+    "valuation_engine": "估值引擎",
+    "earnings_forecast": "盈利预测",
+    "broker_research": "券商研报",
+    "holding_intelligence": "持仓情报",
+    "portfolio_doctor": "持仓体检",
+    "alt_data": "另类数据",
+    "fund_monitor": "基金监控",
+    "stock_monitor": "个股监控",
+    "monte_carlo": "蒙特卡洛模拟",
+    "genetic_factor": "遗传因子",
+    "scenario_engine": "情景分析",
+    "business_exposure": "业务敞口",
+}
+
+
+def _humanize_terms(text: str) -> str:
+    """把 reasoning 中的英文模块名/技术术语替换为中文"""
+    for en, zh in _TERM_MAP.items():
+        if en in text:
+            text = text.replace(en, zh)
+    return text
+
+
+def _sanitize_push_text(text: str) -> str:
+    """检测文本是否为原始 JSON，如果是则提取关键信息格式化"""
+    stripped = text.strip()
+    if stripped.startswith("{") or stripped.startswith("["):
+        try:
+            data = json.loads(stripped)
+            if isinstance(data, dict):
+                return _format_review_for_push(data)
+        except (json.JSONDecodeError, ValueError):
+            pass
+    return text
+
+
 def run_close_review():
     """收盘后复盘（升级版：扫描 + R1深度诊断 + steward review + 企微推送）"""
     print("[CRON] 收盘复盘...")
@@ -241,23 +321,25 @@ def run_close_review():
         # ---- V4 新增：steward 收盘 review ----
         print(f"  [复盘] {name}: steward review...")
         review_text = ""
+        review = {}
         try:
             from services.steward import get_steward
             steward = get_steward()
             review = steward.review(uid)
-            review_text = review.get("conclusion", "") or review.get("summary", "")
-            
+            # 用格式化函数把结构化结果翻译成人话
+            review_text = _format_review_for_push(review)
+
             # 保存复盘结果（前端 /api/steward/review 可读）
             review_dir = MONITOR_DIR / uid / "reviews"
             review_dir.mkdir(parents=True, exist_ok=True)
             review_file = review_dir / f"{date}.json"
             review_file.write_text(
                 json.dumps(review, ensure_ascii=False, indent=2), encoding="utf-8")
-            
+
             # 也存一份 latest
             (review_dir / "latest.json").write_text(
                 json.dumps(review, ensure_ascii=False, indent=2), encoding="utf-8")
-            
+
             print(f"  [复盘] {name}: 已保存 ({len(review_text)}字)")
         except Exception as e:
             print(f"  [复盘] {name}: steward review 失败: {e}")
@@ -307,7 +389,8 @@ def run_close_review():
 ## 持仓相关新闻
 {holdings_news_text if holdings_news_text else "暂无个股/基金新闻"}
 
-请按 close_review 格式输出收盘复盘，300 字以内。"""
+请按 close_review 格式输出收盘复盘，300 字以内。
+重要：用普通人能看懂的大白话，不要输出 JSON，不要英文术语。"""
                     
                     result = gw.call_sync(
                         prompt,
@@ -337,14 +420,16 @@ def run_close_review():
             try:
                 from services.wxwork_push import is_configured, send_daily_report_to
                 if is_configured():
-                    # 组装推送内容
+                    # 组装推送内容（确保不推原始 JSON）
                     msg_parts = [f"📊 {date} 收盘复盘"]
                     if review_text:
-                        msg_parts.append(f"\n{review_text[:200]}")
+                        msg_parts.append(f"\n{review_text[:300]}")
                     if diagnosis_text:
-                        msg_parts.append(f"\n🤖 AI诊断:\n{diagnosis_text[:300]}")
+                        # 防止 LLM 输出原始 JSON
+                        safe_diag = _sanitize_push_text(diagnosis_text)
+                        msg_parts.append(f"\n🤖 AI诊断:\n{safe_diag[:300]}")
                     msg_parts.append("\n打开钱袋子查看完整报告")
-                    
+
                     send_daily_report_to(wxwork_uid, "\n".join(msg_parts))
                     print(f"  [推送] {name}: 复盘+诊断已推企微")
             except Exception as e:
@@ -374,13 +459,20 @@ def run_close_review():
         if severity >= 3:
             from services.wxwork_push import is_configured, send_daily_report_to
             if is_configured():
-                geo_msg = f"🚨 地缘风险预警 (级别 {severity}/5)\n\n"
-                geo_msg += f"风险评分: {geo.get('score', 0)}/100\n"
-                geo_msg += f"级别: {geo.get('level', '未知')}\n"
-                events = geo.get('events', [])
+                _geo_level_map = {"low": "低", "normal": "低", "moderate": "中等",
+                                  "elevated": "偏高", "high": "高", "extreme": "极高", "critical": "极高"}
+                geo_cn = _geo_level_map.get(geo.get('level', ''), geo.get('level', '未知'))
+                geo_msg = f"🚨 地缘风险预警\n\n"
+                geo_msg += f"风险等级: {geo_cn}（{geo.get('score', 0)}分）\n"
+                events = geo.get('top_events', geo.get('events', []))
                 if events:
-                    geo_msg += f"\n事件:\n" + "\n".join(f"• {e}" for e in events[:3])
-                geo_msg += "\n\n打开钱袋子查看详情"
+                    geo_msg += "\n相关事件:\n"
+                    for e in events[:3]:
+                        if isinstance(e, dict):
+                            geo_msg += f"• {e.get('title', str(e))[:40]}\n"
+                        else:
+                            geo_msg += f"• {str(e)[:40]}\n"
+                geo_msg += "\n打开钱袋子查看详情"
                 for p in profiles:
                     wxid = p.get("wxworkUserId", "")
                     if wxid:
