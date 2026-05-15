@@ -87,3 +87,18 @@ def weekly_report_history(userId: str = "", limit: int = 4):
     if not userId:
         return {"reports": []}
     return {"reports": get_weekly_history(userId, limit)}
+
+
+# ============================================================
+# 家庭 CFO 首页聚合接口
+# ============================================================
+
+@router.get("/api/cfo-summary")
+def cfo_summary(userId: str = ""):
+    """家庭 CFO 今日面板 — 一次请求返回首页全部数据
+
+    聚合：净资产 + 今日提醒 + 配置 + 情绪提醒 + 本周待办
+    全部纯规则计算，不调 LLM，保证 <2s 响应。
+    """
+    from services.cfo_dashboard import generate_cfo_summary
+    return generate_cfo_summary(userId or "default")

@@ -1,62 +1,119 @@
-// ---- 落地页（智能决策中心）----
+// ---- 落地页（家庭 CFO 今日面板）----
 function renderLanding(){currentPage='landing';const p=loadPortfolio();const txns=loadTxns();const assets=loadAssets();const ledger=loadLedger();
-// 已登录用户直接进首页，不走问卷（v3.0：资产通过持仓Tab和资产Tab录入，不需要问卷）
+// 已登录用户直接进首页，不走问卷
 const hasProfile=!!getProfileId()&&getProfileId()!=='default';
 const hasServerHoldings=localStorage.getItem(_uk('moneybag_has_holdings'))==='1';
 const hasLocalData=txns.length>0||p.transactions?.length>0||assets.length>0||ledger.length>0||hasServerHoldings;
 if(!hasProfile&&!hasLocalData){
 $('#app').innerHTML=`<div class="landing stagger"><div class="landing-icon">💰</div><h1>你的钱，该怎么放？</h1><p class="subtitle">回答5个问题，AI帮你出一份<br>专属资产配置方案</p><button class="cta-btn" onclick="startQuiz()">开始测评</button><div class="trust-badges"><span class="trust-badge">不收费</span><span class="trust-badge">不推销</span><span class="trust-badge">不注册</span></div></div>`;renderNav();return}
-// 有数据 → 智能决策中心
-const nw=calcNetWorth();
-const monthNow=new Date();const monthStart=new Date(monthNow.getFullYear(),monthNow.getMonth(),1).toISOString();
-const monthLedger=ledger.filter(e=>e.date>=monthStart);
-const monthInc=monthLedger.filter(e=>e.direction==='income').reduce((s,e)=>s+(e.amount||0),0);
-const monthExp=monthLedger.filter(e=>e.direction!=='income').reduce((s,e)=>s+(e.amount||0),0);
 
+// ── 家庭 CFO 今日面板 ──
+const nw=calcNetWorth();
 $('#app').innerHTML=`<div class="result-page fade-up">
+
+<!-- A. 家庭净资产 -->
 <div class="pnl-hero" style="margin-bottom:16px">
-<div class="pnl-label">💰 我的净资产 <span onclick="showExplain('networth')" style="font-size:14px;cursor:pointer;opacity:0.6">ℹ️</span></div>
-<div style="font-size:10px;color:var(--text2);margin-top:2px">含投资+现金+房产+车辆+保险 - 负债</div>
+<div class="pnl-label">💰 家庭净资产</div>
 <div class="pnl-total-value" id="heroNetWorth">${fmtFull(Math.round(nw.netWorth))}</div>
 <div id="heroBreakdown" style="display:flex;gap:12px;justify-content:center;margin-top:12px;font-size:12px;flex-wrap:wrap">
 <div style="text-align:center"><div style="color:var(--text2)">📈 投资</div><div style="font-weight:700;color:var(--accent)">¥${fmtMoney(Math.round(nw.fundValue))}</div></div>
 <div style="text-align:center"><div style="color:var(--text2)">💵 现金</div><div style="font-weight:700;color:var(--green)">¥${fmtMoney(Math.round(nw.assetTotal))}</div></div>
 <div style="text-align:center"><div style="color:var(--text2)">💳 负债</div><div style="font-weight:700;color:var(--red)">-¥${fmtMoney(Math.round(nw.liabilities))}</div></div>
 </div>
-<div id="heroHealth" style="margin-top:8px;font-size:12px;color:var(--text2)"></div>
 </div>
 
-<div style="display:flex;gap:8px;margin-bottom:16px">
-<div style="flex:1;background:rgba(16,185,129,.08);border:1px solid rgba(16,185,129,.2);border-radius:12px;padding:12px;text-align:center">
-<div style="font-size:11px;color:var(--text2)">本月收入</div>
-<div style="font-size:16px;font-weight:700;color:var(--green)">+¥${Math.round(monthInc)}</div>
-</div>
-<div style="flex:1;background:rgba(239,68,68,.08);border:1px solid rgba(239,68,68,.2);border-radius:12px;padding:12px;text-align:center">
-<div style="font-size:11px;color:var(--text2)">本月支出</div>
-<div style="font-size:16px;font-weight:700;color:var(--red)">-¥${Math.round(monthExp)}</div>
-</div>
+<!-- B. 今日提醒 -->
+<div id="cfoAlerts" class="dashboard-card" style="border-left:3px solid #6366F1;margin-bottom:12px">
+<div class="dashboard-card-title">📋 今日提醒</div>
+<div style="font-size:13px;color:var(--text2);padding:8px 0">加载中...</div>
 </div>
 
-<div id="dailyFocusSection"></div>
-
-<div id="stewardBriefingCard" class="dashboard-card" style="border-left:3px solid #6366F1;display:none">
-<div class="dashboard-card-title">🤖 管家一句话</div>
-<div id="stewardBriefingText" style="font-size:13px;line-height:1.8;color:var(--text1)">加载中...</div>
+<!-- C. 资产配置 -->
+<div id="cfoAllocation" class="dashboard-card" style="margin-bottom:12px">
+<div class="dashboard-card-title">🥧 资产配置</div>
+<div style="font-size:13px;color:var(--text2);padding:8px 0">加载中...</div>
 </div>
 
-<div id="signalsSection" ${isProMode()?'':'style="display:none"'}></div>
+<!-- D. 情绪提醒 -->
+<div id="cfoEmotion" class="dashboard-card" style="margin-bottom:12px">
+<div class="dashboard-card-title">🧠 情绪提醒</div>
+<div style="font-size:13px;color:var(--text2);padding:8px 0">加载中...</div>
+</div>
 
-<div id="riskAlertSection"></div>
+<!-- E. 本周待办 -->
+<div id="cfoTodos" class="dashboard-card" style="margin-bottom:12px">
+<div class="dashboard-card-title">✅ 本周待办</div>
+<div style="font-size:13px;color:var(--text2);padding:8px 0">加载中...</div>
+</div>
 
-<div id="allocationAdviceSection" ${isProMode()?'':'style="display:none"'}></div>
-
+<!-- 底部操作 -->
 <div class="bottom-actions" style="margin-top:16px">
-<button class="action-btn primary" onclick="showAllocateAssets()">💰 配置资产<div style="font-size:10px;font-weight:400;opacity:0.7;margin-top:2px">新存款到账？一键按方案分配</div></button>
-<button class="action-btn secondary" onclick="showAllocHistory()">📋 配比历史</button>
-<button class="action-btn secondary" onclick="showAddTxn()">➕ 记交易</button>
-<button class="action-btn secondary" onclick="startQuiz()">🔄 重新测评</button>
+<button class="action-btn primary" onclick="navigateTo('stocks')">📊 查看持仓</button>
+<button class="action-btn secondary" onclick="navigateTo('assets')">🏦 管理资产</button>
+<button class="action-btn secondary" onclick="navigateTo('chat')">💬 问管家</button>
 </div>
-</div>`;renderNav();loadSignals();loadDailyFocus();loadHomeRiskAlert();loadHomeAllocationAdvice();loadUnifiedHero();loadStewardBriefing()}
+</div>`;renderNav();loadUnifiedHero();_loadCfoSummary()}
+
+// ---- 首页：加载 CFO 聚合数据 ----
+async function _loadCfoSummary(){
+if(!API_AVAILABLE)return;
+try{
+const r=await fetch(`${API_BASE}/cfo-summary?userId=${getProfileId()}`,{signal:AbortSignal.timeout(12000)});
+if(!r.ok)return;
+const d=await r.json();
+
+// B. 今日提醒
+const alertsEl=document.getElementById('cfoAlerts');
+if(alertsEl&&d.alerts&&d.alerts.length){
+const levelIcon={danger:'🔴',warning:'⚠️',opportunity:'🟢',info:'💡'};
+alertsEl.innerHTML=`<div class="dashboard-card-title">📋 今日提醒</div>`+
+d.alerts.map(a=>`<div style="font-size:13px;line-height:1.8;padding:6px 0;border-bottom:1px solid var(--bg3,rgba(0,0,0,.05))">${levelIcon[a.level]||'📌'} ${a.text}</div>`).join('');
+}else if(alertsEl){
+alertsEl.innerHTML=`<div class="dashboard-card-title">📋 今日提醒</div><div style="font-size:13px;color:var(--green);padding:8px 0">✅ 今天一切正常，没有需要特别注意的事项。</div>`;
+}
+
+// C. 资产配置
+const allocEl=document.getElementById('cfoAllocation');
+if(allocEl&&d.allocation&&d.allocation.current){
+const c=d.allocation.current;const t=d.allocation.target||{};
+const items=[
+{label:'股票',key:'stock',color:'#6366F1'},
+{label:'债券',key:'bond',color:'#22C55E'},
+{label:'现金',key:'cash',color:'#F59E0B'}
+];
+let html=`<div class="dashboard-card-title">🥧 资产配置 <span style="font-size:11px;color:var(--text2);font-weight:400">${d.allocation.zone||''}</span></div>`;
+items.forEach(item=>{
+const cur=Math.round(c[item.key]||0);const tgt=Math.round(t[item.key]||0);
+const dev=cur-tgt;const devColor=Math.abs(dev)>10?'var(--red)':Math.abs(dev)>5?'#F59E0B':'var(--green)';
+html+=`<div style="display:flex;align-items:center;gap:8px;margin:8px 0">
+<div style="width:48px;font-size:12px;color:var(--text2)">${item.label}</div>
+<div style="flex:1;height:8px;background:var(--bg3,rgba(0,0,0,.05));border-radius:4px;overflow:hidden"><div style="height:100%;width:${Math.min(cur,100)}%;background:${item.color};border-radius:4px"></div></div>
+<div style="width:90px;font-size:11px;text-align:right">${cur}% <span style="color:var(--text2)">目标${tgt}%</span> <span style="color:${devColor};font-weight:600">${dev>0?'+':''}${dev}%</span></div>
+</div>`;});
+allocEl.innerHTML=html;
+}
+
+// D. 情绪提醒
+const emotionEl=document.getElementById('cfoEmotion');
+if(emotionEl&&d.emotion){
+const bgMap={caution:'rgba(239,68,68,.06)',reassure:'rgba(59,130,246,.06)',calm:'rgba(148,163,184,.04)',neutral:'rgba(148,163,184,.04)'};
+emotionEl.innerHTML=`<div class="dashboard-card-title">🧠 情绪提醒</div>
+<div style="padding:10px;background:${bgMap[d.emotion.tone]||''};border-radius:8px;margin-top:6px">
+<div style="font-size:14px;font-weight:700;margin-bottom:4px">${d.emotion.icon||''} ${d.emotion.title||''}</div>
+<div style="font-size:13px;color:var(--text2);line-height:1.6">${d.emotion.body||''}</div>
+</div>`;
+}
+
+// E. 本周待办
+const todosEl=document.getElementById('cfoTodos');
+if(todosEl&&d.todos&&d.todos.length){
+todosEl.innerHTML=`<div class="dashboard-card-title">✅ 本周待办</div>`+
+d.todos.map(t=>`<div style="font-size:13px;line-height:2;padding-left:4px">☐ ${t}</div>`).join('');
+}else if(todosEl){
+todosEl.innerHTML=`<div class="dashboard-card-title">✅ 本周待办</div><div style="font-size:13px;color:var(--green);padding:8px 0">👍 本周暂无待办事项。</div>`;
+}
+
+}catch(e){console.warn('[CFO]',e)}}
 
 // ---- 首页：管家简报 ----
 async function loadStewardBriefing(){
