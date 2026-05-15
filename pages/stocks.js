@@ -96,6 +96,15 @@ el.innerHTML='<div style="text-align:center;padding:40px"><div class="loading-sp
 try{const[hRes,scanRes]=await Promise.all([fetch(API_BASE+'/stock-holdings?'+getProfileParam()).then(r=>r.json()),fetch(API_BASE+'/stock-holdings/scan?'+getProfileParam()).then(r=>r.json())]);
 _stockScanData=scanRes;const holdings=scanRes.holdings||[];const signals=scanRes.signals||[];const discipline=scanRes.discipline||[];
 const el=document.getElementById('holdingsContent');if(!el)return;
+// ── 风险纪律卡（精简版，一眼扫完）──
+let riskCardHtml='';
+const riskIssues=[];
+discipline.forEach(d=>{if(d.level==='danger'||d.level==='warning')riskIssues.push(d.msg)});
+if(_overviewData&&_overviewData.healthIssues)_overviewData.healthIssues.forEach(h=>{if(!riskIssues.includes(h))riskIssues.push(h)});
+if(riskIssues.length>0){
+riskCardHtml=`<div style="background:rgba(245,158,11,.06);border:1px solid rgba(245,158,11,.2);border-radius:12px;padding:12px 14px;margin-bottom:12px"><div style="font-size:13px;font-weight:700;margin-bottom:6px">🛡️ 风险纪律</div>${riskIssues.slice(0,4).map(i=>`<div style="font-size:12px;line-height:1.8;color:#92400E">• ${i}</div>`).join('')}</div>`
+}else if(holdings.length>0){
+riskCardHtml=`<div style="background:rgba(16,185,129,.06);border:1px solid rgba(16,185,129,.2);border-radius:12px;padding:10px 14px;margin-bottom:12px;font-size:12px;color:var(--green)">🛡️ 风险纪律：一切正常，没有需要注意的问题 ✅</div>`}
 // 异动信号汇总
 let signalHtml='';if(signals.length>0){const dangerS=signals.filter(s=>s.level==='danger'||s.level==='warning');const opS=signals.filter(s=>s.level==='opportunity');
 signalHtml=`<div class="dashboard-card" style="border-left:3px solid ${dangerS.length?'var(--red)':'var(--green)'}"><div class="dashboard-card-title">⚡ 盯盘信号 (${signals.length})</div>${signals.map(s=>{const c=s.level==='danger'?'var(--red)':s.level==='warning'?'#F59E0B':s.level==='opportunity'?'var(--green)':'var(--text2)';return`<div style="padding:6px 0;font-size:13px;border-bottom:1px solid var(--bg3);color:${c}">${s.msg}</div>`}).join('')}</div>`}
@@ -114,7 +123,7 @@ return`<div class="holding-card" onclick="showStockDetail('${h.code}')"><div cla
 let totalMV=holdings.reduce((s,h)=>s+(h.marketValue||0),0);let totalPnl=holdings.reduce((s,h)=>s+(h.pnl||0),0);
 let heroHtml='';if(holdings.length>0&&totalMV>0){const pnlC=totalPnl>=0?'var(--green)':'var(--red)';
 heroHtml=`<div class="pnl-hero"><div class="pnl-label">股票持仓总市值</div><div class="pnl-total-value">¥${totalMV.toLocaleString()}</div><div class="pnl-change ${totalPnl>=0?'pos':'neg'}" style="color:${pnlC}">${totalPnl>=0?'+':''}${totalPnl.toFixed(0)}</div><div class="pnl-sub">${holdings.length} 只股票 · ${scanRes.scannedAt?'更新于 '+scanRes.scannedAt.slice(11,16):''}</div></div>`}
-el.innerHTML=heroHtml+signalHtml+disciplineHtml+listHtml+`<div style="margin-top:16px"><button class="action-btn primary" onclick="showAddStockModal()" style="width:100%">➕ 添加股票</button></div><div style="margin-top:8px"><button class="action-btn secondary" onclick="renderStocksContent()" style="width:100%">🔄 刷新行情</button></div>`;
+el.innerHTML=heroHtml+riskCardHtml+signalHtml+disciplineHtml+listHtml+`<div style="margin-top:16px"><button class="action-btn primary" onclick="showAddStockModal()" style="width:100%">➕ 添加股票</button></div><div style="margin-top:8px"><button class="action-btn secondary" onclick="renderStocksContent()" style="width:100%">🔄 刷新行情</button></div>`;
 }catch(e){console.error('Stock load error:',e);document.getElementById('holdingsContent').innerHTML='<div style="text-align:center;padding:40px;color:var(--red)">加载失败: '+e.message+'</div>'}}
 
 function showAddStockModal(){const overlay=document.createElement('div');overlay.className='modal-overlay';overlay.onclick=e=>{if(e.target===overlay)overlay.remove()};

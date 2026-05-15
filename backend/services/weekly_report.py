@@ -64,6 +64,13 @@ def generate(user_id: str, weeks_ago: int = 0) -> dict:
         "week_end": week_end.isoformat(),
         "generated_at": now.isoformat(),
         "summary": _build_summary(judgments_summary, portfolio_changes),
+        "narrative": generate_narrative({
+            "period": period,
+            "portfolio_changes": portfolio_changes,
+            "market_review": market_review,
+            "recommendations": recommendations,
+            "judgments": judgments_summary,
+        }),
         "judgments": judgments_summary,
         "portfolio_changes": portfolio_changes,
         "market_review": market_review,
@@ -189,6 +196,84 @@ def _build_summary(judgments: dict, portfolio: dict) -> str:
     if portfolio.get("total_transactions", 0) > 0:
         parts.append(f"交易{portfolio['total_transactions']}笔")
     return "｜".join(parts) if parts else "本周暂无活动"
+
+
+def generate_narrative(report: dict) -> str:
+    """把结构化周报转为家庭财务复盘的人话版本（不调 LLM，纯模板）
+
+    输出风格：像给家人写的周记，不用专业术语。
+    """
+    period = report.get("period", "本周")
+    portfolio = report.get("portfolio_changes", {})
+    market = report.get("market_review", {})
+    recommendations = report.get("recommendations", [])
+    judgments = report.get("judgments", {})
+
+    lines = [f"📋 本周家庭财务复盘（{period}）", ""]
+
+    # 1. 投资操作
+    lines.append("📌 投资操作")
+    txn_count = portfolio.get("total_transactions", 0)
+    if txn_count == 0:
+        lines.append("   本周没有新增交易，执行纪律良好。👍")
+    else:
+        buys = portfolio.get("buys", 0)
+        sells = portfolio.get("sells", 0)
+        bought = portfolio.get("total_bought", 0)
+        sold = portfolio.get("total_sold", 0)
+        parts = []
+        if buys > 0:
+            parts.append(f"买入 {buys} 笔（¥{bought:,.0f}）")
+        if sells > 0:
+            parts.append(f"卖出 {sells} 笔（¥{sold:,.0f}）")
+        lines.append(f"   {', '.join(parts)}。")
+        if txn_count > 5:
+            lines.append("   ⚠️ 交易次数偏多，频繁操作可能影响长期收益。")
+    lines.append("")
+
+    # 2. 市场状态
+    lines.append("📊 市场状态")
+    regime_desc = market.get("regime_description", "")
+    if regime_desc:
+        lines.append(f"   {regime_desc}")
+    else:
+        regime_map = {
+            "trending_bull": "市场处于上升趋势，整体偏强。",
+            "oscillating": "市场横盘震荡，方向不明。",
+            "high_vol_bear": "市场波动加大，偏弱，注意防守。",
+            "rotation": "市场热点轮动，板块分化明显。",
+        }
+        regime = market.get("regime", "unknown")
+        lines.append(f"   {regime_map.get(regime, '市场状态正常。')}")
+    lines.append("")
+
+    # 3. 判断复盘
+    total_j = judgments.get("total_judgments", 0)
+    if total_j > 0:
+        lines.append("🎯 判断复盘")
+        accuracy = judgments.get("accuracy", 0)
+        verified = judgments.get("verified", 0)
+        if verified > 0:
+            lines.append(f"   本周做了 {total_j} 次判断，验证了 {verified} 次，准确率 {accuracy}%。")
+            if accuracy >= 70:
+                lines.append("   判断质量不错，继续保持。✅")
+            elif accuracy < 50:
+                lines.append("   准确率偏低，下周建议减少操作频率，多观察少动手。")
+        else:
+            lines.append(f"   本周做了 {total_j} 次判断，暂未验证。")
+        lines.append("")
+
+    # 4. 下周提醒
+    lines.append("💡 下周提醒")
+    if recommendations:
+        for r in recommendations[:3]:
+            # 去掉开头的 emoji（如果有的话）
+            text = r.lstrip("📉⚠️💰🐻🐂✅ ")
+            lines.append(f"   • {text}")
+    else:
+        lines.append("   • 按计划执行，无需特别调整。")
+
+    return "\n".join(lines)
 
 
 def enrich(ctx):

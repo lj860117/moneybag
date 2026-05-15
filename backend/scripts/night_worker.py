@@ -118,6 +118,24 @@ def step_health_check():
 
 
 # ============================================================
+# 01:15 月度净资产快照（每月 1 号自动触发）
+# ============================================================
+
+def step_monthly_snapshot():
+    """每月 1 号保存所有用户的净资产快照"""
+    from datetime import date
+    if date.today().day != 1:
+        return  # 非月初不执行
+    log("📸 01:15 月度净资产快照")
+    try:
+        from services.monthly_snapshot import save_all_users_snapshot
+        count = save_all_users_snapshot()
+        log(f"  ✅ 快照完成: {count} 个用户")
+    except Exception as e:
+        log(f"  ❌ 快照失败: {e}")
+
+
+# ============================================================
 # 01:30 数据预热
 # ============================================================
 
@@ -839,6 +857,9 @@ def run_night_worker():
 
     # 01:00 健康巡检
     step_health_check()
+
+    # 01:15 月度快照（每月1号执行）
+    step_monthly_snapshot()
 
     # 01:30 数据预热
     step_data_warm()
