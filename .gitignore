@@ -3,6 +3,8 @@ __pycache__/
 .env
 .venv/
 .DS_Store
+.cache/
+backend/infra/.cache/
 
 # ---- QA/Local 开发产物（不入库）----
 backend/data/
