@@ -28,6 +28,28 @@ def _user_file(user_id: str) -> Path:
     safe_id = hashlib.sha256(user_id.encode()).hexdigest()[:16]
     return USERS_DIR / f"{safe_id}.json"
 
+def _init_phase3_fields(data: dict) -> dict:
+    """
+    Phase 3 字段初始化。如果用户数据不包含 Phase 3 字段，自动添加。
+    
+    新增字段：
+    - behavior_events: 行为事件列表（最多 500 条）
+    - todos: 待办任务列表
+    - monthly_snapshots: 月度快照字典 {YYYY-MM: snapshot_data}
+    
+    这个函数在 load_user() 和 save_user() 中被调用，确保 Phase 3 字段总是存在。
+    """
+    if "behavior_events" not in data:
+        data["behavior_events"] = []
+    
+    if "todos" not in data:
+        data["todos"] = []
+    
+    if "monthly_snapshots" not in data:
+        data["monthly_snapshots"] = {}
+    
+    return data
+
 def load_user(user_id: str) -> dict:
     """安全读取用户 JSON（损坏时尝试从 .bak 恢复）"""
     f = _user_file(user_id)
@@ -36,7 +58,10 @@ def load_user(user_id: str) -> dict:
     # 1. 尝试读主文件
     if f.exists():
         try:
-            return json.loads(f.read_text(encoding="utf-8"))
+            data = json.loads(f.read_text(encoding="utf-8"))
+            # Phase 3: 确保新字段存在
+            data = _init_phase3_fields(data)
+            return data
         except (json.JSONDecodeError, UnicodeDecodeError) as e:
             print(f"[PERSISTENCE] ⚠️ 用户文件损坏: {f}, error: {e}")
 
@@ -44,6 +69,8 @@ def load_user(user_id: str) -> dict:
     if backup.exists():
         try:
             data = json.loads(backup.read_text(encoding="utf-8"))
+            # Phase 3: 确保新字段存在
+            data = _init_phase3_fields(data)
             print(f"[PERSISTENCE] 🔄 从备份恢复: {backup}")
             atomic_write_json(f, data)  # 恢复主文件
             return data
@@ -51,13 +78,16 @@ def load_user(user_id: str) -> dict:
             print(f"[PERSISTENCE] 🔴 备份也损坏: {backup}")
 
     # 3. 全新用户
-    return {
+    data = {
         "userId": user_id,
         "portfolio": None,
         "ledger": [],
         "createdAt": datetime.now().isoformat(),
         "updatedAt": datetime.now().isoformat(),
     }
+    # Phase 3: 新用户也要初始化 Phase 3 字段
+    data = _init_phase3_fields(data)
+    return data
 
 def save_user(data: dict):
     """原子写用户 JSON（tmp + fsync + rename，防断电损坏）"""
@@ -100,5 +130,4 @@ def backup_user_files():
             count += 1
     if count:
         print(f"[PERSISTENCE] 📦 备份 {count} 个用户文件")
-
 
