@@ -129,6 +129,14 @@ app.include_router(chart_router)
 from api.behavior import router as behavior_router
 app.include_router(behavior_router)
 
+# ---- Phase 3 Batch 2: 行为监控 + 待办 + 月度再平衡（3 路由）----
+from api.todos import router as todos_router
+from api.behavior_tracking import router as behavior_tracking_router
+from api.monthly_rebalance import router as monthly_rebalance_router
+app.include_router(todos_router)
+app.include_router(behavior_tracking_router)
+app.include_router(monthly_rebalance_router)
+
 # ---- 静态文件服务（部署时前后端一体）----
 FRONTEND_DIR = Path(__file__).resolve().parent.parent  # moneybag/
 
