@@ -445,7 +445,7 @@ def run_close_review():
             if diagnosis_text:
                 full_text += f"【R1 深度诊断】\n{diagnosis_text}"
             if full_text.strip():
-                save_analysis(uid, "deepseek", "DeepSeek 收盘复盘", "full", full_text.strip(), direction="auto")
+                save_analysis(uid, "deepseek", "DeepSeek 收盘复盘", "full", full_text.strip(), direction="unknown")
                 print(f"  [存档] {name}: 复盘已存 analysis_history")
         except Exception as e:
             print(f"  [存档] {name}: 失败: {e}")

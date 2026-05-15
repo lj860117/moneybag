@@ -575,7 +575,7 @@ def step_generate_products(phase1, phase2, phase3):
         try:
             from services.analysis_history import save_analysis
             save_analysis(uid, "night_worker", "AI凌晨自动分析", "full",
-                         user_briefing, direction="auto", confidence=0)
+                         user_briefing, direction="unknown", confidence=0)
         except Exception:
             pass
 

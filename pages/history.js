@@ -10,13 +10,13 @@ try{const r=await fetch(`/api/analysis/history?userId=${uid}&source=${src}&days=
 if(!d.records||d.records.length===0){el.innerHTML='<div style="text-align:center;padding:40px;color:var(--text2)">暂无分析记录<br><span style="font-size:12px">AI分析后会自动存档</span></div>';return}
 let html='';let lastDate='';
 d.records.forEach(rec=>{const date=rec.created_at?.slice(0,10)||'';if(date!==lastDate){html+=`<div style="font-size:13px;font-weight:700;color:var(--text2);margin:16px 0 8px;padding-left:4px">${date}</div>`;lastDate=date}
-const dirColor=rec.direction==='看多'||rec.direction==='bullish'?'var(--bull,#22c55e)':rec.direction==='看空'||rec.direction==='bearish'?'var(--bear,#ef4444)':'var(--text2)';
+const dirDisplay=rec.direction_display||translateDirection(rec.direction)||rec.direction||'';const typeDisplay=rec.type_display||translateAnalysisType(rec.type)||rec.type||'';const dirColor=rec.direction==='看多'||rec.direction==='bullish'||dirDisplay==='看多'?'var(--bull,#22c55e)':rec.direction==='看空'||rec.direction==='bearish'||dirDisplay==='看空'?'var(--bear,#ef4444)':'var(--text2)';
 const srcIcon=rec.source==='deepseek'?'🤖':rec.source==='claude'?'🧠':rec.source==='broker'?'🏛️':'📝';
 html+=`<div class="card" style="margin-bottom:8px;padding:12px;cursor:pointer" onclick="showAnalysisDetail('${rec.id}')">
 <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px">
-<div style="font-size:14px;font-weight:600">${srcIcon} ${rec.source_label||rec.source} <span style="font-size:11px;font-weight:400;color:var(--text2)">${rec.type||''}</span></div>
+<div style="font-size:14px;font-weight:600">${srcIcon} ${rec.source_label||rec.source} <span style="font-size:11px;font-weight:400;color:var(--text2)">${typeDisplay}</span></div>
 <div style="font-size:11px;color:var(--text2)">${rec.created_at?.slice(11,16)||''}</div></div>
-<div style="display:flex;gap:8px;margin-bottom:6px"><span style="font-size:12px;color:${dirColor};font-weight:600">${rec.direction||''}</span>${rec.confidence?'<span style="font-size:11px;color:var(--text2)">置信度:'+rec.confidence+'%</span>':''}</div>
+<div style="display:flex;gap:8px;margin-bottom:6px"><span style="font-size:12px;color:${dirColor};font-weight:600">${dirDisplay}</span>${rec.confidence?'<span style="font-size:11px;color:var(--text2)">置信度:'+rec.confidence+'%</span>':''}</div>
 <div style="font-size:12px;color:var(--text2);line-height:1.5">${rec.preview||''}</div>
 </div>`});
 el.innerHTML=html+'<div style="text-align:center;padding:16px"><button class="action-btn secondary" onclick="showCompareView()" style="font-size:13px">📊 多源对比</button></div>'}catch(e){el.innerHTML='<div style="text-align:center;padding:20px;color:#ef4444">加载失败: '+e.message+'</div>'}}
@@ -28,8 +28,8 @@ const snap=d.market_snapshot||{};
 const snapHtml=Object.keys(snap).length?`<div style="margin-top:12px;padding:8px;background:var(--bg2,rgba(0,0,0,.05));border-radius:8px;font-size:11px;color:var(--text2)">📊 分析时市场: 恐贪=${snap.fear_greed||'-'} | 估值=${snap.valuation_pct||'-'}% | 北向5日=${snap.north_5d||'-'}亿</div>`:'';
 const modal=document.createElement('div');modal.className='modal-overlay';modal.onclick=e=>{if(e.target===modal)modal.remove()};
 modal.innerHTML=`<div class="modal-content" style="max-height:80vh;overflow-y:auto">
-<div class="modal-title">${d.source_label||d.source} · ${d.type||'分析'} <span style="font-size:12px;font-weight:400;color:var(--text2)">${d.created_at?.slice(0,16)||''}</span></div>
-<div style="margin:8px 0;font-size:13px;color:var(--accent)">${d.direction||''} ${d.confidence?'置信度'+d.confidence+'%':''}</div>
+<div class="modal-title">${d.source_label||d.source} · ${d.type_display||translateAnalysisType(d.type)||d.type||'分析'} <span style="font-size:12px;font-weight:400;color:var(--text2)">${d.created_at?.slice(0,16)||''}</span></div>
+<div style="margin:8px 0;font-size:13px;color:var(--accent)">${d.direction_display||translateDirection(d.direction)||d.direction||''} ${d.confidence?'置信度'+d.confidence+'%':''}</div>
 <div style="font-size:13px;line-height:1.8;white-space:pre-wrap">${d.analysis||'无内容'}</div>
 ${snapHtml}
 <button class="form-submit" style="margin-top:16px" onclick="this.closest('.modal-overlay').remove()">关闭</button>
@@ -41,11 +41,11 @@ const sources=d.sources||{};const keys=Object.keys(sources);
 if(keys.length===0){alert('暂无分析记录');return}
 let tabsHtml=keys.map((k,i)=>`<button class="section-tab ${i===0?'active':''}" onclick="switchCompareTab(this,'${k}')">${sources[k].source_label||k}</button>`).join('');
 let panelsHtml=keys.map((k,i)=>`<div class="compare-panel" data-source="${k}" style="${i>0?'display:none':''}">
-<div style="font-size:13px;color:var(--accent);margin-bottom:8px">${sources[k].direction||'未知'} · ${sources[k].created_at?.slice(0,16)||''}</div>
+<div style="font-size:13px;color:var(--accent);margin-bottom:8px">${sources[k].direction_display||translateDirection(sources[k].direction)||sources[k].direction||'未知'} · ${sources[k].created_at?.slice(0,16)||''}</div>
 <div style="font-size:13px;line-height:1.8">${sources[k].preview||'无预览'}</div>
 </div>`).join('');
 let summaryHtml='<div style="margin-top:16px;padding:12px;background:var(--bg2,rgba(0,0,0,.05));border-radius:8px"><div style="font-size:13px;font-weight:600;margin-bottom:8px">📊 分歧汇总</div>';
-keys.forEach(k=>{summaryHtml+=`<div style="font-size:12px;margin-bottom:4px">${sources[k].source_label||k}: ${sources[k].direction||'未知'}</div>`});
+keys.forEach(k=>{summaryHtml+=`<div style="font-size:12px;margin-bottom:4px">${sources[k].source_label||k}: ${sources[k].direction_display||translateDirection(sources[k].direction)||sources[k].direction||'未知'}</div>`});
 summaryHtml+='</div>';
 const modal=document.createElement('div');modal.className='modal-overlay';modal.onclick=e=>{if(e.target===modal)modal.remove()};
 modal.innerHTML=`<div class="modal-content" style="max-height:80vh;overflow-y:auto">

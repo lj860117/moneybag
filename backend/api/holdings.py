@@ -223,7 +223,7 @@ async def analyze_stock_holdings(req: dict = {}):
         reply = result["content"]
         try:
             from services.analysis_history import save_analysis
-            save_analysis(uid, "deepseek", "DeepSeek V4", "stock", reply, direction="auto")
+            save_analysis(uid, "deepseek", "DeepSeek V4", "stock", reply, direction="unknown")
         except Exception as e:
             print(f"[HISTORY] stock analyze 存档失败: {e}")
         return {
@@ -354,7 +354,7 @@ async def analyze_fund_holdings(req: dict = {}):
         reply = result["content"]
         try:
             from services.analysis_history import save_analysis
-            save_analysis(uid, "deepseek", "DeepSeek V4", "fund", reply, direction="auto")
+            save_analysis(uid, "deepseek", "DeepSeek V4", "fund", reply, direction="unknown")
         except Exception as e:
             print(f"[HISTORY] fund analyze 存档失败: {e}")
         return {

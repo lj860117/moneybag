@@ -51,6 +51,49 @@ def _take_market_snapshot() -> dict:
 
 
 # ============================================================
+# 翻译辅助函数（V7.5 新增：修复数据展示问题）
+# ============================================================
+
+_DIRECTION_MAP = {
+    "bullish": "看多",
+    "bearish": "看空",
+    "neutral": "中性",
+    "unknown": "未知",
+    "auto": "自动分析",
+}
+
+_TYPE_MAP = {
+    "full": "每日复盘",
+    "stock": "个股分析",
+    "fund": "基金分析",
+    "scenario": "情景分析",
+}
+
+def _translate_direction(direction: str) -> str:
+    """翻译方向字段为中文"""
+    return _DIRECTION_MAP.get(direction, direction) if direction else direction
+
+def _translate_type(analysis_type: str) -> str:
+    """翻译分析类型为中文"""
+    return _TYPE_MAP.get(analysis_type, analysis_type) if analysis_type else analysis_type
+
+def _sanitize_record(record: dict) -> dict:
+    """清理和规范化记录字段，去掉内部字段并添加翻译"""
+    return {
+        "id": record.get("id"),
+        "source": record.get("source"),
+        "source_label": record.get("source_label"),
+        "type": record.get("type"),
+        "type_display": _translate_type(record.get("type")),
+        "direction": record.get("direction"),
+        "direction_display": _translate_direction(record.get("direction")),
+        "confidence": record.get("confidence", 0),
+        "created_at": record.get("created_at"),
+        "preview": record.get("preview", ""),
+        "market_snapshot": record.get("market_snapshot", {}),
+    }
+
+# ============================================================
 # 1. 存档
 # ============================================================
 
@@ -66,7 +109,7 @@ def save_analysis(user_id: str, source: str, source_label: str,
         source_label: 显示名称（DeepSeek V3/Claude/机构共识）
         analysis_type: 分析类型（stock/fund/full/scenario）
         analysis_text: 分析正文
-        direction: 方向（看多/看空/中性/谨慎/unknown）
+        direction: 方向（bullish/bearish/neutral/unknown）
         confidence: 置信度（0-100）
         metadata: 额外元数据
     """
@@ -130,7 +173,7 @@ def get_analysis_history(user_id: str, source: str = "", analysis_type: str = ""
             if created < cutoff:
                 continue
             # 列表只返回摘要
-            records.append({
+            record_dict = {
                 "id": data["id"],
                 "source": data.get("source"),
                 "source_label": data.get("source_label"),
@@ -140,7 +183,8 @@ def get_analysis_history(user_id: str, source: str = "", analysis_type: str = ""
                 "created_at": data.get("created_at"),
                 "preview": data.get("analysis", "")[:120] + "..." if len(data.get("analysis", "")) > 120 else data.get("analysis", ""),
                 "market_snapshot": data.get("market_snapshot", {}),
-            })
+            }
+            records.append(_sanitize_record(record_dict))
         except Exception as e:
             print(f"[HISTORY] 读取 {f.name} 失败: {e}")
 
@@ -158,7 +202,11 @@ def get_analysis_detail(user_id: str, record_id: str) -> dict:
     if not filepath.exists():
         return {"error": f"记录不存在: {record_id}"}
     try:
-        return json.loads(filepath.read_text(encoding="utf-8"))
+        data = json.loads(filepath.read_text(encoding="utf-8"))
+        # 添加翻译字段
+        data["type_display"] = _translate_type(data.get("type"))
+        data["direction_display"] = _translate_direction(data.get("direction"))
+        return data
     except Exception as e:
         return {"error": str(e)}
 
@@ -177,7 +225,7 @@ def get_latest_by_source(user_id: str) -> dict:
             data = json.loads(f.read_text(encoding="utf-8"))
             src = data.get("source", "unknown")
             if src not in latest:
-                latest[src] = {
+                record_dict = {
                     "id": data["id"],
                     "source": src,
                     "source_label": data.get("source_label", src),
@@ -188,6 +236,7 @@ def get_latest_by_source(user_id: str) -> dict:
                     "preview": data.get("analysis", "")[:200],
                     "market_snapshot": data.get("market_snapshot", {}),
                 }
+                latest[src] = _sanitize_record(record_dict)
         except Exception:
             continue
 

@@ -63,7 +63,34 @@ const API_BASE = (() => {
   return '/api'; // 同源，自动匹配当前协议和域名
 })();
 
-// 全局 API 路径工具 — 防止 /api/api/ 双前缀
+// ============================================================
+// V7.5 全局翻译对象（修复数据展示问题）
+// ============================================================
+const ANALYSIS_TRANSLATE = {
+    direction: {
+        'bullish': '看多',
+        'bearish': '看空',
+        'neutral': '中性',
+        'unknown': '未知',
+        'auto': '自动分析'
+    },
+    type: {
+        'full': '每日复盘',
+        'stock': '个股分析',
+        'fund': '基金分析',
+        'scenario': '情景分析'
+    }
+};
+
+function translateDirection(dir) {
+    return ANALYSIS_TRANSLATE.direction[dir] || dir;
+}
+
+function translateAnalysisType(type_str) {
+    return ANALYSIS_TRANSLATE.type[type_str] || type_str;
+}
+
+// // 全局 API 路径工具 — 防止 /api/api/ 双前缀
 function api(path) {
   if (!path.startsWith('/')) path = '/' + path;
   if (path.startsWith('/api/') && API_BASE.endsWith('/api')) path = path.slice(4);
