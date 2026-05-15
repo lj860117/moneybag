@@ -56,8 +56,14 @@ def _load_profiles():
                 {"id": "BuLuoGeLi", "name": "BuLuoGeLi", "wxworkUserId": "BuLuoGeLi"}]
 
 
-def _call_v3(prompt, max_tokens=500):
-    """调用 DeepSeek V3（通过 gateway 统一管理）"""
+def _call_v3(prompt, max_tokens=500, system=""):
+    """调用 DeepSeek V3（通过 gateway 统一管理）
+
+    Args:
+        prompt: 用户 prompt
+        max_tokens: 最大输出 token 数
+        system: system prompt（用于注入角色设定和硬性约束）
+    """
     if not LLM_API_KEY:
         return ""
     try:
@@ -67,7 +73,7 @@ def _call_v3(prompt, max_tokens=500):
         gw = LLMGateway.instance()
         result = gw.call_sync(
             prompt,
-            system="",
+            system=system,
             model_tier="llm_light",
             user_id="",
             module="night_worker",
@@ -254,26 +260,29 @@ def step_r1_phase1():
 - 今日要闻: {'; '.join(news_titles[:3]) if news_titles else '暂无'}"""
 
     # LLM 研判（可选，失败也不影响简报生成）
-    # 【FIX #1】添加数据完整性声明，防止 LLM 幻觉
-    prompt = f"""你是 A 股宏观策略分析师。
+    # 严格约束：只基于已提供数据分析，禁止编造任何未提供的数字或事件
+    ANTI_HALLUCINATION_SYSTEM = """你是 A 股宏观策略分析师。你有一条铁律：
+1. 只能基于用户提供的数据进行分析，禁止编造任何数据点
+2. 禁止提及以下未提供的信息：MLF操作、OMO规模、逆回购、出口数据、新增贷款、PMI、CPI
+3. 禁止输出任何精确数字（百分比/亿元），除非数据中已明确给出
+4. 如果要做推测，必须用"可能""或许"等不确定性词语
+5. 违反以上规则等于失职"""
 
-【数据完整性声明】本分析基于以下实时数据：
-- 恐贪指数、估值百分位、北向资金、银行间利率、融资余额、地缘风险、行业热点、机构共识、新闻头条
-- 【缺失数据提示】本次快照不包含：MLF操作、OMO规模、PBOC逆回购、出口数据、新增贷款等央行精准操作数据
-- 重要：请ONLY基于上述实时数据进行分析，对央行政策判断必须标注"缺少央行操作数据"的警示
-
-请基于上述数据写一段 200 字以内的市场研判。
+    prompt = f"""请基于以下数据写一段 200 字以内的市场研判。
 
 {data_text}
 
-要求: 
-1. 1句话结论（基于上述数据）
-2. 3个要点（如涉及央行政策需标注数据缺失）
+要求:
+1. 1句话结论（仅基于上述数据）
+2. 3个要点（每个要点标注[数据]或[推测]前缀）
 3. 风险提示
+
+重要: 上述数据就是全部信息，你不知道央行今日有无操作、不知道出口数据、不知道 PMI/CPI。
+如果某个维度数据缺失，直接跳过，不要臆测。
 
 语言: 用普通人能看懂的大白话，不要英文术语和专业缩写"""
 
-    analysis = _call_v3(prompt, 400)
+    analysis = _call_v3(prompt, 400, system=ANTI_HALLUCINATION_SYSTEM)
     if analysis:
         results["macro_analysis"] = analysis
         log(f"  ✅ 宏观研判: {len(analysis)}字")
@@ -321,9 +330,11 @@ def step_r1_phase2():
 持仓:
 {holdings_text}
 
-要求: 1句话总评 + 最大风险 + 操作建议"""
+要求: 1句话总评 + 最大风险 + 操作建议
+重要: 只基于上面列出的持仓做判断，不要引用任何你自己知道的市场新闻或数据。"""
 
-            diagnosis = _call_v3(prompt, 300)
+            diagnosis = _call_v3(prompt, 300,
+                                 system="你是持仓诊断师，只基于用户提供的持仓列表做分析，禁止编造任何市场新闻、政策或未提供的数据。")
             results[uid] = {"diagnosis": diagnosis, "stock_count": len(stocks), "fund_count": len(funds)}
             log(f"  ✅ {name}: {len(diagnosis)}字")
 
@@ -634,58 +645,107 @@ def step_maintenance():
 # ============================================================
 
 def step_overnight_check():
+    """外盘速览 — 纯数据驱动，禁止 LLM 凭空编造
+
+    数据源优先级:
+    1. get_global_futures_snapshot() — A50/标普/道指/纳指/原油/黄金 期货实时
+    2. get_us_indices() — 美股三大指数收盘
+    3. get_forex_data() — 汇率
+
+    如果数据全部获取失败 → 返回明确提示"暂不可用"，不让 LLM 编故事
+    """
     log("🌍 07:00 外盘+事件检查")
     parts = []
 
-    # 尝试获取美股数据
+    # ── 数据源 1: 全球期货快照（A50/美指/大宗） ──
+    futures = {}
     try:
-        from infra.data_source.macro.indicators import get_us_index
-        dji = get_us_index(".DJI")
-        if dji is not None and len(dji) > 1:
-            last = dji.iloc[-1]
-            prev = dji.iloc[-2]
-            close_col = next((c for c in dji.columns if "close" in c.lower() or "收盘" in c), dji.columns[-2])
-            change = (float(last[close_col]) - float(prev[close_col])) / float(prev[close_col]) * 100
-            parts.append(f"道指{'↑' if change > 0 else '↓'}{abs(change):.1f}%")
-    except Exception as e:
-        log(f"  美股数据失败: {e}")
+        from infra.data_source.macro.indicators import get_global_futures_snapshot
+        futures = get_global_futures_snapshot()
+        if futures.get("available"):
+            # A50 期货
+            a50 = futures.get("a50")
+            if a50 and a50.get("change_pct") is not None:
+                emoji = "📈" if a50["change_pct"] > 0 else "📉"
+                parts.append(f"{emoji} A50期指: {a50['price']:,.0f} ({a50['change_pct']:+.2f}%)")
 
-    # 尝试获取汇率
+            # 美股三大指数期货
+            for key, name in [("sp500", "标普500"), ("dji", "道琼斯"), ("nasdaq", "纳斯达克")]:
+                d = futures.get(key)
+                if d and d.get("change_pct") is not None:
+                    emoji = "📈" if d["change_pct"] > 0 else "📉"
+                    parts.append(f"{emoji} {name}期货: {d['change_pct']:+.2f}%")
+
+            # 大宗商品
+            oil = futures.get("oil")
+            if oil and oil.get("change_pct") is not None:
+                parts.append(f"🛢️ 原油: ${oil['price']:.1f} ({oil['change_pct']:+.2f}%)")
+
+            gold = futures.get("gold")
+            if gold and gold.get("price") is not None:
+                parts.append(f"🥇 黄金: {gold['price']:.0f} ({gold.get('change_pct', 0):+.2f}%)")
+    except Exception as e:
+        log(f"  期货快照获取失败: {e}")
+
+    # ── 数据源 2: 美股三大指数收盘（如果期货没拿到） ──
+    if not any(k in (futures or {}) for k in ["sp500", "dji", "nasdaq"]) or not futures.get("available"):
+        try:
+            from services.global_market import get_us_indices
+            us = get_us_indices()
+            if us.get("available"):
+                for key, name in [("dji", "道琼斯"), ("spx", "标普500"), ("ixic", "纳斯达克")]:
+                    d = us.get(key)
+                    if d:
+                        emoji = "📈" if d["change_pct"] > 0 else "📉"
+                        parts.append(f"{emoji} {name}: {d['close']:,.0f} ({d['change_pct']:+.2f}%)")
+        except Exception as e:
+            log(f"  美股数据失败: {e}")
+
+    # ── 数据源 3: 汇率 ──
     try:
-        from infra.data_source.macro.indicators import get_fx_spot_quote
-        fx = get_fx_spot_quote()
-        if fx is not None and len(fx) > 0:
-            usd_col = next((c for c in fx.columns if "美元" in c or "USD" in c.upper()), None)
-            if usd_col is None:
-                # 找包含 "美元/人民币" 的行
-                name_col = fx.columns[0]
-                usd_row = fx[fx[name_col].str.contains("美元", na=False)]
-                if len(usd_row) > 0:
-                    val_col = next((c for c in fx.columns if "买入" in c or "卖出" in c), fx.columns[1])
-                    parts.append(f"美元/人民币: {usd_row.iloc[0][val_col]}")
+        from services.global_market import get_forex_data
+        fx = get_forex_data()
+        if fx.get("available") and fx.get("usdcny"):
+            parts.append(f"💱 美元/人民币: {fx['usdcny']['rate']:.4f}")
     except Exception as e:
         log(f"  汇率数据失败: {e}")
 
-    # LLM 增强（如果可用）
-    if parts:
-        data_summary = "，".join(parts)
-        prompt = f"""基于以下数据，用3句话总结今日A股开盘前需关注的事项：
-{data_summary}
-要求：简洁，关注对A股的影响"""
-        llm_result = _call_v3(prompt, 200)
-        if llm_result:
-            result = llm_result
-        else:
-            result = f"外盘速览: {data_summary}"
-    else:
-        # 纯 LLM 兜底
-        prompt = """请用3句话总结今日A股开盘前需要关注的事项（基于常识和近期市场趋势）：
-1. 隔夜美股表现对A股的影响
-2. 今日有无重要经济数据发布
-3. 需要关注的风险/机会"""
-        result = _call_v3(prompt, 200) or "外盘数据暂不可用"
+    # ── 数据源 4: 恒生指数（新浪源，比东方财富稳定） ──
+    try:
+        from infra.data_source.macro.indicators import get_hsi_latest
+        hsi = get_hsi_latest()
+        if hsi and hsi.get("change_pct") is not None:
+            emoji = "📈" if hsi["change_pct"] > 0 else "📉"
+            parts.append(f"{emoji} 恒生指数: {hsi['price']:,.0f} ({hsi['change_pct']:+.2f}%)")
+    except Exception as e:
+        log(f"  恒指数据失败: {e}")
 
-    log(f"  ✅ 外盘检查: {len(result)}字")
+    # ── 组装结果 ──
+    if parts:
+        # 有真实数据，用 LLM 生成简短总结（严格限制只用提供的数据）
+        data_summary = "\n".join(parts)
+        prompt = f"""以下是今日开盘前的外盘数据，请用2-3句话总结对A股的影响：
+
+{data_summary}
+
+要求：
+1. 只基于上面的数据做判断，禁止补充任何未提供的信息
+2. 不要提及 MLF/OMO/央行操作/出口数据等你不知道的东西
+3. 简洁说明利好还是利空，以及主要影响哪些板块"""
+
+        system = "你是市场数据播报员，只转述已有数据，严禁编造任何未提供的数据点。"
+        llm_summary = _call_v3(prompt, 150, system=system)
+
+        if llm_summary:
+            result = f"{data_summary}\n\n💡 {llm_summary}"
+        else:
+            # LLM 不可用也没关系，纯数据已经够用
+            result = data_summary
+    else:
+        # 所有数据源都失败 → 明确告知，不编故事
+        result = "外盘数据暂不可用（数据源连接异常），请稍后查看东方财富全球行情"
+
+    log(f"  ✅ 外盘检查: {len(result)}字, 数据点{len(parts)}个")
     return result
 
 

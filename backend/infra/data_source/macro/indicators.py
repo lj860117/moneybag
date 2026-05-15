@@ -571,3 +571,154 @@ def get_stock_news(symbol: str = "财经") -> Any:
     except Exception as e:
         print(f"[DATA_SOURCE/MACRO] get_stock_news({symbol}): {e}")
         return None
+
+
+# ============================================================
+# 全球期货快照（A50/美股指数期货/原油/黄金）
+# ============================================================
+
+def get_global_futures_snapshot() -> dict:
+    """获取全球主要期货品种的实时快照（用于外盘速览）
+
+    数据源: AKShare futures_global_spot_em（东方财富全球期货行情）
+    品种: A50期指、小型标普、小型道指、小型纳指、NYMEX原油、COMEX黄金
+
+    Returns:
+        dict: {
+            "a50": {"price": float, "change_pct": float, "prev_close": float},
+            "sp500": {...},
+            "dji": {...},
+            "nasdaq": {...},
+            "oil": {...},
+            "gold": {...},
+            "available": bool,
+            "source": "akshare_futures_global"
+        }
+        若获取失败返回 {"available": False}
+    """
+    # 品种代码 → 字段映射（"名称"中的关键词 + 代码前缀）
+    TARGETS = {
+        "a50": {"code": "CN00Y", "label": "A50期指当月连续"},
+        "sp500": {"code": "ES00Y", "label": "小型标普当月连续"},
+        "dji": {"code": "YM00Y", "label": "小型道指当月连续"},
+        "nasdaq": {"code": "NQ00Y", "label": "小型纳指当月连续"},
+        "oil": {"code": "CL00Y", "label": "NYMEX原油"},
+        "gold": {"code": "AU00Y", "label": "COMEX黄金"},
+    }
+
+    result: dict = {"available": False, "source": "akshare_futures_global"}
+
+    try:
+        import akshare as ak
+        import math
+        df = ak.futures_global_spot_em()
+        if df is None or len(df) == 0:
+            print("[DATA_SOURCE/MACRO] get_global_futures_snapshot: 空数据")
+            return result
+
+        # 建立代码→行索引，加速查找
+        code_col = next((c for c in df.columns if "代码" in c or "code" in c.lower()), df.columns[1])
+        code_index = {str(row[code_col]).strip(): idx for idx, row in df.iterrows()}
+
+        found_count = 0
+        for key, target in TARGETS.items():
+            code = target["code"]
+            if code not in code_index:
+                # 黄金代码可能不是 AU00Y，尝试模糊匹配
+                if key == "gold":
+                    # 搜索 COMEX黄金 或 纽约金
+                    name_col = next((c for c in df.columns if "名称" in c or "name" in c.lower()), df.columns[2])
+                    gold_rows = df[df[name_col].str.contains("COMEX黄金|纽约金|黄金当月", case=False, na=False)]
+                    if len(gold_rows) > 0:
+                        row = gold_rows.iloc[0]
+                    else:
+                        result[key] = None
+                        continue
+                else:
+                    result[key] = None
+                    continue
+            else:
+                row = df.loc[code_index[code]]
+
+            # 提取价格数据
+            try:
+                price_col = next((c for c in df.columns if "最新价" in c or "latest" in c.lower()), None)
+                change_col = next((c for c in df.columns if "涨跌幅" in c), None)
+                prev_col = next((c for c in df.columns if "昨结" in c or "昨收" in c), None)
+
+                price = float(row[price_col]) if price_col and not _is_nan(row[price_col]) else None
+                change_pct = float(row[change_col]) if change_col and not _is_nan(row[change_col]) else None
+                prev_close = float(row[prev_col]) if prev_col and not _is_nan(row[prev_col]) else None
+
+                if price is not None or change_pct is not None:
+                    result[key] = {
+                        "price": round(price, 2) if price else None,
+                        "change_pct": round(change_pct, 2) if change_pct is not None else None,
+                        "prev_close": round(prev_close, 2) if prev_close else None,
+                        "label": target["label"],
+                    }
+                    found_count += 1
+                else:
+                    result[key] = None
+            except (ValueError, TypeError, KeyError) as e:
+                print(f"[DATA_SOURCE/MACRO] futures {key} parse error: {e}")
+                result[key] = None
+
+        result["available"] = found_count >= 2  # 至少2个品种有数据才算可用
+        print(f"[DATA_SOURCE/MACRO] get_global_futures_snapshot: {found_count}/{len(TARGETS)} 品种可用")
+
+    except Exception as e:
+        print(f"[DATA_SOURCE/MACRO] get_global_futures_snapshot failed: {e}")
+
+    return result
+
+
+def _is_nan(value) -> bool:
+    """检查值是否为 NaN（兼容 pandas NaN 和 Python float nan）"""
+    try:
+        import math
+        if value is None:
+            return True
+        return math.isnan(float(value))
+    except (ValueError, TypeError):
+        return False
+
+
+# ============================================================
+# 恒生指数（新浪港股指数日线，T+0 更新）
+# ============================================================
+
+def get_hsi_latest() -> dict | None:
+    """获取恒生指数最新收盘数据（含涨跌幅）
+
+    数据源: AKShare stock_hk_index_daily_sina(symbol='HSI')
+    - 新浪源，稳定性优于东方财富港股接口
+    - 返回日线数据，交易日当天 16:00 后即有当日数据
+
+    Returns:
+        {"price": float, "change_pct": float, "prev_close": float, "date": str, "label": "恒生指数"}
+        获取失败返回 None
+    """
+    try:
+        import akshare as ak
+        df = ak.stock_hk_index_daily_sina(symbol="HSI")
+        if df is None or len(df) < 2:
+            print("[DATA_SOURCE/MACRO] get_hsi_latest: 数据不足")
+            return None
+
+        last = df.iloc[-1]
+        prev = df.iloc[-2]
+        close = float(last["close"])
+        prev_close = float(prev["close"])
+        change_pct = (close - prev_close) / prev_close * 100 if prev_close > 0 else 0
+
+        return {
+            "price": round(close, 2),
+            "change_pct": round(change_pct, 2),
+            "prev_close": round(prev_close, 2),
+            "date": str(last["date"]),
+            "label": "恒生指数",
+        }
+    except Exception as e:
+        print(f"[DATA_SOURCE/MACRO] get_hsi_latest failed: {e}")
+        return None

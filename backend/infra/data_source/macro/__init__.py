@@ -36,4 +36,7 @@ from infra.data_source.macro.indicators import (
     get_fx_spot_quote,
     get_global_market_pe,
     get_stock_news,
+    # 全球期货 + 恒指（外盘速览）
+    get_global_futures_snapshot,
+    get_hsi_latest,
 )

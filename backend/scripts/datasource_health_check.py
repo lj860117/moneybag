@@ -42,6 +42,10 @@ HEALTH_CHECKS = [
      "args": {"symbol": "000300"}, "expect": "rows > 0"},
     {"name": "新闻", "source": "akshare", "func": "stock_news_em",
      "args": {"symbol": "000001"}, "expect": "rows > 0"},
+    {"name": "全球期货(外盘速览)", "source": "akshare", "func": "futures_global_spot_em",
+     "args": {}, "expect": "rows > 100"},
+    {"name": "恒指日线(新浪)", "source": "akshare", "func": "stock_hk_index_daily_sina",
+     "args": {"symbol": "HSI"}, "expect": "rows > 100"},
 
     # === Tushare（付费 API，稳定，每次间隔 0.3s）===
     {"name": "股票日线", "source": "tushare", "api_name": "daily",
