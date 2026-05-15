@@ -155,24 +155,48 @@ class Steward:
         每日简报（精简版）
         不问具体问题，只看大盘状态+持仓风险+信号
         优先读取当日缓存（night_worker 07:30 预生成），避免重复计算
+        
+        【FIX #3】缓存策略：4小时TTL而非24小时
+        - 07:30 night_worker 预生成缓存
+        - 07:30-11:30: 使用缓存（数据相对稳定）
+        - 11:30+ 重新计算（北向资金/融资可能发生变化）
         """
-        # ---- 每日文件缓存（当日命中直接返回）----
+        # ---- 每日文件缓存（4小时 TTL）----
         today = datetime.now().strftime("%Y%m%d")
         cache_fp = _BRIEF_DIR / f"{user_id}_{today}.json"
+        CACHE_TTL_HOURS = 4  # 【FIX #3】从24h改为4h
+        
         if cache_fp.exists():
             try:
                 cached = json.loads(cache_fp.read_text(encoding="utf-8"))
-                # 关键修复：验证缓存日期与当前日期匹配
                 cache_date = _extract_cache_date(cache_fp.stem)
                 
+                # 两个条件都需满足：日期匹配 AND 缓存未超过4小时
                 if cache_date == today:
-                    cached["from_cache"] = True
-                    return cached
+                    try:
+                        file_mtime = cache_fp.stat().st_mtime
+                        cache_age_seconds = time.time() - file_mtime
+                        cache_age_hours = cache_age_seconds / 3600
+                        
+                        if cache_age_hours < CACHE_TTL_HOURS:
+                            cached["from_cache"] = True
+                            cached["cache_age_minutes"] = round(cache_age_seconds / 60)
+                            print(f"[STEWARD] ✅ 使用缓存 (生成于 {cache_age_hours:.1f}h前)")
+                            return cached
+                        else:
+                            # 缓存超过4小时，删除重新计算
+                            try:
+                                cache_fp.unlink()
+                                print(f"[STEWARD] 删除过期缓存 (已{cache_age_hours:.1f}h): {cache_fp.name}")
+                            except Exception as e:
+                                print(f"[STEWARD] 删除缓存失败: {e}")
+                    except Exception as e:
+                        print(f"[STEWARD] 检查缓存年龄失败: {e}")
                 else:
                     # 日期不匹配，删除过期缓存
                     try:
                         cache_fp.unlink()
-                        print(f"[STEWARD] 删除过期缓存: {cache_fp.name}")
+                        print(f"[STEWARD] 删除过期缓存（日期不符）: {cache_fp.name}")
                     except Exception as e:
                         print(f"[STEWARD] 删除缓存失败: {e}")
             except Exception as e:

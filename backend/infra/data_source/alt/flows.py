@@ -17,7 +17,9 @@ from typing import Any
 # ============================================================
 
 def get_hsgt_hist(symbol: str = "北向资金") -> Any:
-    """Get northbound/southbound capital flow history (akshare stock_hsgt_hist_em).
+    """Get northbound/southbound capital flow history with Tushare fallback.
+    
+    Degradation chain: AKShare stock_hsgt_hist_em() → Tushare hsgt_detail()
 
     Args:
         symbol: "北向资金" | "沪股通" | "深股通" | "南向资金"
@@ -26,12 +28,38 @@ def get_hsgt_hist(symbol: str = "北向资金") -> Any:
         DataFrame with daily capital flow data.
         None on failure.
     """
+    # Primary: AKShare
     try:
         import akshare as ak
-        return ak.stock_hsgt_hist_em(symbol=symbol)
+        result = ak.stock_hsgt_hist_em(symbol=symbol)
+        if result is not None and len(result) > 0:
+            return result
     except Exception as e:
-        print(f"[DATA_SOURCE/ALT] get_hsgt_hist({symbol}): {e}")
-        return None
+        print(f"[DATA_SOURCE/ALT] get_hsgt_hist({symbol}) - AKShare failed: {e}")
+    
+    # Fallback: Tushare (for 北向资金 only, as others don't have direct equiv)
+    if symbol == "北向资金":
+        try:
+            import os
+            ts_token = os.environ.get("TUSHARE_TOKEN", "")
+            if ts_token:
+                import tushare as ts
+                ts.set_token(ts_token)
+                pro = ts.pro_api()
+                result = pro.hsgt_detail(start_date="20230101")
+                if result is not None and len(result) > 0:
+                    import pandas as pd
+                    transformed = pd.DataFrame({
+                        '日期': result['trade_date'],
+                        '北向资金': result['north_money'] / 100,  # Convert 1M to 亿
+                    })
+                    print(f"[DATA_SOURCE/ALT] get_hsgt_hist: Fallback to Tushare success ({len(transformed)} rows)")
+                    return transformed
+        except Exception as e:
+            print(f"[DATA_SOURCE/ALT] get_hsgt_hist (Tushare fallback failed): {e}")
+    
+    print(f"[DATA_SOURCE/ALT] get_hsgt_hist({symbol}): All sources failed")
+    return None
 
 
 def get_hsgt_hold_stock(market: str = "北向", indicator: str = "今日排行") -> Any:
@@ -183,18 +211,50 @@ def get_zt_pool(date: str = "") -> Any:
 
 
 def get_north_net_flow() -> Any:
-    """Get northbound net capital inflow (akshare stock_hsgt_north_net_flow_in_em).
-
+    """Get northbound net capital inflow with Tushare fallback.
+    
+    Degradation chain: AKShare stock_hsgt_north_net_flow_in_em() → Tushare hsgt_detail()
+    
     Returns:
         DataFrame with daily northbound net flow.
         None on failure.
     """
+    # Primary: AKShare
     try:
         import akshare as ak
-        return ak.stock_hsgt_north_net_flow_in_em()
+        result = ak.stock_hsgt_north_net_flow_in_em()
+        if result is not None and len(result) > 0:
+            return result
     except Exception as e:
-        print(f"[DATA_SOURCE/ALT] get_north_net_flow: {e}")
-        return None
+        print(f"[DATA_SOURCE/ALT] get_north_net_flow (AKShare failed): {e}")
+    
+    # Fallback: Tushare hsgt_detail
+    try:
+        import os
+        ts_token = os.environ.get("TUSHARE_TOKEN", "")
+        if ts_token:
+            import tushare as ts
+            ts.set_token(ts_token)
+            pro = ts.pro_api()
+            result = pro.hsgt_detail(start_date="20230101")
+            if result is not None and len(result) > 0:
+                import pandas as pd
+                # Transform Tushare columns to match AKShare format
+                # AKShare: 日期, 北向资金(亿), 沪股通(亿), 深股通(亿)
+                # Tushare: trade_date, north_money, sh_money, sz_money (in units of 1M)
+                transformed = pd.DataFrame({
+                    '日期': result['trade_date'],
+                    '北向资金(亿)': result['north_money'] / 100,  # Convert 1M to 亿
+                    '沪股通(亿)': result['sh_money'] / 100,
+                    '深股通(亿)': result['sz_money'] / 100,
+                })
+                print(f"[DATA_SOURCE/ALT] get_north_net_flow: Fallback to Tushare success ({len(transformed)} rows)")
+                return transformed
+    except Exception as e:
+        print(f"[DATA_SOURCE/ALT] get_north_net_flow (Tushare fallback failed): {e}")
+    
+    print(f"[DATA_SOURCE/ALT] get_north_net_flow: All sources failed")
+    return None
 
 
 def get_block_trade_daily() -> Any:
