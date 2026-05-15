@@ -90,7 +90,7 @@ function translateAnalysisType(type_str) {
     return ANALYSIS_TRANSLATE.type[type_str] || type_str;
 }
 
-// // 全局 API 路径工具 — 防止 /api/api/ 双前缀
+// 全局 API 路径工具 — 防止 /api/api/ 双前缀
 function api(path) {
   if (!path.startsWith('/')) path = '/' + path;
   if (path.startsWith('/api/') && API_BASE.endsWith('/api')) path = path.slice(4);

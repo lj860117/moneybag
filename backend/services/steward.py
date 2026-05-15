@@ -94,7 +94,7 @@ class Steward:
         # 2. Regime 分类
         regime_result = classify_regime()
         ctx.regime = regime_result["regime"]
-        ctx.regime_confidence = regime_result["confidence"]
+        ctx.regime_confidence = regime_result["confidence"] / 100  # classify 返回 0-100，ctx 期望 0-1
         ctx.regime_params = regime_result.get("params", {})
         ctx.regime_description = regime_result.get("description", "")
         
@@ -209,7 +209,7 @@ class Steward:
         # Regime（轻量级，有缓存通常 <1s）
         regime_result = classify_regime()
         ctx.regime = regime_result["regime"]
-        ctx.regime_confidence = regime_result["confidence"]
+        ctx.regime_confidence = regime_result["confidence"] / 100  # classify 返回 0-100，ctx 期望 0-1
         ctx.regime_description = regime_result.get("description", "")
 
         # 用 fast 管线（不调 LLM）
@@ -249,7 +249,7 @@ class Steward:
         # Regime
         regime_result = classify_regime()
         ctx.regime = regime_result["regime"]
-        ctx.regime_confidence = regime_result["confidence"]
+        ctx.regime_confidence = regime_result["confidence"] / 100  # classify 返回 0-100，ctx 期望 0-1
         ctx.regime_description = regime_result.get("description", "")
         
         # 用 cautious 管线（最完整，含体检）
