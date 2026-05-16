@@ -64,6 +64,8 @@ btn.closest('.modal-content').querySelectorAll('.compare-panel').forEach(p=>{p.s
 
 async function renderSectorHot(el){
 el.innerHTML='<div style="text-align:center;padding:20px"><div class="loading-spinner" style="width:24px;height:24px;margin:0 auto 8px;border-width:2px"></div>加载行业数据...</div>';
+// ★ 缓存检查
+const cached=getCached('sector');if(cached){el.innerHTML=cached;return}
 try{
 const r=await fetch('/api/market-factors/all',{signal:AbortSignal.timeout(15000)});const d=await r.json();
 // API 实际返回 {commodities, unlock, etf_flow, updatedAt}，不含 sector_rotation
@@ -93,7 +95,7 @@ if(inflow.length||outflow.length){
     html+='</div>';
   }
 }else{
-  html+='<div style="text-align:center;padding:40px;color:var(--text2)">'+(note?'<div style="font-size:14px;margin-bottom:8px">📅</div><div style="font-size:13px;line-height:1.6">'+note+'</div>':'ETF 资金流向数据暂无更新')+'<br><button onclick="renderSectorHot(document.getElementById(\'insightContent\'))" style="margin-top:12px;padding:6px 16px;border-radius:8px;border:none;background:var(--accent);color:#fff;cursor:pointer;font-size:12px">🔄 重试</button></div>';
+  html+='<div style="text-align:center;padding:40px;color:var(--text2)">'+(note?'<div style="font-size:14px;margin-bottom:8px">📅</div><div style="font-size:13px;line-height:1.6">'+note+'</div>':'ETF 资金流向数据暂无更新')+'<br><button onclick="renderSectorHot(document.getElementById('insightContent'))" style="margin-top:12px;padding:6px 16px;border-radius:8px;border:none;background:var(--accent);color:#fff;cursor:pointer;font-size:12px">🔄 重试</button></div>';
 }
 // 大宗商品（使用 all 接口已返回的 commodities 数据，不重复请求）
 const cd=d.commodities||{};
@@ -103,11 +105,16 @@ if(cd.available||cd.gold){
   if(cd.copper)html+=`<div style="display:flex;justify-content:space-between;padding:6px 0"><span>🔶 铜</span><span style="font-weight:700">${cd.copper.price}${cd.copper.unit||''} <span style="color:${(cd.copper.change_pct||0)>=0?'var(--bull)':'var(--bear)'}">${(cd.copper.change_pct||0)>=0?'+':''}${(cd.copper.change_pct||0).toFixed(1)}%</span></span></div>`;
   html+='</div>';
 }
-el.innerHTML=html||'<div style="text-align:center;padding:20px;color:var(--text2)">暂无行业数据</div>';
+html=html||'<div style="text-align:center;padding:20px;color:var(--text2)">暂无行业数据</div>';
+// ★ 缓存设置
+setCached('sector',html);
+el.innerHTML=html;
 }catch(e){el.innerHTML='<div style="text-align:center;padding:20px;color:#ef4444">加载失败: '+e.message+'</div>'}}
 
 async function renderBrokerView(el){
 el.innerHTML='<div style="text-align:center;padding:20px"><div class="loading-spinner" style="width:24px;height:24px;margin:0 auto 8px;border-width:2px"></div>加载研报数据...</div>';
+// ★ 缓存检查
+const cached=getCached('broker');if(cached){el.innerHTML=cached;return}
 try{
 const[cr,lr]=await Promise.all([fetch('/api/broker/consensus').then(r=>r.json()),fetch('/api/broker/latest?limit=15').then(r=>r.json())]);
 let html='';
@@ -130,7 +137,10 @@ html+=`<div style="padding:8px 0;border-bottom:1px solid var(--border,rgba(255,2
 <div style="font-size:11px;color:var(--text2);margin-top:2px">${r.org||r.source||''} · ${r.date||''} ${r.rating?'· 评级:'+r.rating:''}</div>
 </div>`});
 html+='</div>'}
-el.innerHTML=html||'<div style="text-align:center;padding:20px;color:var(--text2)">暂无研报数据</div>'}catch(e){el.innerHTML='<div style="text-align:center;padding:20px;color:#ef4444">加载失败: '+e.message+'</div>'}}
+html=html||'<div style="text-align:center;padding:20px;color:var(--text2)">暂无研报数据</div>';
+// ★ 缓存设置
+setCached('broker',html);
+el.innerHTML=html}catch(e){el.innerHTML='<div style="text-align:center;padding:20px;color:#ef4444">加载失败: '+e.message+'</div>'}}
 
 async function renderScenarioView(el){
 el.innerHTML='<div style="text-align:center;padding:20px"><div class="loading-spinner" style="width:24px;height:24px;margin:0 auto 8px;border-width:2px"></div>加载情景...</div>';
