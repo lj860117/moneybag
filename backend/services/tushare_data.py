@@ -441,6 +441,9 @@ def get_northbound_flow(days: int = 30) -> dict:
           f"today={result['net_flow_today']}亿, 5d={result['net_flow_5d']}亿, "
           f"20d={result['net_flow_20d']}亿, trend={result['trend']}")
 
+    # 口径警告：2024年8月后交易所取消每日北向实时披露，各平台口径有分歧
+    result["note"] = "口径:Tushare累计差值法，与东方财富/同花顺可能有差异"
+
     return result
 
 

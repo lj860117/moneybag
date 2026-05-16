@@ -496,7 +496,7 @@ def step_generate_products(phase1, phase2, phase3):
     temp_parts = []
     temp_parts.append(f"恐贪指数(自研): {fgi.get('score', '?')}({fgi.get('level', '中性')})")
     if north.get("net_flow_5d"):
-        temp_parts.append(f"北向5日: {north['net_flow_5d']:+.1f}亿")
+        temp_parts.append(f"北向5日: {north['net_flow_5d']:+.1f}亿(Tushare口径)")
     if margin.get("change_5d_pct"):
         temp_parts.append(f"融资5日: {margin['change_5d_pct']:+.1f}%")
     if shibor.get("overnight"):
