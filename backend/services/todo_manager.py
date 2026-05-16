@@ -13,7 +13,7 @@
 import uuid
 from datetime import datetime, timedelta
 from typing import Optional, Any
-from backend.services.persistence import load_user, save_user
+from services.persistence import load_user, save_user
 
 # ---- MODULE_META ----
 MODULE_META = {
