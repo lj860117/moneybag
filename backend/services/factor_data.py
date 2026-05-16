@@ -177,13 +177,52 @@ def get_margin_trading() -> dict:
 
 
 def get_treasury_yield() -> dict:
-    """获取国债收益率（10年期）— 无风险利率 / 股债性价比"""
+    """获取国债收益率（10年期）— 无风险利率 / 股债性价比
+
+    V7 架构：Tushare yc_cb（主） → AKShare bond_zh_us_rate（降级）
+    """
     cache_key = "treasury"
     cached = factor_cache.get(cache_key)
     if cached is not None:
         return cached
 
     result = {"yield_10y": 0, "yield_change": 0, "equity_premium": "", "available": False}
+
+    # ── 方案 A（主）：Tushare yc_cb 国债收益率曲线 ──
+    try:
+        from services.tushare_data import is_configured, get_treasury_yield as ts_treasury
+        if is_configured():
+            ts_data = ts_treasury(days=30)
+            if ts_data.get("available"):
+                current = ts_data["yield_10y"]
+                result["yield_10y"] = current
+                result["yield_change"] = ts_data.get("yield_change_5d", 0)
+                result["available"] = True
+                result["source"] = "tushare"
+                result["data_date"] = ts_data.get("data_date", "")
+                # 股债性价比
+                val = get_valuation_percentile()
+                pe = val.get("current_pe", 12)
+                if pe > 0:
+                    equity_yield = round(1 / pe * 100, 2)
+                    spread = round(equity_yield - current, 2)
+                    if spread > 4:
+                        result["equity_premium"] = f"股债价差{spread}%，股市极有吸引力"
+                    elif spread > 2:
+                        result["equity_premium"] = f"股债价差{spread}%，股市有吸引力"
+                    elif spread > 0:
+                        result["equity_premium"] = f"股债价差{spread}%，股债相当"
+                    else:
+                        result["equity_premium"] = f"股债价差{spread}%，债券更有吸引力"
+                print(f"[TREASURY] Tushare OK: 10Y={current}%, 5d变化={result['yield_change']}%")
+                factor_cache.set(cache_key, result)
+                return result
+            else:
+                print("[TREASURY] Tushare 返回但 available=False，降级到 AKShare")
+    except Exception as e:
+        print(f"[TREASURY] Tushare failed, fallback AKShare: {e}")
+
+    # ── 方案 B（降级）：AKShare bond_zh_us_rate ──
     try:
         from infra.data_source.alt.flows import get_bond_zh_us_rate
         df = get_bond_zh_us_rate(start_date="20240101")
@@ -197,11 +236,12 @@ def get_treasury_yield() -> dict:
                     result["yield_10y"] = round(current, 3)
                     result["yield_change"] = round(current - prev, 3)
                     result["available"] = True
-                    # 股债性价比：PE倒数 vs 国债收益率
+                    result["source"] = "akshare_fallback"
+                    # 股债性价比
                     val = get_valuation_percentile()
                     pe = val.get("current_pe", 12)
                     if pe > 0:
-                        equity_yield = round(1 / pe * 100, 2)  # 盈利收益率
+                        equity_yield = round(1 / pe * 100, 2)
                         spread = round(equity_yield - current, 2)
                         if spread > 4:
                             result["equity_premium"] = f"股债价差{spread}%，股市极有吸引力"
@@ -211,9 +251,9 @@ def get_treasury_yield() -> dict:
                             result["equity_premium"] = f"股债价差{spread}%，股债相当"
                         else:
                             result["equity_premium"] = f"股债价差{spread}%，债券更有吸引力"
-                    print(f"[TREASURY] 10Y={current}%, change={result['yield_change']}%, premium={result['equity_premium']}")
+                    print(f"[TREASURY] AKShare fallback: 10Y={current}%, change={result['yield_change']}%")
     except Exception as e:
-        print(f"[TREASURY] Failed: {e}")
+        print(f"[TREASURY] AKShare also failed: {e}")
 
     factor_cache.set(cache_key, result)
     return result
@@ -466,13 +506,38 @@ def get_news_sentiment_score() -> dict:
 # ============================================================
 
 def get_main_money_flow() -> dict:
-    """获取主力资金流向（沪深300成分股的主力净流入）"""
+    """获取主力资金流向（全市场主力净流入排名）
+
+    V7 架构：Tushare moneyflow（主） → AKShare stock_individual_fund_flow_rank（降级）
+    """
     cache_key = "main_flow"
     cached = factor_cache.get(cache_key)
     if cached is not None:
         return cached
 
     result = {"net_flow": 0, "top_inflow": [], "top_outflow": [], "available": False}
+
+    # ── 方案 A（主）：Tushare moneyflow ──
+    try:
+        from services.tushare_data import is_configured, get_main_money_flow as ts_flow
+        if is_configured():
+            ts_data = ts_flow()
+            if ts_data.get("available"):
+                result["net_flow"] = ts_data.get("net_flow_total", 0)
+                result["top_inflow"] = [{"name": r["name"], "flow": r["net_flow"]} for r in ts_data.get("top_inflow", [])]
+                result["top_outflow"] = [{"name": r["name"], "flow": r["net_flow"]} for r in ts_data.get("top_outflow", [])]
+                result["available"] = True
+                result["source"] = "tushare"
+                result["data_date"] = ts_data.get("data_date", "")
+                print(f"[MAIN_FLOW] Tushare OK: net={result['net_flow']}亿")
+                factor_cache.set(cache_key, result, ttl=1800)
+                return result
+            else:
+                print("[MAIN_FLOW] Tushare 返回但 available=False，降级到 AKShare")
+    except Exception as e:
+        print(f"[MAIN_FLOW] Tushare failed, fallback AKShare: {e}")
+
+    # ── 方案 B（降级）：AKShare stock_individual_fund_flow_rank ──
     try:
         from infra.data_source.alt.flows import get_individual_fund_flow_rank
         df = get_individual_fund_flow_rank(indicator="今日")
@@ -488,9 +553,10 @@ def get_main_money_flow() -> dict:
                 result["top_outflow"] = [{"name": str(r[name_col]), "flow": round(float(r[flow_col]) / 1e4, 2)} for _, r in top_out.iterrows()]
                 result["net_flow"] = round(float(df[flow_col].sum()) / 1e8, 2)
                 result["available"] = True
-                print(f"[MAIN_FLOW] net={result['net_flow']}亿, top_in={result['top_inflow'][0]['name']}")
+                result["source"] = "akshare_fallback"
+                print(f"[MAIN_FLOW] AKShare fallback: net={result['net_flow']}亿")
     except Exception as e:
-        print(f"[MAIN_FLOW] Failed: {e}")
+        print(f"[MAIN_FLOW] AKShare also failed: {e}")
 
     factor_cache.set(cache_key, result)
     return result

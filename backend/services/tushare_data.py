@@ -856,3 +856,216 @@ def get_fund_basic_all() -> list:
     all_rows = (rows_e or []) + (rows_o or [])
     print(f"[TUSHARE-FUND-BASIC] 场内 {len(rows_e or [])} + 场外 {len(rows_o or [])} = {len(all_rows)}")
     return all_rows
+
+
+# ============================================================
+# 国债收益率（yc_cb 中债国债收益率曲线）
+# ============================================================
+
+def get_treasury_yield(days: int = 30) -> dict:
+    """获取中国10年期国债收益率（Tushare yc_cb）
+
+    返回:
+        {
+            "yield_10y": 1.77,
+            "yield_change_5d": -0.01,
+            "yield_1y": 1.21,
+            "available": True,
+            "data_date": "20260515",
+        }
+    """
+    from datetime import datetime, timedelta
+
+    result = {"yield_10y": 0, "yield_change_5d": 0, "available": False}
+
+    start = (datetime.now() - timedelta(days=days)).strftime("%Y%m%d")
+    end = datetime.now().strftime("%Y%m%d")
+
+    rows = _call_tushare(
+        "yc_cb",
+        {"curve_type": "0", "curve_term": "10", "start_date": start, "end_date": end},
+        "trade_date,curve_term,yield",
+    )
+
+    if not rows or len(rows) < 2:
+        return result
+
+    # 按日期排序（最新在前）
+    rows.sort(key=lambda x: x.get("trade_date", ""), reverse=True)
+
+    current = float(rows[0].get("yield", 0))
+    prev_5d = float(rows[min(4, len(rows) - 1)].get("yield", current))
+
+    result["yield_10y"] = round(current, 4)
+    result["yield_change_5d"] = round(current - prev_5d, 4)
+    result["available"] = True
+    result["data_date"] = rows[0].get("trade_date", "")
+    result["source"] = "tushare_yc_cb"
+
+    # 额外获取1年期收益率
+    rows_1y = _call_tushare(
+        "yc_cb",
+        {"curve_type": "0", "curve_term": "1", "start_date": end, "end_date": end},
+        "trade_date,curve_term,yield",
+    )
+    if rows_1y:
+        result["yield_1y"] = round(float(rows_1y[0].get("yield", 0)), 4)
+
+    print(f"[TUSHARE] 国债收益率 10Y={current}%, 5d变化={result['yield_change_5d']}%")
+    return result
+
+
+# ============================================================
+# 指数日线（index_daily）
+# ============================================================
+
+def get_index_daily(ts_code: str = "000300.SH", days: int = 120) -> list:
+    """获取指数日线数据（用于技术指标计算）
+
+    Args:
+        ts_code: 指数代码（000300.SH=沪深300, 000001.SH=上证指数, 399001.SZ=深证成指）
+        days: 获取天数
+
+    Returns:
+        list of dict: [{"trade_date": ..., "close": ..., "open": ..., "high": ..., "low": ..., "vol": ...}, ...]
+        按日期升序排列
+    """
+    from datetime import datetime, timedelta
+
+    start = (datetime.now() - timedelta(days=days + 30)).strftime("%Y%m%d")  # 多取30天缓冲
+    end = datetime.now().strftime("%Y%m%d")
+
+    rows = _call_tushare(
+        "index_daily",
+        {"ts_code": ts_code, "start_date": start, "end_date": end},
+        "trade_date,close,open,high,low,vol,amount",
+    )
+
+    if not rows:
+        return []
+
+    # 按日期升序
+    rows.sort(key=lambda x: x.get("trade_date", ""))
+    print(f"[TUSHARE] index_daily {ts_code}: {len(rows)} 条")
+    return rows
+
+
+# ============================================================
+# 主力资金流排名（moneyflow + stock_basic 名称映射）
+# ============================================================
+
+_stock_name_cache = MemoryCache(default_ttl=86400)  # 股票名称缓存24小时
+
+
+def _get_stock_names() -> dict:
+    """获取全A股代码→名称映射（缓存24小时）"""
+    cached = _stock_name_cache.get("all_names")
+    if cached is not None:
+        return cached
+
+    rows = _call_tushare(
+        "stock_basic",
+        {"exchange": "", "list_status": "L"},
+        "ts_code,name",
+    )
+    if not rows:
+        return {}
+
+    mapping = {r["ts_code"]: r["name"] for r in rows}
+    _stock_name_cache.set("all_names", mapping, ttl=86400)
+    print(f"[TUSHARE] stock_basic 名称映射: {len(mapping)} 只")
+    return mapping
+
+
+def get_main_money_flow(trade_date: str = "") -> dict:
+    """获取全市场主力资金流排名
+
+    使用 Tushare moneyflow 接口，按 net_mf_amount 排序。
+
+    Returns:
+        {
+            "available": True,
+            "net_flow_total": -12.5 (亿),
+            "top_inflow": [{"code": ..., "name": ..., "net_flow": 万元}, ...],
+            "top_outflow": [{"code": ..., "name": ..., "net_flow": 万元}, ...],
+            "data_date": "20260515",
+        }
+    """
+    from datetime import datetime, timedelta
+
+    if not trade_date:
+        trade_date = datetime.now().strftime("%Y%m%d")
+
+    result = {"available": False, "net_flow_total": 0, "top_inflow": [], "top_outflow": []}
+
+    # 获取全市场资金流（Tushare 每次最多 5000+ 条）
+    rows = _call_tushare(
+        "moneyflow",
+        {"trade_date": trade_date},
+        "ts_code,trade_date,buy_lg_amount,sell_lg_amount,buy_elg_amount,sell_elg_amount,net_mf_amount",
+    )
+
+    if not rows:
+        # 当天可能还没收盘/非交易日，试前一天
+        prev_date = (datetime.now() - timedelta(days=1)).strftime("%Y%m%d")
+        rows = _call_tushare(
+            "moneyflow",
+            {"trade_date": prev_date},
+            "ts_code,trade_date,buy_lg_amount,sell_lg_amount,buy_elg_amount,sell_elg_amount,net_mf_amount",
+        )
+        if rows:
+            trade_date = prev_date
+
+    if not rows:
+        return result
+
+    # 获取股票名称映射
+    name_map = _get_stock_names()
+
+    # 计算主力净流入 = (buy_lg + buy_elg) - (sell_lg + sell_elg)
+    # net_mf_amount 已经是净主力资金（万元）
+    for r in rows:
+        r["_net"] = float(r.get("net_mf_amount", 0) or 0)
+        r["_name"] = name_map.get(r.get("ts_code", ""), "")
+
+    # 排序
+    rows.sort(key=lambda x: x["_net"], reverse=True)
+
+    # TOP5 流入
+    top_in = []
+    for r in rows[:10]:
+        if r["_net"] > 0:
+            top_in.append({
+                "code": r["ts_code"].split(".")[0],
+                "name": r["_name"],
+                "net_flow": round(r["_net"] / 10000, 2),  # 万→亿
+            })
+        if len(top_in) >= 5:
+            break
+
+    # TOP5 流出
+    top_out = []
+    for r in rows[-10:][::-1]:
+        if r["_net"] < 0:
+            top_out.append({
+                "code": r["ts_code"].split(".")[0],
+                "name": r["_name"],
+                "net_flow": round(r["_net"] / 10000, 2),  # 万→亿
+            })
+        if len(top_out) >= 5:
+            break
+
+    # 全市场净流入
+    total_net = sum(r["_net"] for r in rows) / 10000  # 万→亿
+
+    result["available"] = True
+    result["top_inflow"] = top_in
+    result["top_outflow"] = top_out
+    result["net_flow_total"] = round(total_net, 2)
+    result["data_date"] = trade_date
+    result["source"] = "tushare_moneyflow"
+    result["total_stocks"] = len(rows)
+
+    print(f"[TUSHARE] moneyflow {trade_date}: 全市场净流{total_net:.1f}亿, "
+          f"TOP流入={top_in[0]['name'] if top_in else 'N/A'}")
+    return result

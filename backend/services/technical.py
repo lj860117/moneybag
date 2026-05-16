@@ -113,34 +113,74 @@ def calc_bollinger(prices: list, period: int = 20) -> dict:
 
 
 def get_technical_indicators(symbol: str = "sh000300") -> dict:
-    """获取沪深300的技术指标（RSI/MACD/布林带）"""
+    """获取沪深300的技术指标（RSI/MACD/布林带）
+
+    V7 架构：Tushare index_daily（主） → AKShare/baostock（降级）
+    """
     cache_key = f"tech_{symbol}"
     now = time.time()
     cached = _tech_cache.get(cache_key)
     if cached is not None:
         return cached
 
+    closes = []
+
+    # ── 方案 A（主）：Tushare index_daily ──
     try:
-        from infra.data_source.market.stocks import get_index_daily
-        df = get_index_daily(symbol=symbol)
-        if df is not None and len(df) >= 60:
-            # 列名兼容（Tushare=close, BaoStock=收盘, AKShare=close）
-            close_col = next((c for c in df.columns if c in ("close", "收盘")), None)
-            if not close_col:
-                raise ValueError(f"无法识别收盘价列: {list(df.columns)}")
-            import pandas as _pd
-            closes = [float(c) for c in _pd.to_numeric(df.tail(120)[close_col], errors="coerce").dropna().values]
-            result = {
-                "rsi": calc_rsi(closes),
-                "macd": calc_macd(closes),
-                "bollinger": calc_bollinger(closes),
-                "rsi_signal": "超买" if calc_rsi(closes) > 70 else "超卖" if calc_rsi(closes) < 30 else "中性",
-            }
-            _tech_cache.set(cache_key, result, ttl=NAV_CACHE_TTL)
-            return result
+        from services.tushare_data import is_configured, get_index_daily as ts_index
+        if is_configured():
+            # 将 sh000300 格式转为 000300.SH
+            ts_code = _symbol_to_tscode(symbol)
+            rows = ts_index(ts_code=ts_code, days=150)
+            if rows and len(rows) >= 60:
+                closes = [float(r["close"]) for r in rows if r.get("close")]
+                if len(closes) >= 60:
+                    print(f"[TECH] Tushare index_daily OK: {ts_code}, {len(closes)} 条")
     except Exception as e:
-        print(f"[TECH] Failed: {e}")
+        print(f"[TECH] Tushare failed, fallback: {e}")
+
+    # ── 方案 B（降级）：AKShare / baostock ──
+    if len(closes) < 60:
+        try:
+            from infra.data_source.market.stocks import get_index_daily
+            df = get_index_daily(symbol=symbol)
+            if df is not None and len(df) >= 60:
+                close_col = next((c for c in df.columns if c in ("close", "收盘")), None)
+                if close_col:
+                    import pandas as _pd
+                    closes = [float(c) for c in _pd.to_numeric(df.tail(120)[close_col], errors="coerce").dropna().values]
+                    print(f"[TECH] AKShare/baostock fallback: {len(closes)} 条")
+        except Exception as e:
+            print(f"[TECH] AKShare/baostock also failed: {e}")
+
+    if len(closes) >= 60:
+        result = {
+            "rsi": calc_rsi(closes),
+            "macd": calc_macd(closes),
+            "bollinger": calc_bollinger(closes),
+            "rsi_signal": "超买" if calc_rsi(closes) > 70 else "超卖" if calc_rsi(closes) < 30 else "中性",
+        }
+        _tech_cache.set(cache_key, result, ttl=NAV_CACHE_TTL)
+        return result
+
     return {"rsi": 50, "macd": {"macd": 0, "dif": 0, "dea": 0, "trend": "数据不足"}, "bollinger": {"upper": 0, "middle": 0, "lower": 0, "position": "数据不足"}, "rsi_signal": "数据不足"}
+
+
+def _symbol_to_tscode(symbol: str) -> str:
+    """将 sh000300/sz399001 格式转为 Tushare 格式 000300.SH/399001.SZ"""
+    s = symbol.lower().strip()
+    if s.startswith("sh"):
+        return f"{s[2:]}.SH"
+    elif s.startswith("sz"):
+        return f"{s[2:]}.SZ"
+    elif "." in symbol:
+        return symbol
+    else:
+        # 默认：6开头上交所
+        code = s
+        if code.startswith("0") or code.startswith("3"):
+            return f"{code}.SZ"
+        return f"{code}.SH"
 
 
 # ---- 新闻资讯 ----
