@@ -51,11 +51,12 @@ $('#app').innerHTML=`<div class="result-page fade-up">
 <button class="action-btn primary" onclick="navigateTo('stocks')">📊 查看持仓</button>
 <button class="action-btn secondary" onclick="navigateTo('assets')">🏦 管理资产</button>
 <button class="action-btn secondary" onclick="navigateTo('chat')">💬 问管家</button>
+<div style="display:flex;gap:6px;margin-top:8px">
+<div onclick="navigateTo('todos')" style="flex:1;text-align:center;padding:6px 0;font-size:11px;color:var(--text2);background:var(--bg2,rgba(0,0,0,.03));border-radius:8px;cursor:pointer">📌 待办</div>
+<div onclick="navigateTo('behavior-history')" style="flex:1;text-align:center;padding:6px 0;font-size:11px;color:var(--text2);background:var(--bg2,rgba(0,0,0,.03));border-radius:8px;cursor:pointer">📊 行为</div>
+<div onclick="navigateTo('monthly-rebalance')" style="flex:1;text-align:center;padding:6px 0;font-size:11px;color:var(--text2);background:var(--bg2,rgba(0,0,0,.03));border-radius:8px;cursor:pointer">🔄 再平衡</div>
+<div onclick="navigateTo('market-panorama')" style="flex:1;text-align:center;padding:6px 0;font-size:11px;color:var(--text2);background:var(--bg2,rgba(0,0,0,.03));border-radius:8px;cursor:pointer">🌍 市场</div>
 </div>
-<div style="display:flex;gap:8px;margin-top:8px">
-<button class="action-btn secondary" onclick="navigateTo('todos')" style="flex:1;font-size:12px">📌 待办</button>
-<button class="action-btn secondary" onclick="navigateTo('behavior-history')" style="flex:1;font-size:12px">📊 行为</button>
-<button class="action-btn secondary" onclick="navigateTo('monthly-rebalance')" style="flex:1;font-size:12px">🔄 再平衡</button>
 </div>
 </div>`;renderNav();loadUnifiedHero();_loadCfoSummary()}
 

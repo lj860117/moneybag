@@ -93,6 +93,17 @@ def weekly_report_history(userId: str = "", limit: int = 4):
 # 家庭 CFO 首页聚合接口
 # ============================================================
 
+@router.get("/api/market-panorama")
+def market_panorama():
+    """市场全景 — 一次请求返回市场全貌数据
+
+    聚合：市场温度 + 热点板块 + 重要新闻 + 资产判断 + 机构观点
+    全部纯规则/缓存，不调 LLM。
+    """
+    from services.market_panorama import generate_market_panorama
+    return generate_market_panorama()
+
+
 @router.get("/api/cfo-summary")
 def cfo_summary(userId: str = ""):
     """家庭 CFO 今日面板 — 一次请求返回首页全部数据

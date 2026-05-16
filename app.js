@@ -554,6 +554,7 @@ function navigateTo(p){
   else if(p==='assets')renderAssets();
   else if(p==='weekly-lesson')renderWeeklyLesson();
   else if(p==='chart')renderChart();
+  else if(p==='market-panorama')renderMarketPanorama();
   else if(p==='todos')renderTodos();
   else if(p==='behavior-history')renderBehaviorHistory();
   else if(p==='monthly-rebalance')renderMonthlyRebalance();
