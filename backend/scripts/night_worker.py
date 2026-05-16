@@ -802,7 +802,7 @@ def step_morning_briefing(products, overnight):
             briefing = simple
 
         briefings[uid] = briefing
-        log(f"  ✅ {name}: {'Pro' if is_pro else 'Simple'} 简报 {len(briefing)}字")
+        log(f"  ✅ {name}: {'Pro' if display_mode != 'simple' else 'Simple'} 简报 {len(briefing)}字")
 
     return briefings
 
