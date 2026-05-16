@@ -35,14 +35,15 @@ _CACHE_TTL = 1800  # 30 分钟
 def _get_cached(key, ttl=_CACHE_TTL):
     """从缓存取数据"""
     entry = _sector_cache.get(key)
-    if entry and (time.time() - entry["ts"]) < ttl:
-        return entry["data"]
+    if entry is not None:
+        # MemoryCache 自带 TTL 过期机制，直接返回
+        return entry
     return None
 
 
 def _set_cached(key, data):
     """写入缓存"""
-    _sector_cache.set(key, data)
+    _sector_cache.set(key, data, ttl=_CACHE_TTL)
 
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━

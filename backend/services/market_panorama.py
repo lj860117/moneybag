@@ -99,8 +99,10 @@ def generate_market_panorama() -> dict:
                     {"name": s.get("name", ""), "change_pct": s.get("change_pct", 0)}
                     for s in sr["top_gainers"][:5]
                 ]
-    except Exception:
-        pass
+            else:
+                print(f"[PANORAMA] 热点板块获取失败: {sr.get('error', 'no top_gainers') if sr else 'None'}")
+    except Exception as e:
+        print(f"[PANORAMA] 热点板块异常: {e}")
 
     # ── 3. 重要新闻 ──
     try:
