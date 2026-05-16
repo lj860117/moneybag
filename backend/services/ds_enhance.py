@@ -166,7 +166,8 @@ def comment_fund_picks(funds: list) -> list:
         lines = [l.strip() for l in result.strip().split("\n") if l.strip()]
         # 先过滤所有异常行
         bad_keywords = ["我们要求", "一句话点评", "15字", "格式", "注意：", "要求：",
-                        "需要根据", "以下是", "点评如下", "好的", "以上是"]
+                        "需要根据", "以下是", "点评如下", "好的", "以上是",
+                        "写5条", "写10条", "写3条", "条：", "如下："]
         # 基金名称关键词（LLM 容易输出其他基金名而非点评）
         fund_name_keywords = ["混合", "债券", "指数", "ETF", "联接", "增强",
                               "精选", "优选", "灵活配置", "QDII", "LOF", "FOF"]
@@ -215,26 +216,52 @@ def comment_fund_picks(funds: list) -> list:
 
 
 def _rule_fund_comment(f: dict) -> str:
-    """规则引擎兜底：根据基金数据生成简短评语"""
+    """规则引擎兜底：根据基金数据生成简短评语（个性化）"""
     r = f.get("returns", {})
     r1y = r.get("1y")
     r3m = r.get("3m")
+    r6m = r.get("6m")
+    r3y = r.get("3y")
     score = f.get("score", 0)
+    name = f.get("name", "")
 
-    if r1y is not None and r1y > 30:
-        return "近1年涨幅可观，注意追高风险"
+    # 根据基金类型+收益组合多样化评语
+    if "QDII" in name or "全球" in name or "标普" in name or "纳" in name:
+        if r1y and r1y > 20:
+            return "海外市场贡献超额收益，注意汇率波动"
+        return "全球配置分散风险，适合多元化组合"
+
+    if "债" in name or "利率" in name or "信用" in name:
+        if r1y and r1y > 5:
+            return "债基表现优异，低波动稳收益"
+        return "固收打底，震荡市避风港"
+
+    if r1y is not None and r1y > 50:
+        return "爆发力极强，高位追入需谨慎"
+    elif r1y is not None and r1y > 30:
+        if r3m and r3m > 15:
+            return "短期加速上涨，关注回调风险"
+        elif r3y and r3y > 60:
+            return "中长期持续优秀，但估值已不便宜"
+        return "近1年涨幅可观，注意阶段性回撤"
     elif r1y is not None and r1y > 15:
-        return "中长期表现稳健，性价比较高"
+        if r3m and r3m > 0 and r6m and r6m > 0:
+            return "走势稳健上行，性价比较优"
+        return "中等偏上收益，适合均衡配置"
     elif r1y is not None and r1y > 0:
-        return "收益正向但偏保守，适合稳健型"
-    elif r1y is not None and r1y < -5:
-        return "近期回撤明显，逆向布局需耐心"
+        if score > 12:
+            return "收益稳定风险可控，定投友好"
+        return "偏保守策略，适合稳健投资者"
+    elif r1y is not None and r1y < -10:
+        return "深度回调中，左侧布局需耐心"
+    elif r1y is not None and r1y < 0:
+        return "短期承压，但长期逻辑未变"
     elif r3m is not None and r3m > 10:
-        return "短期动量强劲，关注持续性"
+        return "短期反弹动量强，关注持续性"
     elif score > 15:
         return "综合评分靠前，多维表现均衡"
     else:
-        return "表现中规中矩，可作配置参考"
+        return "表现中规中矩，可作组合配置参考"
 
 
 def comment_recommend_funds(allocations: list, risk_profile: str,
