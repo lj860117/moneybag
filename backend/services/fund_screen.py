@@ -76,6 +76,10 @@ def screen_funds(
             if r1y is None:
                 continue
 
+            # 过滤极端涨幅：近1年>150%的基金不纳入（极端行业ETF/新基效应，风险极高）
+            if r1y > 150:
+                continue
+
             # 多维评分（含风险调整）
             # FIX 2026-04-19 V7.2: 权重从 config.FUND_SCORE_WEIGHTS 读取
             from config import FUND_SCORE_WEIGHTS as _FW
