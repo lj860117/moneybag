@@ -77,7 +77,9 @@ alertsEl.innerHTML=`<div class="dashboard-card-title">📋 今日提醒</div>`+
 d.alerts.map(a=>`<div style="font-size:13px;line-height:1.8;padding:6px 0;border-bottom:1px solid var(--bg3,rgba(0,0,0,.05))">${levelIcon[a.level]||'📌'} ${a.text}</div>`).join('')+marketLink;
 }else if(alertsEl){
 // 判断是否空数据用户（净资产=0 且无持仓）
-const isEmptyUser=!d.allocation||(!d.allocation.current)||(d.allocation.total_market===0);
+const hasNetWorth=d.net_worth&&d.net_worth.total>0;
+const hasAlloc=d.allocation&&d.allocation.current&&d.allocation.total_market>0;
+const isEmptyUser=!hasNetWorth&&!hasAlloc;
 if(isEmptyUser){
 alertsEl.innerHTML=`<div class="dashboard-card-title">📋 今日提醒</div><div style="font-size:13px;color:var(--accent);padding:8px 0">📝 还没有录入资产数据，<span onclick="navigateTo('portfolio')" style="text-decoration:underline;cursor:pointer">去录入持仓</span> 或 <span onclick="navigateTo('assets')" style="text-decoration:underline;cursor:pointer">添加资产</span> 后，这里会显示个性化提醒。</div>`+marketLink;
 }else{

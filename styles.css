@@ -28,7 +28,7 @@
   :root:not([data-theme]) .chat-msg.user{color:#fff}
   :root:not([data-theme]) .chat-msg.bot{border:1px solid var(--bg3)}
 }
-body{font-family:'Noto Sans SC',-apple-system,sans-serif;background:var(--bg);color:var(--text);min-height:100vh;overflow-x:hidden;-webkit-tap-highlight-color:transparent;padding-top:32px}
+body{font-family:-apple-system,BlinkMacSystemFont,'PingFang SC','Hiragino Sans GB','Microsoft YaHei','Noto Sans SC',sans-serif;background:var(--bg);color:var(--text);min-height:100vh;overflow-x:hidden;-webkit-tap-highlight-color:transparent;padding-top:32px}
 #app{max-width:480px;margin:0 auto;padding:20px 20px 100px;min-height:100vh}
 
 /* 动画 */
