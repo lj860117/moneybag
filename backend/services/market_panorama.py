@@ -74,15 +74,24 @@ def generate_market_panorama() -> dict:
         "signal_summary": signal_summary,
     }
 
-    # ── 2. 热点板块 ──
+    # ── 2. 热点板块（优先读预计算缓存，更稳定）──
     try:
-        from services.sector_rotation import get_sector_ranking
-        sr = get_sector_ranking()
+        from services.precomputed_cache import get_precomputed
+        sr = get_precomputed("sector_rotation")
         if sr and sr.get("available") and sr.get("top_gainers"):
             result["hot_sectors"] = [
                 {"name": s.get("name", ""), "change_pct": s.get("change_pct", 0)}
                 for s in sr["top_gainers"][:5]
             ]
+        else:
+            # 降级：实时获取
+            from services.sector_rotation import get_sector_ranking
+            sr = get_sector_ranking()
+            if sr and sr.get("available") and sr.get("top_gainers"):
+                result["hot_sectors"] = [
+                    {"name": s.get("name", ""), "change_pct": s.get("change_pct", 0)}
+                    for s in sr["top_gainers"][:5]
+                ]
     except Exception:
         pass
 
