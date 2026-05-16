@@ -55,13 +55,25 @@ def calc_macd(prices: list) -> dict:
     macd_val = dif[-1] - dea[-1]
 
     if dif[-1] > dea[-1] and dif[-2] <= dea[-2]:
-        trend = "金叉（买入信号）"
+        # 金叉：DIF 上穿 DEA
+        if dif[-1] > 0:
+            trend = "金叉（买入信号，0轴上方强势）"
+        else:
+            trend = "金叉（反弹信号，但仍在0轴下方）"
     elif dif[-1] < dea[-1] and dif[-2] >= dea[-2]:
-        trend = "死叉（卖出信号）"
-    elif dif[-1] > dea[-1]:
-        trend = "多头排列"
+        # 死叉：DIF 下穿 DEA
+        if dif[-1] < 0:
+            trend = "死叉（卖出信号，0轴下方弱势）"
+        else:
+            trend = "死叉（回调信号，仍在0轴上方）"
+    elif dif[-1] > dea[-1] and dif[-1] > 0:
+        trend = "多头排列（DIF/DEA均在0轴上方）"
+    elif dif[-1] > dea[-1] and dif[-1] <= 0:
+        trend = "弱势反弹（金叉但在0轴下方，趋势未反转）"
+    elif dif[-1] < dea[-1] and dif[-1] < 0:
+        trend = "空头排列（DIF/DEA均在0轴下方）"
     else:
-        trend = "空头排列"
+        trend = "高位回调（死叉但在0轴上方）"
 
     return {
         "macd": round(macd_val, 4),

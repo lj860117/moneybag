@@ -153,14 +153,22 @@ def generate_daily_signal() -> dict:
     # --- 2. MACD 信号 ---
     macd = tech.get("macd", {})
     trend = macd.get("trend", "")
-    if "金叉" in trend:
-        macd_score, macd_detail = 70, f"MACD金叉（{trend}），趋势转多"
-    elif "多头" in trend:
-        macd_score, macd_detail = 30, f"MACD多头排列，上升趋势持续"
+    if "金叉" in trend and "0轴上方" in trend:
+        macd_score, macd_detail = 70, f"MACD金叉且在0轴上方，强势买入信号"
+    elif "金叉" in trend:
+        macd_score, macd_detail = 30, f"MACD金叉但仍在0轴下方，反弹信号（非趋势反转）"
+    elif "多头排列" in trend:
+        macd_score, macd_detail = 50, f"MACD多头排列（DIF/DEA均在0轴上方），上升趋势"
+    elif "弱势反弹" in trend:
+        macd_score, macd_detail = 20, f"MACD弱势反弹（0轴下方金叉），谨慎乐观"
+    elif "死叉" in trend and "0轴下方" in trend:
+        macd_score, macd_detail = -70, f"MACD死叉且在0轴下方，强势卖出信号"
     elif "死叉" in trend:
-        macd_score, macd_detail = -70, f"MACD死叉（{trend}），趋势转空"
-    elif "空头" in trend:
-        macd_score, macd_detail = -30, f"MACD空头排列，下降趋势持续"
+        macd_score, macd_detail = -30, f"MACD死叉但在0轴上方，回调信号（趋势未破）"
+    elif "空头排列" in trend:
+        macd_score, macd_detail = -50, f"MACD空头排列，下降趋势"
+    elif "高位回调" in trend:
+        macd_score, macd_detail = -20, f"MACD高位回调，短期调整"
     else:
         macd_score, macd_detail = 0, "MACD数据不足"
     scores.append((macd_score, _w["MACD"], "MACD", macd_detail, "技术面"))
