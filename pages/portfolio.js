@@ -112,6 +112,7 @@ ${actionsHtml}</div>`}catch(e){console.warn('Risk actions load failed:',e)}}
 async function loadAllocationAdvice(){
 try{const r=await fetch(API_BASE+'/allocation-advice',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({userId:getUserId()}),signal:AbortSignal.timeout(15000)});
 if(!r.ok)return;const data=await r.json();
+if(!data||!data.target){const el=document.getElementById('allocationSection');if(el)el.innerHTML='<div class="dashboard-card-title">🥧 资产配置</div><div style="padding:12px;font-size:12px;color:var(--text2)">暂无配置数据，请先录入持仓</div>';return}
 const el=document.getElementById('allocationSection');if(!el)return;
 const t=data.target||{};const c=data.current||{};const dev=data.deviation||{};
 const advice=data.advice||[];const zone=data.valuation_zone||'适中';const valPct=data.valuation_pct||50;

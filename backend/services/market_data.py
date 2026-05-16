@@ -27,6 +27,17 @@ def _looks_like_stock_code(code: str) -> bool:
     """简易判断：A股股票代码（6位数字，首位 6/0/3），基金通常 0/1/5 开头但长度不同"""
     if not code or not code.isdigit() or len(code) != 6:
         return False
+    # 基金白名单（这些000开头的是基金不是股票）
+    _FUND_WHITELIST = {
+        "000216",  # 华安黄金易ETF联接A
+        "000217",  # 华安黄金易ETF联接C
+        "000311",  # 景顺长城沪深300增强
+        "000478",  # 建信中证500增强
+        "000961",  # 天弘沪深300ETF联接A
+        "000968",  # 广发养老指数
+    }
+    if code in _FUND_WHITELIST:
+        return False
     # A 股：60xxxx/00xxxx/30xxxx/688xxx/8xxxxx
     return code[0] in ("6", "3") or code.startswith("000") or code.startswith("002") or code.startswith("688") or code.startswith("8")
 

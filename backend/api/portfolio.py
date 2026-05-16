@@ -557,7 +557,8 @@ def get_allocation_advice_api(req: dict):
     else:
         user = load_user(user_id)
         user = ensure_v4_portfolio(user)
-        txs = user["portfolio"].get("transactions", [])
+        portfolio = user.get("portfolio") or {}
+        txs = portfolio.get("transactions", [])
     try:
         vp = get_valuation_percentile()
         val_pct = vp.get("percentile", 50) if isinstance(vp, dict) else 50
