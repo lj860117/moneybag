@@ -24,7 +24,8 @@ LLM_API_BASE = os.environ.get("LLM_API_BASE", "https://api.deepseek.com/v1")
 # 模型路由
 MODEL_ROUTING = {
     "llm_light": "deepseek-v4-flash",    # V4 Flash: 聊天/点评/解读/信号
-    "llm_heavy": "deepseek-reasoner",    # R1: 仲裁/诊断/因子生成
+    "llm_heavy": "deepseek-v4-pro",      # V4 Pro: 仲裁/诊断/因子生成（快且质量高）
+    "llm_reasoning": "deepseek-reasoner", # R1: 仅用于情景分析等深度推理
 }
 
 # 限制
