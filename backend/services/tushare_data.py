@@ -388,34 +388,39 @@ def get_northbound_flow(days: int = 30) -> dict:
     # 按日期升序排列
     rows = sorted(rows, key=lambda x: x.get("trade_date", ""))
 
-    # 计算每日北向净流入（万元）
-    # north_money = 沪股通净买额 + 深股通净买额（Tushare 直接提供）
-    # 如果 north_money 字段可用就直接用，否则 hgt + sgt
+    # 关键：moneyflow_hsgt 的 north_money/hgt/sgt 都是【历史累计值】（百万元）
+    # 当日净流入 = 当天累计 - 前一天累计
     daily_flows = []
-    for row in rows:
-        trade_date = row.get("trade_date", "")
-        # north_money 是直接的北向净买入（万元）
-        nm = row.get("north_money")
-        if nm is not None:
-            net_flow = float(nm)
+    for i in range(1, len(rows)):
+        trade_date = rows[i].get("trade_date", "")
+        # north_money 是累计北向净买入（百万元）
+        nm_today = float(rows[i].get("north_money") or 0)
+        nm_prev = float(rows[i-1].get("north_money") or 0)
+
+        if nm_today > 0 and nm_prev > 0:
+            # 当日净流入 = 今天累计 - 昨天累计（百万元）
+            net_flow_million = nm_today - nm_prev
         else:
-            # 降级：hgt（沪股通）+ sgt（深股通）
-            hgt = float(row.get("hgt", 0) or 0)
-            sgt = float(row.get("sgt", 0) or 0)
-            net_flow = hgt + sgt
-        daily_flows.append({"date": trade_date, "net_flow": net_flow})
+            # 降级：hgt + sgt 差值
+            hgt_today = float(rows[i].get("hgt") or 0)
+            hgt_prev = float(rows[i-1].get("hgt") or 0)
+            sgt_today = float(rows[i].get("sgt") or 0)
+            sgt_prev = float(rows[i-1].get("sgt") or 0)
+            net_flow_million = (hgt_today - hgt_prev) + (sgt_today - sgt_prev)
+
+        daily_flows.append({"date": trade_date, "net_flow_million": net_flow_million})
 
     if len(daily_flows) < 5:
         print(f"[TUSHARE-NORTH] 数据不足: {len(daily_flows)}天")
         return result
 
-    # 单位转换：万元 → 亿元
-    def wan_to_yi(v):
-        return round(v / 10000, 2)
+    # 单位转换：百万元 → 亿元（除以 100）
+    def million_to_yi(v):
+        return round(v / 100, 2)
 
-    result["net_flow_today"] = wan_to_yi(daily_flows[-1]["net_flow"])
-    result["net_flow_5d"] = wan_to_yi(sum(d["net_flow"] for d in daily_flows[-5:]))
-    result["net_flow_20d"] = wan_to_yi(sum(d["net_flow"] for d in daily_flows[-20:]))
+    result["net_flow_today"] = million_to_yi(daily_flows[-1]["net_flow_million"])
+    result["net_flow_5d"] = million_to_yi(sum(d["net_flow_million"] for d in daily_flows[-5:]))
+    result["net_flow_20d"] = million_to_yi(sum(d["net_flow_million"] for d in daily_flows[-20:]))
     result["data_date"] = daily_flows[-1]["date"]
     result["available"] = True
 
@@ -571,6 +576,16 @@ def get_margin_data(days: int = 30) -> dict:
 
     latest = daily_totals[sorted_dates[-1]]
     prev_5d = daily_totals[sorted_dates[-6]] if len(sorted_dates) >= 6 else daily_totals[sorted_dates[0]]
+
+    # 数据完整性检查：如果最新一天余额比前一天骤降 >30%，说明部分交易所数据未到
+    # 此时用前一天数据代替，避免误判
+    if len(sorted_dates) >= 2:
+        prev_day = daily_totals[sorted_dates[-2]]
+        if prev_day["rzye"] > 0 and latest["rzye"] / prev_day["rzye"] < 0.7:
+            print(f"[TUSHARE-MARGIN] ⚠️ {sorted_dates[-1]} 数据不完整"
+                  f"（{latest['rzye']/1e8:.0f}亿 vs 前日{prev_day['rzye']/1e8:.0f}亿），用前日数据")
+            latest = prev_day
+            sorted_dates[-1] = sorted_dates[-2]
 
     # 万元 → 亿元
     def to_yi(v):
