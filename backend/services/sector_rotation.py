@@ -46,6 +46,58 @@ def _set_cached(key, data):
 
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# Tushare 降级：申万行业日行情
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+def _tushare_sw_daily_fallback():
+    """Tushare sw_daily 降级：获取申万行业涨跌排名
+
+    当 AKShare 东方财富/同花顺接口不可用时，用 Tushare 申万行业日行情替代。
+    返回与 get_industry_board_summary 兼容的 DataFrame 格式。
+    """
+    try:
+        import os
+        import pandas as pd
+        token = os.environ.get("TUSHARE_TOKEN", "")
+        if not token:
+            return None
+        import tushare as ts
+        ts.set_token(token)
+        pro = ts.pro_api()
+
+        from datetime import datetime
+        trade_date = datetime.now().strftime("%Y%m%d")
+        df = pro.sw_daily(trade_date=trade_date)
+
+        if df is None or len(df) < 10:
+            # 试前一天
+            from datetime import timedelta
+            prev_date = (datetime.now() - timedelta(days=1)).strftime("%Y%m%d")
+            df = pro.sw_daily(trade_date=prev_date)
+
+        if df is None or len(df) < 10:
+            return None
+
+        # 只取一级行业（801xxx.SI）
+        l1 = df[df["ts_code"].str.startswith("801")].copy()
+        if len(l1) < 10:
+            l1 = df.copy()
+
+        # 转换为兼容格式
+        result = pd.DataFrame({
+            "板块": l1["name"].values,
+            "涨跌幅": l1["pct_change"].values,
+            "总成交额": l1["amount"].values if "amount" in l1.columns else 0,
+        })
+        print(f"[SECTOR] Tushare sw_daily 降级成功: {len(result)} 行业")
+        return result
+
+    except Exception as e:
+        print(f"[SECTOR] Tushare sw_daily fallback failed: {e}")
+        return None
+
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 # 核心数据获取
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
@@ -75,7 +127,10 @@ def get_sector_ranking() -> dict:
         df = get_industry_board_summary()
 
         if df is None or len(df) < 10:
-            return {"available": False, "error": "行业数据不足", "source": "ths"}
+            # 降级方案: Tushare sw_daily（申万行业日行情，稳定可靠）
+            df = _tushare_sw_daily_fallback()
+            if df is None or len(df) < 10:
+                return {"available": False, "error": "行业数据不足", "source": "all_failed"}
 
         # 标准化列名
         col_map = {}
