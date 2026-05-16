@@ -72,9 +72,13 @@ def _build_market_context() -> str:
     # 技术指标
     try:
         tech = get_technical_indicators()
+        # 沪深300实时点位（从布林带 current 字段获取）
+        hs300_price = tech.get('bollinger', {}).get('current', 0)
+        if hs300_price:
+            lines.append(f"沪深300指数：当前 {hs300_price} 点")
         lines.append(f"RSI(14)：{tech['rsi']}（{tech['rsi_signal']}）")
         lines.append(f"MACD：{tech['macd']['trend']}")
-        lines.append(f"布林带：{tech['bollinger']['position']}")
+        lines.append(f"布林带：{tech['bollinger']['position']}（上轨{tech['bollinger'].get('upper',0)} 中轨{tech['bollinger'].get('middle',0)} 下轨{tech['bollinger'].get('lower',0)}）")
     except Exception:
         pass
 
