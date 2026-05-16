@@ -214,54 +214,17 @@ def get_fear_greed_index() -> dict:
     return result
 
 def get_valuation_percentile() -> dict:
-    """获取沪深300估值百分位 — 使用等权PE-TTM（与ETF.run/理杏仁对齐）
-    
+    """获取沪深300估值百分位 — 优先使用加权PE-TTM（市场通用标准）
+
     口径说明：
-    - 加权PE(14.38): 大市值股权重大，被银行/茅台拉低，不反映市场整体
-    - 等权PE(23.83): 每只成分股等权，反映"大多数股票"的估值水平
-    - 主流个人投资平台(ETF.run/理杏仁/蛋卷)都用等权/中位数 → 我们也用等权
+    - 加权PE-TTM(~14.6): Wind/同花顺/乐咕默认口径，市场通用标准
+    - 等权PE中位数(~21): ETF.run/理杏仁口径，会偏高
+    - 本函数优先用加权PE-TTM，因为这是普通投资者最常看到的数字
     """
     try:
         from infra.data_source.market.stocks import get_index_pe, get_index_valuation_csindex
 
-        # 方案1：乐咕"滚动市盈率中位数" — 与理杏仁(23.15)/ETF.run(23.83)口径最接近
-        try:
-            df = get_index_pe(symbol="沪深300")
-            if df is not None and len(df) >= 250:
-                # 优先用"滚动市盈率中位数"（≈ETF.run/理杏仁的PE-TTM中位数）
-                pe_col = None
-                for col_name in ["滚动市盈率中位数", "静态市盈率中位数"]:
-                    if col_name in df.columns:
-                        pe_col = col_name
-                        break
-                if not pe_col:
-                    pe_col = next((c for c in df.columns if "中位" in c and "市盈率" in c), None)
-                
-                if pe_col:
-                    pe_data = df[pe_col].dropna()
-                    # 全历史数据算百分位（与ETF.run一致）
-                    if len(pe_data) >= 250:
-                        current_pe = float(pe_data.iloc[-1])
-                        pe_values = pe_data.values
-                        percentile = round(sum(1 for p in pe_values if p <= current_pe) / len(pe_values) * 100, 1)
-                        latest_date = str(df["日期"].iloc[-1]) if "日期" in df.columns else ""
-                        
-                        print(f"[VAL] 中位数PE={current_pe}, pct={percentile}%, col={pe_col}, window={len(pe_values)}d")
-                        return {
-                            "index": "沪深300",
-                            "percentile": percentile,
-                            "level": "低估" if percentile < 30 else "适中" if percentile < 70 else "高估",
-                            "current_pe": round(current_pe, 2),
-                            "metric": f"PE-TTM中位数(与理杏仁/ETF.run口径一致)",
-                            "date": latest_date,
-                            "pe_range": f"{pe_data.min():.1f}-{pe_data.max():.1f}",
-                            "window_days": len(pe_values),
-                            "note": "PE中位数反映成分股整体估值水平，与理杏仁(~23)、ETF.run(~24)口径一致",
-                        }
-        except Exception as e:
-            print(f"[VAL] legulegu equal-weight failed: {e}")
-
-        # 方案2降级：Tushare 加权PE（标注口径差异）
+        # 方案1（首选）：Tushare 加权PE-TTM — 市场通用标准
         try:
             import os
             token = os.getenv("TUSHARE_TOKEN", "")
@@ -287,20 +250,56 @@ def get_valuation_percentile() -> dict:
                         pe_values = pe_data.values
                         percentile = round(sum(1 for p in pe_values if p <= current_pe) / len(pe_values) * 100, 1)
                         latest_date = str(df["trade_date"].iloc[0])
-                        print(f"[VAL] Tushare(降级) PE-TTM={current_pe}, pct={percentile}%")
+                        window_years = round(len(pe_values) / 250, 1)
+                        print(f"[VAL] Tushare 加权PE-TTM={current_pe}, pct={percentile}%, window={window_years}年")
                         return {
                             "index": "沪深300",
                             "percentile": percentile,
                             "level": "低估" if percentile < 30 else "适中" if percentile < 70 else "高估",
                             "current_pe": round(current_pe, 2),
-                            "metric": "⚠️加权PE-TTM(Tushare降级，加权法被大盘股拉低，实际等权PE更高)",
+                            "metric": f"加权PE-TTM(近{window_years}年分位，Wind/同花顺同口径)",
                             "date": latest_date,
                             "pe_range": f"{pe_data.min():.1f}-{pe_data.max():.1f}",
                             "window_days": len(pe_values),
-                            "note": "当前为加权PE口径（~14），主流平台等权PE约23-24，百分位约47%。差异源于计算方法不同。",
+                            "note": f"加权PE-TTM是市场通用口径，近{window_years}年{percentile}%分位",
                         }
         except Exception as e:
-            print(f"[VAL] Tushare failed: {e}")
+            print(f"[VAL] Tushare PE-TTM failed: {e}")
+
+        # 方案2（降级）：乐咕中位数PE — 标注口径差异
+        try:
+            df = get_index_pe(symbol="沪深300")
+            if df is not None and len(df) >= 250:
+                pe_col = None
+                for col_name in ["滚动市盈率中位数", "静态市盈率中位数"]:
+                    if col_name in df.columns:
+                        pe_col = col_name
+                        break
+                if not pe_col:
+                    pe_col = next((c for c in df.columns if "中位" in c and "市盈率" in c), None)
+
+                if pe_col:
+                    pe_data = df[pe_col].dropna()
+                    if len(pe_data) >= 250:
+                        current_pe = float(pe_data.iloc[-1])
+                        pe_values = pe_data.values
+                        percentile = round(sum(1 for p in pe_values if p <= current_pe) / len(pe_values) * 100, 1)
+                        latest_date = str(df["日期"].iloc[-1]) if "日期" in df.columns else ""
+
+                        print(f"[VAL] 降级:中位数PE={current_pe}, pct={percentile}%")
+                        return {
+                            "index": "沪深300",
+                            "percentile": percentile,
+                            "level": "低估" if percentile < 30 else "适中" if percentile < 70 else "高估",
+                            "current_pe": round(current_pe, 2),
+                            "metric": "⚠️中位数PE(非市场通用口径，仅供参考)",
+                            "date": latest_date,
+                            "pe_range": f"{pe_data.min():.1f}-{pe_data.max():.1f}",
+                            "window_days": len(pe_values),
+                            "note": "中位数PE偏高于加权PE，市场通用标准见Wind/同花顺",
+                        }
+        except Exception as e:
+            print(f"[VAL] legulegu median PE failed: {e}")
 
         # 降级：乐咕 stock_index_pe_lg（口径可能偏差，但有数据）
         try:
