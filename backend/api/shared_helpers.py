@@ -231,7 +231,32 @@ def _build_portfolio_context(p=None, user_id: str = "default") -> str:
         for h in p.holdings:
             lines.append(f"  - {h.name}({h.code})：¥{h.amount:,.0f}，目标占比 {h.targetPct}%")
     else:
-        lines.append("用户尚未通过前端传入持仓数据。")
+        # 后端主动拉取真实持仓（stock-holdings + fund-holdings + assets）
+        _has_data = False
+        try:
+            from services.stock_monitor import load_stock_holdings
+            from services.fund_monitor import load_fund_holdings
+            stocks = load_stock_holdings(user_id) or []
+            funds = load_fund_holdings(user_id) or []
+            if stocks or funds:
+                _has_data = True
+                lines.append("【持仓明细】（后端真实数据）")
+                for s in stocks:
+                    lines.append(f"  - 股票：{s.get('name','?')}({s.get('code','')}) {s.get('shares',0)}股 成本¥{s.get('costPrice',0)}")
+                for f in funds:
+                    lines.append(f"  - 基金：{f.get('name','?')}({f.get('code','')}) {f.get('shares',0)}份 成本{f.get('costNav',0)}")
+        except Exception:
+            pass
+        try:
+            from services.unified_networth import calc_unified_networth
+            nw = calc_unified_networth(user_id)
+            if nw and nw.get("netWorth", 0) > 0:
+                _has_data = True
+                lines.append(f"  - 净资产：¥{nw['netWorth']:,.0f}（投资¥{nw.get('breakdown',{}).get('investment',{}).get('total',0):,.0f} + 现金¥{nw.get('breakdown',{}).get('cash',{}).get('total',0):,.0f}）")
+        except Exception:
+            pass
+        if not _has_data:
+            lines.append("用户尚未录入持仓/资产数据。")
 
     # 2. 风控状态
     vp_val = 50

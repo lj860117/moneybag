@@ -211,7 +211,7 @@ return `<div style="margin-bottom:12px"><div style="font-size:12px;font-weight:7
         if (d.keys_status) _lastBudget._keys = d.keys_status;
       }
       // per-user 花费（只在详情弹窗需要，badge 不等它）
-      const uid = (typeof currentUserId !== 'undefined' && currentUserId) ? currentUserId : 'LeiJiang';
+      const uid = (typeof getProfileId === 'function') ? getProfileId() : ((typeof currentUserId !== 'undefined' && currentUserId) ? currentUserId : 'default');
       try {
         const u = await _v6Fetch('/llm-usage?userId=' + uid);
         if (u && _lastBudget) {
