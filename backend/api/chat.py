@@ -204,6 +204,18 @@ async def chat_analysis_stream(req: ChatRequest):
 
     uid = req.userId or "default"
 
+    # ★ 统一构建市场+持仓上下文（无论理财还是闲聊，都需要）
+    market_ctx = ""
+    portfolio_ctx = ""
+    try:
+        market_ctx = _build_market_context()
+    except Exception as e:
+        print(f"[CHAT-STREAM] market_ctx build failed: {e}")
+    try:
+        portfolio_ctx = _build_portfolio_context(req.portfolio, user_id=uid) if req.portfolio else _build_portfolio_context(user_id=uid)
+    except Exception as e:
+        print(f"[CHAT-STREAM] portfolio_ctx build failed: {e}")
+
     # ★ 意图分类：判断是否理财相关
     intent = classify_chat_intent(user_msg)
     is_finance = intent["intent"] != "general"
@@ -212,7 +224,9 @@ async def chat_analysis_stream(req: ChatRequest):
     _FINANCE_KEYWORDS = ["股", "基金", "A股", "大盘", "牛市", "熊市", "涨", "跌",
                          "买入", "卖出", "持仓", "仓位", "定投", "理财", "投资",
                          "收益", "亏", "赚", "ETF", "指数", "板块", "行业",
-                         # 地缘/政策事件（对市场有直接影响，需注入市场上下文）
+                         "资产", "净资产", "现金", "配置", "风险", "周报", "晨报",
+                         "数据源", "数据", "持有", "账户",
+                         # 地缘/政策事件
                          "特朗普", "拜登", "普京", "关税", "制裁", "贸易战",
                          "访华", "峰会", "降息", "加息", "降准", "央行",
                          "战争", "冲突", "停火", "地缘", "芯片禁令"]
@@ -220,9 +234,7 @@ async def chat_analysis_stream(req: ChatRequest):
         is_finance = any(kw in user_msg for kw in _FINANCE_KEYWORDS)
 
     if is_finance:
-        # ---- 理财模式：注入市场数据 + 完整分析 ----
-        market_ctx = _build_market_context()
-        portfolio_ctx = _build_portfolio_context(req.portfolio, user_id=uid) if req.portfolio else _build_portfolio_context(user_id=uid)
+        # ---- 理财模式：完整分析 ----
 
         # ★ 规则优先：明确意图且规则引擎能精准回答的，直接用规则（快+准+用真实数据）
         if intent["intent"] in FAST_PATH_INTENTS:
@@ -372,6 +384,9 @@ async def chat_analysis_stream(req: ChatRequest):
                 # 正常 chunk（thinking / answering）
                 delta = chunk.get("delta", "")
                 phase = chunk.get("phase", "answering")
+                # 过滤 thinking phase（不发给前端，避免内部推理泄露）
+                if phase == "thinking":
+                    continue
                 if delta:
                     yield f"data: {json.dumps({'delta': delta, 'source': 'ai', 'done': False, 'phase': phase}, ensure_ascii=False)}\n\n"
         except Exception as e:
