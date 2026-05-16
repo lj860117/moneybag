@@ -465,7 +465,18 @@ async function runDataAudit(){const btn=document.getElementById('auditBtn');if(b
 
 // ---- 底部导航 ----
 function renderNav(){let n=document.getElementById('btmNav');if(!n){n=document.createElement('div');n.id='btmNav';n.className='bottom-nav';document.body.appendChild(n)}
-const tabs=[{id:'landing',icon:'🏠',label:'首页'},{id:'stocks',icon:'📈',label:'持仓'},{id:'insight',icon:'📰',label:'资讯'},{id:'chat',icon:'🤖',label:'AI分析'},{id:'history',icon:'📋',label:'历史'},{id:'assets',icon:'🏦',label:'资产'},{id:'weekly-lesson',icon:'📚',label:'小课'}];
+const tabs=[
+  {id:'landing',icon:'🏠',label:'首页'},
+  {id:'stocks',icon:'📈',label:'持仓'},
+  {id:'insight',icon:'📰',label:'资讯'},
+  {id:'chat',icon:'🤖',label:'AI分析'},
+  {id:'history',icon:'📋',label:'历史'},
+  {id:'assets',icon:'🏦',label:'资产'},
+  {id:'weekly-lesson',icon:'📚',label:'小课'},
+  {id:'todos',icon:'📌',label:'待办'},
+  {id:'behavior-history',icon:'📊',label:'行为'},
+  {id:'monthly-rebalance',icon:'🔄',label:'再平衡'}
+];
 n.innerHTML=tabs.map(t=>`<div class="nav-item ${currentPage===t.id?'active':''}" onclick="navigateTo('${t.id}')"><div class="nav-icon">${t.icon}</div><div>${t.label}</div></div>`).join('');
 // 顶部用户名条（2026-04-19 V7.7: 只在首页显示，其他页面隐藏省屏幕空间）
 let hdr=document.getElementById('profileHeader');
@@ -533,7 +544,23 @@ localStorage.setItem('moneybag_wxwork_uid',wxId);
 document.querySelector('.modal-overlay')?.remove();
 if(wxId){alert('✅ 绑定成功！盯盘异动将推送给: '+wxId)}else{alert('已清除企微绑定')}}
 
-function navigateTo(p){currentPage=p;renderNav();if(p==='landing')renderLanding();else if(p==='portfolio')renderPortfolio();else if(p==='stocks')renderStocks();else if(p==='insight')renderInsight();else if(p==='chat')renderChat();else if(p==='history')renderHistory();else if(p==='ledger')renderLedger();else if(p==='assets')renderAssets();else if(p==='weekly-lesson')renderWeeklyLesson();else if(p==='chart')renderChart()}
+function navigateTo(p){
+  currentPage=p;
+  renderNav();
+  if(p==='landing')renderLanding();
+  else if(p==='portfolio')renderPortfolio();
+  else if(p==='stocks')renderStocks();
+  else if(p==='insight')renderInsight();
+  else if(p==='chat')renderChat();
+  else if(p==='history')renderHistory();
+  else if(p==='ledger')renderLedger();
+  else if(p==='assets')renderAssets();
+  else if(p==='weekly-lesson')renderWeeklyLesson();
+  else if(p==='chart')renderChart();
+  else if(p==='todos')renderTodos();
+  else if(p==='behavior-history')renderBehaviorHistory();
+  else if(p==='monthly-rebalance')renderMonthlyRebalance();
+}
 
 
 // ---- 弹窗 ----
