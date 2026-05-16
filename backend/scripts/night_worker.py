@@ -408,6 +408,10 @@ def _get_fund_recommendations(top_n=5, category="stock"):
 
     category: stock / hybrid / bond / index / qdii / etf
     默认 stock（股票型基金），给空仓小白用户一个中高收益的起步选项
+
+    过滤规则：
+    - 近1年涨幅 >100% 的极端品种不推荐（可能是行业 ETF 暴涨，风险极高）
+    - 近1年涨幅 <5% 的不推荐（收益太低没意义）
     """
     try:
         import json as _json
@@ -423,7 +427,10 @@ def _get_fund_recommendations(top_n=5, category="stock"):
         category_list = ranks.get(category) or ranks.get("all") or []
         if not isinstance(category_list, list):
             return []
-        return category_list[:top_n]
+        # 过滤极端涨幅：只推荐 5%-100% 区间的基金
+        filtered = [f for f in category_list
+                    if 5 <= (f.get("return_1y") or 0) <= 100]
+        return filtered[:top_n]
     except Exception as e:
         log(f"  基金推荐失败: {e}")
         return []
@@ -474,7 +481,7 @@ def step_generate_products(phase1, phase2, phase3):
     recs = phase3.get("recommendations", [])
     recs = _fix_stock_names(recs)
     rec_text = "\n".join(
-        f"  {i+1}. {r.get('name', r.get('code', '?'))}({r.get('code', '')}) 评分{r.get('total_score', 0)}"
+        f"  {i+1}. {r.get('name', r.get('code', '?'))}({r.get('code', '')}) 综合评分{r.get('total_score', 0)}(自研多因子)"
         for i, r in enumerate(recs[:3])
     ) if recs else "  暂无推荐"
 
@@ -487,7 +494,7 @@ def step_generate_products(phase1, phase2, phase3):
 
     # ---- 市场温度 ----
     temp_parts = []
-    temp_parts.append(f"恐贪指数: {fgi.get('score', '?')}({fgi.get('level', '中性')})")
+    temp_parts.append(f"恐贪指数(自研): {fgi.get('score', '?')}({fgi.get('level', '中性')})")
     if north.get("net_flow_5d"):
         temp_parts.append(f"北向5日: {north['net_flow_5d']:+.1f}亿")
     if margin.get("change_5d_pct"):
@@ -534,7 +541,7 @@ def step_generate_products(phase1, phase2, phase3):
     # ---- 组装核心简报 ----
     briefing = f"""📊 {today} 钱袋子晨报
 
-📊 【市场温度】
+📊 【市场温度】（数据源: Tushare/AKShare实时）
 {temp_text}
 
 🏭 【行业热点】
@@ -701,7 +708,7 @@ def step_overnight_check():
 
             gold = futures.get("gold")
             if gold and gold.get("price") is not None:
-                parts.append(f"🥇 黄金: {gold['price']:.0f} ({gold.get('change_pct', 0):+.2f}%)")
+                parts.append(f"🥇 黄金: ${gold['price']:.1f}/盎司 ({gold.get('change_pct', 0):+.2f}%)")
     except Exception as e:
         log(f"  期货快照获取失败: {e}")
 

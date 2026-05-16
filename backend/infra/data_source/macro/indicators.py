@@ -603,7 +603,7 @@ def get_global_futures_snapshot() -> dict:
         "dji": {"code": "YM00Y", "label": "小型道指当月连续"},
         "nasdaq": {"code": "NQ00Y", "label": "小型纳指当月连续"},
         "oil": {"code": "CL00Y", "label": "NYMEX原油"},
-        "gold": {"code": "AU00Y", "label": "COMEX黄金"},
+        "gold": {"code": "GC00Y", "label": "COMEX黄金(美元/盎司)"},
     }
 
     result: dict = {"available": False, "source": "akshare_futures_global"}
