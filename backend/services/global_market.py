@@ -163,12 +163,7 @@ def get_fed_rate() -> dict:
         from infra.data_source.macro.indicators import get_usa_interest_rate
         df = get_usa_interest_rate()
         if df is not None and len(df) > 0:
-            # 取最新几条
-            recent = df.tail(5)
-            latest = recent.iloc[-1]
-            prev = recent.iloc[-2] if len(recent) > 1 else latest
-
-            # 列名可能不同，尝试取值
+            # 列名识别
             cols = list(df.columns)
             rate_col = None
             date_col = None
@@ -179,25 +174,30 @@ def get_fed_rate() -> dict:
                     date_col = c
 
             if rate_col:
-                try:
-                    current = _safe_num(latest[rate_col])
-                    previous = _safe_num(prev[rate_col])
-                    result["current_rate"] = current
-                    result["previous_rate"] = previous
-                    if current > previous:
-                        result["trend"] = "hiking"
-                        result["impact"] = "加息周期，资金回流美国，利空新兴市场"
-                    elif current < previous:
-                        result["trend"] = "cutting"
-                        result["impact"] = "降息周期，资金流入新兴市场，利好A股"
-                    else:
-                        result["trend"] = "hold"
-                        result["impact"] = "利率不变，市场等待政策信号"
-                except (ValueError, TypeError):
-                    pass
+                # 从后往前找第一个有效值（跳过 NaN/0）
+                valid_rows = df[df[rate_col].notna() & (df[rate_col] != 0)]
+                if len(valid_rows) >= 2:
+                    latest = valid_rows.iloc[-1]
+                    prev = valid_rows.iloc[-2]
+                    try:
+                        current = _safe_num(latest[rate_col])
+                        previous = _safe_num(prev[rate_col])
+                        result["current_rate"] = current
+                        result["previous_rate"] = previous
+                        if current > previous:
+                            result["trend"] = "hiking"
+                            result["impact"] = "加息周期，资金回流美国，利空新兴市场"
+                        elif current < previous:
+                            result["trend"] = "cutting"
+                            result["impact"] = "降息周期，资金流入新兴市场，利好A股"
+                        else:
+                            result["trend"] = "hold"
+                            result["impact"] = "利率不变，市场等待政策信号"
+                    except (ValueError, TypeError):
+                        pass
 
-            if date_col:
-                result["last_change"] = str(latest[date_col])
+                    if date_col:
+                        result["last_change"] = str(latest[date_col])
 
             result["available"] = result["current_rate"] is not None
     except Exception as e:
