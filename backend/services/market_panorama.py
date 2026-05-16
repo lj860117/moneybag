@@ -109,7 +109,7 @@ def generate_market_panorama() -> dict:
                            "bullish": "看多", "bearish": "看空", "neutral": "中性"}
             result["broker_view"] = {
                 "consensus": consensus_map.get(br.get("consensus", ""), br.get("consensus", "中性")),
-                "hot_industries": br.get("top_industries", [])[:3],
+                "hot_industries": [s.get("name", "") for s in br.get("hot_sectors", [])[:3]],
             }
     except Exception:
         pass
