@@ -472,10 +472,7 @@ const tabs=[
   {id:'chat',icon:'🤖',label:'AI分析'},
   {id:'history',icon:'📋',label:'历史'},
   {id:'assets',icon:'🏦',label:'资产'},
-  {id:'weekly-lesson',icon:'📚',label:'小课'},
-  {id:'todos',icon:'📌',label:'待办'},
-  {id:'behavior-history',icon:'📊',label:'行为'},
-  {id:'monthly-rebalance',icon:'🔄',label:'再平衡'}
+  {id:'weekly-lesson',icon:'📚',label:'小课'}
 ];
 n.innerHTML=tabs.map(t=>`<div class="nav-item ${currentPage===t.id?'active':''}" onclick="navigateTo('${t.id}')"><div class="nav-icon">${t.icon}</div><div>${t.label}</div></div>`).join('');
 // 顶部用户名条（2026-04-19 V7.7: 只在首页显示，其他页面隐藏省屏幕空间）

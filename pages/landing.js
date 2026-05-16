@@ -52,6 +52,11 @@ $('#app').innerHTML=`<div class="result-page fade-up">
 <button class="action-btn secondary" onclick="navigateTo('assets')">🏦 管理资产</button>
 <button class="action-btn secondary" onclick="navigateTo('chat')">💬 问管家</button>
 </div>
+<div style="display:flex;gap:8px;margin-top:8px">
+<button class="action-btn secondary" onclick="navigateTo('todos')" style="flex:1;font-size:12px">📌 待办</button>
+<button class="action-btn secondary" onclick="navigateTo('behavior-history')" style="flex:1;font-size:12px">📊 行为</button>
+<button class="action-btn secondary" onclick="navigateTo('monthly-rebalance')" style="flex:1;font-size:12px">🔄 再平衡</button>
+</div>
 </div>`;renderNav();loadUnifiedHero();_loadCfoSummary()}
 
 // ---- 首页：加载 CFO 聚合数据 ----
