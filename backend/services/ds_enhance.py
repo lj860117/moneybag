@@ -144,28 +144,36 @@ def comment_fund_picks(funds: list) -> list:
         for i, f in enumerate(top10)
     ])
 
-    prompt = f"""以下是 AI 选出的 TOP {len(top10)} 基金：
+    prompt = f"""以下是筛选出的基金，为每只写一句点评（15字以内）。
+
 {fund_desc}
 
-为每只基金写一句话点评（15字以内），格式：
-1. 点评内容
-2. 点评内容
-...
-
-要求：说人话，突出核心优势或风险。不要重复用相同句式。"""
+直接输出点评，一行一条，不要编号，不要重复数据。示例格式：
+科技赛道龙头，波动大但弹性足
+稳健收益，适合长持
+"""
 
     result = _call_deepseek(
         prompt,
-        system="你是基金分析师，点评简短犀利。",
-        max_tokens=400,
+        system="你是基金点评员。只输出点评文字，每行一条，15字以内。禁止复述基金名称、代码、收益率等已有信息。",
+        max_tokens=300,
         cache_key=f"fund_comment_10_{funds[0]['code'] if funds else ''}",
     )
 
     if result:
         lines = [l.strip() for l in result.strip().split("\n") if l.strip()]
+        # 过滤掉异常输出（包含 prompt 关键词或基金代码的行）
+        bad_keywords = ["我们要求", "一句话点评", "15字", "格式", "注意：", "要求："]
         for i, f in enumerate(top10):
             if i < len(lines):
                 comment = lines[i].lstrip("0123456789.、）) ").strip()
+                # 验证：不能包含异常内容
+                if any(kw in comment for kw in bad_keywords):
+                    continue  # 跳过异常行
+                if len(comment) > 50:  # 太长说明格式错误
+                    comment = comment[:20] + "..."
+                if f['code'] in comment or f['name'] in comment:
+                    continue  # 复述了基金信息，跳过
                 f["aiComment"] = comment
     return funds
 
