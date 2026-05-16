@@ -16,6 +16,7 @@
 
 Design doc: docs/design/12-framework-refactor.md §四
 """
+from __future__ import annotations
 import os
 import json
 import time

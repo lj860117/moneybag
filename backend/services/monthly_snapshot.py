@@ -14,8 +14,8 @@ import json
 from datetime import datetime
 from pathlib import Path
 from typing import Optional, Any
-from config import DATA_DIR
-from services.persistence import load_user, save_user
+from backend.config import DATA_DIR
+from backend.services.persistence import load_user, save_user
 
 # ---- MODULE_META ----
 MODULE_META = {

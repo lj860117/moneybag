@@ -13,6 +13,7 @@ C. allocation — 资产配置占比
 D. emotion — 情绪提醒（基于恐贪+涨跌）
 E. todos — 本周待办
 """
+from __future__ import annotations
 import time
 from datetime import datetime, timedelta
 
@@ -282,8 +283,11 @@ def _generate_emotion(fear_greed: int, market_change: float,
 # ============================================================
 
 def _generate_todos(user_id: str, allocation: dict | None) -> list:
-    """基于当前数据状态自动生成本周待办"""
+    """基于当前数据状态自动生成本周待办并保存到数据库"""
+    from services.todo_manager import create_todo
+    
     todos = []
+    todo_objects = []
     today = datetime.now()
     weekday = today.weekday()  # 0=周一, 6=周日
 
@@ -291,11 +295,37 @@ def _generate_todos(user_id: str, allocation: dict | None) -> list:
     if allocation and allocation.get("deviation"):
         max_dev = max(abs(v) for v in allocation["deviation"].values()) if allocation["deviation"] else 0
         if max_dev > 15:
-            todos.append("检查资产配置是否需要再平衡（偏离已超 15%）")
+            title = "检查资产配置是否需要再平衡（偏离已超 15%）"
+            todos.append(title)
+            # 自动保存到数据库
+            try:
+                todo_obj = create_todo(
+                    user_id,
+                    title,
+                    rule_triggered="allocation_deviation_gt_15",
+                    due_by_days=7,
+                    metadata={"deviation": max_dev}
+                )
+                if todo_obj:
+                    todo_objects.append(todo_obj)
+            except Exception as e:
+                print(f"[CFO] 创建 todo 失败: {e}")
 
     # 规则 2: 周末 → 家庭复盘
     if weekday >= 4:  # 周五/六/日
-        todos.append("本周末和家人做一次财务小复盘")
+        title = "本周末和家人做一次财务小复盘"
+        todos.append(title)
+        try:
+            todo_obj = create_todo(
+                user_id,
+                title,
+                rule_triggered="weekly_review",
+                due_by_days=3,
+            )
+            if todo_obj:
+                todo_objects.append(todo_obj)
+        except Exception:
+            pass
 
     # 规则 3: 检查记账
     try:
@@ -312,14 +342,41 @@ def _generate_todos(user_id: str, allocation: dict | None) -> list:
                 if last_entry:
                     days_since = (today - datetime.fromisoformat(last_entry.replace("Z", ""))).days
                     if days_since > 5:
-                        todos.append(f"已 {days_since} 天没记账，补录近期消费")
+                        title = f"已 {days_since} 天没记账，补录近期消费"
+                        todos.append(title)
+                        try:
+                            todo_obj = create_todo(
+                                user_id,
+                                title,
+                                rule_triggered="accounting_overdue",
+                                due_by_days=2,
+                                metadata={"days_overdue": days_since}
+                            )
+                            if todo_obj:
+                                todo_objects.append(todo_obj)
+                        except Exception:
+                            pass
             else:
-                todos.append("开始记录日常收支（每周花 2 分钟）")
+                title = "开始记录日常收支（每周花 2 分钟）"
+                todos.append(title)
     except Exception:
         pass
 
     # 规则 4: 有持仓但没设过目标
     if allocation and not allocation.get("target"):
-        todos.append("设置你的目标资产配置比例")
+        title = "设置你的目标资产配置比例"
+        todos.append(title)
+        try:
+            todo_obj = create_todo(
+                user_id,
+                title,
+                rule_triggered="no_target_config",
+                due_by_days=7,
+            )
+            if todo_obj:
+                todo_objects.append(todo_obj)
+        except Exception:
+            pass
 
-    return todos[:4]  # 最多 4 条
+    # 返回最多 4 条（显示用）
+    return todos[:4]

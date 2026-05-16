@@ -8,7 +8,7 @@ import os
 import tempfile
 from pathlib import Path
 from datetime import datetime
-from config import USERS_DIR
+from backend.config import USERS_DIR
 
 # ---- V4 底座：MODULE_META ----
 MODULE_META = {
