@@ -241,11 +241,12 @@ def get_global_pe() -> dict:
         else:
             return None
 
-        # 合理性校验：全球主要市场 PE 通常在 5~60 之间
-        if val is not None and 3 < val < 80:
+        # 合理性校验：全球主要市场 PE 通常在 5~150 之间
+        # 注意：乐咕全市场PE可能到90+（含亏损股拉高）
+        if val is not None and 3 < val < 150:
             return round(val, 2)
         else:
-            print(f"[GLOBAL_PE] {label} PE={val} 不在合理区间(3-80)，丢弃")
+            print(f"[GLOBAL_PE] {label} PE={val} 不在合理区间(3-150)，丢弃")
             return None
 
     try:
