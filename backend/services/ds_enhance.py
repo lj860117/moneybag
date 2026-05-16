@@ -244,25 +244,51 @@ def comment_stock_picks(stocks: list) -> list:
         for i, s in enumerate(top10)
     ])
 
-    prompt = f"""以下是 AI 选出的 TOP {len(top10)} 股票：
+    prompt = f"""以下是筛选出的股票，为每只写一句点评（15字以内）。
+共{len(top10)}只，输出{len(top10)}行，一行一条，顺序对应。
+
 {stock_desc}
 
-为每只股票写一句话点评（15字以内），格式同上。
-要求：说人话，突出核心逻辑。不要重复用相同句式。"""
+要求：
+- 直接输出点评文字，不要编号
+- 不要复述股票名称和代码
+- 每条15字以内，突出核心逻辑或风险
+"""
 
     result = _call_deepseek(
         prompt,
-        system="你是 A 股分析师，点评简短犀利。",
+        system="你是A股分析师。严格输出N行点评（N=股票数量），每行对应一只股票。禁止输出股票名称/代码，只写点评。",
         max_tokens=400,
         cache_key=f"stock_comment_10_{stocks[0]['code'] if stocks else ''}",
     )
 
     if result:
         lines = [l.strip() for l in result.strip().split("\n") if l.strip()]
+        # 先过滤异常行
+        bad_keywords = ["我们要求", "一句话点评", "15字", "格式", "注意：", "要求：",
+                        "需要根据", "以下是", "点评如下"]
+        clean_lines = []
+        for line in lines:
+            comment = line.lstrip("0123456789.、）) -").strip()
+            if not comment:
+                continue
+            if any(kw in comment for kw in bad_keywords):
+                continue
+            # 去掉开头的股票名称（如"贵州茅台：xxx" → "xxx"）
+            for s in top10:
+                name = s.get('name', '')
+                if comment.startswith(name):
+                    comment = comment[len(name):].lstrip("：: -").strip()
+                    break
+            if len(comment) > 50:
+                comment = comment[:18] + "..."
+            if comment:
+                clean_lines.append(comment)
+
+        # 按顺序匹配
         for i, s in enumerate(top10):
-            if i < len(lines):
-                comment = lines[i].lstrip("0123456789.、）) ").strip()
-                s["aiComment"] = comment
+            if i < len(clean_lines):
+                s["aiComment"] = clean_lines[i]
     return stocks
 
 
