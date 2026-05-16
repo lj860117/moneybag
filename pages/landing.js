@@ -76,7 +76,13 @@ const levelIcon={danger:'🔴',warning:'⚠️',opportunity:'🟢',info:'💡'};
 alertsEl.innerHTML=`<div class="dashboard-card-title">📋 今日提醒</div>`+
 d.alerts.map(a=>`<div style="font-size:13px;line-height:1.8;padding:6px 0;border-bottom:1px solid var(--bg3,rgba(0,0,0,.05))">${levelIcon[a.level]||'📌'} ${a.text}</div>`).join('')+marketLink;
 }else if(alertsEl){
+// 判断是否空数据用户（净资产=0 且无持仓）
+const isEmptyUser=!d.allocation||(!d.allocation.current)||(d.allocation.total_market===0);
+if(isEmptyUser){
+alertsEl.innerHTML=`<div class="dashboard-card-title">📋 今日提醒</div><div style="font-size:13px;color:var(--accent);padding:8px 0">📝 还没有录入资产数据，<span onclick="navigateTo('portfolio')" style="text-decoration:underline;cursor:pointer">去录入持仓</span> 或 <span onclick="navigateTo('assets')" style="text-decoration:underline;cursor:pointer">添加资产</span> 后，这里会显示个性化提醒。</div>`+marketLink;
+}else{
 alertsEl.innerHTML=`<div class="dashboard-card-title">📋 今日提醒</div><div style="font-size:13px;color:var(--green);padding:8px 0">✅ 今天一切正常，没有需要特别注意的事项。</div>`+marketLink;
+}
 }
 
 // C. 资产配置
@@ -98,6 +104,8 @@ html+=`<div style="display:flex;align-items:center;gap:8px;margin:8px 0">
 <div style="width:90px;font-size:11px;text-align:right">${cur}% <span style="color:var(--text2)">目标${tgt}%</span> <span style="color:${devColor};font-weight:600">${dev>0?'+':''}${dev}%</span></div>
 </div>`;});
 allocEl.innerHTML=html;
+}else if(allocEl){
+allocEl.innerHTML=`<div class="dashboard-card-title">🥧 资产配置</div><div style="font-size:13px;color:var(--text2);padding:8px 0">暂无配置数据，<span onclick="navigateTo('quiz')" style="color:var(--accent);text-decoration:underline;cursor:pointer">做个风险测评</span> 开始吧</div>`;
 }
 
 // D. 情绪提醒

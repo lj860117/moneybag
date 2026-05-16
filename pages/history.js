@@ -95,7 +95,7 @@ if(inflow.length||outflow.length){
     html+='</div>';
   }
 }else{
-  html+='<div style="text-align:center;padding:40px;color:var(--text2)">'+(note?'<div style="font-size:14px;margin-bottom:8px">📅</div><div style="font-size:13px;line-height:1.6">'+note+'</div>':'ETF 资金流向数据暂无更新')+'<br><button onclick="renderSectorHot(document.getElementById('insightContent'))" style="margin-top:12px;padding:6px 16px;border-radius:8px;border:none;background:var(--accent);color:#fff;cursor:pointer;font-size:12px">🔄 重试</button></div>';
+  html+='<div style="text-align:center;padding:40px;color:var(--text2)">'+(note?'<div style="font-size:14px;margin-bottom:8px">📅</div><div style="font-size:13px;line-height:1.6">'+note+'</div>':'ETF 资金流向数据暂无更新')+'<br><button onclick="renderSectorHot(document.getElementById(&quot;insightContent&quot;))" style="margin-top:12px;padding:6px 16px;border-radius:8px;border:none;background:var(--accent);color:#fff;cursor:pointer;font-size:12px">🔄 重试</button></div>';
 }
 // 大宗商品（使用 all 接口已返回的 commodities 数据，不重复请求）
 const cd=d.commodities||{};
