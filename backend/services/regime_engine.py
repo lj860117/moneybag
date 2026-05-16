@@ -98,48 +98,70 @@ def classify(force: bool = False) -> dict:
 
 
 def _get_market_params() -> dict:
-    """获取沪深300关键参数"""
-    try:
-        from infra.data_source.market.stocks import get_index_daily
+    """获取沪深300关键参数（Tushare优先 → AKShare/baostock降级）"""
+    import pandas as pd
 
-        # 沪深300日K（近120天）
-        df = get_index_daily(symbol="sh000300")
-        if df is None or len(df) < 60:
-            return _fallback_params()
-        
-        df = df.tail(120).copy()
-        close = df["close"].astype(float)
-        
+    df = None
+
+    # 方案 A：Tushare index_daily
+    try:
+        from services.tushare_data import is_configured, get_index_daily as ts_index
+        if is_configured():
+            rows = ts_index(ts_code="000300.SH", days=150)
+            if rows and len(rows) >= 60:
+                df = pd.DataFrame(rows)
+                df["close"] = pd.to_numeric(df["close"], errors="coerce")
+    except Exception as e:
+        print(f"[REGIME] Tushare index_daily failed: {e}")
+
+    # 方案 B：AKShare/baostock
+    if df is None or len(df) < 60:
+        try:
+            from infra.data_source.market.stocks import get_index_daily
+            df = get_index_daily(symbol="sh000300")
+        except Exception as e:
+            print(f"[REGIME] AKShare/baostock failed: {e}")
+
+    if df is None or len(df) < 60:
+        return _fallback_params()
+
+    df = df.tail(120).copy()
+    close = df["close"].astype(float)
+
+    try:
         # 均线
         ma5 = close.rolling(5).mean().iloc[-1]
         ma20 = close.rolling(20).mean().iloc[-1]
         ma60 = close.rolling(60).mean().iloc[-1]
         current = close.iloc[-1]
-        
+
         # 波动率（20日年化）
         returns = close.pct_change().dropna()
         vol_20d = returns.tail(20).std() * (252 ** 0.5) * 100  # 年化百分比
-        
+
         # 近20日收益率
         ret_20d = (close.iloc[-1] / close.iloc[-21] - 1) * 100 if len(close) > 21 else 0
-        
+
         # 近5日收益率
         ret_5d = (close.iloc[-1] / close.iloc[-6] - 1) * 100 if len(close) > 6 else 0
-        
+
         # 均线排列方向
         ma_bullish = ma5 > ma20 > ma60  # 多头排列
         ma_bearish = ma5 < ma20 < ma60  # 空头排列
-        
+
         # 价格相对均线位置
         above_ma60 = current > ma60
-        
+
         # 成交量变化（近5日 vs 近20日均量）
         if "volume" in df.columns:
             vol = df["volume"].astype(float)
             vol_ratio = vol.tail(5).mean() / vol.tail(20).mean() if vol.tail(20).mean() > 0 else 1
+        elif "vol" in df.columns:
+            vol = df["vol"].astype(float)
+            vol_ratio = vol.tail(5).mean() / vol.tail(20).mean() if vol.tail(20).mean() > 0 else 1
         else:
             vol_ratio = 1.0
-        
+
         return {
             "current": round(current, 2),
             "ma5": round(ma5, 2),
@@ -154,7 +176,7 @@ def _get_market_params() -> dict:
             "vol_ratio": round(vol_ratio, 2),
         }
     except Exception as e:
-        print(f"[REGIME] 数据获取失败: {e}")
+        print(f"[REGIME] 数据计算失败: {e}")
         return _fallback_params()
 
 
