@@ -145,36 +145,51 @@ def comment_fund_picks(funds: list) -> list:
     ])
 
     prompt = f"""以下是筛选出的基金，为每只写一句点评（15字以内）。
+共{len(top10)}只，输出{len(top10)}行，一行一条，顺序对应。
 
 {fund_desc}
 
-直接输出点评，一行一条，不要编号，不要重复数据。示例格式：
-科技赛道龙头，波动大但弹性足
-稳健收益，适合长持
+要求：
+- 直接输出点评文字，不要编号
+- 不要复述基金名称、代码、收益率
+- 每条15字以内，突出核心特点或风险
 """
 
     result = _call_deepseek(
         prompt,
-        system="你是基金点评员。只输出点评文字，每行一条，15字以内。禁止复述基金名称、代码、收益率等已有信息。",
+        system="你是基金点评员。严格输出N行点评（N=基金数量），每行对应一只基金。禁止输出基金名称/代码/收益率，只写点评。",
         max_tokens=300,
         cache_key=f"fund_comment_10_{funds[0]['code'] if funds else ''}",
     )
 
     if result:
         lines = [l.strip() for l in result.strip().split("\n") if l.strip()]
-        # 过滤掉异常输出（包含 prompt 关键词或基金代码的行）
-        bad_keywords = ["我们要求", "一句话点评", "15字", "格式", "注意：", "要求："]
+        # 先过滤所有异常行
+        bad_keywords = ["我们要求", "一句话点评", "15字", "格式", "注意：", "要求：",
+                        "需要根据", "以下是", "点评如下"]
+        clean_lines = []
+        for line in lines:
+            comment = line.lstrip("0123456789.、）) -").strip()
+            if not comment:
+                continue
+            if any(kw in comment for kw in bad_keywords):
+                continue
+            if len(comment) > 50:
+                comment = comment[:18] + "..."
+            # 检查是否复述了某只基金的名称
+            is_repeat = False
+            for f in top10:
+                if f['code'] in comment or f['name'][:4] in comment:
+                    is_repeat = True
+                    break
+            if is_repeat:
+                continue
+            clean_lines.append(comment)
+
+        # 按顺序匹配
         for i, f in enumerate(top10):
-            if i < len(lines):
-                comment = lines[i].lstrip("0123456789.、）) ").strip()
-                # 验证：不能包含异常内容
-                if any(kw in comment for kw in bad_keywords):
-                    continue  # 跳过异常行
-                if len(comment) > 50:  # 太长说明格式错误
-                    comment = comment[:20] + "..."
-                if f['code'] in comment or f['name'] in comment:
-                    continue  # 复述了基金信息，跳过
-                f["aiComment"] = comment
+            if i < len(clean_lines):
+                f["aiComment"] = clean_lines[i]
     return funds
 
 
