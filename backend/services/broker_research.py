@@ -163,14 +163,28 @@ def get_broker_consensus() -> dict:
 
     for r in reports:
         rating = r.get("rating", "")
-        # 精确匹配评级
+        title = r.get("title", "")
+
+        # 精确匹配评级字段
         direction = _RATING_MAP.get(rating, "")
         if not direction and rating:
-            # 模糊匹配
             for key, val in _RATING_MAP.items():
                 if key in rating:
                     direction = val
                     break
+
+        # 如果没有评级字段，从标题关键词推断方向
+        if not direction and title:
+            bull_kw = ["景气度提升", "有望", "看好", "超预期", "加速", "机遇",
+                       "风口", "高增长", "突破", "利好", "上涨", "复苏", "向上",
+                       "超级周期", "优势", "涨价", "历史性"]
+            bear_kw = ["风险", "下行", "承压", "谨慎", "回落", "下跌", "衰退",
+                       "利空", "收缩"]
+            if any(kw in title for kw in bull_kw):
+                direction = "bullish"
+            elif any(kw in title for kw in bear_kw):
+                direction = "bearish"
+
         if direction == "bullish":
             bullish += 1
         elif direction == "bearish":
