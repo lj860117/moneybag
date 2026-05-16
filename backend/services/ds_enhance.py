@@ -603,6 +603,10 @@ def enhance_allocation_advice(base_advice: dict, market_ctx: str = "", news_summ
         cache_key=f"alloc_enhance_{target.get('stock',0)}_{time.strftime('%Y%m%d_%H')}",
     )
 
+    if result:
+        base_advice["ai_note"] = result.strip()
+    return base_advice
+
 
 # ============================================================
 # 8. 资产诊断 — 全量分析用户资产结构，给出个性化建议
