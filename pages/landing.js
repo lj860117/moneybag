@@ -70,12 +70,13 @@ const d=await r.json();
 
 // B. 今日提醒
 const alertsEl=document.getElementById('cfoAlerts');
+const marketLink=`<div onclick="showMarketPanoramaModal()" style="margin-top:8px;padding:6px 10px;background:rgba(99,102,241,.06);border-radius:8px;font-size:12px;color:var(--accent);cursor:pointer;display:flex;align-items:center;gap:4px">🌍 看市场全景 →</div>`;
 if(alertsEl&&d.alerts&&d.alerts.length){
 const levelIcon={danger:'🔴',warning:'⚠️',opportunity:'🟢',info:'💡'};
 alertsEl.innerHTML=`<div class="dashboard-card-title">📋 今日提醒</div>`+
-d.alerts.map(a=>`<div style="font-size:13px;line-height:1.8;padding:6px 0;border-bottom:1px solid var(--bg3,rgba(0,0,0,.05))">${levelIcon[a.level]||'📌'} ${a.text}</div>`).join('');
+d.alerts.map(a=>`<div style="font-size:13px;line-height:1.8;padding:6px 0;border-bottom:1px solid var(--bg3,rgba(0,0,0,.05))">${levelIcon[a.level]||'📌'} ${a.text}</div>`).join('')+marketLink;
 }else if(alertsEl){
-alertsEl.innerHTML=`<div class="dashboard-card-title">📋 今日提醒</div><div style="font-size:13px;color:var(--green);padding:8px 0">✅ 今天一切正常，没有需要特别注意的事项。</div>`;
+alertsEl.innerHTML=`<div class="dashboard-card-title">📋 今日提醒</div><div style="font-size:13px;color:var(--green);padding:8px 0">✅ 今天一切正常，没有需要特别注意的事项。</div>`+marketLink;
 }
 
 // C. 资产配置

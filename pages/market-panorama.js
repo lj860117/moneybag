@@ -87,3 +87,62 @@ ${bv.hot_industries&&bv.hot_industries.length?`<div style="font-size:12px;color:
 }
 
 }catch(e){console.warn('[MP]',e)}}
+
+// ---- 市场全景弹窗（从首页今日提醒点入）----
+async function showMarketPanoramaModal(){
+const o=document.createElement('div');o.className='modal-overlay';o.onclick=e=>{if(e.target===o)o.remove()};
+o.innerHTML=`<div class="modal-sheet" onclick="event.stopPropagation()" style="max-height:85vh;overflow-y:auto"><div class="modal-handle"></div><div class="modal-title">🌍 市场全景</div><div id="mpModalContent" style="padding:8px 0"><div style="text-align:center;padding:30px;color:var(--text2)"><div class="loading-spinner" style="width:20px;height:20px;margin:0 auto 8px;border-width:2px"></div>加载中...</div></div><button class="form-submit" style="margin-top:12px" onclick="this.closest('.modal-overlay').remove()">关闭</button></div>`;
+document.body.appendChild(o);
+
+try{
+const r=await fetch(`${API_BASE}/market-panorama`,{signal:AbortSignal.timeout(12000)});
+if(!r.ok){document.getElementById('mpModalContent').innerHTML='<div style="color:var(--red)">加载失败</div>';return}
+const d=await r.json();
+let html='';
+
+// 温度
+const t=d.temperature;
+if(t){
+html+=`<div style="padding:10px;background:rgba(99,102,241,.04);border-radius:10px;margin-bottom:12px">
+<div style="font-size:18px;font-weight:800;margin-bottom:4px">${t.icon} ${t.overall}</div>
+<div style="font-size:13px;color:var(--text2)">${t.advice}</div>
+<div style="font-size:11px;color:var(--text2);margin-top:6px">恐贪 ${t.fear_greed}(${t.fear_greed_level}) · 估值 ${t.valuation_pct}%分位(${t.valuation_level})</div>
+</div>`;
+}
+
+// 热点
+const sectors=d.hot_sectors||[];
+if(sectors.length){
+html+=`<div style="margin-bottom:12px"><div style="font-size:13px;font-weight:700;margin-bottom:6px">🔥 热点板块</div>`;
+html+=sectors.slice(0,3).map(s=>`<span style="display:inline-block;padding:3px 8px;margin:2px 4px 2px 0;font-size:11px;background:rgba(16,185,129,.08);border-radius:12px;color:var(--green)">${s.name} ${s.change_pct>=0?'+':''}${s.change_pct.toFixed(1)}%</span>`).join('');
+html+=`</div>`;
+}
+
+// 新闻
+const news=d.news||[];
+if(news.length){
+html+=`<div style="margin-bottom:12px"><div style="font-size:13px;font-weight:700;margin-bottom:6px">📰 要闻</div>`;
+html+=news.slice(0,3).map(n=>`<div style="font-size:12px;line-height:1.7;color:var(--text2)">• ${n.title}</div>`).join('');
+html+=`</div>`;
+}
+
+// 资产判断
+const aj=d.asset_judgment;
+if(aj){
+html+=`<div style="margin-bottom:12px"><div style="font-size:13px;font-weight:700;margin-bottom:6px">💰 资产判断</div>
+<div style="font-size:12px;line-height:2">
+📈 A股: ${aj.stock.icon} ${aj.stock.label}<br>
+💰 基金: ${aj.fund.icon} ${aj.fund.label}<br>
+🥇 黄金: ${aj.gold.icon} ${aj.gold.label}
+</div></div>`;
+}
+
+// 机构
+const bv=d.broker_view;
+if(bv){
+html+=`<div><div style="font-size:13px;font-weight:700;margin-bottom:4px">🏛️ 机构共识: ${bv.consensus}</div>
+${bv.hot_industries&&bv.hot_industries.length?`<div style="font-size:11px;color:var(--text2)">关注: ${bv.hot_industries.join('、')}</div>`:''}</div>`;
+}
+
+document.getElementById('mpModalContent').innerHTML=html;
+}catch(e){document.getElementById('mpModalContent').innerHTML='<div style="color:var(--red)">加载失败: '+e.message+'</div>'}}
