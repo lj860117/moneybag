@@ -63,6 +63,13 @@ def generate_market_panorama() -> dict:
     }
     temp_info = temp_map.get(signal_overall, temp_map["HOLD"])
 
+    # 关键：估值过高时覆盖信号建议，避免矛盾
+    # 如果估值>80%分位，即使技术信号偏多，也不能建议加仓
+    if valuation_pct >= 80 and signal_overall in ("BUY", "STRONG_BUY"):
+        temp_info = dict(temp_info)  # 不修改原字典
+        temp_info["advice"] = f"技术指标偏多但估值已处{valuation_pct:.0f}%高位，谨慎追高，控制仓位"
+        temp_info["icon"] = "🟡"
+
     result["temperature"] = {
         "overall": temp_info["label"],
         "icon": temp_info["icon"],
