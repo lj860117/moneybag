@@ -166,17 +166,23 @@ def comment_fund_picks(funds: list) -> list:
         lines = [l.strip() for l in result.strip().split("\n") if l.strip()]
         # 先过滤所有异常行
         bad_keywords = ["我们要求", "一句话点评", "15字", "格式", "注意：", "要求：",
-                        "需要根据", "以下是", "点评如下"]
+                        "需要根据", "以下是", "点评如下", "好的", "以上是"]
+        # 基金名称关键词（LLM 容易输出其他基金名而非点评）
+        fund_name_keywords = ["混合", "债券", "指数", "ETF", "联接", "增强",
+                              "精选", "优选", "灵活配置", "QDII", "LOF", "FOF"]
         clean_lines = []
         for line in lines:
-            comment = line.lstrip("0123456789.、）) -").strip()
+            comment = line.lstrip("0123456789.、）) -·").strip()
             if not comment:
                 continue
             if any(kw in comment for kw in bad_keywords):
                 continue
+            # 太短的不是有效评语（通常是编号残留）
+            if len(comment) < 4:
+                continue
             if len(comment) > 50:
                 comment = comment[:18] + "..."
-            # 检查是否复述了某只基金的名称
+            # 检查是否复述了列表中某只基金的名称
             is_repeat = False
             for f in top10:
                 if f['code'] in comment or f['name'][:4] in comment:
@@ -184,13 +190,51 @@ def comment_fund_picks(funds: list) -> list:
                     break
             if is_repeat:
                 continue
+            # 检查是否"看起来像基金名"（包含混合/债券/指数等关键词且无动词）
+            if any(kw in comment for kw in fund_name_keywords) and len(comment) < 20:
+                # 进一步判断：有动词/形容词则是评语，纯名称则跳过
+                has_verb = any(v in comment for v in ["稳", "高", "低", "强", "弱", "适合",
+                                                      "建议", "注意", "关注", "优秀", "波动",
+                                                      "收益", "风险", "回撤", "超额"])
+                if not has_verb:
+                    continue
             clean_lines.append(comment)
 
         # 按顺序匹配
         for i, f in enumerate(top10):
             if i < len(clean_lines):
                 f["aiComment"] = clean_lines[i]
+            else:
+                # 规则兜底：LLM 输出不够时用简单规则生成
+                f["aiComment"] = _rule_fund_comment(f)
+    else:
+        # LLM 完全不可用，全部用规则兜底
+        for f in top10:
+            f["aiComment"] = _rule_fund_comment(f)
     return funds
+
+
+def _rule_fund_comment(f: dict) -> str:
+    """规则引擎兜底：根据基金数据生成简短评语"""
+    r = f.get("returns", {})
+    r1y = r.get("1y")
+    r3m = r.get("3m")
+    score = f.get("score", 0)
+
+    if r1y is not None and r1y > 30:
+        return "近1年涨幅可观，注意追高风险"
+    elif r1y is not None and r1y > 15:
+        return "中长期表现稳健，性价比较高"
+    elif r1y is not None and r1y > 0:
+        return "收益正向但偏保守，适合稳健型"
+    elif r1y is not None and r1y < -5:
+        return "近期回撤明显，逆向布局需耐心"
+    elif r3m is not None and r3m > 10:
+        return "短期动量强劲，关注持续性"
+    elif score > 15:
+        return "综合评分靠前，多维表现均衡"
+    else:
+        return "表现中规中矩，可作配置参考"
 
 
 def comment_recommend_funds(allocations: list, risk_profile: str,

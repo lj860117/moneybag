@@ -409,6 +409,10 @@ const INSIGHT_CACHE = {
   global_snap: { ttl: 900000 },   // 15 分钟
   global_impact: { ttl: 900000 }, // 15 分钟
   news_impact: { ttl: 900000 },   // 15 分钟
+  sector: { ttl: 900000 },        // 15 分钟（行业板块）
+  broker: { ttl: 900000 },        // 15 分钟（研报）
+  fund_screen: { ttl: 600000 },   // 10 分钟（选基）
+  stock_screen: { ttl: 900000 },  // 15 分钟（选股）
 };
 
 function getCached(key) {

@@ -254,11 +254,18 @@ renderFundPickResult()}
 async function renderFundPickResult(){
 const listEl=document.getElementById('fundPickList');
 if(!listEl)return;
+const cacheKey='fund_screen_'+fundPickType+'_'+fundPickSort;
+const cached=getCached(cacheKey);
+if(cached){_showFundData(listEl,cached);return}
 listEl.innerHTML='<div style="text-align:center;padding:20px;color:var(--text2)"><div class="loading-spinner" style="width:24px;height:24px;margin:0 auto 8px;border-width:2px"></div>正在筛选基金...</div>';
 try{
 const r=await fetch(API_BASE+'/fund-screen?fund_type='+fundPickType+'&sort_by='+fundPickSort+'&top_n=20',{signal:AbortSignal.timeout(30000)});
 if(!r.ok)throw new Error('fetch failed');
 const data=await r.json();
+setCached(cacheKey,data);
+_showFundData(listEl,data);
+}catch(e){console.warn('Fund pick failed:',e);listEl.innerHTML='<div style="text-align:center;padding:20px;color:var(--text2)">📡 数据源加载中，请稍后重试<br><span style="font-size:11px;opacity:0.6">（首次加载可能需要 10-30 秒）</span><br><button onclick="renderFundPickResult()" style="margin-top:8px;padding:6px 16px;border-radius:6px;border:none;background:var(--accent);color:#fff;cursor:pointer;font-size:12px">🔄 重试</button></div>'}}
+function _showFundData(listEl,data){
 const funds=data.funds||[];
 if(!funds.length){listEl.innerHTML='<div style="text-align:center;padding:20px;color:var(--text2)">暂无符合条件的基金</div>';return}
 listEl.innerHTML=`<div style="font-size:11px;color:var(--text2);margin-bottom:8px">共筛选 ${data.total} 只基金，显示 TOP ${funds.length}</div>
@@ -284,7 +291,7 @@ const r=f.returns;
 setExplain('fund_'+f.code,f.name+' ('+f.code+')',
 '📊 综合评分：'+f.score+'\n\n📈 收益表现：\n• 近3月：'+(r['3m']!=null?r['3m']+'%':'—')+'\n• 近6月：'+(r['6m']!=null?r['6m']+'%':'—')+'\n• 近1年：'+(r['1y']!=null?r['1y']+'%':'—')+'\n• 近3年：'+(r['3y']!=null?r['3y']+'%':'—')+'\n• 今年来：'+(r.ytd!=null?r.ytd+'%':'—')+'\n\n💰 费率：'+(f.fee||'—')+'\n\n💡 评分方法：近1年35%+近3年25%+近6月20%+近3月10%+费率加减分。仅供参考，不构成投资建议。',
 {type:'fund',code:f.code,name:f.name,score:f.score,fee:f.fee||'',returns:r})
-})}catch(e){console.warn('Fund pick failed:',e);listEl.innerHTML='<div style="text-align:center;padding:20px;color:var(--text2)">📡 数据源加载中，请稍后重试<br><span style="font-size:11px;opacity:0.6">（首次加载可能需要 10-30 秒）</span><br><button onclick="renderFundPickResult()" style="margin-top:8px;padding:6px 16px;border-radius:6px;border:none;background:var(--accent);color:#fff;cursor:pointer;font-size:12px">🔄 重试</button></div>'}}
+})}
 
 // AI 多因子选股页
 function _stockTagsHTML(s){const sc=s.scores||{};const tags=[];if(sc.value>=70)tags.push('💰低估值');if(sc.momentum>=70)tags.push('📈强动量');if(sc.liquidity>=70)tags.push('🏦高流动');if(sc.risk>=80)tags.push('🛡️低风险');if(sc.quality>=75)tags.push('⭐高质量');if(sc.growth>=70)tags.push('🚀高成长');if(s.roe&&s.roe>20)tags.push('💎ROE>20%');if(s.gross_margin&&s.gross_margin>50)tags.push('🏆高毛利');let h='';if(tags.length)h+='<div style="display:flex;gap:4px;flex-wrap:wrap;margin-bottom:4px">'+tags.map(t=>'<span style="font-size:10px;padding:2px 6px;border-radius:4px;background:rgba(99,102,241,.1);color:#818CF8">'+t+'</span>').join('')+'</div>';if(s.aiComment)h+='<div style="font-size:12px;color:#E0E7FF;padding:6px 10px;background:rgba(99,102,241,.08);border-radius:8px;line-height:1.5">\u{1F916} '+s.aiComment+'</div>';return h?'<div style="padding:4px 0 8px 34px;border-bottom:1px solid rgba(148,163,184,.04)">'+h+'</div>':''}
@@ -296,10 +303,18 @@ el.innerHTML=`<div class="dashboard-card" style="overflow:hidden">
 <div id="stockScreenMeta" style="display:none;font-size:11px;color:var(--accent);margin-bottom:8px;padding:6px 8px;background:rgba(59,130,246,.06);border-radius:6px"></div>
 <div id="stockPickList"><div style="text-align:center;padding:20px;color:var(--text2)"><div class="loading-spinner" style="width:24px;height:24px;margin:0 auto 8px;border-width:2px"></div>正在从 5000+ A股中筛选（AI 动态调权中）...</div></div>
 </div>`;
+const _stockCache=getCached('stock_screen');
+if(_stockCache){_fillStockList(_stockCache);return}
 try{
 const r=await fetch(API_BASE+'/stock-screen?top_n=50',{signal:AbortSignal.timeout(60000)});
 if(!r.ok)throw new Error('fetch failed');
 const data=await r.json();
+setCached('stock_screen',data);
+_fillStockList(data);
+}catch(e){console.warn('Stock pick failed:',e);
+const listEl=document.getElementById('stockPickList');
+if(listEl)listEl.innerHTML='<div style="text-align:center;padding:20px;color:var(--text2)">📡 选股数据加载中<br><span style="font-size:11px;opacity:0.6">需分析5000+只A股，首次约30秒</span><br><span style="font-size:11px;opacity:0.5">非交易时段数据源可能不稳定</span><br><button onclick="insightTab=\'stockpick\';renderInsight()" style="margin-top:8px;padding:6px 16px;border-radius:6px;border:none;background:var(--accent);color:#fff;cursor:pointer;font-size:12px">🔄 重试</button></div>'}}
+function _fillStockList(data){
 const stocks=data.stocks||[];
 const listEl=document.getElementById('stockPickList');if(!listEl)return;
 // 展示 V3 动态权重元信息
@@ -331,9 +346,7 @@ const sc=s.scores||{};
 setExplain('stock_'+s.code,s.name+' ('+s.code+')',
 '💰 价格：¥'+s.price+' · 涨跌：'+(s.change_pct!=null?s.change_pct+'%':'—')+'\n📊 PE：'+(s.pe||'—')+' · PB：'+(s.pb||'—')+' · 换手率：'+(s.turnover||'—')+'%\n📈 市值：'+(s.market_cap?s.market_cap+'亿':'—')+'\n\n📋 财务指标：\n• ROE：'+(s.roe||'—')+'%\n• 毛利率：'+(s.gross_margin||'—')+'%\n• 净利率：'+(s.net_margin||'—')+'%\n• 负债率：'+(s.debt_ratio||'—')+'%\n• 营收增速：'+(s.revenue_growth||'—')+'%\n• EPS：'+(s.eps||'—')+'\n\n🎯 综合评分：'+s.score+'/100\n\n7维30因子详情：\n• 价值(20%)：'+sc.value+' (PE/PB/股息率/ROE-PB/EPS/低PE高ROE)\n• 成长(15%)：'+sc.growth+' (营收增速/ROE/EPS/60日动量/PEG)\n• 质量(18%)：'+sc.quality+' (ROE/毛利率/净利率/负债率/现金流/市值)\n• 动量(15%)：'+sc.momentum+' (5日/20日/60日/今日)\n• 风险(12%)：'+sc.risk+' (振幅/负债率/现金流/PE极端)\n• 流动性(10%)：'+sc.liquidity+' (换手率/市值/成交额)\n• 舆情(10%)：'+sc.sentiment+' (新闻情绪/LLM评分)\n\n⚠️ 仅供参考，不构成投资建议。',
 {type:'stock',code:s.code,name:s.name,score:s.score,pe:s.pe||0,roe:s.roe||0,gross_margin:s.gross_margin||0})
-})}catch(e){console.warn('Stock pick failed:',e);
-const listEl=document.getElementById('stockPickList');
-if(listEl)listEl.innerHTML='<div style="text-align:center;padding:20px;color:var(--text2)">📡 选股数据加载中<br><span style="font-size:11px;opacity:0.6">需分析5000+只A股，首次约30秒</span><br><span style="font-size:11px;opacity:0.5">非交易时段数据源可能不稳定</span><br><button onclick="insightTab=\'stockpick\';renderInsight()" style="margin-top:8px;padding:6px 16px;border-radius:6px;border:none;background:var(--accent);color:#fff;cursor:pointer;font-size:12px">🔄 重试</button></div>'}}
+})}
 
 
 // --- 02-insight-protabs.js ---
