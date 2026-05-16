@@ -95,8 +95,8 @@ def generate_cfo_summary(user_id: str) -> dict:
 
 def _get_net_worth(user_id: str) -> dict:
     """获取家庭净资产 + 分项明细"""
-    from services.portfolio_overview import get_unified_networth
-    nw = get_unified_networth(user_id)
+    from services.unified_networth import calc_unified_networth
+    nw = calc_unified_networth(user_id)
     if not nw:
         return {"total": 0, "breakdown": {}}
 
