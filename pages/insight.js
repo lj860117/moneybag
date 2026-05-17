@@ -284,7 +284,8 @@ return`<div style="display:flex;align-items:center;gap:10px;padding:10px 0;borde
 <div style="font-size:10px;color:var(--text2)">近1年</div></div>
 <div style="min-width:40px;text-align:right">
 <div style="font-size:12px;font-weight:700;color:${scoreColor}">${f.score}</div>
-<div style="font-size:10px;color:var(--text2)">评分</div></div></div>${_fundTagsHTML(f)}`}).join('')}
+<div style="font-size:10px;color:var(--text2)">评分</div></div>
+<button onclick="event.stopPropagation();showFundChart('${f.code}')" style="padding:3px 6px;font-size:10px;border:1px solid var(--accent);border-radius:4px;background:transparent;color:var(--accent);cursor:pointer;white-space:nowrap">K线</button></div>${_fundTagsHTML(f)}`}).join('')}
 <div style="text-align:center;margin-top:12px"><button class="action-btn secondary" style="display:inline-block;min-width:auto;padding:10px 24px" onclick="renderFundPickResult()">🔄 刷新</button></div>`;
 // 注册每只基金的白话弹窗
 funds.forEach(f=>{
@@ -329,17 +330,18 @@ metaEl.style.display='block';
 }
 if(!stocks.length){listEl.innerHTML='<div style="text-align:center;padding:20px;color:var(--text2)">'+(data.error||'暂无数据')+'</div>';return}
 listEl.innerHTML=`<div style="font-size:11px;color:var(--text2);margin-bottom:8px">从 ${data.total} 只股票中筛选 TOP ${stocks.length}</div>
-<div style="display:grid;grid-template-columns:30px 1fr 70px 50px;gap:4px;font-size:11px;color:var(--text2);font-weight:600;padding:6px 0;border-bottom:1px solid rgba(148,163,184,.1)">
-<div>#</div><div>股票</div><div style="text-align:right">涨跌</div><div style="text-align:right">评分</div></div>
+<div style="display:grid;grid-template-columns:30px 1fr 70px 50px 32px;gap:4px;font-size:11px;color:var(--text2);font-weight:600;padding:6px 0;border-bottom:1px solid rgba(148,163,184,.1)">
+<div>#</div><div>股票</div><div style="text-align:right">涨跌</div><div style="text-align:right">评分</div><div></div></div>
 ${stocks.map((s,i)=>{
 const chgColor=s.change_pct>0?'var(--green)':s.change_pct<0?'var(--red)':'var(--text2)';
 const scoreColor=s.score>65?'var(--green)':s.score>50?'var(--accent)':'var(--red)';
-return`<div style="display:grid;grid-template-columns:30px 1fr 70px 50px;gap:4px;padding:8px 0;border-bottom:1px solid rgba(148,163,184,.04);align-items:center;cursor:pointer" onclick="showExplain('stock_${s.code}')">
+return`<div style="display:grid;grid-template-columns:30px 1fr 70px 50px 32px;gap:4px;padding:8px 0;border-bottom:1px solid rgba(148,163,184,.04);align-items:center;cursor:pointer" onclick="showExplain('stock_${s.code}')">
 <div style="font-size:11px;color:var(--text2);font-weight:700">${i+1}</div>
 <div><div style="font-size:13px;font-weight:600">${s.name}</div>
 <div style="font-size:10px;color:var(--text2)">${s.code} · PE ${s.pe!=null?s.pe:'暂无'} · ${s.market_cap?s.market_cap+'亿':'-'}${s.roe?' · ROE'+s.roe+'%':''}${s.gross_margin?' · 毛利'+s.gross_margin+'%':''}</div></div>
 <div style="text-align:right;font-size:13px;font-weight:700;color:${chgColor}">${s.change_pct!=null?(s.change_pct>0?'+':'')+s.change_pct+'%':'—'}</div>
-<div style="text-align:right;font-size:13px;font-weight:800;color:${scoreColor}">${s.score}</div></div>${_stockTagsHTML(s)}`}).join('')}
+<div style="text-align:right;font-size:13px;font-weight:800;color:${scoreColor}">${s.score}</div>
+<button onclick="event.stopPropagation();showFundChart('${s.code}')" style="padding:2px 4px;font-size:9px;border:1px solid var(--accent);border-radius:3px;background:transparent;color:var(--accent);cursor:pointer">K线</button></div>${_stockTagsHTML(s)}`}).join('')}
 <div style="text-align:center;margin-top:12px"><button class="action-btn secondary" style="display:inline-block;min-width:auto;padding:10px 24px" onclick="insightTab='stockpick';renderInsight()">🔄 刷新</button></div>
 <div style="font-size:11px;color:#475569;margin-top:8px;line-height:1.5">${data.method||''}<br>${data.note||''}</div>`;
 stocks.forEach(s=>{
