@@ -73,8 +73,22 @@ async function _loadChartData() {
 function _renderTVChart(data) {
     const wrap = document.getElementById('tvChartWrap');
     wrap.innerHTML = '';
-    const chartH = Math.min(window.innerHeight * 0.35, 300);
 
+    try {
+    // 1. 数据清洗：过滤无效点
+    const validKline = (data.kline_data || []).filter(p =>
+        p && p.date && isFinite(p.open) && isFinite(p.high) && isFinite(p.low) && isFinite(p.close)
+    );
+    if (validKline.length < 5) {
+        wrap.innerHTML = '<div class="mb-empty" style="padding:30px 0"><div class="mb-empty__icon">📊</div><div class="mb-empty__title">行情数据不足</div><div class="mb-empty__desc">有效数据少于 5 个交易日，无法绘制图表</div></div>';
+        return;
+    }
+
+    // 2. 判断是否为基金净值线（OHLC 全相同 = 只有 close 价）
+    const isFundLine = validKline.every(p => p.open === p.close && p.high === p.close && p.low === p.close)
+                     || (data.chart_type === 'line');
+
+    const chartH = Math.min(window.innerHeight * 0.35, 300);
     _tvChart = LightweightCharts.createChart(wrap, {
         width: wrap.clientWidth, height: chartH,
         layout: { background: { color: '#1e293b' }, textColor: '#94a3b8' },
@@ -84,36 +98,56 @@ function _renderTVChart(data) {
         rightPriceScale: { borderColor: '#475569' },
     });
 
-    // K 线
-    const candleSeries = _tvChart.addCandlestickSeries({
-        upColor: '#10b981', downColor: '#ef4444',
-        borderUpColor: '#10b981', borderDownColor: '#ef4444',
-        wickUpColor: '#10b981', wickDownColor: '#ef4444',
-    });
-    const kData = data.kline_data.map(p => ({ time: p.date, open: p.open, high: p.high, low: p.low, close: p.close }));
-    candleSeries.setData(kData);
+    let mainSeries;
+    const kData = validKline.map(p => ({ time: p.date, open: p.open, high: p.high, low: p.low, close: p.close }));
 
-    // 成交量
-    if (data.volume_data && data.volume_data.length > 0) {
-        const volSeries = _tvChart.addHistogramSeries({ priceFormat: { type: 'volume' }, priceScaleId: 'vol' });
-        _tvChart.priceScale('vol').applyOptions({ scaleMargins: { top: 0.8, bottom: 0 } });
-        volSeries.setData(data.volume_data.map((v, i) => ({
-            time: v.date, value: v.volume,
-            color: kData[i] && kData[i].close >= kData[i].open ? 'rgba(16,185,129,0.3)' : 'rgba(239,68,68,0.3)',
-        })));
+    if (isFundLine) {
+        // 基金：净值折线 + 面积图
+        mainSeries = _tvChart.addAreaSeries({
+            topColor: 'rgba(255, 183, 85, 0.3)',
+            bottomColor: 'rgba(255, 183, 85, 0.02)',
+            lineColor: '#FFB755',
+            lineWidth: 2,
+            priceFormat: { minMove: 0.0001 },
+        });
+        mainSeries.setData(validKline.map(p => ({ time: p.date, value: p.close })));
+    } else {
+        // 股票：蜡烛图
+        mainSeries = _tvChart.addCandlestickSeries({
+            upColor: '#10b981', downColor: '#ef4444',
+            borderUpColor: '#10b981', borderDownColor: '#ef4444',
+            wickUpColor: '#10b981', wickDownColor: '#ef4444',
+        });
+        mainSeries.setData(kData);
     }
 
-    // 成本线
+    // 3. 成交量（用 date 匹配而非 index）
+    if (data.volume_data && data.volume_data.length > 0) {
+        const kDateMap = {};
+        kData.forEach(k => { kDateMap[k.time] = k; });
+        const validVol = data.volume_data.filter(v => v && v.date && isFinite(v.volume) && v.volume > 0);
+        if (validVol.length > 0) {
+            const volSeries = _tvChart.addHistogramSeries({ priceFormat: { type: 'volume' }, priceScaleId: 'vol' });
+            _tvChart.priceScale('vol').applyOptions({ scaleMargins: { top: 0.8, bottom: 0 } });
+            volSeries.setData(validVol.map(v => {
+                const k = kDateMap[v.date];
+                return { time: v.date, value: v.volume, color: k && k.close >= k.open ? 'rgba(16,185,129,0.3)' : 'rgba(239,68,68,0.3)' };
+            }));
+        }
+    }
+
+    // 4. 成本线
     if (data.cost_line && data.cost_line > 0) {
-        candleSeries.createPriceLine({ price: data.cost_line, color: '#f59e0b', lineWidth: 2, lineStyle: LightweightCharts.LineStyle.Dashed, axisLabelVisible: true, title: '成本' });
-        const last = kData[kData.length - 1];
+        mainSeries.createPriceLine({ price: data.cost_line, color: '#f59e0b', lineWidth: 2, lineStyle: LightweightCharts.LineStyle.Dashed, axisLabelVisible: true, title: '成本' });
+        const last = validKline[validKline.length - 1];
         const pnl = last ? ((last.close - data.cost_line) / data.cost_line * 100).toFixed(2) : 0;
         const pnlC = pnl >= 0 ? 'var(--green)' : 'var(--red)';
-        document.getElementById('chartCostInfo').innerHTML = `<div style="display:flex;gap:12px;justify-content:center;color:var(--text2)"><span>成本 ¥${data.cost_line.toFixed(4)}</span><span style="color:${pnlC}">浮盈 ${pnl >= 0 ? '+' : ''}${pnl}%</span></div>`;
+        document.getElementById('chartCostInfo').innerHTML = `<div style="display:flex;gap:12px;justify-content:center;color:var(--text2)"><span>成本 ¥${data.cost_line.toFixed(4)}</span><span style="color:${pnlC}">浮盈 ${pnl >= 0 ? '+' : ''}${pnl}%</span>${isFundLine?'<span style="color:var(--text2);opacity:.6">📈 净值走势</span>':''}</div>`;
     }
 
-    // RSI
-    if (data.indicators && data.indicators.rsi_14 && data.indicators.rsi_14.length > 0) {
+    // 5. RSI（过滤无效点）
+    const validRsi = (data.indicators && data.indicators.rsi_14 || []).filter(r => r && r.date && isFinite(r.rsi));
+    if (validRsi.length > 5) {
         const rsiWrap = document.getElementById('tvRsiWrap');
         rsiWrap.innerHTML = '';
         _tvRsiChart = LightweightCharts.createChart(rsiWrap, {
@@ -124,7 +158,7 @@ function _renderTVChart(data) {
             rightPriceScale: { borderColor: '#475569' },
         });
         const rsiSeries = _tvRsiChart.addLineSeries({ color: '#818cf8', lineWidth: 1.5, priceFormat: { minMove: 0.01 } });
-        rsiSeries.setData(data.indicators.rsi_14.map(r => ({ time: r.date, value: r.rsi })));
+        rsiSeries.setData(validRsi.map(r => ({ time: r.date, value: r.rsi })));
         rsiSeries.createPriceLine({ price: 70, color: '#ef4444', lineWidth: 1, lineStyle: 2, axisLabelVisible: false, title: '' });
         rsiSeries.createPriceLine({ price: 30, color: '#10b981', lineWidth: 1, lineStyle: 2, axisLabelVisible: false, title: '' });
         // 同步时间轴
@@ -141,6 +175,12 @@ function _renderTVChart(data) {
         const rw = document.getElementById('tvRsiWrap');
         if (_tvRsiChart && rw) _tvRsiChart.applyOptions({ width: rw.clientWidth });
     }).observe(wrap);
+
+    } catch (e) {
+        // 图表渲染失败兜底
+        console.warn('[Chart] render failed:', e);
+        wrap.innerHTML = '<div class="mb-empty" style="padding:30px 0"><div class="mb-empty__icon">📊</div><div class="mb-empty__title">图表渲染失败</div><div class="mb-empty__desc">请稍后重试或切换周期</div></div>';
+    }
 }
 
 // 保留 renderChart() 作为 navigateTo('chart') 的 fallback
