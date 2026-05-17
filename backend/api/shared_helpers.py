@@ -432,12 +432,25 @@ def _rule_based_reply_structured(msg: str, market_ctx: str, portfolio_ctx: str) 
         return {"text": text, "confidence": 0.95, "intent": "safety_refusal"}
 
     # ★ 最高优先级2：用户持仓/资产查询（必须基于真实数据回答）
-    _HOLDING_QUERY_KW = ["我持有", "我有什么", "我的持仓", "我的资产", "我有没有",
-                          "是不是持有", "现在还在", "我刚才", "录入的", "我当前",
+    # 排除：问"老婆/家人"的持仓 — 应交给 LLM 说"无法查看其他账号"
+    _OTHER_PERSON_KW = ["老婆", "老公", "家人", "她的", "他的", "对方"]
+    _asking_about_others = any(k in msg_lower for k in _OTHER_PERSON_KW)
+
+    _HOLDING_QUERY_KW = ["我有什么", "我的持仓", "我的资产",
+                          "现在还在", "我刚才", "录入的", "我当前",
                           "我现在有", "净资产", "我有多少", "持有什么", "有什么基金",
                           "有什么股票", "我的基金", "我的股票", "有哪些持仓",
                           "我买了什么", "我买了哪些"]
-    if any(k in msg_lower for k in _HOLDING_QUERY_KW):
+    # "我持有X吗/我有没有X/是不是持有X" + 具体标的名 → 交给LLM精准回答
+    _SPECIFIC_QUERY_KW = ["我有没有", "是不是持有"]
+    _is_specific_query = any(k in msg_lower for k in _SPECIFIC_QUERY_KW)
+    # "我持有" + "吗" = 问具体标的，也交给LLM
+    if "我持有" in msg_lower and "吗" in msg_lower:
+        _is_specific_query = True
+    # 纯 "我持有" 无 "吗" = 问全部持仓 → 走规则返回列表
+    if "我持有" in msg_lower and "吗" not in msg_lower:
+        _HOLDING_QUERY_KW.append("我持有")
+    if not _asking_about_others and not _is_specific_query and any(k in msg_lower for k in _HOLDING_QUERY_KW):
         # 从 portfolio_ctx 中提取真实持仓信息
         if "没有任何持仓" in portfolio_ctx or "没有持仓" in portfolio_ctx or "尚未录入" in portfolio_ctx:
             text = "**结论：** 当前钱袋子系统没有记录到持仓/资产数据。\n\n**依据：** 股票持仓、基金持仓、手动资产均为空。\n\n**建议：** 去 持仓页 或 资产页 添加你的真实持仓，我就能给你个性化分析了。\n\n⚠️ 仅基于钱袋子系统记录。"
