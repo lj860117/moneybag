@@ -92,22 +92,22 @@ ${!isTradeDay?`<div style="background:linear-gradient(90deg,rgba(255,183,85,.08)
 <!-- 快捷网格 -->
 <section style="display:grid;grid-template-columns:repeat(4,1fr);gap:8px;margin-bottom:14px">
   <div style="background:rgba(255,255,255,.03);border:1px solid rgba(255,255,255,.05);border-radius:14px;padding:12px 4px;text-align:center;cursor:pointer" onclick="navigateTo('portfolio')">
-    <div style="width:36px;height:36px;border-radius:10px;margin:0 auto 6px;display:grid;place-items:center;font-size:16px;background:rgba(255,183,85,.12)">🥨</div>
+    <div style="width:36px;height:36px;border-radius:10px;margin:0 auto 6px;display:grid;place-items:center;font-size:16px;background:rgba(255,183,85,.18)">🥨</div>
     <div style="font-size:11px;font-weight:600;color:#F0F2F7;line-height:1.3">资产配置</div>
     <div style="font-size:9px;color:#7A8499;margin-top:2px" id="quickAllocStatus">未测评</div>
   </div>
   <div style="background:rgba(255,255,255,.03);border:1px solid rgba(255,255,255,.05);border-radius:14px;padding:12px 4px;text-align:center;cursor:pointer" onclick="navigateTo('portfolio')">
-    <div style="width:36px;height:36px;border-radius:10px;margin:0 auto 6px;display:grid;place-items:center;font-size:16px;background:rgba(0,229,160,.12)">📊</div>
+    <div style="width:36px;height:36px;border-radius:10px;margin:0 auto 6px;display:grid;place-items:center;font-size:16px;background:rgba(0,229,160,.18)">📊</div>
     <div style="font-size:11px;font-weight:600;color:#F0F2F7;line-height:1.3">查看持仓</div>
     <div style="font-size:9px;color:#7A8499;margin-top:2px">0 只</div>
   </div>
   <div style="background:rgba(255,255,255,.03);border:1px solid rgba(255,255,255,.05);border-radius:14px;padding:12px 4px;text-align:center;cursor:pointer" onclick="navigateTo('market-panorama')">
-    <div style="width:36px;height:36px;border-radius:10px;margin:0 auto 6px;display:grid;place-items:center;font-size:16px;background:rgba(139,111,230,.12)">🌐</div>
+    <div style="width:36px;height:36px;border-radius:10px;margin:0 auto 6px;display:grid;place-items:center;font-size:16px;background:rgba(139,111,230,.18)">🌐</div>
     <div style="font-size:11px;font-weight:600;color:#F0F2F7;line-height:1.3">市场全景</div>
     <div style="font-size:9px;color:#7A8499;margin-top:2px">已更新</div>
   </div>
   <div style="background:rgba(255,255,255,.03);border:1px solid rgba(255,255,255,.05);border-radius:14px;padding:12px 4px;text-align:center;cursor:pointer" onclick="navigateTo('assets')">
-    <div style="width:36px;height:36px;border-radius:10px;margin:0 auto 6px;display:grid;place-items:center;font-size:16px;background:rgba(255,138,177,.12)">🏛</div>
+    <div style="width:36px;height:36px;border-radius:10px;margin:0 auto 6px;display:grid;place-items:center;font-size:16px;background:rgba(255,138,177,.18)">🏛</div>
     <div style="font-size:11px;font-weight:600;color:#F0F2F7;line-height:1.3">管理资产</div>
     <div style="font-size:9px;color:#7A8499;margin-top:2px">添加</div>
   </div>
