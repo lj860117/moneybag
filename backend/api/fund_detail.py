@@ -207,6 +207,61 @@ def fund_detail(code: str):
 
 
 # ──────────────────────────────────────────────────────────
+# 股票基本信息查询（持仓录入自动补全用）
+# ──────────────────────────────────────────────────────────
+@router.get("/api/stock-basic/{code}")
+def stock_basic_info(code: str):
+    """根据股票代码返回名称、行业、最新价格"""
+    cache_key = f"stock_basic_{code}"
+    cached = _get_cached(cache_key)
+    if cached:
+        return cached
+
+    # 尝试多种 ts_code 格式
+    from services.tushare_data import _call_tushare
+    info = None
+    for suffix in [".SH", ".SZ"]:
+        ts_code = code + suffix if "." not in code else code
+        rows = _call_tushare("stock_basic", {"ts_code": ts_code}, "ts_code,name,industry,list_date")
+        if rows:
+            info = rows[0]
+            break
+
+    if not info:
+        # 按代码模糊匹配
+        rows = _call_tushare("stock_basic", {"exchange": "", "list_status": "L"}, "ts_code,name,industry")
+        if rows:
+            for r in rows:
+                if r.get("ts_code", "").startswith(code):
+                    info = r
+                    break
+
+    if not info:
+        return {"available": False, "reason": "未找到该股票"}
+
+    # 获取最新价格
+    price = None
+    try:
+        ts_code = info.get("ts_code", "")
+        price_rows = _call_tushare("daily", {"ts_code": ts_code, "limit": "1"}, "ts_code,close,trade_date")
+        if price_rows:
+            price = float(price_rows[0].get("close", 0))
+    except Exception:
+        pass
+
+    result = {
+        "available": True,
+        "code": code,
+        "ts_code": info.get("ts_code", ""),
+        "name": info.get("name", ""),
+        "industry": info.get("industry", ""),
+        "price": price,
+    }
+    _set_cached(cache_key, result)
+    return result
+
+
+# ──────────────────────────────────────────────────────────
 # Phase 2: 经理规模-业绩对照（规模诅咒检测）
 # ──────────────────────────────────────────────────────────
 @router.get("/api/fund/manager-track/{code}")

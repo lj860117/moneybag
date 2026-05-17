@@ -127,6 +127,7 @@ if(API_AVAILABLE){loadRiskMetrics();loadRiskActions()}}
 
 // Tab 切换辅助
 function showStockHoldings(){
+  window._portfolioTab='stock';
   document.getElementById('holdingsContent').style.display='';
   document.getElementById('txnContent').style.display='none';
   document.getElementById('tabStockBtn').className='mb-pill mb-pill--on';
@@ -137,6 +138,7 @@ function showStockHoldings(){
   const c=document.getElementById('emptyHoldCTA');if(c)c.textContent='➕ 添加股票';
 }
 function showFundHoldings(){
+  window._portfolioTab='fund';
   document.getElementById('holdingsContent').style.display='';
   document.getElementById('txnContent').style.display='none';
   document.getElementById('tabStockBtn').className='mb-pill';
@@ -272,22 +274,25 @@ document.body.appendChild(o)}
 function showAddTxn(){showAddTxnFor('','BUY')}
 
 function showAddTxnFor(code,type){
+const isFund=(window._portfolioTab||'stock')==='fund';
+const assetLabel=isFund?'基金':'股票';
 const detail=code?FUND_DETAILS[code]:null;
 const allCodes=Object.keys(FUND_DETAILS);
 const o=document.createElement('div');o.className='modal-overlay';o.onclick=e=>{if(e.target===o)o.remove()};
 o.innerHTML=`<div class="modal-sheet" onclick="event.stopPropagation()"><div class="modal-handle"></div>
-<div class="modal-title">${type==='BUY'?'🟢 买入':'🔴 卖出'}基金</div>
+<div class="modal-title">${type==='BUY'?'🟢 买入':'🔴 卖出'}${assetLabel}</div>
 <div class="manual-form" style="background:transparent;padding:0;margin-top:16px">
-<div class="form-row"><div class="form-label">基金代码</div>
-<input class="form-input" type="text" id="txnCode" placeholder="输入基金代码 如 110020" value="${code}" ${code?'readonly':''}></div>
-<div class="form-row"><div class="form-label">基金名称</div>
-<input class="form-input" type="text" id="txnName" placeholder="基金名称" value="${detail?.fullName||''}"></div>
-<div class="form-row"><div class="form-label">买入/卖出金额(¥)</div>
+<div class="form-row"><div class="form-label">${assetLabel}代码</div>
+<input class="form-input" type="text" id="txnCode" placeholder="输入${isFund?'6位基金代码 如 110020':'股票代码 如 600519'}" value="${code}" ${code?'readonly':''} inputmode="numeric"></div>
+<div class="form-row"><div class="form-label">${assetLabel}名称</div>
+<input class="form-input" type="text" id="txnName" placeholder="${assetLabel}名称（输入代码自动填充）" value="${detail?.fullName||''}" readonly style="opacity:.7"></div>
+<div id="txnLookupHint" style="font-size:11px;color:var(--accent);padding:0 0 8px;display:none"></div>
+<div class="form-row"><div class="form-label">${isFund?'买入/卖出金额(¥)':'买入/卖出金额(¥)'}</div>
 <input class="form-input" type="number" id="txnAmt" placeholder="0" inputmode="decimal"></div>
-<div class="form-row"><div class="form-label">净值(每份价格)</div>
-<input class="form-input" type="number" id="txnPrice" placeholder="如 1.2345" step="0.0001" inputmode="decimal" value="${liveNavData[code]?.nav||''}"></div>
-<div class="form-row"><div class="form-label">份额(自动计算)</div>
-<input class="form-input" type="number" id="txnShares" placeholder="金额÷净值" readonly style="opacity:.6"></div>
+<div class="form-row"><div class="form-label">${isFund?'净值(每份价格)':'股价(每股价格)'}</div>
+<input class="form-input" type="number" id="txnPrice" placeholder="${isFund?'如 1.2345':'如 25.60'}" step="0.0001" inputmode="decimal" value="${liveNavData[code]?.nav||''}"></div>
+<div class="form-row"><div class="form-label">${isFund?'份额(自动计算)':'股数(自动计算)'}</div>
+<input class="form-input" type="number" id="txnShares" placeholder="金额÷${isFund?'净值':'股价'}" readonly style="opacity:.6"></div>
 <div class="form-row"><div class="form-label">备注</div>
 <input class="form-input" type="text" id="txnNote" placeholder="可选"></div>
 <button class="form-submit" style="background:${type==='BUY'?'var(--green)':'var(--red)'}" onclick="confirmAddTxn('${type}')">确认${type==='BUY'?'买入':'卖出'}</button>
@@ -297,10 +302,32 @@ document.body.appendChild(o);
 const amtIn=document.getElementById('txnAmt');const priceIn=document.getElementById('txnPrice');const sharesIn=document.getElementById('txnShares');
 const calcShares=()=>{const a=parseFloat(amtIn?.value);const p=parseFloat(priceIn?.value);if(a>0&&p>0)sharesIn.value=(a/p).toFixed(2)};
 amtIn?.addEventListener('input',calcShares);priceIn?.addEventListener('input',calcShares);
-// 自动获取基金名和净值
-if(!code){const codeIn=document.getElementById('txnCode');const nameIn=document.getElementById('txnName');
-codeIn?.addEventListener('blur',()=>{const c=codeIn.value.trim();const d=FUND_DETAILS[c];if(d){nameIn.value=d.fullName}
-if(liveNavData[c]){priceIn.value=liveNavData[c].nav;calcShares()}})}}
+// 代码输入自动查询名称和价格
+if(!code){const codeIn=document.getElementById('txnCode');const nameIn=document.getElementById('txnName');const hintEl=document.getElementById('txnLookupHint');
+let _lookupTimer=null;
+codeIn?.addEventListener('input',()=>{
+  clearTimeout(_lookupTimer);
+  const c=codeIn.value.trim();
+  // 本地先查
+  const d=FUND_DETAILS[c];if(d){nameIn.value=d.fullName;if(liveNavData[c]){priceIn.value=liveNavData[c].nav;calcShares()}return}
+  // 代码够长才查 API
+  if(c.length>=5){
+    hintEl.textContent='🔍 查询中...';hintEl.style.display='';
+    _lookupTimer=setTimeout(async()=>{
+      try{
+        if(isFund){
+          const r=await fetch(API_BASE+'/fund/detail/'+c,{signal:AbortSignal.timeout(8000)});
+          if(r.ok){const fd=await r.json();nameIn.value=fd.name||'';if(fd.nav){priceIn.value=fd.nav;calcShares()}hintEl.textContent='✅ '+fd.name+(fd.fund_type?' · '+fd.fund_type:'');hintEl.style.display=''}
+          else{hintEl.textContent='未找到该基金';hintEl.style.display=''}
+        }else{
+          const r=await fetch(API_BASE+'/stock-basic/'+c,{signal:AbortSignal.timeout(8000)});
+          if(r.ok){const sd=await r.json();nameIn.value=sd.name||'';if(sd.price){priceIn.value=sd.price;calcShares()}hintEl.textContent='✅ '+sd.name+(sd.industry?' · '+sd.industry:'');hintEl.style.display=''}
+          else{hintEl.textContent='未找到该股票';hintEl.style.display=''}
+        }
+      }catch(e){hintEl.textContent='查询超时';hintEl.style.display=''}
+    },500)}
+  else{hintEl.style.display='none'}
+})}}
 
 function confirmAddTxn(type){
 const code=document.getElementById('txnCode')?.value?.trim();
