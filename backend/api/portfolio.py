@@ -179,11 +179,20 @@ def get_holdings_v4(req: dict):
 @router.post("/api/assets")
 def add_or_update_asset(req: AssetRequest):
     """添加或更新非投资类资产"""
+    # 输入校验
+    asset_data = req.asset.dict()
+    value = asset_data.get("value", 0)
+    asset_type = asset_data.get("type", "")
+    if asset_type != "liability" and value < 0:
+        raise HTTPException(400, "非负债类资产金额不能为负数（如需录入负债请使用 type=liability）")
+    if abs(value) > 1_000_000_000:
+        raise HTTPException(400, "金额异常，请确认是否正确（超过10亿）")
+
     user = load_user(req.userId)
     user = ensure_v4_portfolio(user)
     p = user["portfolio"]
 
-    asset = req.asset.dict()
+    asset = asset_data
     if not asset.get("id"):
         asset["id"] = f"a_{int(time.time())}_{uuid.uuid4().hex[:6]}"
     if not asset.get("updated"):

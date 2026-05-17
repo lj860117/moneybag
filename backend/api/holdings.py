@@ -43,12 +43,23 @@ def add_stock_holding_api(req: dict):
     code = req.get("code", "").strip()
     if not code:
         raise HTTPException(400, "股票代码不能为空")
+    # 输入校验
+    if not code.isdigit() or len(code) != 6:
+        raise HTTPException(400, f"股票代码格式错误：{code}（应为6位数字）")
+    cost_price = float(req.get("costPrice", 0))
+    shares = int(req.get("shares", 0))
+    if cost_price < 0:
+        raise HTTPException(400, "成本价不能为负数")
+    if shares <= 0:
+        raise HTTPException(400, "持仓数量必须大于0")
+    if cost_price > 100000:
+        print(f"[HOLDINGS] 高成本价警告: {code} costPrice={cost_price}")
     uid = req.get("userId", "default")
     return add_stock_holding(
         code=code,
         name=req.get("name", ""),
-        cost_price=float(req.get("costPrice", 0)),
-        shares=int(req.get("shares", 0)),
+        cost_price=cost_price,
+        shares=shares,
         note=req.get("note", ""),
         user_id=uid,
     )
@@ -253,12 +264,21 @@ def add_fund_holding_api(req: dict):
     code = req.get("code", "").strip()
     if not code:
         raise HTTPException(400, "基金代码不能为空")
+    # 输入校验
+    if not code.isdigit() or len(code) != 6:
+        raise HTTPException(400, f"基金代码格式错误：{code}（应为6位数字）")
+    cost_nav = float(req.get("costNav", 0))
+    shares = float(req.get("shares", 0))
+    if cost_nav < 0:
+        raise HTTPException(400, "成本净值不能为负数")
+    if shares <= 0:
+        raise HTTPException(400, "持仓份额必须大于0")
     uid = req.get("userId", "default")
     return add_fund_holding(
         code=code,
         name=req.get("name", ""),
-        cost_nav=float(req.get("costNav", 0)),
-        shares=float(req.get("shares", 0)),
+        cost_nav=cost_nav,
+        shares=shares,
         note=req.get("note", ""),
         user_id=uid,
     )

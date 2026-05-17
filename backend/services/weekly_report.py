@@ -112,33 +112,49 @@ def _summarize_judgments(user_id: str, start: datetime, end: datetime) -> dict:
 
 
 def _summarize_portfolio_changes(user_id: str, start: datetime, end: datetime) -> dict:
-    """汇总持仓变化"""
+    """汇总持仓变化（接入真实 stock/fund holdings + unified-networth）"""
+    result = {"total_transactions": 0, "buys": 0, "sells": 0,
+              "total_bought": 0, "total_sold": 0, "net_flow": 0,
+              "current_holdings": [], "net_worth": 0}
     try:
+        # 获取当前真实持仓快照
+        from services.stock_monitor import load_stock_holdings
+        from services.fund_monitor import load_fund_holdings
+        stocks = load_stock_holdings(user_id) or []
+        funds = load_fund_holdings(user_id) or []
+
+        holdings_list = []
+        for s in stocks:
+            holdings_list.append(f"{s.get('name','?')}({s.get('code','')}) {s.get('shares',0)}股")
+        for f in funds:
+            holdings_list.append(f"{f.get('name','?')}({f.get('code','')}) {f.get('shares',0)}份")
+        result["current_holdings"] = holdings_list
+
+        # 获取净资产
+        from services.unified_networth import calc_unified_networth
+        nw = calc_unified_networth(user_id)
+        if nw:
+            result["net_worth"] = nw.get("netWorth", 0)
+            result["investment"] = (nw.get("breakdown", {}).get("investment") or {}).get("total", 0)
+            result["cash"] = (nw.get("breakdown", {}).get("cash") or {}).get("total", 0)
+
+        # 旧 transactions 方式降级
         from services.persistence import load_user
         user = load_user(user_id)
-        txns = user.get("portfolio", {}).get("transactions", [])
-        
-        # 本周交易
-        week_txns = [t for t in txns 
+        txns = (user.get("portfolio") or {}).get("transactions", [])
+        week_txns = [t for t in txns
                      if start.isoformat() <= t.get("date", "") <= end.isoformat()]
-        
         buys = [t for t in week_txns if t.get("type") == "BUY"]
         sells = [t for t in week_txns if t.get("type") == "SELL"]
-        
-        total_bought = sum(t.get("amount", 0) for t in buys)
-        total_sold = sum(t.get("amount", 0) for t in sells)
-        
-        return {
-            "total_transactions": len(week_txns),
-            "buys": len(buys),
-            "sells": len(sells),
-            "total_bought": round(total_bought, 2),
-            "total_sold": round(total_sold, 2),
-            "net_flow": round(total_bought - total_sold, 2),
-        }
+        result["total_transactions"] = len(week_txns)
+        result["buys"] = len(buys)
+        result["sells"] = len(sells)
+        result["total_bought"] = round(sum(t.get("amount", 0) for t in buys), 2)
+        result["total_sold"] = round(sum(t.get("amount", 0) for t in sells), 2)
+        result["net_flow"] = round(result["total_bought"] - result["total_sold"], 2)
     except Exception as e:
         print(f"[WEEKLY] portfolio summary failed: {e}")
-        return {"total_transactions": 0, "buys": 0, "sells": 0, "total_bought": 0, "total_sold": 0, "net_flow": 0}
+    return result
 
 
 def _summarize_market(start: datetime, end: datetime) -> dict:
@@ -210,6 +226,23 @@ def generate_narrative(report: dict) -> str:
     judgments = report.get("judgments", {})
 
     lines = [f"📋 本周家庭财务复盘（{period}）", ""]
+
+    # 0. 用户资产概况（个性化）
+    net_worth = portfolio.get("net_worth", 0)
+    holdings = portfolio.get("current_holdings", [])
+    if net_worth > 0 or holdings:
+        lines.append("💰 家庭资产")
+        if net_worth > 0:
+            inv = portfolio.get("investment", 0)
+            cash = portfolio.get("cash", 0)
+            lines.append(f"   净资产 ¥{net_worth:,.0f}（投资 ¥{inv:,.0f} + 现金 ¥{cash:,.0f}）")
+        if holdings:
+            lines.append(f"   持仓：{'、'.join(holdings[:5])}")
+        lines.append("")
+    else:
+        lines.append("💰 家庭资产")
+        lines.append("   当前没有录入资产/持仓数据。录入后周报会展示个性化内容。")
+        lines.append("")
 
     # 1. 投资操作
     lines.append("📌 投资操作")

@@ -213,75 +213,37 @@ def _estimate_monthly_expense(user_id: str, net_worth: dict) -> float:
 # ============================================================
 
 def _get_allocation(user_id: str) -> dict | None:
-    """获取当前资产配置 + 目标 + 偏离（基于真实 holdings/assets）"""
+    """获取当前资产配置 + 目标 + 偏离
+
+    使用 unified-networth（已缓存）而非逐个查实时价格，保证速度 <500ms。
+    """
     try:
-        from services.stock_monitor import load_stock_holdings
-        from services.fund_monitor import load_fund_holdings
-        from services.market_data import get_fund_nav, get_valuation_percentile, get_fear_greed_index
-        from infra.data_source.market.stocks import get_stock_realtime_single
+        from services.unified_networth import calc_unified_networth
+        from services.market_data import get_valuation_percentile
 
-        stocks = load_stock_holdings(user_id) or []
-        funds = load_fund_holdings(user_id) or []
+        nw = calc_unified_networth(user_id)
+        if not nw or nw.get("netWorth", 0) <= 0:
+            return None
 
-        # 计算各类资产市值
-        stock_value = 0
-        bond_value = 0
-        other_value = 0
-
-        for s in stocks:
-            shares = s.get("shares", 0)
-            price = s.get("currentPrice", s.get("costPrice", 0))
-            # 尝试获取实时价格
-            try:
-                rt = get_stock_realtime_single(s.get("code", ""))
-                if rt and rt.get("price"):
-                    price = rt["price"]
-            except Exception:
-                pass
-            stock_value += shares * price
-
-        for f in funds:
-            shares = f.get("shares", 0)
-            nav = f.get("currentNav", f.get("costNav", 1))
-            try:
-                nav_info = get_fund_nav(f.get("code", ""))
-                if nav_info and nav_info.get("nav") != "N/A":
-                    nav = float(nav_info["nav"])
-            except Exception:
-                pass
-            # 简单分类：名称含"债"归债券，其余归股票
-            name = f.get("name", "")
-            if "债" in name or "利率" in name or "货币" in name:
-                bond_value += shares * nav
-            else:
-                stock_value += shares * nav
-
-        # 获取现金
-        try:
-            from services.unified_networth import calc_unified_networth
-            nw = calc_unified_networth(user_id)
-            cash_value = (nw.get("breakdown", {}).get("cash", {}) or {}).get("total", 0)
-        except Exception:
-            cash_value = 0
-
-        total = stock_value + bond_value + cash_value
+        breakdown = nw.get("breakdown", {})
+        inv = (breakdown.get("investment") or {}).get("total", 0)
+        cash = (breakdown.get("cash") or {}).get("total", 0)
+        total = inv + cash
         if total <= 0:
             return None
 
         current = {
-            "stock": round(stock_value / total * 100, 1),
-            "bond": round(bond_value / total * 100, 1),
-            "cash": round(cash_value / total * 100, 1),
+            "stock": round(inv / total * 100, 1),
+            "bond": 0,
+            "cash": round(cash / total * 100, 1),
         }
 
-        # 目标配置（基于估值动态调整）
         try:
             val = get_valuation_percentile()
             val_pct = val.get("percentile", 50)
         except Exception:
             val_pct = 50
 
-        # 简单目标：高估减股、低估加股
         if val_pct > 70:
             target = {"stock": 40, "bond": 35, "cash": 25}
         elif val_pct < 30:
