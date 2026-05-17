@@ -162,7 +162,7 @@ el.innerHTML=`
   </div>
   <div class="dashboard-card" style="margin-bottom:0;cursor:pointer" onclick="insightTab='tech';renderInsight()">
     <div style="display:flex;align-items:center;gap:5px;font-size:10px;color:var(--text-tertiary,#7A8499);margin-bottom:5px">📊 MACD</div>
-    <div style="font-size:var(--fs-xl,22px);font-weight:700;color:var(--text-primary,#F0F2F7)">${tech.macd?.trend||'—'}</div>
+    <div style="font-size:var(--fs-base,13px);font-weight:600;color:${tech.macd?.trend?.includes('多')?'var(--color-bull,#00E5A0)':tech.macd?.trend?.includes('空')?'var(--color-bear,#FF6B6B)':'var(--text-primary,#F0F2F7)'};line-height:1.4;overflow:hidden;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical">${tech.macd?.trend||'—'}</div>
     <div style="font-size:9px;color:var(--text-tertiary,#7A8499)">趋势</div>
   </div>
   <div class="dashboard-card" style="margin-bottom:0;cursor:pointer" onclick="insightTab='macro';renderInsight()">
