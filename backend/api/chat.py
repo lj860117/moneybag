@@ -175,6 +175,16 @@ async def chat_analysis(req: ChatRequest):
                         except Exception as e:
                             print(f"[CHAT] auto_extract 启动失败: {e}")
 
+                    # Response Validator: 校验 LLM 输出质量
+                    try:
+                        from use_cases.response_validator import validate_response
+                        validation = validate_response(reply, user_msg, portfolio_ctx)
+                        if not validation["valid"]:
+                            reply = validation["reply"]
+                            print(f"[CHAT] Response validated, issues={validation['issues']}")
+                    except Exception as e:
+                        print(f"[CHAT] Response validator failed (non-blocking): {e}")
+
                     return {
                         "reply": reply,
                         "source": "ai",

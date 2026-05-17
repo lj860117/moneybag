@@ -438,22 +438,24 @@ def _rule_based_reply_structured(msg: str, market_ctx: str, portfolio_ctx: str) 
     if any(k in msg_lower for k in _HOLDING_QUERY_KW):
         # 从 portfolio_ctx 中提取真实持仓信息
         if "没有任何持仓" in portfolio_ctx or "没有持仓" in portfolio_ctx or "尚未录入" in portfolio_ctx:
-            text = "📋 当前你的钱袋子里**没有持仓/资产记录**。\n\n如果你刚才录入过但已删除，数据确实已清空。\n\n去 持仓页 或 资产页 添加你的真实持仓，我就能给你个性化分析了。"
+            text = "**结论：** 当前钱袋子系统没有记录到持仓/资产数据。\n\n**依据：** 股票持仓、基金持仓、手动资产均为空。\n\n**建议：** 去 持仓页 或 资产页 添加你的真实持仓，我就能给你个性化分析了。\n\n⚠️ 仅基于钱袋子系统记录。"
             return {"text": text, "confidence": 0.90, "intent": "empty_holdings_query"}
         elif "持仓明细" in portfolio_ctx:
             # 有持仓数据，把上下文中的持仓信息提取出来
             import re
             holdings_lines = re.findall(r'- (?:股票|基金)：(.+)', portfolio_ctx)
             nw_line = re.search(r'净资产：¥([\d,.]+)', portfolio_ctx)
-            parts = []
+            parts = ["**结论：** 当前钱袋子系统记录如下：\n"]
             if nw_line:
                 parts.append(f"💰 净资产：¥{nw_line.group(1)}")
             if holdings_lines:
-                parts.append("📋 持仓：")
+                parts.append("\n**持仓明细：**")
                 for h in holdings_lines[:5]:
                     parts.append(f"  • {h}")
-            if parts:
-                text = "\n".join(parts) + "\n\n⚠️ 以上数据来自钱袋子记录，仅供参考。"
+            if len(parts) > 1:
+                parts.append("\n**数据来源：** 钱袋子持仓记录 + 资产记录")
+                parts.append("\n⚠️ 以上仅基于系统记录，不包含未同步的券商/银行账户。")
+                text = "\n".join(parts)
                 return {"text": text, "confidence": 0.90, "intent": "holdings_query"}
         # 没提取到有用信息，交给 LLM
         pass
