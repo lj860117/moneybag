@@ -140,6 +140,13 @@ app.include_router(monthly_rebalance_router)
 # ---- 静态文件服务（部署时前后端一体）----
 FRONTEND_DIR = Path(__file__).resolve().parent.parent  # moneybag/
 
+
+@app.on_event("startup")
+def _on_startup():
+    """应用启动时初始化后台任务"""
+    from services.cfo_dashboard import start_cfo_prewarm
+    start_cfo_prewarm()
+
 @app.get("/")
 def serve_index():
     return _cached_file_response(FRONTEND_DIR / "index.html")

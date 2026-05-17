@@ -479,3 +479,50 @@ def _generate_todos(user_id: str, allocation: dict | None) -> list:
 
     # 返回最多 4 条（显示用）
     return todos[:4]
+
+
+# ============================================================
+# 后台预热：定期刷新活跃用户的 CFO 缓存
+# ============================================================
+
+_PREWARM_INTERVAL = 55  # 每 55 秒刷新一次（< 60s 缓存 TTL，保证用户永远命中）
+_prewarm_started = False
+
+
+def _get_active_users() -> list:
+    """获取需要预热的用户列表（家庭成员）"""
+    from api.shared_helpers import FAMILY_MEMBERS
+    return FAMILY_MEMBERS
+
+
+def _prewarm_loop():
+    """后台线程：循环预热 CFO 缓存"""
+    import threading
+    while True:
+        try:
+            users = _get_active_users()
+            for uid in users:
+                try:
+                    # force=False 但缓存 key 是 _cfo_cache，不是 _NW_CACHE
+                    # 直接调用 generate_cfo_summary 即可刷新缓存
+                    cache_key = f"cfo_{uid}"
+                    # 清除旧缓存强制重算
+                    _cfo_cache.delete(cache_key)
+                    generate_cfo_summary(uid)
+                except Exception as e:
+                    print(f"[CFO-PREWARM] {uid} failed: {e}")
+        except Exception as e:
+            print(f"[CFO-PREWARM] loop error: {e}")
+        time.sleep(_PREWARM_INTERVAL)
+
+
+def start_cfo_prewarm():
+    """启动后台预热线程（在 main.py 启动时调用一次）"""
+    global _prewarm_started
+    if _prewarm_started:
+        return
+    _prewarm_started = True
+    import threading
+    t = threading.Thread(target=_prewarm_loop, daemon=True, name="cfo-prewarm")
+    t.start()
+    print("[CFO-PREWARM] 后台预热线程已启动")
