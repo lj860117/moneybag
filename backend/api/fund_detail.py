@@ -69,12 +69,20 @@ def fund_detail(code: str):
 
     # 基金规模（份额 × 净值）
     scale_billion = None
-    ts_code = code if "." in code else f"{code}.OF"
-    share_data = get_fund_share(ts_code, days=10)
+    # 尝试多种 ts_code 格式
+    ts_code_candidates = [
+        code if "." in code else f"{code}.OF",
+        f"{code}.SZ",
+        f"{code}.SH",
+    ]
+    for ts_code in ts_code_candidates:
+        share_data = get_fund_share(ts_code, days=10)
+        if share_data.get("available"):
+            break
     if share_data.get("available") and info.get("nav"):
         shares_yi = share_data.get("shares_latest", 0)  # 亿份
         nav = info["nav"]
-        scale_billion = round(shares_yi * nav / 10, 2)  # 亿元
+        scale_billion = round(shares_yi * nav, 2)  # 亿份 × 元/份 = 亿元
 
     # 持仓明细
     portfolio_data = get_fund_portfolio(code)
@@ -132,11 +140,15 @@ def fund_manager_track(code: str):
         "ts_code,ann_date,nav_date,unit_nav,accum_nav"
     )
 
-    # 拉取份额历史
-    share_rows = _call_tushare(
-        "fund_share", {"ts_code": ts_code, "start_date": start, "end_date": end},
-        "ts_code,trade_date,fd_share,total_share"
-    )
+    # 拉取份额历史（尝试多种 ts_code 格式）
+    share_rows = []
+    for tc in [ts_code, f"{code}.SZ", f"{code}.SH"]:
+        share_rows = _call_tushare(
+            "fund_share", {"ts_code": tc, "start_date": start, "end_date": end},
+            "ts_code,trade_date,fd_share,total_share"
+        )
+        if share_rows:
+            break
 
     if not nav_rows or len(nav_rows) < 10:
         return {"available": False, "reason": "净值数据不足", "manager": manager_name}
@@ -188,8 +200,8 @@ def fund_manager_track(code: str):
         if prev_nav > 0:
             track[i]["quarter_return_pct"] = round((cur_nav - prev_nav) / prev_nav * 100, 2)
 
-    # 过滤掉第一个（没有收益率）和没有规模的
-    track_with_data = [t for t in track[1:] if t.get("scale_billion") and t.get("quarter_return_pct") is not None]
+    # 过滤掉第一个（没有收益率），保留有收益率的
+    track_with_data = [t for t in track[1:] if t.get("quarter_return_pct") is not None]
 
     # AI 总结（如果有 LLM 可用）
     verdict = ""
