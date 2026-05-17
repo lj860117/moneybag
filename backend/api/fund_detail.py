@@ -264,8 +264,9 @@ def policy_beneficiaries(topic: str = "数字基建"):
 4. 如果不确定代码，宁可不推也不要编造"""
 
         llm_result = gw.call_sync(
-            messages=[{"role": "user", "content": prompt}],
-            purpose="policy_beneficiaries",
+            prompt,
+            system="你是 A 股行业分析师，输出纯 JSON，不要 markdown。",
+            module="policy_beneficiaries",
             max_tokens=800,
         )
 
