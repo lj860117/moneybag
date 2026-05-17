@@ -653,8 +653,22 @@ def _rule_based_reply(msg: str, market_ctx: str, portfolio_ctx: str) -> str:
     if result:
         return result["text"]
 
-    # 兜底前检查：如果用户问的是持仓/标的相关 + portfolio为空 → 直接说无持仓
+    # 兜底前检查1：未知代码 — 消息含6位数字且不是已知股票
+    import re
     msg_lower = msg.lower()
+    code_match = re.search(r'\b(\d{6})\b', msg)
+    if code_match:
+        unknown_code = code_match.group(1)
+        try:
+            from services.tushare_data import validate_stock_code, validate_fund_code
+            stock_check = validate_stock_code(unknown_code)
+            fund_check = validate_fund_code(unknown_code)
+            if stock_check.get("valid") is False and fund_check.get("valid") is False:
+                return f"❓ 代码 {unknown_code} 在 A 股和公募基金数据库中均**未查到**，待核实。\n\n可能原因：\n• 代码输入有误\n• 已退市/未上市\n• 非 A 股/非公募基金标的\n\n请确认后重新提问。"
+        except Exception:
+            pass
+
+    # 兜底前检查2：如果用户问的是持仓/标的相关 + portfolio为空 → 直接说无持仓
     _ASSET_HINTS = ["持有", "持仓", "资产", "还在", "删除", "茅台", "宁德", "基金", "股票", "买了"]
     if any(k in msg_lower for k in _ASSET_HINTS):
         if "没有任何持仓" in portfolio_ctx or "没有持仓" in portfolio_ctx or "尚未录入" in portfolio_ctx or "尚未建仓" in portfolio_ctx:
