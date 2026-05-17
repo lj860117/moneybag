@@ -284,10 +284,13 @@ def _build_allocation(nw, val_pct: int = 50) -> dict | None:
         if total <= 0:
             return None
 
+        equity_pct = round(inv / total * 100, 1)
+        cash_pct = round(cash / total * 100, 1)
         current = {
-            "stock": round(inv / total * 100, 1),
+            "stock": equity_pct,   # 兼容旧前端
+            "equity": equity_pct,  # 新字段：含股票+基金+黄金等权益类
             "bond": 0,
-            "cash": round(cash / total * 100, 1),
+            "cash": cash_pct,
         }
 
         if val_pct > 70:
