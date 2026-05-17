@@ -1,31 +1,122 @@
 // ---- AI聊天页 ----
 let chatModel='deepseek-v4-flash';
 let chatModelList=[];
+let chatMaster='buffett'; // 当前选中大师
 async function loadModelList(){try{const r=await fetch(API_BASE+'/models',{signal:AbortSignal.timeout(5000)});if(r.ok){const d=await r.json();chatModelList=d.models||[];if(d.default)chatModel=localStorage.getItem('chatModel')||d.default}}catch{chatModelList=[{id:'deepseek-v4-flash',name:'DeepSeek V4',provider:'deepseek'}]}}
-function renderChat(){currentPage='chat';renderNav();const sugs=['现在适合入场吗？','什么时候该卖出？','智能定投怎么投？','最近有什么新闻？','政策对我持仓有啥影响？','关税贸易战利好利空啥？','技术指标怎么样？','宏观经济怎么样？','今天市场怎么样？','黄金还能买吗？'];
-const modelSelector=chatModelList.length>0?`<select id="modelSelect" onchange="chatModel=this.value;localStorage.setItem('chatModel',this.value)" style="background:var(--bg2);color:var(--text);border:1px solid var(--bg3);border-radius:8px;padding:4px 8px;font-size:11px;margin-left:8px">${chatModelList.map(m=>`<option value="${m.id}" ${m.id===chatModel?'selected':''}>${m.name}</option>`).join('')}</select>`:'';
-$('#app').innerHTML=`<div class="chat-page"><div class="chat-header"><h2>🤖 AI理财分析师</h2><p>${API_AVAILABLE?'连接实时数据分析':'后端离线，部分功能受限'}${modelSelector}</p></div><div class="chat-messages" id="chatMsgs"><div class="chat-msg bot">你好！我是钱袋子AI分析师，内置巴菲特、格雷厄姆、林奇、塔勒布四位大师的投资框架 🧠\n\n问我关于市场行情、持仓、买卖建议等问题。\n\n所有建议仅供参考 😊<div class="src-tag">系统</div></div>${chatMessages.map(m=>`<div class="chat-msg ${m.role}">${m.text}${m.src?`<div class="src-tag">${m.src==='ai'?'🤖 AI · DeepSeek':'📐 规则引擎 · 实时数据'}</div>`:''}</div>`).join('')}</div><div class="chat-suggestions" id="chatSugs">${sugs.map(s=>`<button class="chat-suggest-btn" onclick="sendChat('${s}')">${s}</button>`).join('')}</div><div class="chat-input-bar"><input class="chat-input" id="chatIn" placeholder="问点什么..." onkeydown="if(event.key==='Enter')sendChat()"><button class="chat-send" onclick="sendChat()">→</button></div></div>`;scrollChat()}
+function renderChat(){currentPage='chat';renderNav();
+// 恢复上次选中的大师
+chatMaster=localStorage.getItem('mb-chat-master')||'buffett';
+const sugs=[
+  {emoji:'📈',text:'现在适合入场吗？'},
+  {emoji:'🛡️',text:'我的持仓风险大吗？'},
+  {emoji:'💰',text:'智能定投怎么投？'},
+  {emoji:'🌐',text:'今天市场怎么样？'},
+  {emoji:'🏛️',text:'政策对我有啥影响？'}
+];
+const masters=[
+  {id:'buffett',emoji:'🎩',name:'巴菲特',desc:'价值',bg:'linear-gradient(135deg,#FF8A65,#E64A19)'},
+  {id:'graham',emoji:'📚',name:'格雷厄姆',desc:'安全边际',bg:'linear-gradient(135deg,#5C6BC0,#283593)'},
+  {id:'lynch',emoji:'🔍',name:'林奇',desc:'实地研究',bg:'linear-gradient(135deg,#26A69A,#00695C)'},
+  {id:'taleb',emoji:'🌪',name:'塔勒布',desc:'反脆弱',bg:'linear-gradient(135deg,#7E57C2,#4527A0)'}
+];
+const modelPill=chatModelList.length>1?`<span class="mb-pill mb-pill--ai" style="font-size:10px;cursor:pointer" onclick="showModelPicker()">${chatModelList.find(m=>m.id===chatModel)?.name||'DeepSeek'}</span>`:'';
+
+$('#app').innerHTML=`<div class="chat-page" style="display:flex;flex-direction:column;height:calc(100vh - var(--tabbar-height,76px));max-height:calc(100vh - 76px);padding:0">
+
+<!-- 顶部 -->
+<div style="padding:12px 16px 8px;flex-shrink:0">
+  <div class="mb-flex mb-flex--between" style="margin-bottom:10px">
+    <div class="mb-flex mb-gap-3">
+      <div class="mb-avatar mb-avatar--sm mb-avatar--ai">🤖</div>
+      <div>
+        <b style="font-size:14px">AI 分析师</b>
+        <div style="display:flex;align-items:center;gap:4px;margin-top:1px"><span class="mb-live-dot"></span><span style="font-size:10px;color:var(--color-bull,#00E5A0)">在线</span></div>
+      </div>
+    </div>
+    <div class="mb-flex mb-gap-2">${modelPill}</div>
+  </div>
+
+  <!-- 4 大师切换 -->
+  <div class="mb-master-grid" style="display:grid;grid-template-columns:repeat(4,1fr);gap:6px;margin-bottom:10px">
+    ${masters.map(m=>`<button class="mb-master${m.id===chatMaster?' mb-master--active':''}" data-master="${m.id}" onclick="switchMaster('${m.id}')" style="display:flex;flex-direction:column;align-items:center;gap:3px;padding:8px 4px;border:1px solid ${m.id===chatMaster?'var(--color-brand-500,#FFB755)':'var(--border-subtle,rgba(255,255,255,.05))'};border-radius:var(--radius-lg,14px);background:var(--bg-elevated,#10131C);cursor:pointer;transition:border-color var(--duration-fast,.12s)">
+      <div class="mb-avatar mb-avatar--md" style="background:${m.bg}">${m.emoji}</div>
+      <b style="font-size:10px;color:var(--text-primary,#F0F2F7)">${m.name}</b>
+      <small style="font-size:9px;color:var(--text-tertiary,#7A8499)">${m.desc}</small>
+    </button>`).join('')}
+  </div>
+</div>
+
+<!-- 对话区域 -->
+<div class="chat-messages" id="chatMsgs" style="flex:1;overflow-y:auto;padding:0 16px 16px;scroll-behavior:smooth">
+  <div class="mb-bubble mb-bubble--ai">你好！我是钱袋子 AI 分析师 🧠\n\n当前视角：<b data-current-master>${masters.find(m=>m.id===chatMaster)?.name||'巴菲特'}</b>\n\n问我关于市场行情、持仓、买卖建议等问题。所有建议仅供参考 😊</div>
+  ${chatMessages.map(m=>m.role==='user'?`<div class="mb-bubble mb-bubble--user">${m.text}</div>`:`<div class="mb-bubble mb-bubble--ai">${m.text}${m.src?`<div style="margin-top:6px;font-size:10px;color:var(--text-tertiary,#7A8499)">${m.src==='ai'?'🤖 AI · DeepSeek':'📐 规则引擎'}</div>`:''}</div>`).join('')}
+</div>
+
+<!-- 常见问题 -->
+<div id="chatSugs" style="flex-shrink:0;padding:0 16px 8px;display:flex;gap:6px;overflow-x:auto;scrollbar-width:none">
+  ${sugs.map(s=>`<button class="mb-card--ghost" style="padding:8px 12px;white-space:nowrap;cursor:pointer;font-size:11px;display:flex;align-items:center;gap:4px;flex-shrink:0" onclick="sendChat('${s.text}')">${s.emoji} ${s.text}</button>`).join('')}
+</div>
+
+<!-- 输入框（固定底部 80px 处） -->
+<div style="flex-shrink:0;padding:8px 16px calc(8px + var(--safe-area-bottom,0px));background:var(--bg-overlay,rgba(10,12,18,.85));backdrop-filter:blur(20px);border-top:1px solid var(--border-subtle,rgba(255,255,255,.05))">
+  <div style="display:flex;gap:8px;align-items:center;background:var(--bg-input,rgba(255,255,255,.04));border:1px solid var(--border-default,rgba(255,255,255,.08));border-radius:var(--radius-pill,999px);padding:6px 6px 6px 16px">
+    <input class="chat-input" id="chatIn" placeholder="问点什么..." style="flex:1;border:none;background:none;color:var(--text-primary,#F0F2F7);font-size:var(--fs-base,13px);outline:none;font-family:inherit" onkeydown="if(event.key==='Enter')sendChat()">
+    <button class="chat-send" onclick="sendChat()" style="width:32px;height:32px;border-radius:50%;background:var(--color-brand-gradient,linear-gradient(135deg,#FFB755,#FF7A4D));border:none;color:var(--text-on-brand,#0a0a0a);font-size:14px;cursor:pointer;display:grid;place-items:center;flex-shrink:0">→</button>
+  </div>
+</div>
+</div>`;scrollChat()}
+
+// 切换大师
+function switchMaster(id){
+  chatMaster=id;
+  localStorage.setItem('mb-chat-master',id);
+  // 更新 UI 高亮
+  document.querySelectorAll('.mb-master').forEach(el=>{
+    const isActive=el.dataset.master===id;
+    el.classList.toggle('mb-master--active',isActive);
+    el.style.borderColor=isActive?'var(--color-brand-500,#FFB755)':'var(--border-subtle,rgba(255,255,255,.05))';
+  });
+  // 更新欢迎语中的视角文字
+  const masterNameMap={buffett:'巴菲特',graham:'格雷厄姆',lynch:'林奇',taleb:'塔勒布'};
+  const viewLabel=document.querySelector('[data-current-master]');
+  if(viewLabel) viewLabel.textContent=masterNameMap[id]||id;
+}
+
+// 模型选择弹窗
+function showModelPicker(){
+  const o=document.createElement('div');o.className='modal-overlay';o.onclick=e=>{if(e.target===o)o.remove()};
+  o.innerHTML=`<div class="modal-sheet" onclick="event.stopPropagation()"><div class="modal-handle"></div>
+  <div class="modal-title">选择 AI 模型</div>
+  <div style="margin-top:12px;display:flex;flex-direction:column;gap:8px">
+  ${chatModelList.map(m=>`<button style="padding:12px;border-radius:var(--radius-md,10px);border:1px solid ${m.id===chatModel?'var(--color-brand-500,#FFB755)':'var(--border-default,rgba(255,255,255,.08))'};background:var(--bg-elevated,#10131C);color:var(--text-primary,#F0F2F7);font-size:13px;cursor:pointer;text-align:left" onclick="chatModel='${m.id}';localStorage.setItem('chatModel','${m.id}');document.querySelector('.modal-overlay')?.remove();renderChat()">${m.name} <span style="font-size:11px;color:var(--text-tertiary)">${m.provider||''}</span></button>`).join('')}
+  </div></div>`;
+  document.body.appendChild(o);
+}
 
 let _chatSending=false;
 function _setChatLock(locked){
 _chatSending=locked;
-const inp=document.getElementById('chatIn');const btn=document.querySelector('.chat-send');const sugs=document.querySelectorAll('.chat-suggest-btn');
+const inp=document.getElementById('chatIn');const btn=document.querySelector('.chat-send');const sugs=document.querySelectorAll('#chatSugs button');
 if(inp){inp.disabled=locked;inp.placeholder=locked?'AI 正在思考中...':'问点什么...'}
 if(btn){btn.disabled=locked;btn.style.opacity=locked?'0.4':'1';btn.style.pointerEvents=locked?'none':'auto'}
 sugs.forEach(s=>{s.disabled=locked;s.style.opacity=locked?'0.4':'1';s.style.pointerEvents=locked?'none':'auto'})}
 async function sendChat(text){if(_chatSending)return;const inp=document.getElementById('chatIn');const msg=text||(inp?inp.value.trim():'');if(!msg)return;_setChatLock(true);if(inp)inp.value='';
 const sg=document.getElementById('chatSugs');if(sg)sg.style.display='none';
 chatMessages.push({role:'user',text:msg});appendMsg('user',msg);appendTyping();
+// 大师视角前缀（如果后端不支持 master 参数，拼到消息开头）
+const masterNames={buffett:'巴菲特（价值投资）',graham:'格雷厄姆（安全边际）',lynch:'彼得·林奇（实地研究）',taleb:'塔勒布（反脆弱）'};
+const masterPrefix=chatMaster&&chatMaster!=='buffett'?`（请用${masterNames[chatMaster]||chatMaster}视角回答）`:`（请用${masterNames.buffett}视角回答）`;
+const msgWithMaster=masterPrefix+msg;
 // 思考进度计时
 const isR1=chatModel.includes('reasoner');
 let _thinkSec=0;_thinkTimer=setInterval(()=>{_thinkSec++;const el=document.getElementById('chatTyp');if(!el)return;const tips=isR1?['🧠 深度推理模型思考中...','💭 正在多角度分析...','📊 综合大师观点中...','⏳ R1 深度思考需要 15-30 秒，请耐心等待']:['🤖 AI 分析中...','📊 查询实时数据...','💭 综合分析中...'];const tip=tips[Math.min(Math.floor(_thinkSec/5),tips.length-1)];el.innerHTML=`<span></span><span></span><span></span><div style="font-size:11px;color:var(--text2);margin-top:4px">${tip}（${_thinkSec}s）</div>`},1000);
 if(API_AVAILABLE){try{const p=loadPortfolio();
-const r=await fetch(API_BASE+'/chat/stream',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({message:msg,model:chatModel,portfolio:p.holdings.length?p:null,userId:getProfileId()})});
+const r=await fetch(API_BASE+'/chat/stream',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({message:msgWithMaster,model:chatModel,master:chatMaster,portfolio:p.holdings.length?p:null,userId:getProfileId()})});
 rmTyping();
 if(r.ok&&r.body){
 // SSE 流式逐字渲染
 const el=document.getElementById('chatMsgs');if(!el)return;
-const botDiv=document.createElement('div');botDiv.className='chat-msg bot';botDiv.innerHTML='<span class="stream-cursor">▊</span>';el.appendChild(botDiv);scrollChat();
+const botDiv=document.createElement('div');botDiv.className='mb-bubble mb-bubble--ai';botDiv.innerHTML='<span class="stream-cursor">▊</span>';el.appendChild(botDiv);scrollChat();
 let fullText='',source='ai',thinkText='',_r1Thinking=false;
 const reader=r.body.getReader();const dec=new TextDecoder();let buf='';
 while(true){const{done,value}=await reader.read();if(done)break;
@@ -57,7 +148,7 @@ if(r.ok){const d=await r.json();chatMessages.push({role:'bot',text:d.reply,src:d
 }catch(e){console.warn('Chat stream error:',e)}}
 rmTyping();const fb='后端未连接，无法获取实时数据。请确保后端运行中。';chatMessages.push({role:'bot',text:fb,src:'offline'});_saveChatHistory();appendMsg('bot',fb,'offline');_setChatLock(false)}
 
-function appendMsg(r,t,src){const el=document.getElementById('chatMsgs');if(!el)return;const d=document.createElement('div');d.className='chat-msg '+r;d.innerHTML=t+(src?`<div class="src-tag">${src==='ai'?'🤖 AI · DeepSeek':src==='rules'?'📐 规则引擎 · 实时数据':'离线'}</div>`:'');el.appendChild(d);scrollChat()}
+function appendMsg(r,t,src){const el=document.getElementById('chatMsgs');if(!el)return;const d=document.createElement('div');d.className=r==='user'?'mb-bubble mb-bubble--user':'mb-bubble mb-bubble--ai';d.innerHTML=t+(src?`<div style="margin-top:6px;font-size:10px;color:var(--text-tertiary,#7A8499)">${src==='ai'?'🤖 AI · DeepSeek':src==='rules'?'📐 规则引擎':'离线'}</div>`:'');el.appendChild(d);scrollChat()}
 let _thinkTimer=null;
 function appendTyping(){const el=document.getElementById('chatMsgs');if(!el)return;const d=document.createElement('div');d.className='chat-typing';d.id='chatTyp';d.innerHTML='<span></span><span></span><span></span>';el.appendChild(d);scrollChat()}
 function rmTyping(){if(_thinkTimer){clearInterval(_thinkTimer);_thinkTimer=null}const el=document.getElementById('chatTyp');if(el)el.remove()}
