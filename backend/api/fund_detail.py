@@ -300,6 +300,24 @@ def fund_manager_track(code: str):
     # 过滤掉第一个（没有收益率），保留有收益率的
     track_with_data = [t for t in track[1:] if t.get("quarter_return_pct") is not None]
 
+    # 如果规模数据全缺失，尝试 AKShare 获取当前规模补到最新季度
+    has_scale = any(t.get("scale_billion") for t in track_with_data)
+    current_scale = None
+    if not has_scale and track_with_data:
+        try:
+            from services.tushare_data import get_fund_extra_info_ak
+            ak_extra = get_fund_extra_info_ak(code)
+            if ak_extra.get('最新规模'):
+                scale_str = str(ak_extra['最新规模']).replace('亿', '').strip()
+                current_scale = round(float(scale_str), 2)
+                # 给最近几个季度填充当前规模（近似）
+                if current_scale and current_scale > 0:
+                    for t in track_with_data[-4:]:
+                        if not t.get("scale_billion"):
+                            t["scale_billion"] = current_scale
+        except Exception:
+            pass
+
     # AI 总结（如果有 LLM 可用）
     verdict = ""
     if track_with_data and len(track_with_data) >= 4:
@@ -308,20 +326,30 @@ def fund_manager_track(code: str):
         late = track_with_data[len(track_with_data) // 2:]
         early_median = sorted([t["quarter_return_pct"] for t in early])[len(early) // 2] if early else 0
         late_median = sorted([t["quarter_return_pct"] for t in late])[len(late) // 2] if late else 0
-        early_scale = sum(t["scale_billion"] for t in early if t["scale_billion"]) / max(len(early), 1)
-        late_scale = sum(t["scale_billion"] for t in late if t["scale_billion"]) / max(len(late), 1)
+        early_scale = sum(t["scale_billion"] for t in early if t.get("scale_billion")) / max(sum(1 for t in early if t.get("scale_billion")), 1)
+        late_scale = sum(t["scale_billion"] for t in late if t.get("scale_billion")) / max(sum(1 for t in late if t.get("scale_billion")), 1)
 
-        if late_scale > early_scale * 2 and late_median < early_median * 0.5:
-            verdict = f"⚠️ 规模诅咒明显：规模从{early_scale:.0f}亿增至{late_scale:.0f}亿后，季度收益中位数从{early_median:.1f}%降至{late_median:.1f}%"
-        elif late_scale > early_scale * 1.5 and late_median < early_median:
-            verdict = f"🟡 存在规模压力：规模{early_scale:.0f}→{late_scale:.0f}亿，收益略有下降"
+        # 规模数据充分时给规模诅咒判断
+        if early_scale > 0 and late_scale > 0:
+            if late_scale > early_scale * 2 and late_median < early_median * 0.5:
+                verdict = f"⚠️ 规模诅咒明显：规模从{early_scale:.1f}亿增至{late_scale:.1f}亿后，季度收益中位数从{early_median:.1f}%降至{late_median:.1f}%"
+            elif late_scale > early_scale * 1.5 and late_median < early_median:
+                verdict = f"🟡 存在规模压力：规模{early_scale:.1f}→{late_scale:.1f}亿，收益略有下降"
+            else:
+                verdict = f"✅ 规模管理良好：规模{early_scale:.1f}→{late_scale:.1f}亿，收益未明显下滑"
         else:
-            verdict = f"✅ 规模管理良好：规模{early_scale:.0f}→{late_scale:.0f}亿，收益未明显下滑"
+            # 规模数据不全，只评价收益趋势
+            final_scale = current_scale or late_scale or 0
+            scale_note = f"（当前规模{final_scale:.1f}亿）" if final_scale > 0 else ""
+            if late_median >= early_median:
+                verdict = f"✅ 收益表现稳定{scale_note}，后半段季度中位数{late_median:.1f}% ≥ 前半段{early_median:.1f}%"
+            else:
+                verdict = f"🟡 近期收益有所回落{scale_note}，后半段季度中位数{late_median:.1f}% < 前半段{early_median:.1f}%"
 
     result = {
         "available": True,
         "manager": manager_name,
-        "current_scale_billion": track_with_data[-1]["scale_billion"] if track_with_data else None,
+        "current_scale_billion": current_scale or (track_with_data[-1]["scale_billion"] if track_with_data else None),
         "track": track_with_data[-12:],  # 最多返回最近 12 个季度
         "verdict": verdict,
         "source": "tushare",
