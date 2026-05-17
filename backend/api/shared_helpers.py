@@ -499,8 +499,8 @@ def _rule_based_reply_structured(msg: str, market_ctx: str, portfolio_ctx: str) 
         if entity_name:
             # 个股新闻查询：只返回该股票相关的
             try:
-                from services.news_data import get_stock_news
-                stock_news = get_stock_news(entity_code, limit=5)
+                from services.news_data import get_stock_news_by_code
+                stock_news = get_stock_news_by_code(entity_code, limit=5)
                 if stock_news:
                     news_lines = [f"📰 {n.get('title', '')}（{n.get('source', '')}）" for n in stock_news[:5]]
                     text = f"📰 {entity_name}最新消息：\n\n" + "\n".join(news_lines) + "\n\n⚠️ 以上仅供参考，不构成投资建议。"
