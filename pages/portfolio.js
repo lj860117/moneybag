@@ -94,25 +94,6 @@ $('#app').innerHTML=`<div class="portfolio-page fade-up" style="padding-bottom:c
 
 <!-- 持仓列表 -->
 <div id="holdingsContent">
-${hasHoldings?`<div id="holdList">${displayHoldings.map(h=>`<div class="mb-card" style="margin-bottom:8px;padding:12px;cursor:pointer" onclick="showHoldingActions('${h.code}')">
-<div class="mb-flex mb-flex--between">
-<div><div style="font-size:var(--fs-md,14px);font-weight:var(--fw-semibold,600)">${h.name}</div>
-<div class="mb-caption">${h.category}${h.shares?' · '+h.shares.toFixed(2)+'份':''}${h.avgPrice?' · 均价¥'+h.avgPrice.toFixed(4):''}</div></div>
-<div style="text-align:right"><div class="mb-money mb-money--sm">${fmtFull(Math.round(h.totalCost))}</div></div></div></div>`).join('')}</div>
-<div class="mb-flex mb-gap-3" style="margin-top:14px">
-<button class="mb-btn mb-btn--primary mb-btn--block" onclick="showAddTxn()">➕ 新交易</button>
-<button class="mb-btn mb-btn--secondary mb-btn--block" onclick="showAddCustomFund()">🔍 添加自选</button>
-</div>`:`
-<div class="mb-empty">
-  <div class="mb-empty__icon">📊</div>
-  <div class="mb-empty__title" id="emptyHoldTitle">还没有持仓</div>
-  <div class="mb-empty__desc">完成测评记录买入，或手动添加交易</div>
-  <div class="mb-flex mb-flex--center mb-gap-3" style="flex-wrap:wrap">
-    <button class="mb-btn mb-btn--primary" id="emptyHoldCTA" onclick="showAddTxn()">➕ 添加股票</button>
-    <button class="mb-btn mb-btn--secondary" onclick="showAddCustomFund()">🔍 刷新行情</button>
-    <button class="mb-btn mb-btn--ai mb-btn--sm" onclick="navigateTo('chat')">🧠 AI 深度分析</button>
-  </div>
-</div>`}
 </div>
 
 <!-- 交易记录（初始隐藏） -->
@@ -134,6 +115,10 @@ return`<div class="mb-card" style="margin-bottom:6px;padding:10px;display:flex;a
 <button class="mb-btn mb-btn--secondary mb-btn--block" onclick="startQuiz()">🔄 重新测评</button>
 <button class="mb-btn mb-btn--secondary mb-btn--block" style="color:var(--color-bear,#FF6B6B)" onclick="if(confirm('清除所有持仓和交易记录？')){localStorage.removeItem(TXN_KEY);localStorage.removeItem(STORAGE_KEY);renderPortfolio()}">🗑️ 清除</button>
 </div></div>`;
+
+// 初始渲染时立即按当前Tab过滤持仓列表
+if(!window._portfolioTab)window._portfolioTab='stock';
+_renderFilteredHoldings();
 
 // 异步更新实时盈亏
 if(API_AVAILABLE&&useV4){
