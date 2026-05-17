@@ -48,8 +48,7 @@ ${!isTradeDay?`<div style="background:linear-gradient(90deg,rgba(255,183,85,.08)
     <span class="mb-text-tertiary">今日 · 较昨日收盘</span>
   </div>
   <div class="mb-hero__splits" id="heroBreakdown">
-    <div class="mb-hero__split"><div class="mb-hero__split-label">📊 股票</div><div class="mb-hero__split-value">¥${fmtMoney(Math.round(nw.stockValue||0))}</div></div>
-    <div class="mb-hero__split"><div class="mb-hero__split-label">💼 基金</div><div class="mb-hero__split-value">¥${fmtMoney(Math.round(nw.fundOnlyValue||0))}</div></div>
+    <div class="mb-hero__split" style="cursor:pointer" onclick="_showInvestBreakdown()"><div class="mb-hero__split-label">📈 投资</div><div class="mb-hero__split-value">¥${fmtMoney(Math.round(nw.fundValue))}</div></div>
     <div class="mb-hero__split"><div class="mb-hero__split-label">💵 现金</div><div class="mb-hero__split-value">¥${fmtMoney(Math.round(nw.assetTotal))}</div></div>
     <div class="mb-hero__split"><div class="mb-hero__split-label">📋 负债</div><div class="mb-hero__split-value mb-hero__split-value--dn">-¥${fmtMoney(Math.round(nw.liabilities))}</div></div>
   </div>
@@ -596,4 +595,29 @@ ${advArr.length?advArr.map(a=>{const bg=a.direction==='reduce'?'rgba(239,68,68,.
 
   console.log('[V6-6] household-hero patch installed');
 })();
+
+// 投资明细弹窗（点击首页"📈 投资"触发）
+function _showInvestBreakdown(){
+  const nw=calcNetWorth();
+  const o=document.createElement('div');o.className='modal-overlay';o.onclick=e=>{if(e.target===o)o.remove()};
+  o.innerHTML=`<div class="modal-sheet" onclick="event.stopPropagation()" style="max-height:60vh">
+    <div class="modal-handle"></div>
+    <div class="modal-title">📈 投资明细</div>
+    <div class="modal-subtitle">总投资 ¥${fmtMoney(Math.round(nw.fundValue))}</div>
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin:16px 0">
+      <div style="text-align:center;padding:16px;background:var(--bg-elevated,rgba(255,255,255,.03));border-radius:12px">
+        <div style="font-size:24px;margin-bottom:6px">📊</div>
+        <div style="font-size:11px;color:var(--text-tertiary)">股票</div>
+        <div style="font-size:18px;font-weight:800;margin-top:4px">¥${fmtMoney(Math.round(nw.stockValue||0))}</div>
+      </div>
+      <div style="text-align:center;padding:16px;background:var(--bg-elevated,rgba(255,255,255,.03));border-radius:12px">
+        <div style="font-size:24px;margin-bottom:6px">💼</div>
+        <div style="font-size:11px;color:var(--text-tertiary)">基金</div>
+        <div style="font-size:18px;font-weight:800;margin-top:4px">¥${fmtMoney(Math.round(nw.fundOnlyValue||0))}</div>
+      </div>
+    </div>
+    <button class="mb-btn mb-btn--secondary mb-btn--block" onclick="document.querySelector('.modal-overlay')?.remove();navigateTo('portfolio')">查看持仓详情 →</button>
+  </div>`;
+  document.body.appendChild(o);
+}
 
