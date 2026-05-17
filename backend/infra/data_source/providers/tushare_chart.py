@@ -66,13 +66,18 @@ def _fetch_fund_nav_kline(ts_code: str, start_date: str, end_date: str) -> list[
     try:
         df = _get_api().fund_nav(ts_code=ts_code, start_date=start_date, end_date=end_date)
         if df is None or df.empty: return []
-        df = df.sort_values("ann_date")
+        # 用 nav_date 作为实际日期（ann_date 是公布日，比实际晚一天）
+        date_col = "nav_date" if "nav_date" in df.columns else "ann_date"
+        df = df.sort_values(date_col)
         result = []
         for _, r in df.iterrows():
             nav = float(r.get("unit_nav") or r.get("adj_nav") or 0)
             if nav <= 0:
                 continue
-            d = _fmt(str(r.get("ann_date", r.get("end_date", ""))))
+            raw_date = str(r.get(date_col, ""))
+            if not raw_date or len(raw_date) < 8:
+                continue
+            d = _fmt(raw_date)
             # 场外基金无盘中数据，OHLC 都用净值
             result.append(KLinePoint(d, nav, nav, nav, nav))
         return result
