@@ -233,7 +233,61 @@ ${policyNews.length?`<div class="dashboard-card"><div class="dashboard-card-titl
 ${intlNews.length?`<div class="dashboard-card"><div class="dashboard-card-title">🌍 国际动态</div>${intlNews.map(n=>`<div class="news-item" onclick="${n.url?`window.open('${n.url}','_blank')`:''}"${n.url?'':' style="cursor:default"'}><div class="news-icon">🌐</div><div class="news-content"><div class="news-title">${n.title}</div><div class="news-meta">${n.source||''}${n.time?' · '+n.time:''}</div></div>${n.url?'<div class="news-arrow">›</div>':''}</div>`).join('')}</div>`:''}
 ${!policyNews.length&&!intlNews.length&&!topicHtml?news.map(n=>`<div class="news-item"><div class="news-icon">📰</div><div class="news-content"><div class="news-title">${n.title}</div></div></div>`).join(''):''}
 <div style="text-align:center;margin-top:12px"><button class="action-btn secondary" style="display:inline-block;min-width:auto;padding:10px 24px" onclick="insightTab='policy';renderInsight()">🔄 刷新</button></div>
-<div style="text-align:center;font-size:11px;color:#475569;margin-top:8px">关键词: 政策/央行/关税/中美/美联储/地缘/半导体等</div>`;setCached('policy',el.innerHTML)}
+<div style="text-align:center;font-size:11px;color:#475569;margin-top:8px">关键词: 政策/央行/关税/中美/美联储/地缘/半导体等</div>
+<div id="policyBeneficiaryArea"></div>`;setCached('policy',el.innerHTML);
+// 异步加载政策受益标的区域
+_renderPolicyBeneficiaryCards();}
+
+async function _renderPolicyBeneficiaryCards(){
+const area=document.getElementById('policyBeneficiaryArea');
+if(!area)return;
+area.innerHTML='<div class="dashboard-card" style="margin-top:16px"><div class="dashboard-card-title">🏷️ 政策受益标的</div><div style="text-align:center;padding:16px;color:var(--text2)"><div class="loading-spinner" style="width:20px;height:20px;margin:0 auto 8px;border-width:2px"></div>正在分析热门政策受益方向...</div></div>';
+try{
+const r=await fetch(API_BASE+'/policy/tags',{signal:AbortSignal.timeout(20000)});
+if(!r.ok)throw new Error('fetch failed');
+const data=await r.json();
+if(!data.available){area.innerHTML='';return}
+const topics=data.topics||[];
+const codeTags=data.code_tags||{};
+// 按政策主题分组展示
+let html='<div class="dashboard-card" style="margin-top:16px"><div class="dashboard-card-title">🏷️ 政策受益标的 <span style="font-size:10px;color:var(--text2);font-weight:400">'+data.total_codes+'只标的覆盖'+topics.length+'个主题</span></div>';
+// 主题选择pills
+html+='<div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:12px">';
+topics.forEach((t,i)=>{html+='<button class="section-tab '+(i===0?'active':'')+'" onclick="_switchPolicyTopic(\''+t+'\')" data-policy-topic="'+t+'" style="font-size:11px;padding:4px 10px">'+t+'</button>'});
+html+='</div>';
+// 默认显示第一个主题
+html+='<div id="policyTopicContent"></div></div>';
+area.innerHTML=html;
+// 加载第一个主题详情
+if(topics.length)_switchPolicyTopic(topics[0]);
+}catch(e){console.warn('Policy beneficiary cards failed:',e);area.innerHTML=''}}
+
+async function _switchPolicyTopic(topic){
+// 高亮选中pill
+document.querySelectorAll('[data-policy-topic]').forEach(btn=>{btn.classList.toggle('active',btn.dataset.policyTopic===topic)});
+const container=document.getElementById('policyTopicContent');
+if(!container)return;
+container.innerHTML='<div style="text-align:center;padding:12px;color:var(--text2)"><div class="loading-spinner" style="width:16px;height:16px;margin:0 auto 6px;border-width:2px"></div></div>';
+try{
+const r=await fetch(API_BASE+'/policy/beneficiaries?topic='+encodeURIComponent(topic),{signal:AbortSignal.timeout(20000)});
+if(!r.ok)throw new Error('fetch failed');
+const d=await r.json();
+if(!d.available){container.innerHTML='<div style="text-align:center;padding:12px;color:var(--text2)">暂无数据</div>';return}
+let h='';
+if(d.summary)h+='<div style="font-size:12px;color:var(--text1);margin-bottom:10px;padding:8px;background:rgba(245,158,11,.06);border-radius:8px">💡 '+d.summary+'</div>';
+if(d.industries&&d.industries.length)h+='<div style="display:flex;gap:4px;flex-wrap:wrap;margin-bottom:10px">'+d.industries.map(i=>'<span style="font-size:10px;padding:2px 8px;border-radius:10px;background:rgba(99,102,241,.1);color:#818CF8">'+i+'</span>').join('')+'</div>';
+// 基金列表
+if(d.funds&&d.funds.length){h+='<div style="font-size:11px;color:var(--text2);font-weight:600;margin-bottom:6px">📊 受益基金</div>';
+d.funds.forEach(f=>{h+='<div style="display:flex;align-items:center;gap:8px;padding:6px 0;border-bottom:1px solid rgba(148,163,184,.06);cursor:pointer" onclick="showFundDetailModal(\''+f.code+'\',\''+((f.name||'').replace(/'/g,''))+'\')">'
++'<div style="font-size:12px;font-weight:600;flex:1">'+f.name+'<span style="font-size:10px;color:var(--text2);margin-left:4px">'+f.code+'</span></div>'
++'<div style="font-size:10px;color:#FBBF24;background:rgba(245,158,11,.1);padding:2px 6px;border-radius:4px">'+f.reason+'</div></div>'})}
+// 股票列表
+if(d.stocks&&d.stocks.length){h+='<div style="font-size:11px;color:var(--text2);font-weight:600;margin:10px 0 6px">📈 受益个股</div>';
+d.stocks.forEach(s=>{h+='<div style="display:flex;align-items:center;gap:8px;padding:6px 0;border-bottom:1px solid rgba(148,163,184,.06);cursor:pointer" onclick="showFundChart(\''+s.code+'\')">'
++'<div style="font-size:12px;font-weight:600;flex:1">'+s.name+'<span style="font-size:10px;color:var(--text2);margin-left:4px">'+s.code+'</span></div>'
++'<div style="font-size:10px;color:#FBBF24;background:rgba(245,158,11,.1);padding:2px 6px;border-radius:4px">'+s.reason+'</div></div>'})}
+container.innerHTML=h||'<div style="text-align:center;padding:12px;color:var(--text2)">暂无受益标的数据</div>';
+}catch(e){container.innerHTML='<div style="text-align:center;padding:12px;color:var(--text2)">加载失败，请稍后重试</div>'}}
 
 function renderInsightTech(el,d){
 const tech=d.technical||{};const m=tech.macd||{};const b=tech.bollinger||{};
@@ -308,7 +362,7 @@ async function _loadPolicyTags(){
 if(_policyTagsCache)return _policyTagsCache;
 if(_policyTagsLoading)return null;
 _policyTagsLoading=true;
-try{const r=await fetch(API_BASE+'/api/policy/tags',{signal:AbortSignal.timeout(15000)});
+try{const r=await fetch(API_BASE+'/policy/tags',{signal:AbortSignal.timeout(15000)});
 if(!r.ok)throw new Error('policy tags fetch failed');
 const data=await r.json();
 if(data.available){_policyTagsCache=data.code_tags||{};
@@ -429,13 +483,14 @@ metaEl.innerHTML=`🧠 市场判断: <b>${regimeZh}</b> | 动态权重: ${wText}
 metaEl.style.display='block';
 }
 if(!stocks.length){listEl.innerHTML='<div style="text-align:center;padding:20px;color:var(--text2)">'+(data.error||'暂无数据')+'</div>';return}
+window._stockScreenData=stocks;
 listEl.innerHTML=`<div style="font-size:11px;color:var(--text2);margin-bottom:8px">从 ${data.total} 只股票中筛选 TOP ${stocks.length}</div>
 <div style="display:grid;grid-template-columns:30px 1fr 70px 50px 32px;gap:4px;font-size:11px;color:var(--text2);font-weight:600;padding:6px 0;border-bottom:1px solid rgba(148,163,184,.1)">
 <div>#</div><div>股票</div><div style="text-align:right">涨跌</div><div style="text-align:right">评分</div><div></div></div>
 ${stocks.map((s,i)=>{
 const chgColor=s.change_pct>0?'var(--green)':s.change_pct<0?'var(--red)':'var(--text2)';
 const scoreColor=s.score>65?'var(--green)':s.score>50?'var(--accent)':'var(--red)';
-return`<div style="display:grid;grid-template-columns:30px 1fr 70px 50px 32px;gap:4px;padding:8px 0;border-bottom:1px solid rgba(148,163,184,.04);align-items:center;cursor:pointer" onclick="showExplain('stock_${s.code}')">
+return`<div style="display:grid;grid-template-columns:30px 1fr 70px 50px 32px;gap:4px;padding:8px 0;border-bottom:1px solid rgba(148,163,184,.04);align-items:center;cursor:pointer" onclick="showStockDetailModal(window._stockScreenData[${i}])">
 <div style="font-size:11px;color:var(--text2);font-weight:700">${i+1}</div>
 <div><div style="font-size:13px;font-weight:600">${s.name}</div>
 <div style="font-size:10px;color:var(--text2)">${s.code.replace(/^(sh|sz)/i,'')} · PE ${s.pe!=null?s.pe:'暂无'} · ${s.market_cap?s.market_cap+'亿':'-'}${s.roe?' · ROE'+s.roe+'%':''}${s.gross_margin?' · 毛利'+s.gross_margin+'%':''}</div></div>

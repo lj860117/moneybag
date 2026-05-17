@@ -455,3 +455,67 @@ window.loadManagerTrack = async function(code, managerName) {
   }
 };
 
+/* 选股详情弹窗（Phase 3 前端） */
+window.showStockDetailModal = function(stockData) {
+  if (!stockData) return;
+  const s = stockData;
+  const code = (s.code || '').replace(/^(sh|sz)/i, '');
+  const chgColor = (s.change_pct||0) >= 0 ? 'var(--color-bull,#00E5A0)' : 'var(--color-bear,#FF6B6B)';
+  const scoreColor = (s.score||0) > 65 ? 'var(--color-bull,#00E5A0)' : (s.score||0) > 50 ? 'var(--accent,#F59E0B)' : 'var(--color-bear,#FF6B6B)';
+
+  // 政策标签
+  let policyHtml = '';
+  if (typeof _policyTagsCache !== 'undefined' && _policyTagsCache && _policyTagsCache[code]) {
+    policyHtml = '<div style="display:flex;gap:4px;flex-wrap:wrap;margin:8px 0">' +
+      _policyTagsCache[code].map(t => '<span style="font-size:10px;padding:2px 6px;border-radius:4px;background:rgba(245,158,11,.12);color:#FBBF24">\u{1F3F7}️' + t + '</span>').join('') + '</div>';
+  }
+
+  const o = document.createElement('div');
+  o.className = 'modal-overlay';
+  o.onclick = e => { if (e.target === o) o.remove(); };
+  o.innerHTML = `<div class="modal-sheet" onclick="event.stopPropagation()" style="max-height:90vh;overflow-y:auto">
+    <div class="modal-handle"></div>
+    <div class="modal-title" style="display:flex;align-items:baseline;gap:8px">
+      <span>\u{1F4C8} ${s.name||code}</span>
+      <span style="font-size:18px;font-weight:800;color:${chgColor}">${s.price?'¥'+s.price:''}</span>
+    </div>
+    <div class="modal-subtitle">${code} · ${s.change_pct!=null?(s.change_pct>0?'+':'')+s.change_pct+'%':'—'} · 市值 ${s.market_cap?s.market_cap+'亿':'—'}</div>
+    ${policyHtml}
+
+    <!-- 核心指标网格 -->
+    <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin:14px 0">
+      <div class="mb-card--ghost" style="padding:10px;text-align:center"><div style="font-size:10px;color:var(--text-tertiary)">PE</div><div style="font-size:16px;font-weight:700">${s.pe!=null?s.pe:'—'}</div></div>
+      <div class="mb-card--ghost" style="padding:10px;text-align:center"><div style="font-size:10px;color:var(--text-tertiary)">PB</div><div style="font-size:16px;font-weight:700">${s.pb!=null?s.pb:'—'}</div></div>
+      <div class="mb-card--ghost" style="padding:10px;text-align:center"><div style="font-size:10px;color:var(--text-tertiary)">综合评分</div><div style="font-size:16px;font-weight:800;color:${scoreColor}">${s.score||'—'}</div></div>
+    </div>
+
+    <!-- 财务指标 -->
+    <div style="font-size:12px;font-weight:700;margin-bottom:8px">\u{1F4CB} 财务指标</div>
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:6px;margin-bottom:14px">
+      <div style="display:flex;justify-content:space-between;font-size:12px;padding:6px 8px;background:var(--bg-elevated,rgba(255,255,255,.03));border-radius:6px"><span style="color:var(--text-tertiary)">ROE</span><span style="font-weight:600">${s.roe?s.roe+'%':'—'}</span></div>
+      <div style="display:flex;justify-content:space-between;font-size:12px;padding:6px 8px;background:var(--bg-elevated,rgba(255,255,255,.03));border-radius:6px"><span style="color:var(--text-tertiary)">毛利率</span><span style="font-weight:600">${s.gross_margin?s.gross_margin+'%':'—'}</span></div>
+      <div style="display:flex;justify-content:space-between;font-size:12px;padding:6px 8px;background:var(--bg-elevated,rgba(255,255,255,.03));border-radius:6px"><span style="color:var(--text-tertiary)">净利率</span><span style="font-weight:600">${s.net_margin?s.net_margin+'%':'—'}</span></div>
+      <div style="display:flex;justify-content:space-between;font-size:12px;padding:6px 8px;background:var(--bg-elevated,rgba(255,255,255,.03));border-radius:6px"><span style="color:var(--text-tertiary)">负债率</span><span style="font-weight:600">${s.debt_ratio?s.debt_ratio+'%':'—'}</span></div>
+      <div style="display:flex;justify-content:space-between;font-size:12px;padding:6px 8px;background:var(--bg-elevated,rgba(255,255,255,.03));border-radius:6px"><span style="color:var(--text-tertiary)">营收增速</span><span style="font-weight:600">${s.revenue_growth?s.revenue_growth+'%':'—'}</span></div>
+      <div style="display:flex;justify-content:space-between;font-size:12px;padding:6px 8px;background:var(--bg-elevated,rgba(255,255,255,.03));border-radius:6px"><span style="color:var(--text-tertiary)">EPS</span><span style="font-weight:600">${s.eps||'—'}</span></div>
+    </div>
+
+    <!-- 7维评分 -->
+    ${s.scores?`<div style="font-size:12px;font-weight:700;margin-bottom:8px">\u{1F3AF} 7维评分</div>
+    <div style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:14px">
+      ${Object.entries(s.scores).map(([k,v])=>{const labels={value:'价值',growth:'成长',quality:'质量',momentum:'动量',risk:'风险',liquidity:'流动性',sentiment:'舆情'};const color=v>=70?'var(--color-bull,#00E5A0)':v>=50?'var(--accent,#F59E0B)':'var(--color-bear,#FF6B6B)';return '<div style="flex:1;min-width:70px;text-align:center;padding:6px;background:var(--bg-elevated,rgba(255,255,255,.03));border-radius:6px"><div style="font-size:10px;color:var(--text-tertiary)">'+(labels[k]||k)+'</div><div style="font-size:14px;font-weight:700;color:'+color+'">'+v+'</div></div>'}).join('')}
+    </div>`:''}
+
+    <!-- AI 点评 -->
+    ${s.aiComment?'<div style="padding:10px;background:rgba(99,102,241,.08);border-radius:10px;font-size:12px;color:#E0E7FF;line-height:1.6;margin-bottom:14px">\u{1F916} '+s.aiComment+'</div>':''}
+
+    <!-- 换手率 -->
+    <div style="font-size:11px;color:var(--text-tertiary);text-align:center;margin-bottom:12px">换手率 ${s.turnover?s.turnover+'%':'—'}</div>
+
+    <div style="display:flex;gap:8px">
+      <button class="mb-btn mb-btn--secondary mb-btn--block" onclick="showFundChart('${code}')">\u{1F4C8} K线</button>
+      <button class="mb-btn mb-btn--ai mb-btn--block" onclick="document.querySelector('.modal-overlay')?.remove();navigateTo('chat');setTimeout(()=>{const inp=document.getElementById('chatIn');if(inp){inp.value='帮我分析${(s.name||code).replace(/'/g,'')}(${code})的投资价值';inp.focus()}},300)">\u{1F4AC} 问 AI</button>
+    </div>
+  </div>`;
+  document.body.appendChild(o);
+};
