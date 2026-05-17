@@ -347,7 +347,7 @@ ${funds.map((f,i)=>{
 const scoreColor=f.score>15?'var(--green)':f.score>5?'var(--accent)':'var(--red)';
 const r1y=f.returns['1y'];const r3y=f.returns['3y'];const rytd=f.returns.ytd;
 const r1yColor=r1y>0?'var(--green)':'var(--red)';
-return`<div style="display:flex;align-items:center;gap:10px;padding:10px 0;border-bottom:1px solid rgba(148,163,184,.06);cursor:pointer" onclick="showExplain('fund_${f.code}')">
+return`<div style="display:flex;align-items:center;gap:10px;padding:10px 0;border-bottom:1px solid rgba(148,163,184,.06);cursor:pointer" onclick="showFundDetailModal('${f.code}','${(f.name||'').replace(/'/g,'')}')">
 <div style="font-size:12px;color:var(--text2);min-width:20px;text-align:center;font-weight:700">${i+1}</div>
 <div style="flex:1;min-width:0">
 <div style="font-size:13px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${f.name}</div>

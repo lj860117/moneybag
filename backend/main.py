@@ -101,6 +101,10 @@ app.include_router(balance_sheet_router)
 from api.allocation import router as allocation_router
 app.include_router(allocation_router)
 
+# ---- v9.3.4: 基金详情 + 经理战绩 + 政策受益（3 路由）----
+from api.fund_detail import router as fund_detail_router
+app.include_router(fund_detail_router)
+
 # ---- M3 W1: 决策复盘（4 路由）----
 from api.decisions import router as decisions_router
 app.include_router(decisions_router)

@@ -341,3 +341,117 @@ MB.components.mdLite = function(text) {
     .replace(/\n/g, '<br>');
 };
 window.mdLite = MB.components.mdLite;
+
+/* ──────────────────────────────────────────────────────────
+ * 基金详情弹窗（Phase 1 + Phase 2）
+ * 入口：showFundDetailModal(code, name)
+ * ────────────────────────────────────────────────────────── */
+window.showFundDetailModal = async function(code, name) {
+  const o = document.createElement('div');
+  o.className = 'modal-overlay';
+  o.onclick = e => { if (e.target === o) o.remove(); };
+  o.innerHTML = `<div class="modal-sheet" onclick="event.stopPropagation()" style="max-height:90vh;overflow-y:auto">
+    <div class="modal-handle"></div>
+    <div class="modal-title">📊 ${name || code}</div>
+    <div class="modal-subtitle">${code} · 加载详情中...</div>
+    <div id="fundDetailBody" style="padding:12px 0"><div style="text-align:center;padding:30px"><div class="loading-spinner" style="width:24px;height:24px;margin:0 auto 8px;border-width:2px"></div><div style="font-size:12px;color:var(--text2)">正在获取基金经理和规模数据...</div></div></div>
+    <div style="display:flex;gap:8px;margin-top:12px">
+      <button class="mb-btn mb-btn--secondary mb-btn--block" onclick="showFundChart('${code}')">📈 K线</button>
+      <button class="mb-btn mb-btn--ai mb-btn--block" onclick="document.querySelector('.modal-overlay')?.remove();navigateTo('chat');setTimeout(()=>{const inp=document.getElementById('chatIn');if(inp){inp.value='帮我分析基金${code}的投资价值';inp.focus()}},300)">💬 问 AI</button>
+    </div>
+  </div>`;
+  document.body.appendChild(o);
+
+  // 异步加载详情
+  try {
+    const r = await fetch(API_BASE + '/fund/detail/' + code, { signal: AbortSignal.timeout(15000) });
+    if (!r.ok) throw new Error('API ' + r.status);
+    const d = await r.json();
+    const body = document.getElementById('fundDetailBody');
+    if (!body) return;
+
+    let html = '';
+
+    // 基本信息网格
+    const returns = d.returns || {};
+    html += `<div style="display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin-bottom:14px">
+      <div class="mb-card--ghost" style="padding:10px;text-align:center"><div style="font-size:10px;color:var(--text-tertiary)">近1年</div><div style="font-size:16px;font-weight:700;color:${(returns['1y']||0)>=0?'var(--color-bull,#00E5A0)':'var(--color-bear,#FF6B6B)'}">${returns['1y']!=null?(returns['1y']>0?'+':'')+returns['1y']+'%':'—'}</div></div>
+      <div class="mb-card--ghost" style="padding:10px;text-align:center"><div style="font-size:10px;color:var(--text-tertiary)">近3年</div><div style="font-size:16px;font-weight:700;color:${(returns['3y']||0)>=0?'var(--color-bull,#00E5A0)':'var(--color-bear,#FF6B6B)'}">${returns['3y']!=null?(returns['3y']>0?'+':'')+returns['3y']+'%':'—'}</div></div>
+      <div class="mb-card--ghost" style="padding:10px;text-align:center"><div style="font-size:10px;color:var(--text-tertiary)">规模</div><div style="font-size:16px;font-weight:700">${d.scale_billion?d.scale_billion+'亿':'—'}</div></div>
+    </div>`;
+
+    // 基金经理卡
+    if (d.manager) {
+      const m = d.manager;
+      html += `<div class="mb-card--ghost" style="padding:12px;margin-bottom:14px">
+        <div class="mb-flex mb-gap-3 mb-mb-3">
+          <div class="mb-avatar mb-avatar--md" style="background:linear-gradient(135deg,#5C6BC0,#283593)">👤</div>
+          <div>
+            <b style="font-size:14px">${m.name}</b>
+            <div style="font-size:11px;color:var(--text-tertiary);margin-top:2px">任期 ${m.tenure_years} 年${d.scale_billion?' · 管理 '+d.scale_billion+'亿':''}</div>
+          </div>
+        </div>
+        ${m.resume?'<div style="font-size:11px;color:var(--text-secondary);line-height:1.5;margin-top:6px">'+m.resume+'</div>':''}
+        <button class="mb-btn mb-btn--ghost mb-btn--sm" style="margin-top:8px;width:100%" onclick="loadManagerTrack('${code}','${m.name}')">📊 查看规模-业绩对照</button>
+        <div id="managerTrackArea"></div>
+      </div>`;
+    }
+
+    // 重仓持仓
+    if (d.top_holdings && d.top_holdings.length) {
+      html += `<div style="font-size:12px;font-weight:700;margin-bottom:6px">🏦 重仓持仓 TOP5</div>`;
+      html += d.top_holdings.map(h => `<div style="display:flex;justify-content:space-between;padding:4px 0;font-size:12px;border-bottom:1px solid var(--border-subtle,rgba(255,255,255,.04))"><span>${h.symbol}</span><span style="color:var(--text-tertiary)">${h.ratio?h.ratio+'%':''}</span></div>`).join('');
+      html += '<div style="margin-bottom:14px"></div>';
+    }
+
+    // 其他信息
+    html += `<div style="font-size:11px;color:var(--text-tertiary);text-align:center">费率 ${d.fee||'—'} · 数据来源 ${d.source||'tushare'} · ${d.updatedAt||''}</div>`;
+
+    body.innerHTML = html;
+  } catch (e) {
+    const body = document.getElementById('fundDetailBody');
+    if (body) body.innerHTML = typeof renderFetchError === 'function' ? renderFetchError('基金详情加载失败') : '<div style="text-align:center;padding:20px;color:var(--text2)">加载失败</div>';
+  }
+};
+
+/* 经理规模-业绩对照（Phase 2 前端） */
+window.loadManagerTrack = async function(code, managerName) {
+  const area = document.getElementById('managerTrackArea');
+  if (!area) return;
+  area.innerHTML = '<div style="text-align:center;padding:12px;font-size:11px;color:var(--text-tertiary)"><div class="loading-spinner" style="width:16px;height:16px;margin:0 auto 6px;border-width:2px"></div>加载规模-战绩数据...</div>';
+
+  try {
+    const r = await fetch(API_BASE + '/fund/manager-track/' + code, { signal: AbortSignal.timeout(20000) });
+    if (!r.ok) throw new Error('API ' + r.status);
+    const d = await r.json();
+    if (!d.available) {
+      area.innerHTML = '<div style="font-size:11px;color:var(--text-tertiary);padding:8px">' + (d.reason || '数据不足') + '</div>';
+      return;
+    }
+
+    let html = '<div style="margin-top:10px;border-top:1px solid var(--border-subtle,rgba(255,255,255,.04));padding-top:10px">';
+    html += '<div style="font-size:12px;font-weight:700;margin-bottom:8px">📊 ' + (managerName||'') + ' 规模-业绩对照</div>';
+
+    // 表格
+    if (d.track && d.track.length) {
+      html += '<div style="max-height:180px;overflow-y:auto;font-size:11px">';
+      html += '<div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:2px;padding:4px 0;border-bottom:1px solid var(--border-subtle);font-weight:600;color:var(--text-tertiary)"><span>季度</span><span>规模(亿)</span><span>收益</span></div>';
+      d.track.forEach(t => {
+        const retColor = (t.quarter_return_pct||0) >= 0 ? 'var(--color-bull,#00E5A0)' : 'var(--color-bear,#FF6B6B)';
+        html += '<div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:2px;padding:3px 0;border-bottom:1px solid rgba(255,255,255,.02)"><span>' + t.quarter + '</span><span>' + (t.scale_billion||'—') + '</span><span style="color:' + retColor + '">' + (t.quarter_return_pct!=null?(t.quarter_return_pct>0?'+':'')+t.quarter_return_pct+'%':'—') + '</span></div>';
+      });
+      html += '</div>';
+    }
+
+    // 结论
+    if (d.verdict) {
+      html += '<div style="margin-top:8px;padding:8px;background:rgba(255,183,85,.06);border-radius:8px;font-size:12px;line-height:1.5">' + d.verdict + '</div>';
+    }
+
+    html += '</div>';
+    area.innerHTML = html;
+  } catch (e) {
+    area.innerHTML = '<div style="font-size:11px;color:var(--text-tertiary);padding:8px">规模数据加载失败</div>';
+  }
+};
+
