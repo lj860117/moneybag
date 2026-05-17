@@ -128,6 +128,7 @@ el.innerHTML=`<div class="dashboard-card"><div class="dashboard-card-title">📰
 <div style="text-align:center;margin-top:12px"><button class="action-btn secondary" style="display:inline-block;min-width:auto;padding:10px 24px" onclick="renderInsight()">🔄 刷新</button></div>`}
 
 async function renderInsightPolicy(el){
+const _policyCache=getCached('policy');if(_policyCache){el.innerHTML=_policyCache;return}
 el.innerHTML='<div style="text-align:center;padding:40px;color:var(--text2)"><div class="loading-spinner" style="width:32px;height:32px;margin:0 auto 12px;border-width:3px"></div>正在加载政策新闻...</div>';
 // 并行加载：传统政策新闻 + 分主题政策新闻 + AI影响分析（allSettled 防止一个超时拖垮全部）
 const results = await Promise.allSettled([
@@ -159,7 +160,7 @@ ${policyNews.length?`<div class="dashboard-card"><div class="dashboard-card-titl
 ${intlNews.length?`<div class="dashboard-card"><div class="dashboard-card-title">🌍 国际动态</div>${intlNews.map(n=>`<div class="news-item" onclick="${n.url?`window.open('${n.url}','_blank')`:''}"${n.url?'':' style="cursor:default"'}><div class="news-icon">🌐</div><div class="news-content"><div class="news-title">${n.title}</div><div class="news-meta">${n.source||''}${n.time?' · '+n.time:''}</div></div>${n.url?'<div class="news-arrow">›</div>':''}</div>`).join('')}</div>`:''}
 ${!policyNews.length&&!intlNews.length&&!topicHtml?news.map(n=>`<div class="news-item"><div class="news-icon">📰</div><div class="news-content"><div class="news-title">${n.title}</div></div></div>`).join(''):''}
 <div style="text-align:center;margin-top:12px"><button class="action-btn secondary" style="display:inline-block;min-width:auto;padding:10px 24px" onclick="insightTab='policy';renderInsight()">🔄 刷新</button></div>
-<div style="text-align:center;font-size:11px;color:#475569;margin-top:8px">关键词: 政策/央行/关税/中美/美联储/地缘/半导体等</div>`}
+<div style="text-align:center;font-size:11px;color:#475569;margin-top:8px">关键词: 政策/央行/关税/中美/美联储/地缘/半导体等</div>`;setCached('policy',el.innerHTML)}
 
 function renderInsightTech(el,d){
 const tech=d.technical||{};const m=tech.macd||{};const b=tech.bollinger||{};

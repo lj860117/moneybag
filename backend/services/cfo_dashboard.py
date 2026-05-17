@@ -19,7 +19,11 @@ from datetime import datetime, timedelta
 
 
 def generate_cfo_summary(user_id: str) -> dict:
-    """聚合首页全部数据，单个模块失败不影响整体"""
+    """聚合首页全部数据，单个模块失败不影响整体。
+
+    性能优化：并行获取外部数据（恐贪/期货/净资产/估值），避免串行等待。
+    """
+    import concurrent.futures
     start = time.time()
     result = {
         "net_worth": None,
@@ -30,35 +34,71 @@ def generate_cfo_summary(user_id: str) -> dict:
         "timestamp": datetime.now().isoformat(),
     }
 
-    # ── A. 净资产 ──
-    try:
-        result["net_worth"] = _get_net_worth(user_id)
-    except Exception as e:
-        print(f"[CFO] net_worth failed: {e}")
-
-    # ── 中间数据（供 B/D 使用）──
+    # ── 并行获取所有外部数据（主要耗时点）──
     fear_greed = 50
     market_change = 0.0
-    allocation_data = None
+    nw_data = None
+    val_pct = 50
 
-    try:
+    def _fetch_fear_greed():
         from services.market_data import get_fear_greed_index
-        fgi = get_fear_greed_index()
+        return get_fear_greed_index()
+
+    def _fetch_futures():
+        from infra.data_source.macro.indicators import get_global_futures_snapshot
+        return get_global_futures_snapshot()
+
+    def _fetch_networth():
+        from services.unified_networth import calc_unified_networth
+        return calc_unified_networth(user_id)
+
+    def _fetch_valuation():
+        from services.market_data import get_valuation_percentile
+        return get_valuation_percentile()
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=4) as pool:
+        f_fgi = pool.submit(_fetch_fear_greed)
+        f_futures = pool.submit(_fetch_futures)
+        f_nw = pool.submit(_fetch_networth)
+        f_val = pool.submit(_fetch_valuation)
+
+    # 收集结果（每个独立 try/except，单个失败不影响其他）
+    try:
+        fgi = f_fgi.result(timeout=5)
         if fgi:
             fear_greed = fgi.get("score", 50)
-    except Exception:
-        pass
+    except Exception as e:
+        print(f"[CFO] fear_greed fetch failed: {e}")
 
     try:
-        from infra.data_source.macro.indicators import get_global_futures_snapshot
-        futures = get_global_futures_snapshot()
-        if futures.get("available") and futures.get("a50"):
+        futures = f_futures.result(timeout=5)
+        if futures and futures.get("available") and futures.get("a50"):
             market_change = futures["a50"].get("change_pct", 0) or 0
-    except Exception:
-        pass
+    except Exception as e:
+        print(f"[CFO] futures fetch failed: {e}")
 
     try:
-        allocation_data = _get_allocation(user_id)
+        nw_data = f_nw.result(timeout=5)
+    except Exception as e:
+        print(f"[CFO] networth fetch failed: {e}")
+
+    try:
+        val_result = f_val.result(timeout=5)
+        if val_result:
+            val_pct = val_result.get("percentile", 50)
+    except Exception as e:
+        print(f"[CFO] valuation fetch failed: {e}")
+
+    # ── A. 净资产（从已获取数据构建）──
+    try:
+        result["net_worth"] = _format_net_worth(nw_data)
+    except Exception as e:
+        print(f"[CFO] net_worth format failed: {e}")
+
+    # ── C. 资产配置（从已获取数据构建，不再重复调接口）──
+    allocation_data = None
+    try:
+        allocation_data = _build_allocation(nw_data, val_pct)
         result["allocation"] = allocation_data
     except Exception as e:
         print(f"[CFO] allocation failed: {e}")
@@ -66,7 +106,7 @@ def generate_cfo_summary(user_id: str) -> dict:
     # ── B. 今日提醒（纯规则，不调 LLM）──
     try:
         result["alerts"] = _generate_alerts(
-            user_id, fear_greed, allocation_data, result.get("net_worth")
+            user_id, fear_greed, allocation_data, result.get("net_worth"), val_pct
         )
     except Exception as e:
         print(f"[CFO] alerts failed: {e}")
@@ -93,10 +133,8 @@ def generate_cfo_summary(user_id: str) -> dict:
 # A. 净资产
 # ============================================================
 
-def _get_net_worth(user_id: str) -> dict:
-    """获取家庭净资产 + 分项明细"""
-    from services.unified_networth import calc_unified_networth
-    nw = calc_unified_networth(user_id)
+def _format_net_worth(nw) -> dict:
+    """从已获取的 unified-networth 数据格式化输出"""
     if not nw:
         return {"total": 0, "breakdown": {}}
 
@@ -112,12 +150,19 @@ def _get_net_worth(user_id: str) -> dict:
     }
 
 
+# 兼容旧调用
+def _get_net_worth(user_id: str) -> dict:
+    from services.unified_networth import calc_unified_networth
+    return _format_net_worth(calc_unified_networth(user_id))
+
+
 # ============================================================
 # B. 今日提醒（纯规则引擎，不调 LLM）
 # ============================================================
 
 def _generate_alerts(user_id: str, fear_greed: int,
-                     allocation: dict | None, net_worth: dict | None) -> list:
+                     allocation: dict | None, net_worth: dict | None,
+                     val_pct: int = 50) -> list:
     """从已有数据提炼 1-3 条人话提醒，按优先级排序"""
     alerts = []
 
@@ -162,15 +207,12 @@ def _generate_alerts(user_id: str, fear_greed: int,
                 "text": f"现金储备约 {months:.0f} 个月生活费，低于 6 个月安全线，暂停新增高风险资产。"
             })
 
-    # 规则 4: 获取风控动作
+    # 规则 4: 获取风控动作（使用已获取的 val_pct，不再重复调接口）
     try:
         from services.risk import generate_risk_actions
         from services.stock_monitor import load_stock_holdings
         holdings = load_stock_holdings(user_id) or []
         if holdings:
-            from services.market_data import get_valuation_percentile
-            val = get_valuation_percentile()
-            val_pct = val.get("percentile", 50) if val else 50
             risk_result = generate_risk_actions(holdings, val_pct)
             danger_actions = [a for a in (risk_result.get("actions") or [])
                            if a.get("level") == "danger"]
@@ -212,16 +254,9 @@ def _estimate_monthly_expense(user_id: str, net_worth: dict) -> float:
 # C. 资产配置
 # ============================================================
 
-def _get_allocation(user_id: str) -> dict | None:
-    """获取当前资产配置 + 目标 + 偏离
-
-    使用 unified-networth（已缓存）而非逐个查实时价格，保证速度 <500ms。
-    """
+def _build_allocation(nw, val_pct: int = 50) -> dict | None:
+    """从已获取的 unified-networth + 估值百分位构建配置数据（不再重复调接口）"""
     try:
-        from services.unified_networth import calc_unified_networth
-        from services.market_data import get_valuation_percentile
-
-        nw = calc_unified_networth(user_id)
         if not nw or nw.get("netWorth", 0) <= 0:
             return None
 
@@ -237,12 +272,6 @@ def _get_allocation(user_id: str) -> dict | None:
             "bond": 0,
             "cash": round(cash / total * 100, 1),
         }
-
-        try:
-            val = get_valuation_percentile()
-            val_pct = val.get("percentile", 50)
-        except Exception:
-            val_pct = 50
 
         if val_pct > 70:
             target = {"stock": 40, "bond": 35, "cash": 25}
@@ -265,8 +294,21 @@ def _get_allocation(user_id: str) -> dict | None:
             "total_market": round(total, 0),
         }
     except Exception as e:
-        print(f"[CFO] _get_allocation error: {e}")
+        print(f"[CFO] _build_allocation error: {e}")
         return None
+
+
+# 兼容旧调用
+def _get_allocation(user_id: str) -> dict | None:
+    from services.unified_networth import calc_unified_networth
+    from services.market_data import get_valuation_percentile
+    nw = calc_unified_networth(user_id)
+    try:
+        val = get_valuation_percentile()
+        val_pct = val.get("percentile", 50)
+    except Exception:
+        val_pct = 50
+    return _build_allocation(nw, val_pct)
 
 
 # ============================================================

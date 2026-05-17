@@ -977,6 +977,66 @@ def _get_stock_names() -> dict:
     return mapping
 
 
+def validate_stock_code(code: str) -> dict:
+    """校验股票代码是否为当前上市的A股
+
+    Returns:
+        {"valid": True, "name": "贵州茅台", "ts_code": "600519.SH"}
+        {"valid": False, "reason": "该代码不在A股上市列表中"}
+        {"valid": None, "reason": "无法连接数据源校验"}  # 降级放行
+    """
+    ts_code = _code_to_ts(code)
+    names = _get_stock_names()
+    if not names:
+        # 数据源不可用时降级放行（不阻塞用户操作）
+        return {"valid": None, "reason": "无法连接数据源校验"}
+    if ts_code in names:
+        return {"valid": True, "name": names[ts_code], "ts_code": ts_code}
+    return {"valid": False, "reason": f"代码 {code} 不在A股上市列表中"}
+
+
+def validate_fund_code(code: str) -> dict:
+    """校验基金代码是否存在（使用 Tushare fund_basic）
+
+    Returns:
+        {"valid": True, "name": "易方达沪深300ETF联接A"}
+        {"valid": False, "reason": "该代码不在公募基金列表中"}
+        {"valid": None, "reason": "无法连接数据源校验"}
+    """
+    cache_key = "fund_names"
+    cached = _stock_name_cache.get(cache_key)
+    if cached is None:
+        rows = _call_tushare(
+            "fund_basic",
+            {"market": "E"},  # E=场外基金
+            "ts_code,name",
+        )
+        if not rows:
+            # 也尝试场内
+            rows = _call_tushare(
+                "fund_basic",
+                {"market": "O"},
+                "ts_code,name",
+            )
+        if not rows:
+            return {"valid": None, "reason": "无法连接数据源校验"}
+        # fund ts_code 格式为 "110020.OF"
+        mapping = {}
+        for r in rows:
+            ts = r.get("ts_code", "")
+            name = r.get("name", "")
+            # 取纯数字部分
+            pure_code = ts.split(".")[0] if "." in ts else ts
+            mapping[pure_code] = name
+        _stock_name_cache.set(cache_key, mapping, ttl=86400)
+        cached = mapping
+        print(f"[TUSHARE] fund_basic 名称映射: {len(cached)} 只")
+
+    if code in cached:
+        return {"valid": True, "name": cached[code]}
+    return {"valid": False, "reason": f"代码 {code} 不在公募基金列表中"}
+
+
 def get_main_money_flow(trade_date: str = "") -> dict:
     """获取全市场主力资金流排名
 

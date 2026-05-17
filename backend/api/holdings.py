@@ -49,6 +49,16 @@ def add_stock_holding_api(req: dict):
     # 合法性校验：A股代码首位必须是 0/3/6/8
     if code[0] not in ("0", "3", "6", "8"):
         raise HTTPException(400, f"不是有效的A股代码：{code}")
+    # 数据源校验：检查是否真实上市股票
+    try:
+        from services.tushare_data import validate_stock_code
+        check = validate_stock_code(code)
+        if check["valid"] is False:
+            raise HTTPException(400, f"股票代码不存在：{code}（{check['reason']}）")
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"[HOLDINGS] 股票代码校验降级: {e}")
     cost_price = float(req.get("costPrice", 0))
     shares = int(req.get("shares", 0))
     if cost_price <= 0:
@@ -270,6 +280,16 @@ def add_fund_holding_api(req: dict):
     # 输入校验
     if not code.isdigit() or len(code) != 6:
         raise HTTPException(400, f"基金代码格式错误：{code}（应为6位数字）")
+    # 数据源校验：检查是否真实基金
+    try:
+        from services.tushare_data import validate_fund_code
+        check = validate_fund_code(code)
+        if check["valid"] is False:
+            raise HTTPException(400, f"基金代码不存在：{code}（{check['reason']}）")
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"[HOLDINGS] 基金代码校验降级: {e}")
     cost_nav = float(req.get("costNav", 0))
     shares = float(req.get("shares", 0))
     if cost_nav <= 0:
