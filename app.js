@@ -291,11 +291,11 @@ function saveAssets(d){localStorage.setItem(ASSETS_KEY,JSON.stringify(d))}
 function calcHoldingsFromTxns(txns){
   const map={};
   txns.filter(t=>t.type==='BUY'||t.type==='SELL').sort((a,b)=>new Date(a.date)-new Date(b.date)).forEach(t=>{
-    if(!map[t.code])map[t.code]={code:t.code,name:t.name||t.code,shares:0,totalCost:0,avgPrice:0,category:t.category||''};
+    if(!map[t.code])map[t.code]={code:t.code,name:t.name||t.code,shares:0,totalCost:0,avgPrice:0,category:t.category||'',assetType:t.assetType||''};
     const h=map[t.code];
     if(t.type==='BUY'){
       h.totalCost+=t.shares*t.price;h.shares+=t.shares;h.avgPrice=h.shares>0?h.totalCost/h.shares:0;
-      if(t.name)h.name=t.name;if(t.category)h.category=t.category;
+      if(t.name)h.name=t.name;if(t.category)h.category=t.category;if(t.assetType)h.assetType=t.assetType;
     }else if(t.type==='SELL'){
       const sellShares=Math.min(t.shares,h.shares);
       h.totalCost-=sellShares*h.avgPrice;h.shares-=sellShares;

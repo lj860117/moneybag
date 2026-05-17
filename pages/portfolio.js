@@ -1,4 +1,17 @@
 // ---- 持仓盈亏页（V4 交易流水制）----
+// 持仓分类判断：股票 vs 基金
+function _isStockHolding(h){
+  if(h.assetType==='stock')return true;
+  if(h.assetType==='fund')return false;
+  // 向后兼容：category 含基金关键词→基金
+  const fundKW=['基金','债券','货币','指数','ETF','QDII','混合','商品','联接'];
+  if(h.category&&fundKW.some(k=>h.category.includes(k)))return false;
+  // 代码推断：00/30/60开头6位纯数字且不在预设基金列表→股票
+  const c=(h.code||'').replace(/^(sh|sz)/i,'');
+  if(/^(00|30|60)\d{4}$/.test(c)&&!FUND_DETAILS[c])return true;
+  return false; // 默认归基金
+}
+
 async function renderPortfolio(){currentPage='portfolio';renderNav();
 const txns=loadTxns();const holdings=calcHoldingsFromTxns(txns);
 const p=loadPortfolio(); // 兼容旧数据
@@ -6,7 +19,12 @@ const p=loadPortfolio(); // 兼容旧数据
 const useV4=holdings.length>0;
 const hasHoldings=holdings.length>0||p.holdings.length>0;
 const displayHoldings=useV4?holdings:hasHoldings?p.holdings.map(h=>({code:h.code,name:h.name,category:h.category,shares:0,totalCost:h.amount,avgPrice:0})):[];
+window._allHoldings=displayHoldings; // 全局存储供Tab过滤用
 const tc=displayHoldings.reduce((s,h)=>s+h.totalCost,0);
+const stockHoldings=displayHoldings.filter(h=>_isStockHolding(h));
+const fundHoldings=displayHoldings.filter(h=>!_isStockHolding(h));
+const stockTotal=stockHoldings.reduce((s,h)=>s+h.totalCost,0);
+const fundTotal=fundHoldings.reduce((s,h)=>s+h.totalCost,0);
 
 $('#app').innerHTML=`<div class="portfolio-page fade-up" style="padding-bottom:calc(var(--tabbar-height,76px) + 16px)">
 
@@ -17,6 +35,10 @@ $('#app').innerHTML=`<div class="portfolio-page fade-up" style="padding-bottom:c
   <div class="mb-hero__delta" id="pnlSum">
     <span class="mb-text-tertiary" style="font-size:var(--fs-sm,11px)">${API_AVAILABLE?(hasHoldings?'正在计算实时盈亏...':'暂无持仓数据'):'后端离线'}</span>
   </div>
+  ${hasHoldings?`<div style="font-size:11px;color:var(--text-secondary,#9AA1AC);margin-top:6px;display:flex;gap:12px;justify-content:center">
+    <span>📊 股票 ¥${fmtMoney(Math.round(stockTotal))}${stockHoldings.length?' ('+stockHoldings.length+'只)':''}</span>
+    <span>💼 基金 ¥${fmtMoney(Math.round(fundTotal))}${fundHoldings.length?' ('+fundHoldings.length+'只)':''}</span>
+  </div>`:''}
   <div style="margin-top:12px;background:rgba(255,255,255,.04);border-radius:var(--radius-sm,8px);padding:8px 12px;display:flex;align-items:center;gap:10px;font-size:11px">
     <span style="color:var(--color-brand-500,#FFB755);font-weight:700" id="portfolioHealthScore">75/100</span>
     <div style="flex:1;height:4px;background:rgba(255,255,255,.06);border-radius:2px;overflow:hidden"><div id="portfolioHealthBar" style="height:100%;width:75%;background:linear-gradient(90deg,var(--color-brand-500,#FFB755),var(--color-bull,#00E5A0));border-radius:2px;transition:width .5s"></div></div>
@@ -128,25 +150,51 @@ if(API_AVAILABLE){loadRiskMetrics();loadRiskActions()}}
 // Tab 切换辅助
 function showStockHoldings(){
   window._portfolioTab='stock';
+  _renderFilteredHoldings();
   document.getElementById('holdingsContent').style.display='';
   document.getElementById('txnContent').style.display='none';
   document.getElementById('tabStockBtn').className='mb-pill mb-pill--on';
   document.getElementById('tabFundBtn').className='mb-pill';
   document.getElementById('tabTxnBtn').className='mb-pill';
-  // 更新空状态文案
-  const t=document.getElementById('emptyHoldTitle');if(t)t.textContent='还没有股票持仓';
-  const c=document.getElementById('emptyHoldCTA');if(c)c.textContent='➕ 添加股票';
 }
 function showFundHoldings(){
   window._portfolioTab='fund';
+  _renderFilteredHoldings();
   document.getElementById('holdingsContent').style.display='';
   document.getElementById('txnContent').style.display='none';
   document.getElementById('tabStockBtn').className='mb-pill';
   document.getElementById('tabFundBtn').className='mb-pill mb-pill--on';
   document.getElementById('tabTxnBtn').className='mb-pill';
-  // 更新空状态文案
-  const t=document.getElementById('emptyHoldTitle');if(t)t.textContent='还没有基金持仓';
-  const c=document.getElementById('emptyHoldCTA');if(c)c.textContent='➕ 添加基金';
+}
+function _renderFilteredHoldings(){
+  const all=window._allHoldings||[];
+  const isStock=(window._portfolioTab||'stock')==='stock';
+  const filtered=all.filter(h=>isStock?_isStockHolding(h):!_isStockHolding(h));
+  const listEl=document.getElementById('holdList');
+  const contentEl=document.getElementById('holdingsContent');
+  if(!contentEl)return;
+  const assetLabel=isStock?'股票':'基金';
+  if(filtered.length){
+    const html=filtered.map(h=>`<div class="mb-card" style="margin-bottom:8px;padding:12px;cursor:pointer" onclick="showHoldingActions('${h.code}')">
+<div class="mb-flex mb-flex--between">
+<div><div style="font-size:var(--fs-md,14px);font-weight:var(--fw-semibold,600)">${h.name}</div>
+<div class="mb-caption">${h.category||assetLabel}${h.shares?' · '+h.shares.toFixed(2)+'份':''}${h.avgPrice?' · 均价¥'+h.avgPrice.toFixed(4):''}</div></div>
+<div style="text-align:right"><div class="mb-money mb-money--sm">${fmtFull(Math.round(h.totalCost))}</div></div></div></div>`).join('');
+    contentEl.innerHTML=`<div id="holdList">${html}</div>
+<div class="mb-flex mb-gap-3" style="margin-top:14px">
+<button class="mb-btn mb-btn--primary mb-btn--block" onclick="showAddTxn()">➕ 新交易</button>
+<button class="mb-btn mb-btn--secondary mb-btn--block" onclick="showAddCustomFund()">🔍 添加自选</button>
+</div>`;
+  }else{
+    contentEl.innerHTML=`<div class="mb-empty">
+  <div class="mb-empty__icon">${isStock?'📊':'💼'}</div>
+  <div class="mb-empty__title">还没有${assetLabel}持仓</div>
+  <div class="mb-empty__desc">点击下方按钮录入${assetLabel}交易</div>
+  <div class="mb-flex mb-flex--center mb-gap-3" style="flex-wrap:wrap">
+    <button class="mb-btn mb-btn--primary" onclick="showAddTxn()">➕ 添加${assetLabel}</button>
+  </div>
+</div>`;
+  }
 }
 function showTxnHistory(){
   document.getElementById('holdingsContent').style.display='none';
@@ -291,6 +339,7 @@ o.innerHTML=`<div class="modal-sheet" onclick="event.stopPropagation()"><div cla
 <input class="form-input" type="number" id="txnAmt" placeholder="0" inputmode="decimal"></div>
 <div class="form-row"><div class="form-label">${isFund?'净值(每份价格)':'股价(每股价格)'}</div>
 <input class="form-input" type="number" id="txnPrice" placeholder="${isFund?'如 1.2345':'如 25.60'}" step="0.0001" inputmode="decimal" value="${liveNavData[code]?.nav||''}"></div>
+<div style="font-size:10px;color:var(--text-tertiary,#7A8499);padding:0 0 6px">💡 自动填充当前价，历史交易可手动修改</div>
 <div class="form-row"><div class="form-label">${isFund?'份额(自动计算)':'股数(自动计算)'}</div>
 <input class="form-input" type="number" id="txnShares" placeholder="金额÷${isFund?'净值':'股价'}" readonly style="opacity:.6"></div>
 <div class="form-row"><div class="form-label">备注</div>
@@ -341,7 +390,7 @@ if(!amt||amt<=0){alert('请输入金额');return}
 if(!price||price<=0){alert('请输入净值');return}
 const txns=loadTxns();
 txns.push({id:'txn_'+Date.now().toString(36)+'_'+Math.random().toString(36).slice(2,6),
-type,code,name:name||code,category:FUND_DETAILS[code]?.type||'',
+type,code,name:name||code,category:FUND_DETAILS[code]?.type||'',assetType:(window._portfolioTab||'fund'),
 shares:shares||amt/price,price,amount:amt,date:new Date().toISOString(),note,source:'manual'});
 saveTxns(txns);
 // 同步到后端
