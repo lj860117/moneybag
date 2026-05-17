@@ -11,7 +11,7 @@ from __future__ import annotations
 import re
 
 
-def validate_response(reply: str, user_msg: str, portfolio_ctx: str) -> dict:
+def validate_response(reply: str, user_msg: str, portfolio_ctx: str) -> dict[str, object]:
     """校验 LLM 回答质量
 
     Returns:
