@@ -53,12 +53,30 @@ def steward_briefing_history(userId: str = "", days: int = 7):
 
 
 @router.get("/api/steward/review")
-def steward_review(userId: str = ""):
-    """管家收盘复盘（完整版，含体检）"""
+async def steward_review(userId: str = ""):
+    """管家收盘复盘（完整版，含体检）— 30s 硬超时保护"""
     if not userId:
         raise HTTPException(400, "userId required")
+    import asyncio
     steward = get_steward()
-    return steward.review(userId)
+    loop = asyncio.get_event_loop()
+    try:
+        result = await asyncio.wait_for(
+            loop.run_in_executor(None, steward.review, userId),
+            timeout=30.0,
+        )
+        return result
+    except asyncio.TimeoutError:
+        print(f"[STEWARD] review timeout 30s for {userId}")
+        return {
+            "direction": "neutral",
+            "confidence": 0,
+            "conclusion": "分析超时，请稍后重试",
+            "modules_status": {"called": 0, "succeeded": 0, "failed": 0, "skipped": 0},
+            "modules_errors": {"timeout": "review 整体超时 30s"},
+            "elapsed": 30.0,
+            "error": "steward review 计算超时(30s)，可能是模块数据源响应慢，请稍后重试。",
+        }
 
 
 @router.get("/api/regime")
