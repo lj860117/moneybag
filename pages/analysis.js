@@ -581,10 +581,12 @@ const r=await fetch(API_BASE+'/steward/ask',{method:'POST',headers:{'Content-Typ
 const d=await r.json();
 const dirColor=d.direction==='bullish'?'var(--green)':d.direction==='bearish'?'var(--red)':d.direction==='blocked'?'#EF4444':'var(--accent)';
 const dirIcon=d.direction==='bullish'?'📈':d.direction==='bearish'?'📉':d.direction==='blocked'?'🚫':'📊';
+const dirLabel={'bullish':'看多','bearish':'看空','neutral':'中性','blocked':'已拦截'}[d.direction]||'中性';
+const pipeLabel={'default':'日常','fast':'快速','cautious':'谨慎'}[d.pipeline]||d.pipeline||'日常';
 let html=`<div style="display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin-bottom:16px">
-<div style="background:var(--bg2);border-radius:12px;padding:12px;text-align:center"><div style="font-size:11px;color:var(--text2)">方向</div><div style="font-size:22px;font-weight:900;color:${dirColor}">${dirIcon} ${d.direction||'neutral'}</div></div>
+<div style="background:var(--bg2);border-radius:12px;padding:12px;text-align:center"><div style="font-size:11px;color:var(--text2)">方向</div><div style="font-size:22px;font-weight:900;color:${dirColor}">${dirIcon}<br>${dirLabel}</div></div>
 <div style="background:var(--bg2);border-radius:12px;padding:12px;text-align:center"><div style="font-size:11px;color:var(--text2)">置信度</div><div style="font-size:22px;font-weight:900">${d.confidence||0}%</div></div>
-<div style="background:var(--bg2);border-radius:12px;padding:12px;text-align:center"><div style="font-size:11px;color:var(--text2)">管线</div><div style="font-size:14px;font-weight:700">${d.pipeline||'?'}</div></div></div>`;
+<div style="background:var(--bg2);border-radius:12px;padding:12px;text-align:center"><div style="font-size:11px;color:var(--text2)">管线</div><div style="font-size:14px;font-weight:700">${pipeLabel}</div></div></div>`;
 if(d.conclusion)html+=`<div style="padding:12px;background:rgba(99,102,241,.06);border-radius:10px;border-left:3px solid ${dirColor};margin-bottom:12px;font-size:13px;line-height:1.8">${d.conclusion}</div>`;
 if(d.regime_description)html+=`<div style="font-size:12px;color:var(--text2);margin-bottom:8px">📊 ${d.regime_description}</div>`;
 if(d.gate_decision)html+=`<div style="font-size:12px;color:var(--text2);margin-bottom:8px">🚦 门控: ${d.gate_decision} (${d.gate_reason||''})</div>`;

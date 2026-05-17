@@ -396,7 +396,7 @@ setExplain('stock_'+s.code,s.name+' ('+s.code+')',
       items = (d2 && d2.impacts) ? d2.impacts : null;
     }
     if (!items || !items.length) {
-      el.innerHTML = '<div style="text-align:center;padding:40px;color:var(--text2)">暂无深度影响数据</div>';
+      el.innerHTML = '<div style="text-align:center;padding:40px;color:var(--text2)"><div style="font-size:24px;margin-bottom:12px">💥</div><div style="font-size:14px;font-weight:600;margin-bottom:8px">新闻深度影响分析</div><div style="font-size:13px;line-height:1.6">当前没有检测到对持仓有显著影响的新闻事件。<br><br>录入持仓后，系统会自动分析新闻对你的资产的影响。</div></div>';
       return;
     }
     let html = `<div class="section-title">💥 新闻深度影响分析 <span style="font-size:11px;color:var(--accent);font-weight:400">Phase 5 · AI 驱动</span></div>`;
@@ -473,8 +473,13 @@ setExplain('stock_'+s.code,s.name+' ('+s.code+')',
         { k: 'var_95', label: 'VaR 95%', fmt: v => (v * 100).toFixed(1) + '%', warn: v => v > 0.03 }
       ];
       metricItems.forEach(m => {
-        const val = metrics[m.k];
+        let val = metrics[m.k];
         if (val == null) return;
+        // 处理对象格式（如 concentration 返回 {hhi, max_single, level}）
+        if (typeof val === 'object') {
+          val = val.max_single || val.hhi || val.current || 0;
+        }
+        if (typeof val !== 'number' || isNaN(val)) return;
         const isWarn = m.warn(val);
         html += `<div style="background:var(--bg3);border-radius:8px;padding:8px 10px">
           <div style="font-size:11px;color:var(--text2)">${m.label}</div>
