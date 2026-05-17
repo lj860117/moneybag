@@ -150,7 +150,7 @@ const d=await r.json();
 
 // B. 今日提醒
 const alertsEl=document.getElementById('cfoAlerts');
-const marketLink=`<div class="mb-flex mb-gap-3" style="margin-top:12px"><a class="mb-btn mb-btn--secondary mb-btn--sm" onclick="event.preventDefault()">稍后处理</a><a class="mb-btn mb-btn--primary mb-btn--sm" onclick="showMarketPanoramaModal()">🌐 看市场全景</a></div>`;
+const marketLink=`<div class="mb-flex mb-gap-3" style="margin-top:12px"><a class="mb-btn mb-btn--secondary mb-btn--sm" onclick="event.preventDefault()">稍后处理</a></div>`;
 if(alertsEl&&d.alerts&&d.alerts.length){
 const levelIcon={danger:'🔴',warning:'⚠️',opportunity:'🟢',info:'💡'};
 alertsEl.innerHTML=`<div class="mb-flex mb-gap-3 mb-mb-3"><div class="mb-avatar mb-avatar--xs mb-avatar--ai">✨</div><b style="font-size:12px;color:var(--color-ai-300,#B89DFF)">💡 今日提醒</b></div>`+

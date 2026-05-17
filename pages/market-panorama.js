@@ -44,7 +44,8 @@ const sectors=d.hot_sectors||[];
 if(sectors.length){
 document.getElementById('mpSectors').innerHTML=`
 <div style="font-size:14px;font-weight:700;margin-bottom:8px">🔥 今日热点板块</div>
-${sectors.map((s,i)=>{const c=s.change_pct>=0?'var(--green)':'var(--red)';return`<div style="display:flex;justify-content:space-between;padding:6px 0;border-bottom:1px solid var(--bg3,rgba(0,0,0,.03));font-size:13px"><span>${i+1}. ${s.name}</span><span style="color:${c};font-weight:600">${s.change_pct>=0?'+':''}${s.change_pct.toFixed(1)}%</span></div>`}).join('')}`;
+${sectors.map((s,i)=>{const c=s.change_pct>=0?'var(--green)':'var(--red)';return`<div style="display:flex;justify-content:space-between;padding:8px 0;border-bottom:1px solid var(--bg3,rgba(0,0,0,.03));font-size:13px;cursor:pointer" onclick="_showSectorDetail('${(s.name||'').replace(/'/g,'\\u0027')}',${s.change_pct||0})"><span>${i+1}. ${s.name}</span><span style="color:${c};font-weight:600">${s.change_pct>=0?'+':''}${s.change_pct.toFixed(1)}%</span></div>`}).join('')}
+<div style="text-align:center;margin-top:10px"><span onclick="navigateTo('insight');setTimeout(()=>{insightTab='sector';renderInsight()},100)" style="font-size:11px;color:var(--accent);cursor:pointer">查看更多行业分析 →</span></div>`;
 }else{
 document.getElementById('mpSectors').innerHTML=`<div style="font-size:14px;font-weight:700;margin-bottom:8px">🔥 今日热点板块</div><div style="font-size:13px;color:var(--text2)">暂无明显热点板块</div>`;
 }
@@ -54,7 +55,7 @@ const news=d.news||[];
 if(news.length){
 document.getElementById('mpNews').innerHTML=`
 <div style="font-size:14px;font-weight:700;margin-bottom:8px">📰 重要新闻</div>
-${news.map(n=>`<div style="font-size:13px;line-height:1.8;padding:4px 0;border-bottom:1px solid var(--bg3,rgba(0,0,0,.03))">• ${n.title}</div>`).join('')}`;
+${news.map(n=>{const hasUrl=n.url&&n.url.startsWith('http');return`<div style="font-size:13px;line-height:1.8;padding:8px 0;border-bottom:1px solid var(--bg3,rgba(0,0,0,.03));cursor:pointer;display:flex;align-items:center;gap:6px" onclick="${hasUrl?`window.open('${n.url}','_blank')`:`_showNewsDetail('${(n.title||'').replace(/'/g,'\\u0027')}','${n.source||''}')`}"><span style="flex:1">• ${n.title}</span>${n.source?`<span style="font-size:10px;color:var(--text2);white-space:nowrap">${n.source}</span>`:''}<span style="font-size:12px;color:var(--accent);opacity:.6">${hasUrl?'›':'💬'}</span></div>`}).join('')}`;
 }
 
 // 4. 各资产判断
@@ -62,15 +63,15 @@ const aj=d.asset_judgment;
 if(aj){
 document.getElementById('mpAssets').innerHTML=`
 <div style="font-size:14px;font-weight:700;margin-bottom:10px">💰 各资产判断</div>
-<div style="margin-bottom:8px;padding:8px 10px;background:var(--bg2,rgba(0,0,0,.02));border-radius:8px">
+<div style="margin-bottom:8px;padding:8px 10px;background:var(--bg2,rgba(0,0,0,.02));border-radius:8px;cursor:pointer" onclick="_showAssetDetail('A股','${(aj.stock.reason||'').replace(/'/g,'\\u0027')}')">
 <div style="font-size:13px;font-weight:600">📈 A股 ${aj.stock.icon} ${aj.stock.label}</div>
 <div style="font-size:12px;color:var(--text2);margin-top:2px">${aj.stock.reason}</div>
 </div>
-<div style="margin-bottom:8px;padding:8px 10px;background:var(--bg2,rgba(0,0,0,.02));border-radius:8px">
+<div style="margin-bottom:8px;padding:8px 10px;background:var(--bg2,rgba(0,0,0,.02));border-radius:8px;cursor:pointer" onclick="_showAssetDetail('基金定投','${(aj.fund.reason||'').replace(/'/g,'\\u0027')}')">
 <div style="font-size:13px;font-weight:600">💰 基金定投 ${aj.fund.icon} ${aj.fund.label}</div>
 <div style="font-size:12px;color:var(--text2);margin-top:2px">${aj.fund.reason}</div>
 </div>
-<div style="padding:8px 10px;background:var(--bg2,rgba(0,0,0,.02));border-radius:8px">
+<div style="padding:8px 10px;background:var(--bg2,rgba(0,0,0,.02));border-radius:8px;cursor:pointer" onclick="_showAssetDetail('黄金','${(aj.gold.reason||'').replace(/'/g,'\\u0027')}')">
 <div style="font-size:13px;font-weight:600">🥇 黄金 ${aj.gold.icon} ${aj.gold.label}</div>
 <div style="font-size:12px;color:var(--text2);margin-top:2px">${aj.gold.reason}</div>
 </div>`;
@@ -146,3 +147,57 @@ ${bv.hot_industries&&bv.hot_industries.length?`<div style="font-size:11px;color:
 
 document.getElementById('mpModalContent').innerHTML=html;
 }catch(e){document.getElementById('mpModalContent').innerHTML='<div style="color:var(--red)">加载失败: '+e.message+'</div>'}}
+
+// ---- 市场全景交互：新闻详情弹窗 ----
+function _showNewsDetail(title, source) {
+  const o = document.createElement('div');
+  o.className = 'modal-overlay';
+  o.onclick = e => { if (e.target === o) o.remove(); };
+  o.innerHTML = `<div class="modal-sheet" onclick="event.stopPropagation()" style="max-height:80vh;overflow-y:auto">
+    <div class="modal-handle"></div>
+    <div class="modal-title">📰 新闻详情</div>
+    <div style="font-size:14px;font-weight:600;line-height:1.6;margin:12px 0">${title}</div>
+    <div style="font-size:11px;color:var(--text2);margin-bottom:16px">来源: ${source || '财经媒体'}</div>
+    <div style="display:flex;gap:8px">
+      <button class="mb-btn mb-btn--ai mb-btn--block" onclick="document.querySelector('.modal-overlay')?.remove();navigateTo('chat');setTimeout(()=>{const inp=document.getElementById('chatIn');if(inp){inp.value='分析这条新闻对我的投资有什么影响：${title.replace(/'/g,'').replace(/"/g,'')}';inp.focus()}},300)">💬 问 AI 影响</button>
+      <button class="mb-btn mb-btn--secondary mb-btn--block" onclick="this.closest('.modal-overlay').remove()">关闭</button>
+    </div>
+  </div>`;
+  document.body.appendChild(o);
+}
+
+// ---- 市场全景交互：板块详情 ----
+function _showSectorDetail(name, changePct) {
+  const color = changePct >= 0 ? 'var(--color-bull,#00E5A0)' : 'var(--color-bear,#FF6B6B)';
+  const o = document.createElement('div');
+  o.className = 'modal-overlay';
+  o.onclick = e => { if (e.target === o) o.remove(); };
+  o.innerHTML = `<div class="modal-sheet" onclick="event.stopPropagation()">
+    <div class="modal-handle"></div>
+    <div class="modal-title">🔥 ${name}</div>
+    <div style="font-size:20px;font-weight:800;color:${color};margin:12px 0">${changePct >= 0 ? '+' : ''}${changePct.toFixed(1)}%</div>
+    <div style="font-size:12px;color:var(--text2);margin-bottom:16px">今日板块涨幅</div>
+    <div style="display:flex;gap:8px">
+      <button class="mb-btn mb-btn--ai mb-btn--block" onclick="document.querySelector('.modal-overlay')?.remove();navigateTo('chat');setTimeout(()=>{const inp=document.getElementById('chatIn');if(inp){inp.value='${name}板块今天涨了${changePct.toFixed(1)}%，帮我分析原因和后续投资机会';inp.focus()}},300)">💬 问 AI</button>
+      <button class="mb-btn mb-btn--secondary mb-btn--block" onclick="document.querySelector('.modal-overlay')?.remove();navigateTo('insight');setTimeout(()=>{insightTab='sector';renderInsight()},100)">📊 看行业</button>
+    </div>
+  </div>`;
+  document.body.appendChild(o);
+}
+
+// ---- 市场全景交互：资产判断详情 ----
+function _showAssetDetail(assetName, reason) {
+  const o = document.createElement('div');
+  o.className = 'modal-overlay';
+  o.onclick = e => { if (e.target === o) o.remove(); };
+  o.innerHTML = `<div class="modal-sheet" onclick="event.stopPropagation()">
+    <div class="modal-handle"></div>
+    <div class="modal-title">💰 ${assetName}判断</div>
+    <div style="font-size:13px;line-height:1.7;margin:12px 0;color:var(--text-default,#D8DCE5)">${reason}</div>
+    <div style="display:flex;gap:8px">
+      <button class="mb-btn mb-btn--ai mb-btn--block" onclick="document.querySelector('.modal-overlay')?.remove();navigateTo('chat');setTimeout(()=>{const inp=document.getElementById('chatIn');if(inp){inp.value='当前${assetName}的判断是「${reason.replace(/'/g,'').replace(/"/g,'')}」，帮我分析应该怎么操作';inp.focus()}},300)">💬 问 AI 怎么做</button>
+      <button class="mb-btn mb-btn--secondary mb-btn--block" onclick="this.closest('.modal-overlay').remove()">关闭</button>
+    </div>
+  </div>`;
+  document.body.appendChild(o);
+}

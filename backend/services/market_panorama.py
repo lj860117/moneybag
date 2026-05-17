@@ -109,7 +109,7 @@ def generate_market_panorama() -> dict:
         from services.news_data import get_market_news
         news = get_market_news(limit=5)
         result["news"] = [
-            {"title": n.get("title", ""), "source": n.get("source", "")}
+            {"title": n.get("title", ""), "source": n.get("source", ""), "url": n.get("url", "")}
             for n in news[:5]
         ]
     except Exception:
