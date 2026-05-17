@@ -1006,21 +1006,22 @@ def validate_fund_code(code: str) -> dict:
     cache_key = "fund_names"
     cached = _stock_name_cache.get(cache_key)
     if cached is None:
-        rows = _call_tushare(
+        # 场外基金（O=OTC，涵盖绝大多数普通投资者购买的基金）
+        rows_o = _call_tushare(
             "fund_basic",
-            {"market": "E"},  # E=场外基金
+            {"market": "O"},
             "ts_code,name",
         )
-        if not rows:
-            # 也尝试场内
-            rows = _call_tushare(
-                "fund_basic",
-                {"market": "O"},
-                "ts_code,name",
-            )
+        # 场内基金（E=Exchange）
+        rows_e = _call_tushare(
+            "fund_basic",
+            {"market": "E"},
+            "ts_code,name",
+        )
+        rows = (rows_o or []) + (rows_e or [])
         if not rows:
             return {"valid": None, "reason": "无法连接数据源校验"}
-        # fund ts_code 格式为 "110020.OF"
+        # fund ts_code 格式为 "110020.OF" 或 "510300.SH"
         mapping = {}
         for r in rows:
             ts = r.get("ts_code", "")
