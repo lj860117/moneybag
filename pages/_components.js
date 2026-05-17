@@ -307,3 +307,37 @@ MB.components.setTheme = function(theme) {
 MB.components.getTheme = function() {
   return typeof _currentTheme !== 'undefined' ? _currentTheme : 'system';
 };
+
+/* ──────────────────────────────────────────────────────────
+ * 通用工具：fetch 失败友好提示
+ * ────────────────────────────────────────────────────────── */
+MB.components.renderFetchError = function(title, retryFn) {
+  title = title || '数据暂未开放';
+  const retryBtn = retryFn ? `<button class="mb-btn mb-btn--secondary mb-btn--sm" onclick="${retryFn}">🔄 重试</button>` : '';
+  return `<div class="mb-empty">
+    <div class="mb-empty__icon">📡</div>
+    <div class="mb-empty__title">${title}</div>
+    <div class="mb-empty__desc">数据源连接失败或尚未开放，请稍后再试</div>
+    ${retryBtn ? '<div style="margin-top:12px">' + retryBtn + '</div>' : ''}
+  </div>`;
+};
+// 全局快捷方式
+window.renderFetchError = MB.components.renderFetchError;
+
+/* ──────────────────────────────────────────────────────────
+ * 通用工具：轻量 Markdown → HTML（不引入外部库）
+ * 支持：**bold** / *italic* / \n→<br> / - 列表 / ### 标题
+ * ────────────────────────────────────────────────────────── */
+MB.components.mdLite = function(text) {
+  if (!text) return '';
+  return text
+    .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+    .replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
+    .replace(/\*(.+?)\*/g, '<em>$1</em>')
+    .replace(/^### (.+)$/gm, '<div style="font-size:14px;font-weight:700;margin:10px 0 4px">$1</div>')
+    .replace(/^## (.+)$/gm, '<div style="font-size:15px;font-weight:700;margin:12px 0 6px">$1</div>')
+    .replace(/^# (.+)$/gm, '<div style="font-size:16px;font-weight:800;margin:14px 0 6px">$1</div>')
+    .replace(/^- (.+)$/gm, '<div style="padding-left:12px">• $1</div>')
+    .replace(/\n/g, '<br>');
+};
+window.mdLite = MB.components.mdLite;

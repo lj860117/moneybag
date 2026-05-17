@@ -140,7 +140,7 @@ html+='</div>'}
 html=html||'<div style="text-align:center;padding:20px;color:var(--text2)">暂无研报数据</div>';
 // ★ 缓存设置
 setCached('broker',html);
-el.innerHTML=html}catch(e){el.innerHTML='<div style="text-align:center;padding:20px;color:#ef4444">加载失败: '+e.message+'</div>'}}
+el.innerHTML=html}catch(e){el.innerHTML=typeof renderFetchError==='function'?renderFetchError('研报数据暂未开放',"renderBrokerView(document.getElementById('insightContent'))"):'<div class="mb-empty"><div class="mb-empty__icon">📡</div><div class="mb-empty__title">研报数据暂未开放</div><div class="mb-empty__desc">请稍后重试</div></div>'}}
 
 async function renderScenarioView(el){
 el.innerHTML='<div style="text-align:center;padding:20px"><div class="loading-spinner" style="width:24px;height:24px;margin:0 auto 8px;border-width:2px"></div>加载情景...</div>';

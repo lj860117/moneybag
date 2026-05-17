@@ -297,10 +297,10 @@ if(fed.available)h+=`<div style="display:flex;justify-content:space-between;padd
 // PE 对比
 if(gpe.available&&gpe.us_pe&&gpe.cn_pe)h+=`<div style="display:flex;justify-content:space-between;padding:10px 0"><div style="font-size:13px">📊 PE 估值对比</div><div style="text-align:right"><div style="font-size:12px">🇺🇸 ${gpe.us_pe} vs 🇨🇳 ${gpe.cn_pe}</div><div style="font-size:11px;color:var(--text2)">${gpe.assessment||''}</div></div></div>`;
 h+='</div>';
-// DeepSeek 影响分析
-if(impact.analysis){h+=`<div class="dashboard-card"><div class="dashboard-card-title">🤖 AI 全球→A股影响分析 <span style="font-size:10px;color:var(--text2)">${impact.source==='ai'?'DeepSeek':'数据'}</span></div><div style="font-size:13px;line-height:1.8;white-space:pre-wrap">${impact.analysis}</div></div>`}
+// DeepSeek 影响分析（markdown → HTML）
+if(impact.analysis){const analysisHtml=typeof mdLite==='function'?mdLite(impact.analysis):impact.analysis.replace(/\*\*(.+?)\*\*/g,'<strong>$1</strong>').replace(/\n/g,'<br>');h+=`<div class="dashboard-card"><div class="dashboard-card-title">🤖 AI 全球→A股影响分析 <span style="font-size:10px;color:var(--text-tertiary,#7A8499)">${impact.source==='ai'?'DeepSeek':'数据'}</span></div><div style="font-size:13px;line-height:1.8">${analysisHtml}</div></div>`}
 el.innerHTML=h;setCached('global',h);
-}catch(e){el.innerHTML=`<div style="text-align:center;padding:40px;color:var(--text2)">全球数据加载失败: ${e.message}</div>`}}
+}catch(e){el.innerHTML=typeof renderFetchError==='function'?renderFetchError('全球数据加载失败',"renderInsightGlobal(document.getElementById('insightContent'))"):'<div class="mb-empty"><div class="mb-empty__icon">🌐</div><div class="mb-empty__title">全球数据暂不可用</div></div>'}}
 
 // 基金智能筛选页
 let fundPickType='all';let fundPickSort='score';
