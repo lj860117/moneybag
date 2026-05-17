@@ -288,9 +288,8 @@ el.innerHTML=html}catch(e){el.innerHTML='<div style="padding:20px;color:var(--be
     // 2026-04-19 V7.7: paddingTop 由 renderNav 根据 currentPage 统一控制，这里不再写
     // 2026-04-19 V7.7.2 FIX: 初次渲染时 renderNav 可能已跑完但 bar 还没创建，
     // 所以每次 renderMarketBanner 也要按当前页检查一下 display
-    if (typeof currentPage !== 'undefined') {
-      bar.style.display = currentPage === 'landing' ? '' : 'none';
-    }
+    // v9.3.0: 首页已有自己的非交易日横幅（PR-4），旧 marketStatusBar 永久隐藏
+    bar.style.display = 'none';
     const session = status.session || 'closed';
     let tone = 'closed'; // 默认灰色
     if (session === 'morning' || session === 'afternoon') tone = 'trading';

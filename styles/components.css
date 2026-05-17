@@ -50,7 +50,7 @@
 }
 .mb-card--ai {
   /* AI 模块专用卡 */
-  background: linear-gradient(135deg, #0F1219, #15192a);
+  background: linear-gradient(135deg, var(--bg-elevated), var(--bg-elevated-2));
   border-color: rgba(0, 229, 160, 0.12);
 }
 .mb-card--ai-tip {

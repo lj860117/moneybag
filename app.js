@@ -168,7 +168,7 @@ function isProMode(){return _uiMode==='pro'}
 
 // Phase 5: 亮/暗/系统 主题切换
 var _THEME_CYCLE=['system','dark','light'];
-var _currentTheme=localStorage.getItem('moneybag_theme')||'system';
+var _currentTheme=localStorage.getItem('moneybag_theme')||'dark';
 function applyTheme(theme){
   _currentTheme=theme;
   localStorage.setItem('moneybag_theme',theme);
@@ -478,16 +478,18 @@ const tabs=[
 ];
 n.innerHTML=tabs.map(t=>`<div class="nav-item ${currentPage===t.id?'active':''}" onclick="navigateTo('${t.id}')"><div class="nav-icon">${t.icon}</div><div>${t.label}</div></div>`).join('');
 // 顶部用户名条（2026-04-19 V7.7: 只在首页显示，其他页面隐藏省屏幕空间）
+// v9.3.0: 首页已有自己的顶部条（PR-4），旧 profileHeader 永久隐藏
 let hdr=document.getElementById('profileHeader');
-const showHeader = currentPage === 'landing';
-if(!hdr){hdr=document.createElement('div');hdr.id='profileHeader';hdr.style.cssText='position:fixed;top:0;left:0;right:0;z-index:100;padding:6px 16px;font-size:12px;color:var(--text2,#94a3b8);background:var(--bg,#0f172a);display:flex;justify-content:space-between;align-items:center;border-bottom:1px solid var(--bg3,#334155);transition:transform .2s ease';document.body.appendChild(hdr)}
+const showHeader = false; // v9.3.0: 旧顶栏不再显示，首页用新模板内置的顶部条
+if(!hdr){hdr=document.createElement('div');hdr.id='profileHeader';hdr.style.cssText='position:fixed;top:0;left:0;right:0;z-index:100;padding:6px 16px;font-size:12px;color:var(--text2,#94a3b8);background:var(--bg,#0f172a);display:none;justify-content:space-between;align-items:center;border-bottom:1px solid var(--bg3,#334155);transition:transform .2s ease';document.body.appendChild(hdr)}
 // V7.7.4 FIX: hdr.style.display = '' 会擦掉 cssText 里的 display:flex 导致 block fallback
 // 必须用 'flex' 明确指定，或者用 visibility/transform
-hdr.style.display = showHeader ? 'flex' : 'none';
+hdr.style.display = 'none';
 // V7.7: 非首页同时把 marketStatusBar 也隐藏 + 清空 paddingTop
+// v9.3.0: marketStatusBar 也永久隐藏，首页有自己的非交易日横幅
 const mktBar = document.getElementById('marketStatusBar');
-if (mktBar) mktBar.style.display = showHeader ? '' : 'none';
-document.body.style.paddingTop = showHeader ? '56px' : '0';
+if (mktBar) mktBar.style.display = 'none';
+document.body.style.paddingTop = '0';
 hdr.innerHTML=`<span onclick="showProfileSettings()" style="cursor:pointer">👋 ${_profileName||'未登录'} ⚙️</span><span style="display:flex;align-items:center;gap:8px"><button onclick="cycleTheme()" style="font-size:10px;padding:2px 8px;border-radius:4px;border:1px solid var(--bg3);background:transparent;color:var(--text2);cursor:pointer" id="themeBtn">${getThemeIcon()}</button><button onclick="toggleUIMode()" style="font-size:10px;padding:2px 8px;border-radius:4px;border:1px solid var(--bg3);background:${isProMode()?'rgba(99,102,241,.2)':'rgba(16,185,129,.2)'};color:${isProMode()?'#818CF8':'#10B981'};cursor:pointer">${isProMode()?'🔬 专业':'🌱 简洁'}</button></span>`}
 
 function showProfileSettings(){

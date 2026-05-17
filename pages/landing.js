@@ -42,7 +42,7 @@ ${!isTradeDay?`<div style="background:linear-gradient(90deg,rgba(255,183,85,.08)
     <span class="mb-hero__label">💰 家庭净资产</span>
     <span class="mb-pill" style="font-size:10px;cursor:pointer" data-action="toggle-money-mask">👁 隐藏</span>
   </div>
-  <h1 class="mb-hero__num mb-numeric" id="heroNetWorth">¥${fmtFull(Math.round(nw.netWorth))}<small>.00</small></h1>
+  <h1 class="mb-hero__num mb-numeric" id="heroNetWorth">${fmtFull(Math.round(nw.netWorth))}<small>.00</small></h1>
   <div class="mb-hero__delta" id="heroDelta">
     <span class="mb-pill mb-pill--bull">▲ +¥0</span>
     <span class="mb-text-tertiary">今日 · 较昨日收盘</span>
@@ -134,17 +134,9 @@ ${!isTradeDay?`<div style="background:linear-gradient(90deg,rgba(255,183,85,.08)
   <div onclick="navigateTo('chat')" style="margin-top:12px;background:rgba(255,255,255,.04);border:1px solid rgba(255,255,255,.06);border-radius:999px;padding:8px 14px;font-size:11px;color:var(--text-tertiary,#7A8499);display:flex;align-items:center;gap:6px;position:relative;z-index:1;cursor:pointer">问点什么…<span style="margin-left:auto;width:24px;height:24px;border-radius:50%;background:linear-gradient(135deg,#00E5A0,#00B8D9);display:grid;place-items:center;font-size:11px;color:#0a0a0a">→</span></div>
 </section>
 
-<!-- 本周待办（Pro 模式才显示） -->
-${isProMode()?`<section id="cfoTodos" class="mb-card" style="margin-bottom:14px">
-  <div style="font-size:12px;font-weight:700;margin-bottom:8px">✅ 本周待办</div>
-  <div style="font-size:13px;color:var(--text-secondary,#9AA1AC)">加载中...</div>
-</section>`:`<div id="cfoTodos" style="display:none"></div>`}
-
-<!-- 资产配置（Pro 模式才显示） -->
-${isProMode()?`<section id="cfoAllocation" class="mb-card" style="margin-bottom:14px">
-  <div style="font-size:12px;font-weight:700;margin-bottom:8px">🥧 资产配置</div>
-  <div style="font-size:13px;color:var(--text-secondary,#9AA1AC)">加载中...</div>
-</section>`:`<div id="cfoAllocation" style="display:none"></div>`}
+<!-- 本周待办 + 资产配置：API 有数据时才显示，初始隐藏 -->
+<div id="cfoTodos" class="mb-card" style="margin-bottom:14px;display:none"></div>
+<div id="cfoAllocation" class="mb-card" style="margin-bottom:14px;display:none"></div>
 
 </div>`;renderNav();loadUnifiedHero();_loadCfoSummary()}
 
@@ -184,18 +176,20 @@ const items=[
 {label:'债券',key:'bond',color:'#22C55E'},
 {label:'现金',key:'cash',color:'#F59E0B'}
 ];
-let html=`<div class="dashboard-card-title">🥧 资产配置 <span style="font-size:11px;color:var(--text2);font-weight:400">${d.allocation.zone||''}</span></div>`;
+let html=`<div style="font-size:12px;font-weight:700;margin-bottom:8px">🥧 资产配置 <span style="font-size:11px;color:var(--text-secondary,#9AA1AC);font-weight:400">${d.allocation.zone||''}</span></div>`;
 items.forEach(item=>{
 const cur=Math.round(c[item.key]||0);const tgt=Math.round(t[item.key]||0);
 const dev=cur-tgt;const devColor=Math.abs(dev)>10?'var(--red)':Math.abs(dev)>5?'#F59E0B':'var(--green)';
 html+=`<div style="display:flex;align-items:center;gap:8px;margin:8px 0">
-<div style="width:48px;font-size:12px;color:var(--text2)">${item.label}</div>
+<div style="width:48px;font-size:12px;color:var(--text-secondary,#9AA1AC)">${item.label}</div>
 <div style="flex:1;height:8px;background:var(--bg3,rgba(0,0,0,.05));border-radius:4px;overflow:hidden"><div style="height:100%;width:${Math.min(cur,100)}%;background:${item.color};border-radius:4px"></div></div>
-<div style="width:90px;font-size:11px;text-align:right">${cur}% <span style="color:var(--text2)">目标${tgt}%</span> <span style="color:${devColor};font-weight:600">${dev>0?'+':''}${dev}%</span></div>
+<div style="width:90px;font-size:11px;text-align:right">${cur}% <span style="color:var(--text-secondary,#9AA1AC)">目标${tgt}%</span> <span style="color:${devColor};font-weight:600">${dev>0?'+':''}${dev}%</span></div>
 </div>`;});
 allocEl.innerHTML=html;
+allocEl.style.display='';
 }else if(allocEl){
-allocEl.innerHTML=`<div class="dashboard-card-title">🥧 资产配置</div><div style="font-size:13px;color:var(--text2);padding:8px 0">暂无配置数据，<span onclick="navigateTo('quiz')" style="color:var(--accent);text-decoration:underline;cursor:pointer">做个风险测评</span> 开始吧</div>`;
+// 无配置数据时也不显示，配置入口已在快捷格"资产配置"里
+allocEl.style.display='none';
 }
 
 // D. 情绪提醒
@@ -213,10 +207,12 @@ emotionEl.innerHTML=`
 // E. 本周待办
 const todosEl=document.getElementById('cfoTodos');
 if(todosEl&&d.todos&&d.todos.length){
-todosEl.innerHTML=`<div class="dashboard-card-title">✅ 本周待办</div>`+
+todosEl.style.display='';
+todosEl.innerHTML=`<div style="font-size:12px;font-weight:700;margin-bottom:8px">✅ 本周待办</div>`+
 d.todos.map(t=>`<div style="font-size:13px;line-height:2;padding-left:4px">☐ ${t}</div>`).join('');
 }else if(todosEl){
-todosEl.innerHTML=`<div class="dashboard-card-title">✅ 本周待办</div><div style="font-size:13px;color:var(--green);padding:8px 0">👍 本周暂无待办事项。</div>`;
+// 无待办时隐藏整个卡片，不显示空壳
+todosEl.style.display='none';
 }
 
 }catch(e){console.warn('[CFO]',e)}}
@@ -253,7 +249,7 @@ el.innerHTML=html}}catch(e){const el=document.getElementById('reviewContent');if
 // ---- 首页：统一净资产 Hero 更新 ----
 async function loadUnifiedHero(){
 const d=await fetchUnifiedNetworth();if(!d||!d.netWorth)return;
-const el=document.getElementById('heroNetWorth');if(el)el.innerHTML='¥'+fmtFull(Math.round(d.netWorth))+'<small>.00</small>';
+const el=document.getElementById('heroNetWorth');if(el)el.innerHTML=fmtFull(Math.round(d.netWorth))+'<small>.00</small>';
 const bd=document.getElementById('heroBreakdown');
 if(bd){const b=d.breakdown||{};
 bd.innerHTML=`
