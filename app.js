@@ -310,11 +310,22 @@ function calcNetWorth(){
   const txns=loadTxns();const assets=loadAssets();const ledger=loadLedger();
   const holdings=calcHoldingsFromTxns(txns);
   const fundValue=holdings.reduce((s,h)=>s+h.totalCost,0);
+  // 区分股票/基金金额
+  const _isStock=h=>{
+    if(h.assetType==='stock')return true;if(h.assetType==='fund')return false;
+    const fkw=['基金','债券','货币','指数','ETF','QDII','混合','商品','联接'];
+    if(h.category&&fkw.some(k=>h.category.includes(k)))return false;
+    const c=(h.code||'').replace(/^(sh|sz)/i,'');
+    if(/^(00|30|60)\d{4}$/.test(c)&&!FUND_DETAILS[c])return true;
+    return false;
+  };
+  const stockValue=holdings.filter(h=>_isStock(h)).reduce((s,h)=>s+h.totalCost,0);
+  const fundOnlyValue=fundValue-stockValue;
   const assetTotal=assets.filter(a=>a.type!=='liability').reduce((s,a)=>s+(a.value||0),0);
   const liabilities=assets.filter(a=>a.type==='liability').reduce((s,a)=>s+(a.value||0),0);
   const ledgerIncome=ledger.filter(e=>e.direction==='income').reduce((s,e)=>s+(e.amount||0),0);
   const ledgerExpense=ledger.filter(e=>e.direction!=='income').reduce((s,e)=>s+(e.amount||0),0);
-  return {fundValue,assetTotal,liabilities,ledgerIncome,ledgerExpense,ledgerNet:ledgerIncome-ledgerExpense,netWorth:fundValue+assetTotal-liabilities+ledgerIncome-ledgerExpense,holdings};
+  return {fundValue,stockValue,fundOnlyValue,assetTotal,liabilities,ledgerIncome,ledgerExpense,ledgerNet:ledgerIncome-ledgerExpense,netWorth:fundValue+assetTotal-liabilities+ledgerIncome-ledgerExpense,holdings};
 }
 
 // 从后端获取统一净资产（包含股票+基金+手动资产+负债）

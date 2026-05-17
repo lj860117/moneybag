@@ -48,7 +48,8 @@ ${!isTradeDay?`<div style="background:linear-gradient(90deg,rgba(255,183,85,.08)
     <span class="mb-text-tertiary">今日 · 较昨日收盘</span>
   </div>
   <div class="mb-hero__splits" id="heroBreakdown">
-    <div class="mb-hero__split"><div class="mb-hero__split-label">📈 投资</div><div class="mb-hero__split-value">¥${fmtMoney(Math.round(nw.fundValue))}</div></div>
+    <div class="mb-hero__split"><div class="mb-hero__split-label">📊 股票</div><div class="mb-hero__split-value">¥${fmtMoney(Math.round(nw.stockValue||0))}</div></div>
+    <div class="mb-hero__split"><div class="mb-hero__split-label">💼 基金</div><div class="mb-hero__split-value">¥${fmtMoney(Math.round(nw.fundOnlyValue||0))}</div></div>
     <div class="mb-hero__split"><div class="mb-hero__split-label">💵 现金</div><div class="mb-hero__split-value">¥${fmtMoney(Math.round(nw.assetTotal))}</div></div>
     <div class="mb-hero__split"><div class="mb-hero__split-label">📋 负债</div><div class="mb-hero__split-value mb-hero__split-value--dn">-¥${fmtMoney(Math.round(nw.liabilities))}</div></div>
   </div>
