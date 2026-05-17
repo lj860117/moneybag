@@ -21,7 +21,7 @@ const masters=[
 ];
 const modelPill=chatModelList.length>1?`<span class="mb-pill mb-pill--ai" style="font-size:10px;cursor:pointer" onclick="showModelPicker()">${chatModelList.find(m=>m.id===chatModel)?.name||'DeepSeek'}</span>`:'';
 
-$('#app').innerHTML=`<div class="chat-page" style="display:flex;flex-direction:column;height:calc(100vh - var(--tabbar-height,76px));max-height:calc(100vh - 76px);padding:0">
+$('#app').innerHTML=`<div class="chat-page" style="display:flex;flex-direction:column;height:calc(100vh - var(--tabbar-height,76px));max-height:calc(100vh - 76px);padding:0;padding-top:calc(env(safe-area-inset-top,8px) + 8px)">
 
 <!-- 顶部 -->
 <div style="padding:12px 16px 8px;flex-shrink:0">
@@ -54,7 +54,7 @@ $('#app').innerHTML=`<div class="chat-page" style="display:flex;flex-direction:c
 
 <!-- 常见问题 -->
 <div id="chatSugs" style="flex-shrink:0;padding:0 16px 8px;display:flex;gap:6px;overflow-x:auto;scrollbar-width:none">
-  ${sugs.map(s=>`<button class="mb-card--ghost" style="padding:8px 12px;white-space:nowrap;cursor:pointer;font-size:11px;display:flex;align-items:center;gap:4px;flex-shrink:0" onclick="sendChat('${s.text}')">${s.emoji} ${s.text}</button>`).join('')}
+  ${sugs.map(s=>`<button style="padding:8px 12px;white-space:nowrap;cursor:pointer;font-size:12px;font-weight:500;display:flex;align-items:center;gap:4px;flex-shrink:0;background:rgba(255,255,255,.06);border:1px solid rgba(255,255,255,.10);border-radius:var(--radius-pill,999px);color:#D8DCE5;font-family:inherit" onclick="sendChat('${s.text}')">${s.emoji} ${s.text}</button>`).join('')}
 </div>
 
 <!-- 输入框（固定底部 80px 处） -->
