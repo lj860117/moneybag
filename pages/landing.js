@@ -93,22 +93,22 @@ ${!isTradeDay?`<div style="background:linear-gradient(90deg,rgba(255,183,85,.08)
 <section style="display:grid;grid-template-columns:repeat(4,1fr);gap:8px;margin-bottom:14px">
   <div class="mb-card--ghost" style="padding:12px 6px;text-align:center;cursor:pointer" onclick="navigateTo('portfolio')">
     <div style="width:36px;height:36px;border-radius:10px;margin:0 auto 6px;display:grid;place-items:center;font-size:16px;background:rgba(255,183,85,.12)">🥨</div>
-    <div style="font-size:11px;font-weight:600">资产配置</div>
+    <div style="font-size:11px;font-weight:600;color:var(--text-primary,#F0F2F7)">资产配置</div>
     <div style="font-size:9px;color:var(--text-tertiary,#7A8499);margin-top:1px" id="quickAllocStatus">未测评</div>
   </div>
   <div class="mb-card--ghost" style="padding:12px 6px;text-align:center;cursor:pointer" onclick="navigateTo('portfolio')">
     <div style="width:36px;height:36px;border-radius:10px;margin:0 auto 6px;display:grid;place-items:center;font-size:16px;background:rgba(0,229,160,.12)">📊</div>
-    <div style="font-size:11px;font-weight:600">查看持仓</div>
+    <div style="font-size:11px;font-weight:600;color:var(--text-primary,#F0F2F7)">查看持仓</div>
     <div style="font-size:9px;color:var(--text-tertiary,#7A8499);margin-top:1px">0 只</div>
   </div>
   <div class="mb-card--ghost" style="padding:12px 6px;text-align:center;cursor:pointer" onclick="navigateTo('market-panorama')">
     <div style="width:36px;height:36px;border-radius:10px;margin:0 auto 6px;display:grid;place-items:center;font-size:16px;background:rgba(139,111,230,.12)">🌐</div>
-    <div style="font-size:11px;font-weight:600">市场全景</div>
+    <div style="font-size:11px;font-weight:600;color:var(--text-primary,#F0F2F7)">市场全景</div>
     <div style="font-size:9px;color:var(--text-tertiary,#7A8499);margin-top:1px">已更新</div>
   </div>
   <div class="mb-card--ghost" style="padding:12px 6px;text-align:center;cursor:pointer" onclick="navigateTo('assets')">
     <div style="width:36px;height:36px;border-radius:10px;margin:0 auto 6px;display:grid;place-items:center;font-size:16px;background:rgba(255,138,177,.12)">🏛</div>
-    <div style="font-size:11px;font-weight:600">管理资产</div>
+    <div style="font-size:11px;font-weight:600;color:var(--text-primary,#F0F2F7)">管理资产</div>
     <div style="font-size:9px;color:var(--text-tertiary,#7A8499);margin-top:1px">添加</div>
   </div>
 </section>
@@ -208,8 +208,8 @@ emotionEl.innerHTML=`
 const todosEl=document.getElementById('cfoTodos');
 if(todosEl&&d.todos&&d.todos.length){
 todosEl.style.display='';
-todosEl.innerHTML=`<div style="font-size:12px;font-weight:700;margin-bottom:8px">✅ 本周待办</div>`+
-d.todos.map(t=>`<div style="font-size:13px;line-height:2;padding-left:4px">☐ ${t}</div>`).join('');
+todosEl.innerHTML=`<div style="font-size:12px;font-weight:700;margin-bottom:8px;display:flex;align-items:center;gap:6px">👨‍👩 本周待办</div>`+
+d.todos.map(t=>`<div style="font-size:13px;line-height:1.8;padding:6px 10px;margin-bottom:4px;background:linear-gradient(135deg,rgba(139,111,230,.06),rgba(255,183,85,.04));border:1px solid var(--border-subtle,rgba(255,255,255,.05));border-radius:var(--radius-md,10px)">❤️ ${t}</div>`).join('');
 }else if(todosEl){
 // 无待办时隐藏整个卡片，不显示空壳
 todosEl.style.display='none';

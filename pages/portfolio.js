@@ -57,10 +57,11 @@ $('#app').innerHTML=`<div class="portfolio-page fade-up" style="padding-bottom:c
   <span style="margin-left:auto;color:var(--color-bull,#00E5A0);font-weight:600">→</span>
 </div>
 
-<!-- 股票⇄基金切换（永远渲染） -->
-<div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:14px">
-  <button class="mb-pill mb-pill--on" id="tabStockBtn" onclick="showStockHoldings()">📊 股票/基金</button>
-  <button class="mb-pill" id="tabTxnBtn" onclick="showTxnHistory()">📋 交易记录</button>
+<!-- 股票⇄基金 pill 切换 -->
+<div class="mb-flex mb-gap-3" style="margin-bottom:14px">
+  <a class="mb-pill mb-pill--on" id="tabStockBtn" onclick="showStockHoldings()" style="cursor:pointer">📊 股票</a>
+  <a class="mb-pill" id="tabFundBtn" onclick="showStockHoldings()" style="cursor:pointer">💼 基金</a>
+  <a class="mb-pill" id="tabTxnBtn" onclick="showTxnHistory()" style="cursor:pointer;margin-left:auto">📋 记录</a>
 </div>
 
 <!-- 风险纪律提醒（永远渲染） -->
