@@ -26,7 +26,8 @@ router = APIRouter()
 # 快速路径意图 — 这些 intent 优先走规则引擎（毫秒级），不命中再 fall through 到 LLM
 FAST_PATH_INTENTS = {"safety_refusal", "holdings_query", "empty_holdings_query",
                      "timing", "take_profit", "dca", "sentiment", "macro_summary",
-                     "smart_dca", "news", "macro", "valuation", "northbound"}
+                     "smart_dca", "news", "macro", "valuation", "northbound",
+                     "briefing_request", "weekly_request", "cash_safety"}
 
 
 @router.get("/api/models")

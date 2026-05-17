@@ -374,6 +374,11 @@ _INTENT_RULES = [
     (["基金", "选基", "推荐基金"], "fund", None),
     (["北向", "外资", "净流入"], "northbound", None),
     (["情绪", "恐惧", "贪婪", "恐慌", "市场情绪", "散户情绪"], "sentiment", None),
+    # 晨报/周报请求（引导到对应功能）
+    (["晨报", "早报", "briefing"], "briefing_request", None),
+    (["周报", "weekly", "本周总结"], "weekly_request", None),
+    # 现金/应急储备
+    (["安全垫", "应急", "现金够", "留多少现金", "备用金"], "cash_safety", None),
 ]
 
 
@@ -587,6 +592,27 @@ def _rule_based_reply_structured(msg: str, market_ctx: str, portfolio_ctx: str) 
             pass
         return None
 
+    # 晨报/周报请求 — 引导用户到正确功能
+    if any(k in msg_lower for k in ["晨报", "早报", "briefing"]):
+        text = "📋 你可以在首页查看每日晨报，或者直接访问 **分析页 → 管家晨报** 获取最新版。\n\n晨报内容包括：市场状态、持仓异动、风控提醒、今日建议。\n\n💡 晨报每天凌晨 4:30 自动生成，也可以手动刷新获取最新数据。"
+        return {"text": text, "confidence": 0.80, "intent": "briefing_request"}
+
+    if any(k in msg_lower for k in ["周报", "weekly", "本周总结"]):
+        text = "📊 你可以在 **分析页 → 周报** 查看本周投资总结。\n\n周报内容包括：本周净资产变动、持仓盈亏、市场回顾、下周关注点。\n\n💡 周报每周日自动生成，也可以在分析页手动触发生成。"
+        return {"text": text, "confidence": 0.80, "intent": "weekly_request"}
+
+    # 现金安全垫/应急储备
+    if any(k in msg_lower for k in ["安全垫", "应急", "现金够", "留多少现金", "备用金", "紧急备用"]):
+        # 从持仓上下文提取现金信息
+        import re
+        cash_match = re.search(r'现金[：:]?\s*¥?([\d,.]+)', portfolio_ctx)
+        if cash_match:
+            cash_str = cash_match.group(1)
+            text = f"💰 你当前记录的现金约 ¥{cash_str}。\n\n**安全垫建议：**\n• 保留 3-6 个月生活费作为应急储备\n• 放在 T+0 货币基金（如余额宝）\n• 不计入投资，随时可取\n\n**判断标准：**\n• 月支出 5000 → 安全垫 1.5-3 万\n• 月支出 10000 → 安全垫 3-6 万\n• 月支出 20000 → 安全垫 6-12 万\n\n如果现金不够安全垫，暂停新增高风险资产，优先攒够。\n\n⚠️ 以上仅供参考，不构成投资建议。"
+        else:
+            text = "💰 **安全垫建议：**\n\n保留 3-6 个月生活费作为应急储备，放在 T+0 货币基金。\n\n你目前没有录入现金数据，去 **资产页** 添加你的银行存款/余额宝金额，我就能帮你判断够不够了。\n\n⚠️ 以上仅供参考，不构成投资建议。"
+        return {"text": text, "confidence": 0.85, "intent": "cash_safety"}
+
     # 市场下跌安慰
     if any(k in msg_lower for k in ["跌", "亏", "赔", "绿", "下跌"]):
         text = f"📉 市场波动是正常现象。\n\n{market_ctx}\n\n长期投资（3年+）能大幅平滑短期波动。如果你的资产配比还在目标范围内，建议保持定投节奏，不要恐慌卖出。记住投资铁律：跌了别卖，越跌越该买。\n\n⚠️ 以上仅供参考，不构成投资建议。"
@@ -606,8 +632,8 @@ def _rule_based_reply(msg: str, market_ctx: str, portfolio_ctx: str) -> str:
     result = _rule_based_reply_structured(msg, market_ctx, portfolio_ctx)
     if result:
         return result["text"]
-    # 兜底回复
-    return f"🤔 关于你的问题：\n\n当前市场概况：\n{market_ctx}\n\n{portfolio_ctx}\n\n你可以问我：\n📰 「最近有什么新闻？」\n📊 「技术指标怎么样？」\n🏛️ 「宏观经济怎么样？」\n🎯 「现在适合入场吗？」\n💰 「什么时候该卖？」\n🧠 「定投多少合适？」\n\n⚠️ 以上仅供参考，不构成投资建议。"
+    # 兜底回复（不倾倒市场概况，简短引导用户提出更明确的问题）
+    return "🤔 这个问题我需要更多上下文才能精准回答。\n\n你可以试试这些问法：\n📰 「最近有什么新闻？」\n📊 「技术指标怎么样？」\n🎯 「现在适合入场吗？」\n💰 「什么时候该卖？」\n🧠 「定投多少合适？」\n🔍 「茅台有什么利空？」（指定个股）\n\n或者直接告诉我你想了解的股票/基金代码，我来帮你查。\n\n⚠️ 以上仅供参考，不构成投资建议。"
 
 
 # ========================================================
