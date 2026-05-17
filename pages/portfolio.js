@@ -3,41 +3,113 @@ async function renderPortfolio(){currentPage='portfolio';renderNav();
 const txns=loadTxns();const holdings=calcHoldingsFromTxns(txns);
 const p=loadPortfolio(); // 兼容旧数据
 
-// 没有任何持仓
-if(!holdings.length&&!p.holdings.length){$('#app').innerHTML=`<div class="landing" style="min-height:70vh"><div class="landing-icon">📊</div><h1>还没有持仓</h1><p class="subtitle">完成测评记录买入，或手动添加交易</p><div class="bottom-actions" style="margin-top:24px;justify-content:center"><button class="cta-btn" onclick="startQuiz()">去测评</button></div><div style="text-align:center;margin-top:16px"><button class="action-btn secondary" style="display:inline-block;min-width:auto" onclick="showAddTxn()">➕ 手动添加交易</button></div></div>`;return}
-
 const useV4=holdings.length>0;
-const displayHoldings=useV4?holdings:p.holdings.map(h=>({code:h.code,name:h.name,category:h.category,shares:0,totalCost:h.amount,avgPrice:0}));
+const hasHoldings=holdings.length>0||p.holdings.length>0;
+const displayHoldings=useV4?holdings:hasHoldings?p.holdings.map(h=>({code:h.code,name:h.name,category:h.category,shares:0,totalCost:h.amount,avgPrice:0})):[];
 const tc=displayHoldings.reduce((s,h)=>s+h.totalCost,0);
 
-$('#app').innerHTML=`<div class="portfolio-page fade-up">
-<div class="pnl-hero"><div class="pnl-label">${p.profile?p.profile+'·':''}基金持仓</div><div class="pnl-total-value">${fmtFull(Math.round(tc))}</div>
-<div id="pnlSum"><div style="font-size:13px;color:var(--text2);margin-top:8px">${API_AVAILABLE?'正在计算实时盈亏...':'后端离线，显示买入成本'}</div></div></div>
+$('#app').innerHTML=`<div class="portfolio-page fade-up" style="padding-bottom:calc(var(--tabbar-height,76px) + 16px)">
 
-<div id="holdList">${displayHoldings.map(h=>`<div class="holding-card" onclick="showHoldingActions('${h.code}')">
-<div class="holding-top"><div class="holding-info"><div class="holding-name">${h.name}</div>
-<div class="holding-meta">${h.category}${h.shares?' · '+h.shares.toFixed(2)+'份':''}${h.avgPrice?' · 均价¥'+h.avgPrice.toFixed(4):''}</div></div>
-<div class="holding-amount"><div class="holding-money">${fmtFull(Math.round(h.totalCost))}</div></div></div></div>`).join('')}</div>
+<!-- Hero 总持仓（永远渲染） -->
+<section class="mb-hero" style="margin-bottom:14px">
+  <div class="mb-hero__label">💰 总持仓资产</div>
+  <h2 class="mb-hero__num" id="portfolioHeroValue">${fmtFull(Math.round(tc))}</h2>
+  <div class="mb-hero__delta" id="pnlSum">
+    <span class="mb-text-tertiary" style="font-size:var(--fs-sm,11px)">${API_AVAILABLE?(hasHoldings?'正在计算实时盈亏...':'暂无持仓数据'):'后端离线'}</span>
+  </div>
+  <div style="margin-top:12px;background:rgba(255,255,255,.04);border-radius:var(--radius-sm,8px);padding:8px 12px;display:flex;align-items:center;gap:10px;font-size:11px">
+    <span style="color:var(--color-brand-500,#FFB755);font-weight:700" id="portfolioHealthScore">75/100</span>
+    <div style="flex:1;height:4px;background:rgba(255,255,255,.06);border-radius:2px;overflow:hidden"><div id="portfolioHealthBar" style="height:100%;width:75%;background:linear-gradient(90deg,var(--color-brand-500,#FFB755),var(--color-bull,#00E5A0));border-radius:2px;transition:width .5s"></div></div>
+    <span class="mb-caption">健康分</span>
+  </div>
+</section>
 
-<div style="margin-top:16px;margin-bottom:8px;display:flex;gap:8px;flex-wrap:wrap">
-<button class="action-btn primary" onclick="showAddTxn()">➕ 新交易</button>
-<button class="action-btn secondary" onclick="showAddCustomFund()">🔍 添加自选</button>
+<!-- 双账户卡（永远渲染） -->
+<section class="mb-card--ghost" style="margin-bottom:14px">
+  <div class="mb-flex mb-flex--between mb-mb-3">
+    <b style="font-size:12px">👨‍👩 家庭持仓</b>
+    <span class="mb-text-tertiary" style="font-size:10px">2 人</span>
+  </div>
+  <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px">
+    <div class="mb-card--ghost" style="padding:10px">
+      <div class="mb-flex mb-gap-2 mb-mb-1">
+        <div class="mb-avatar mb-avatar--xs mb-avatar--leijiang">L</div>
+        <b style="font-size:11px">LeiJiang</b>
+      </div>
+      <div class="mb-money mb-money--sm">¥${fmtMoney(Math.round(tc))}</div>
+      <div class="mb-caption">占比 ${tc>0?'100':'0'}%</div>
+    </div>
+    <div class="mb-card--ghost" style="padding:10px">
+      <div class="mb-flex mb-gap-2 mb-mb-1">
+        <div class="mb-avatar mb-avatar--xs mb-avatar--buluogeli">B</div>
+        <b style="font-size:11px">BuLuoGeLi</b>
+      </div>
+      <div class="mb-money mb-money--sm">¥0</div>
+      <div class="mb-caption">占比 0%</div>
+    </div>
+  </div>
+</section>
+
+<!-- 行为风控提示（永远渲染） -->
+<div style="background:linear-gradient(90deg,rgba(0,229,160,.06),rgba(0,229,160,.02));border:1px solid rgba(0,229,160,.15);border-radius:var(--radius-md,10px);padding:10px 12px;margin-bottom:14px;display:flex;align-items:center;gap:8px;font-size:11px;color:var(--text-secondary,#9aa1ac)">
+  <span class="mb-live-dot"></span>
+  <span>行为风控：${hasHoldings?'正常运行中':'等待首笔交易'}</span>
+  <span style="margin-left:auto;color:var(--color-bull,#00E5A0);font-weight:600">→</span>
 </div>
 
-${txns.length?`<div class="section-title">📋 交易记录 (${txns.length})</div>
+<!-- 股票⇄基金切换（永远渲染） -->
+<div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:14px">
+  <button class="mb-pill mb-pill--on" id="tabStockBtn" onclick="showStockHoldings()">📊 股票/基金</button>
+  <button class="mb-pill" id="tabTxnBtn" onclick="showTxnHistory()">📋 交易记录</button>
+</div>
+
+<!-- 风险纪律提醒（永远渲染） -->
+<div class="mb-card--warn" style="margin-bottom:14px">
+  <b style="display:block;color:var(--color-bear,#FF6B6B);font-size:12px;margin-bottom:3px">⚠️ 投资纪律提醒</b>
+  <span style="font-size:11px;color:var(--text-secondary,#9AA1AC)">单只持仓不超过总资产 30%，止损线 -15%，止盈线 +50%</span>
+</div>
+
+<!-- 持仓列表 -->
+<div id="holdingsContent">
+${hasHoldings?`<div id="holdList">${displayHoldings.map(h=>`<div class="mb-card" style="margin-bottom:8px;padding:12px;cursor:pointer" onclick="showHoldingActions('${h.code}')">
+<div class="mb-flex mb-flex--between">
+<div><div style="font-size:var(--fs-md,14px);font-weight:var(--fw-semibold,600)">${h.name}</div>
+<div class="mb-caption">${h.category}${h.shares?' · '+h.shares.toFixed(2)+'份':''}${h.avgPrice?' · 均价¥'+h.avgPrice.toFixed(4):''}</div></div>
+<div style="text-align:right"><div class="mb-money mb-money--sm">${fmtFull(Math.round(h.totalCost))}</div></div></div></div>`).join('')}</div>
+<div class="mb-flex mb-gap-3" style="margin-top:14px">
+<button class="mb-btn mb-btn--primary mb-btn--block" onclick="showAddTxn()">➕ 新交易</button>
+<button class="mb-btn mb-btn--secondary mb-btn--block" onclick="showAddCustomFund()">🔍 添加自选</button>
+</div>`:`
+<div class="mb-empty">
+  <div class="mb-empty__icon">📊</div>
+  <div class="mb-empty__title">还没有持仓</div>
+  <div class="mb-empty__desc">完成测评记录买入，或手动添加交易</div>
+  <div class="mb-flex mb-flex--center mb-gap-3" style="flex-wrap:wrap">
+    <button class="mb-btn mb-btn--primary" onclick="showAddTxn()">➕ 添加股票</button>
+    <button class="mb-btn mb-btn--secondary" onclick="showAddCustomFund()">🔍 刷新行情</button>
+    <button class="mb-btn mb-btn--ai mb-btn--sm" onclick="navigateTo('chat')">🧠 AI 深度分析</button>
+  </div>
+</div>`}
+</div>
+
+<!-- 交易记录（初始隐藏） -->
+<div id="txnContent" style="display:none">
+${txns.length?`<div style="font-size:12px;font-weight:700;margin-bottom:8px">📋 交易记录 (${txns.length})</div>
 <div id="txnList">${txns.slice(-20).reverse().map(t=>{
 const isBuy=t.type==='BUY';
-return`<div class="ledger-entry"><div class="ledger-entry-icon">${isBuy?'🟢':'🔴'}</div>
-<div class="ledger-entry-info"><div class="ledger-entry-note">${t.type} ${t.name||t.code}${t.note?' · '+t.note:''}</div>
-<div class="ledger-entry-date">${new Date(t.date).toLocaleString('zh-CN')} · ${t.shares?.toFixed(2)||'-'}份 × ¥${t.price?.toFixed(4)||'-'}</div></div>
-<div class="ledger-entry-amt" style="color:${isBuy?'var(--green)':'var(--red)'}">¥${Math.round(t.amount||t.shares*t.price)}</div></div>`}).join('')}</div>`:''}
+return`<div class="mb-card" style="margin-bottom:6px;padding:10px;display:flex;align-items:center;gap:10px">
+<div style="font-size:16px">${isBuy?'🟢':'🔴'}</div>
+<div style="flex:1"><div style="font-size:12px;font-weight:600">${t.type} ${t.name||t.code}${t.note?' · '+t.note:''}</div>
+<div class="mb-caption">${new Date(t.date).toLocaleString('zh-CN')} · ${t.shares?.toFixed(2)||'-'}份 × ¥${t.price?.toFixed(4)||'-'}</div></div>
+<div style="font-size:13px;font-weight:700;color:${isBuy?'var(--color-bull,#00E5A0)':'var(--color-bear,#FF6B6B)'}">¥${Math.round(t.amount||t.shares*t.price)}</div></div>`}).join('')}</div>`:'<div class="mb-empty"><div class="mb-empty__icon">📋</div><div class="mb-empty__title">暂无交易记录</div></div>'}
+</div>
 
 <div id="riskActionsSection"></div>
-<div id="riskMetricsSection"><div style="text-align:center;padding:12px;font-size:12px;color:var(--text2)">${API_AVAILABLE?'正在加载风控体检...':''}</div></div>
+<div id="riskMetricsSection"><div style="text-align:center;padding:12px;font-size:12px;color:var(--text-secondary,#9AA1AC)">${API_AVAILABLE?'正在加载风控体检...':''}</div></div>
 
-<div class="bottom-actions" style="margin-top:16px">
-<button class="action-btn secondary" onclick="startQuiz()">🔄 重新测评</button>
-<button class="action-btn secondary" onclick="if(confirm('清除所有持仓和交易记录？')){localStorage.removeItem(TXN_KEY);localStorage.removeItem(STORAGE_KEY);renderPortfolio()}">🗑️ 清除</button>
+<div class="mb-flex mb-gap-3" style="margin-top:16px">
+<button class="mb-btn mb-btn--secondary mb-btn--block" onclick="startQuiz()">🔄 重新测评</button>
+<button class="mb-btn mb-btn--secondary mb-btn--block" style="color:var(--color-bear,#FF6B6B)" onclick="if(confirm('清除所有持仓和交易记录？')){localStorage.removeItem(TXN_KEY);localStorage.removeItem(STORAGE_KEY);renderPortfolio()}">🗑️ 清除</button>
 </div></div>`;
 
 // 异步更新实时盈亏
@@ -47,10 +119,24 @@ const body={holdings:displayHoldings.map(h=>({code:h.code,name:h.name,category:h
 const r=await fetch(API_BASE+'/portfolio/pnl',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
 if(r.ok){const pnl=await r.json();
 const pe=document.getElementById('pnlSum');
-if(pe){const c=pnl.totalPnl>=0?'pos':'neg';const sg=pnl.totalPnl>=0?'+':'';
-pe.innerHTML=`<div class="pnl-change ${c}">${sg}${fmtFull(Math.round(pnl.totalPnl))}(${sg}${pnl.totalPnlPct.toFixed(2)}%)</div><div class="pnl-sub">当前市值${fmtFull(Math.round(pnl.totalMarket))}</div>`}}}catch{}}
+if(pe){const sg=pnl.totalPnl>=0?'+':'';const cls=pnl.totalPnl>=0?'mb-pill--bull':'mb-pill--bear';
+pe.innerHTML=`<span class="mb-pill ${cls}">${sg}${fmtFull(Math.round(pnl.totalPnl))}(${sg}${pnl.totalPnlPct.toFixed(2)}%)</span><span class="mb-text-tertiary" style="font-size:var(--fs-sm,11px)">当前市值${fmtFull(Math.round(pnl.totalMarket))}</span>`}}}catch{}}
 // 异步加载风控指标
 if(API_AVAILABLE){loadRiskMetrics();loadRiskActions()}}
+
+// Tab 切换辅助
+function showStockHoldings(){
+  document.getElementById('holdingsContent').style.display='';
+  document.getElementById('txnContent').style.display='none';
+  document.getElementById('tabStockBtn').className='mb-pill mb-pill--on';
+  document.getElementById('tabTxnBtn').className='mb-pill';
+}
+function showTxnHistory(){
+  document.getElementById('holdingsContent').style.display='none';
+  document.getElementById('txnContent').style.display='';
+  document.getElementById('tabStockBtn').className='mb-pill';
+  document.getElementById('tabTxnBtn').className='mb-pill mb-pill--on';
+}
 
 async function loadRiskMetrics(){
 try{const r=await fetch(API_BASE+'/risk-metrics',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({userId:getUserId()}),signal:AbortSignal.timeout(15000)});
