@@ -54,8 +54,8 @@ ${!isTradeDay?`<div style="background:linear-gradient(90deg,rgba(255,183,85,.08)
   </div>
 </section>
 
-<!-- 双账户卡 -->
-<section class="mb-card--ghost" style="margin-bottom:14px">
+<!-- 双账户卡（异步从后端加载家庭数据） -->
+<section class="mb-card--ghost" style="margin-bottom:14px" id="landingFamilyCard">
   <div class="mb-flex mb-flex--between mb-mb-3">
     <b style="font-size:12px">👨‍👩 家庭账户</b>
     <span class="mb-text-tertiary" style="font-size:10px;cursor:pointer" onclick="navigateTo('settings')">管理 →</span>
@@ -66,16 +66,16 @@ ${!isTradeDay?`<div style="background:linear-gradient(90deg,rgba(255,183,85,.08)
         <div class="mb-avatar mb-avatar--xs mb-avatar--leijiang">L</div>
         <b style="font-size:11px">LeiJiang</b>
       </div>
-      <div class="mb-money mb-money--sm" id="heroLeijiangAmt">¥0</div>
-      <div class="mb-caption" id="heroLeijiangPct">占比 0%</div>
+      <div class="mb-money mb-money--sm">—</div>
+      <div class="mb-caption">加载中</div>
     </div>
     <div class="mb-card--ghost" style="padding:10px">
       <div class="mb-flex mb-gap-2 mb-mb-1">
         <div class="mb-avatar mb-avatar--xs mb-avatar--buluogeli">B</div>
         <b style="font-size:11px">BuLuoGeLi</b>
       </div>
-      <div class="mb-money mb-money--sm" id="heroBuluogeliAmt">¥0</div>
-      <div class="mb-caption" id="heroBuluogeliPct">占比 0%</div>
+      <div class="mb-money mb-money--sm">—</div>
+      <div class="mb-caption">加载中</div>
     </div>
   </div>
 </section>
@@ -138,7 +138,7 @@ ${!isTradeDay?`<div style="background:linear-gradient(90deg,rgba(255,183,85,.08)
 <div id="cfoTodos" class="mb-card" style="margin-bottom:14px;display:none"></div>
 <div id="cfoAllocation" class="mb-card" style="margin-bottom:14px;display:none"></div>
 
-</div>`;renderNav();loadUnifiedHero();_loadCfoSummary()}
+</div>`;renderNav();loadUnifiedHero();_loadCfoSummary();_loadLandingFamilyData()}
 
 // ---- 首页：加载 CFO 聚合数据 ----
 async function _loadCfoSummary(){
@@ -595,6 +595,58 @@ ${advArr.length?advArr.map(a=>{const bg=a.direction==='reduce'?'rgba(239,68,68,.
 
   console.log('[V6-6] household-hero patch installed');
 })();
+
+// 首页加载家庭数据（净资产+双账户卡）
+async function _loadLandingFamilyData(){
+  if(!API_AVAILABLE)return;
+  try{
+    const r=await fetch(API_BASE+'/family/portfolio-summary?userId='+encodeURIComponent(getProfileId()),{signal:AbortSignal.timeout(10000)});
+    if(!r.ok)return;
+    const d=await r.json();
+    if(!d.available||!d.members)return;
+
+    // 更新家庭净资产（两人合计）
+    const heroEl=document.getElementById('heroNetWorth');
+    if(heroEl&&d.familyNetWorth>0){
+      heroEl.innerHTML=`<span class="mb-money__symbol">¥</span><span class="mb-money__num">${Math.round(d.familyNetWorth).toLocaleString('zh-CN')}</span><small>.00</small>`;
+    }
+
+    // 更新投资/现金/负债 breakdown（两人合计）
+    const totalInvest=d.members.reduce((s,m)=>s+(m.investTotal||0),0);
+    const totalCash=d.members.reduce((s,m)=>s+(m.cashTotal||0),0);
+    const totalLiab=d.members.reduce((s,m)=>s+(m.liabilityTotal||0),0);
+    const breakEl=document.getElementById('heroBreakdown');
+    if(breakEl&&(totalInvest>0||totalCash>0||totalLiab>0)){
+      breakEl.innerHTML=`
+        <div class="mb-hero__split" style="cursor:pointer" onclick="_showInvestBreakdown()"><div class="mb-hero__split-label">📈 投资</div><div class="mb-hero__split-value">¥${fmtMoney(Math.round(totalInvest))}</div></div>
+        <div class="mb-hero__split"><div class="mb-hero__split-label">💵 现金</div><div class="mb-hero__split-value">¥${fmtMoney(Math.round(totalCash))}</div></div>
+        <div class="mb-hero__split"><div class="mb-hero__split-label">📋 负债</div><div class="mb-hero__split-value mb-hero__split-value--dn">-¥${fmtMoney(Math.round(totalLiab))}</div></div>`;
+    }
+
+    // 更新双账户卡
+    const card=document.getElementById('landingFamilyCard');
+    if(!card)return;
+    const total=d.familyNetWorth||d.familyTotal||1;
+    card.innerHTML=`
+      <div class="mb-flex mb-flex--between mb-mb-3">
+        <b style="font-size:12px">👨‍👩 家庭账户</b>
+        <span class="mb-text-tertiary" style="font-size:10px;cursor:pointer" onclick="navigateTo('settings')">管理 →</span>
+      </div>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px">
+        ${d.members.map(m=>{
+          const pct=total>0?Math.round(m.netWorth/total*100):0;
+          const initial=m.userId.charAt(0).toUpperCase();
+          const isMe=m.userId===getProfileId();
+          return`<div class="mb-card--ghost" style="padding:10px">
+            <div class="mb-flex mb-gap-2 mb-mb-1">
+              <div class="mb-avatar mb-avatar--xs" style="background:linear-gradient(135deg,${isMe?'#F59E0B,#D97706':'#A855F7,#7C3AED'})">${initial}</div>
+              <b style="font-size:11px">${m.userId}</b>
+            </div>
+            <div class="mb-money mb-money--sm">¥${fmtMoney(Math.round(m.netWorth))}</div>
+            <div class="mb-caption">占比 ${pct}%</div>
+          </div>`}).join('')}
+      </div>`;
+  }catch(e){console.warn('[Family landing]',e)}}
 
 // 投资明细弹窗（点击首页"📈 投资"触发）
 function _showInvestBreakdown(){

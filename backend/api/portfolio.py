@@ -520,34 +520,12 @@ def unified_networth_api(userId: str = ""):
 
 @router.get("/api/family/portfolio-summary")
 def family_portfolio_summary(userId: str = ""):
-    """家庭持仓汇总 — 聚合同一家庭所有成员的投资数据"""
+    """家庭持仓汇总 — 只统计 LeiJiang + BuLuoGeLi 两个正式账号"""
     if not userId:
         return {"available": False}
 
-    # 查找家庭成员（同一邀请码注册的用户）
-    from services.persistence import load_user
-    current_user = load_user(userId)
-    family_members = [userId]
-
-    # 从用户数据目录扫描同家庭成员
-    try:
-        from config import DATA_DIR
-        from pathlib import Path
-        import json as _json
-        users_dir = Path(DATA_DIR) / "users"
-        if users_dir.exists():
-            for f in users_dir.glob("*.json"):
-                try:
-                    u = _json.loads(f.read_text(encoding="utf-8"))
-                    uid = u.get("userId", "")
-                    if uid and uid != userId and uid not in family_members:
-                        # 简单逻辑：非测试用户都算家庭成员
-                        if not uid.startswith("QA_") and not uid.startswith("qa_") and uid != "Guest":
-                            family_members.append(uid)
-                except Exception:
-                    pass
-    except Exception:
-        pass
+    # 家庭成员写死（只有你和老婆，排除所有测试账号）
+    family_members = ["LeiJiang", "BuLuoGeLi"]
 
     # 聚合每个成员的净资产
     members = []
@@ -555,24 +533,28 @@ def family_portfolio_summary(userId: str = ""):
         try:
             nw = calc_unified_networth(mid)
             inv = nw.get("breakdown", {}).get("investment", {})
+            cash = nw.get("breakdown", {}).get("cash", {}).get("total", 0)
+            liab = nw.get("breakdown", {}).get("liability", {}).get("total", 0)
             members.append({
                 "userId": mid,
-                "stockTotal": inv.get("stockTotal", 0) + inv.get("txnFundTotal", 0) * 0,  # txnFundTotal 是交易基金
+                "stockTotal": inv.get("stockTotal", 0),
                 "fundTotal": inv.get("fundTotal", 0) + inv.get("txnFundTotal", 0),
                 "investTotal": inv.get("total", 0),
+                "cashTotal": cash,
+                "liabilityTotal": liab,
                 "netWorth": nw.get("netWorth", 0),
                 "stockCount": inv.get("stockCount", 0),
                 "fundCount": inv.get("fundCount", 0),
             })
         except Exception:
-            members.append({"userId": mid, "investTotal": 0, "stockTotal": 0, "fundTotal": 0, "netWorth": 0})
+            members.append({"userId": mid, "investTotal": 0, "stockTotal": 0, "fundTotal": 0, "cashTotal": 0, "liabilityTotal": 0, "netWorth": 0, "stockCount": 0, "fundCount": 0})
 
-    family_total = sum(m["investTotal"] for m in members)
+    family_invest = sum(m["investTotal"] for m in members)
     family_net = sum(m["netWorth"] for m in members)
 
     return {
         "available": True,
-        "familyTotal": family_total,
+        "familyTotal": family_invest,
         "familyNetWorth": family_net,
         "members": members,
     }
