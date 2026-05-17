@@ -15,6 +15,8 @@
 .mb-eyebrow   { font-size: var(--fs-xs); letter-spacing: var(--ls-widest); text-transform: uppercase; color: var(--text-tertiary); font-weight: var(--fw-semibold); }
 .mb-numeric   { font-variant-numeric: tabular-nums; }
 .mb-money     { font-family: var(--font-display); font-weight: var(--fw-normal); letter-spacing: var(--ls-tight); line-height: var(--lh-tight); }
+.mb-money__symbol { font-family: var(--font-sans); font-weight: var(--fw-semibold); margin-right: 1px; }
+.mb-money__num    { font-family: var(--font-display); font-weight: var(--fw-normal); }
 .mb-money--xl { font-size: var(--fs-4xl); }
 .mb-money--lg { font-size: var(--fs-3xl); }
 .mb-money--md { font-size: var(--fs-2xl); }

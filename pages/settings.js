@@ -47,7 +47,7 @@ function renderSettings(){
 </div>
 
 <div style="text-align:center;margin-top:24px;font-size:11px;color:var(--text2)">
-钱袋子 v9.2.4 · AI 做管家，人做 CFO
+钱袋子 v9.3.0 · AI 做管家，人做 CFO
 </div>
 </div>`;
 }

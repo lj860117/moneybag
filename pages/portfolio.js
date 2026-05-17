@@ -13,7 +13,7 @@ $('#app').innerHTML=`<div class="portfolio-page fade-up" style="padding-bottom:c
 <!-- Hero 总持仓（永远渲染） -->
 <section class="mb-hero" style="margin-bottom:14px">
   <div class="mb-hero__label">💰 总持仓资产</div>
-  <h2 class="mb-hero__num" id="portfolioHeroValue">${fmtFull(Math.round(tc))}</h2>
+  <h2 class="mb-hero__num" id="portfolioHeroValue"><span class="mb-money__symbol">¥</span><span class="mb-money__num">${Math.round(tc).toLocaleString('zh-CN')}</span></h2>
   <div class="mb-hero__delta" id="pnlSum">
     <span class="mb-text-tertiary" style="font-size:var(--fs-sm,11px)">${API_AVAILABLE?(hasHoldings?'正在计算实时盈亏...':'暂无持仓数据'):'后端离线'}</span>
   </div>

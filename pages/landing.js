@@ -42,7 +42,7 @@ ${!isTradeDay?`<div style="background:linear-gradient(90deg,rgba(255,183,85,.08)
     <span class="mb-hero__label">💰 家庭净资产</span>
     <span class="mb-pill" style="font-size:10px;cursor:pointer" data-action="toggle-money-mask">👁 隐藏</span>
   </div>
-  <h1 class="mb-hero__num mb-numeric" id="heroNetWorth">${fmtFull(Math.round(nw.netWorth))}<small>.00</small></h1>
+  <h1 class="mb-hero__num mb-numeric" id="heroNetWorth"><span class="mb-money__symbol">¥</span><span class="mb-money__num">${Math.round(nw.netWorth).toLocaleString('zh-CN')}</span><small>.00</small></h1>
   <div class="mb-hero__delta" id="heroDelta">
     <span class="mb-pill mb-pill--bull">▲ +¥0</span>
     <span class="mb-text-tertiary">今日 · 较昨日收盘</span>
@@ -249,7 +249,7 @@ el.innerHTML=html}}catch(e){const el=document.getElementById('reviewContent');if
 // ---- 首页：统一净资产 Hero 更新 ----
 async function loadUnifiedHero(){
 const d=await fetchUnifiedNetworth();if(!d||!d.netWorth)return;
-const el=document.getElementById('heroNetWorth');if(el)el.innerHTML=fmtFull(Math.round(d.netWorth))+'<small>.00</small>';
+const el=document.getElementById('heroNetWorth');if(el)el.innerHTML='<span class="mb-money__symbol">¥</span><span class="mb-money__num">'+Math.round(d.netWorth).toLocaleString('zh-CN')+'</span><small>.00</small>';
 const bd=document.getElementById('heroBreakdown');
 if(bd){const b=d.breakdown||{};
 bd.innerHTML=`

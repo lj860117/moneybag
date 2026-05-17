@@ -14,7 +14,7 @@ $('#app').innerHTML=`<div class="result-page fade-up" style="padding-bottom:calc
 <!-- Hero 净资产（与首页风格一致但色调略偏紫，区分） -->
 <section class="mb-hero" style="margin-bottom:14px;background:linear-gradient(140deg,#0F0E1B 0%,#0E1019 60%,#0A0C14 100%);border-color:rgba(139,111,230,.18)">
   <div class="mb-hero__label" style="display:flex;align-items:center;gap:6px">🏦 统一净资产 <span class="mb-pill mb-pill--ai" style="font-size:9px;padding:2px 6px" id="assetHealthPill">加载中</span></div>
-  <h2 class="mb-hero__num" id="assetPageNW">¥0</h2>
+  <h2 class="mb-hero__num" id="assetPageNW"><span class="mb-money__symbol">¥</span><span class="mb-money__num">0</span></h2>
   <div id="assetPageHealth" style="font-size:var(--fs-sm,11px);color:var(--text-tertiary,#7A8499);margin-top:4px"></div>
   <div class="mb-hero__splits" id="assetPageBuckets">
     <div class="mb-hero__split"><div class="mb-hero__split-label">📈 投资</div><div class="mb-hero__split-value">¥0</div></div>
@@ -293,6 +293,6 @@ async function loadAssetPageHistory(){
       </div>`;
     }).join('');
   }catch(e){
-    el.innerHTML='<div style="font-size:11px;color:var(--text2)">记录加载失败</div>';
+    el.innerHTML='<div style="padding:12px;text-align:center;font-size:12px;color:var(--text-secondary,#9AA1AC)">暂无分析记录<div style="margin-top:8px"><button class="mb-btn mb-btn--ai mb-btn--sm" onclick="navigateTo(\'chat\')">🧠 做你的第一次 AI 分析</button></div></div>';
   }
 }
