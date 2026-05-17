@@ -83,10 +83,10 @@ ${hasHoldings?`<div id="holdList">${displayHoldings.map(h=>`<div class="mb-card"
 </div>`:`
 <div class="mb-empty">
   <div class="mb-empty__icon">📊</div>
-  <div class="mb-empty__title">还没有持仓</div>
+  <div class="mb-empty__title" id="emptyHoldTitle">还没有持仓</div>
   <div class="mb-empty__desc">完成测评记录买入，或手动添加交易</div>
   <div class="mb-flex mb-flex--center mb-gap-3" style="flex-wrap:wrap">
-    <button class="mb-btn mb-btn--primary" onclick="showAddTxn()">➕ 添加股票</button>
+    <button class="mb-btn mb-btn--primary" id="emptyHoldCTA" onclick="showAddTxn()">➕ 添加股票</button>
     <button class="mb-btn mb-btn--secondary" onclick="showAddCustomFund()">🔍 刷新行情</button>
     <button class="mb-btn mb-btn--ai mb-btn--sm" onclick="navigateTo('chat')">🧠 AI 深度分析</button>
   </div>
@@ -132,15 +132,19 @@ function showStockHoldings(){
   document.getElementById('tabStockBtn').className='mb-pill mb-pill--on';
   document.getElementById('tabFundBtn').className='mb-pill';
   document.getElementById('tabTxnBtn').className='mb-pill';
+  // 更新空状态文案
+  const t=document.getElementById('emptyHoldTitle');if(t)t.textContent='还没有股票持仓';
+  const c=document.getElementById('emptyHoldCTA');if(c)c.textContent='➕ 添加股票';
 }
 function showFundHoldings(){
-  // 基金和股票共用同一个持仓列表（当前不区分），切换只改高亮态
-  // TODO: 后续可按 category 过滤 stock vs fund
   document.getElementById('holdingsContent').style.display='';
   document.getElementById('txnContent').style.display='none';
   document.getElementById('tabStockBtn').className='mb-pill';
   document.getElementById('tabFundBtn').className='mb-pill mb-pill--on';
   document.getElementById('tabTxnBtn').className='mb-pill';
+  // 更新空状态文案
+  const t=document.getElementById('emptyHoldTitle');if(t)t.textContent='还没有基金持仓';
+  const c=document.getElementById('emptyHoldCTA');if(c)c.textContent='➕ 添加基金';
 }
 function showTxnHistory(){
   document.getElementById('holdingsContent').style.display='none';
