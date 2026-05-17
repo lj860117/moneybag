@@ -16,36 +16,36 @@
 <!-- 国内加载失败时自动 fallback 到 Noto Sans SC / Noto Serif SC（design-tokens 已配系统字体兜底） -->
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=DM+Serif+Display&display=swap" rel="stylesheet">
 <!-- v9.3.0 Design System：tokens 在前，components 在后，现有 styles.css 最后（可覆盖） -->
-<link rel="stylesheet" href="styles/design-tokens.css?v=9.3.2">
-<link rel="stylesheet" href="styles/components.css?v=9.3.2">
-<link rel="stylesheet" href="styles.css?v=9.3.2">
+<link rel="stylesheet" href="styles/design-tokens.css?v=9.3.3">
+<link rel="stylesheet" href="styles/components.css?v=9.3.3">
+<link rel="stylesheet" href="styles.css?v=9.3.3">
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.4/dist/chart.umd.min.js"></script>
 <script src="https://unpkg.com/lightweight-charts@4.1.1/dist/lightweight-charts.standalone.production.js"></script>
 </head>
 <body>
 <div id="app"></div>
 <!-- 核心层（必须先加载） -->
-<script src="app.js?v=9.3.2"></script>
+<script src="app.js?v=9.3.3"></script>
 <!-- v9.3.0 共享组件库（依赖 app.js 的全局函数，页面模块调用） -->
-<script src="pages/_components.js?v=9.3.2"></script>
+<script src="pages/_components.js?v=9.3.3"></script>
 <!-- 页面模块（顺序无关，都依赖 app.js 的全局变量） -->
-<script src="pages/landing.js?v=9.3.2"></script>
-<script src="pages/alloc.js?v=9.3.2"></script>
-<script src="pages/quiz.js?v=9.3.2"></script>
-<script src="pages/portfolio.js?v=9.3.2"></script>
-<script src="pages/chat.js?v=9.3.2"></script>
-<script src="pages/insight.js?v=9.3.2"></script>
-<script src="pages/ledger.js?v=9.3.2"></script>
-<script src="pages/assets.js?v=9.3.2"></script>
-<script src="pages/stocks.js?v=9.3.2"></script>
-<script src="pages/analysis.js?v=9.3.2"></script>
-<script src="pages/history.js?v=9.3.2"></script>
-<script src="pages/chart.js?v=9.3.2"></script>
-<script src="pages/market-panorama.js?v=9.3.2"></script>
-  <script src="pages/todos.js?v=9.3.2"></script>
-  <script src="pages/behavior-history.js?v=9.3.2"></script>
-  <script src="pages/monthly-rebalance.js?v=9.3.2"></script>
-  <script src="pages/settings.js?v=9.3.2"></script>
+<script src="pages/landing.js?v=9.3.3"></script>
+<script src="pages/alloc.js?v=9.3.3"></script>
+<script src="pages/quiz.js?v=9.3.3"></script>
+<script src="pages/portfolio.js?v=9.3.3"></script>
+<script src="pages/chat.js?v=9.3.3"></script>
+<script src="pages/insight.js?v=9.3.3"></script>
+<script src="pages/ledger.js?v=9.3.3"></script>
+<script src="pages/assets.js?v=9.3.3"></script>
+<script src="pages/stocks.js?v=9.3.3"></script>
+<script src="pages/analysis.js?v=9.3.3"></script>
+<script src="pages/history.js?v=9.3.3"></script>
+<script src="pages/chart.js?v=9.3.3"></script>
+<script src="pages/market-panorama.js?v=9.3.3"></script>
+  <script src="pages/todos.js?v=9.3.3"></script>
+  <script src="pages/behavior-history.js?v=9.3.3"></script>
+  <script src="pages/monthly-rebalance.js?v=9.3.3"></script>
+  <script src="pages/settings.js?v=9.3.3"></script>
 <script>
 // 注册 Service Worker（PWA 离线缓存 + 添加到桌面）
 if ('serviceWorker' in navigator) {
