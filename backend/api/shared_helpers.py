@@ -359,6 +359,10 @@ def _build_system_prompt(market_ctx: str, portfolio_ctx: str) -> str:
 # ========================================================
 
 _INTENT_RULES = [
+    # 安全拒绝（最高优先级）
+    (["目标价", "满仓", "全仓", "梭哈", "稳赚", "保本", "借钱炒股", "贷款炒股"], "safety_refusal", None),
+    # 用户持仓查询
+    (["我持有", "我有什么", "我的持仓", "我的资产", "是不是持有", "现在还在", "我当前", "我有没有"], "holdings_query", None),
     (["入场", "时机", "现在适合买", "适合买", "该买吗", "能买吗", "进场", "能进场", "抄底", "适合入"], "timing", "/api/timing"),
     (["定投", "DCA", "每月投", "定投多少", "怎么投", "投多少"], "smart_dca", "/api/smart-dca"),
     (["止盈", "止损", "该卖吗", "减仓", "该出", "锁定利润"], "take_profit", None),
@@ -413,6 +417,41 @@ def _rule_based_reply_structured(msg: str, market_ctx: str, portfolio_ctx: str) 
     confidence=0.85 表示规则精准匹配（用真实数据计算），比 LLM 编造更可靠。
     """
     msg_lower = msg.lower()
+
+    # ★ 最高优先级1：安全硬拒绝（目标价/满仓/稳赚/借钱炒股）
+    _SAFETY_KEYWORDS = ["目标价", "明天涨", "明天跌", "预测价格", "涨到多少",
+                        "满仓", "全仓", "梭哈", "稳赚", "保本", "确定赚",
+                        "借钱炒股", "借钱投资", "贷款炒股", "杠杆炒股"]
+    if any(k in msg_lower for k in _SAFETY_KEYWORDS):
+        text = "🚫 我不能预测具体价格，也不能建议满仓、借钱投资或承诺保本收益。\n\n可以帮你做的：\n• 基于当前持仓做风险检查\n• 分析估值是否偏高\n• 给出仓位建议（但不是满仓）\n\n⚠️ 投资有风险，入市需谨慎。"
+        return {"text": text, "confidence": 0.95, "intent": "safety_refusal"}
+
+    # ★ 最高优先级2：用户持仓/资产查询（必须基于真实数据回答）
+    _HOLDING_QUERY_KW = ["我持有", "我有什么", "我的持仓", "我的资产", "我有没有",
+                          "是不是持有", "现在还在", "我刚才", "录入的", "我当前",
+                          "我现在有", "净资产", "我有多少"]
+    if any(k in msg_lower for k in _HOLDING_QUERY_KW):
+        # 从 portfolio_ctx 中提取真实持仓信息
+        if "没有任何持仓" in portfolio_ctx or "没有持仓" in portfolio_ctx or "尚未录入" in portfolio_ctx:
+            text = "📋 当前你的钱袋子里**没有持仓/资产记录**。\n\n如果你刚才录入过但已删除，数据确实已清空。\n\n去 持仓页 或 资产页 添加你的真实持仓，我就能给你个性化分析了。"
+            return {"text": text, "confidence": 0.90, "intent": "empty_holdings_query"}
+        elif "持仓明细" in portfolio_ctx:
+            # 有持仓数据，把上下文中的持仓信息提取出来
+            import re
+            holdings_lines = re.findall(r'- (?:股票|基金)：(.+)', portfolio_ctx)
+            nw_line = re.search(r'净资产：¥([\d,.]+)', portfolio_ctx)
+            parts = []
+            if nw_line:
+                parts.append(f"💰 净资产：¥{nw_line.group(1)}")
+            if holdings_lines:
+                parts.append("📋 持仓：")
+                for h in holdings_lines[:5]:
+                    parts.append(f"  • {h}")
+            if parts:
+                text = "\n".join(parts) + "\n\n⚠️ 以上数据来自钱袋子记录，仅供参考。"
+                return {"text": text, "confidence": 0.90, "intent": "holdings_query"}
+        # 没提取到有用信息，交给 LLM
+        pass
 
     # 入场时机
     if any(k in msg_lower for k in ["什么时候买", "入手", "入场", "时机", "现在能买", "适合买", "抄底", "能进场"]):

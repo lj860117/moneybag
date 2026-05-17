@@ -406,12 +406,12 @@ def enrich(ctx):
 
     now = _time.time()
     cached = _enrich_cache.get(user_id)
-    if cached and now - cached.get("ts", 0) < _ENRICH_CACHE_TTL:
-        matched = cached["data"]
+    if cached is not None:
+        matched = cached
         print("[SIGNAL_SCOUT] enrich using cache")
     else:
         matched = match(user_id)
-        _enrich_cache.set(user_id, matched)
+        _enrich_cache.set(user_id, matched, ttl=_ENRICH_CACHE_TTL)
     ctx.modules_results["signal_scout"] = {
         "available": True,
         "total_collected": len(collect()),
