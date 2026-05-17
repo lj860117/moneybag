@@ -395,8 +395,6 @@ if(keywords.some(kw=>name.includes(kw)))matched.push(topic)}
 if(matched.length)topics=matched}
 if(!topics||!topics.length)return '';
 return topics.map(t=>'<span style="font-size:10px;padding:2px 6px;border-radius:4px;background:rgba(245,158,11,.12);color:#FBBF24">🏷️'+t+'</span>').join('')}
-if(!topics||!topics.length)return '';
-return topics.map(t=>'<span style="font-size:10px;padding:2px 6px;border-radius:4px;background:rgba(245,158,11,.12);color:#FBBF24">🏷️'+t+'</span>').join('')}
 
 // 基金智能筛选页
 let fundPickType='all';let fundPickSort='score';
