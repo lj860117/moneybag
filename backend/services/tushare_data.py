@@ -996,47 +996,39 @@ def validate_stock_code(code: str) -> dict:
 
 
 def validate_fund_code(code: str) -> dict:
-    """校验基金代码是否存在（使用 Tushare fund_basic）
+    """校验基金代码是否存在（直接查询 Tushare fund_basic）
+
+    不依赖批量缓存（Tushare 分页限制 15000 条会遗漏基金），
+    而是直接查询目标基金代码。结果缓存 24 小时。
 
     Returns:
         {"valid": True, "name": "易方达沪深300ETF联接A"}
         {"valid": False, "reason": "该代码不在公募基金列表中"}
         {"valid": None, "reason": "无法连接数据源校验"}
     """
-    cache_key = "fund_names"
+    cache_key = f"fund_valid_{code}"
     cached = _stock_name_cache.get(cache_key)
-    if cached is None:
-        # 场外基金（O=OTC，涵盖绝大多数普通投资者购买的基金）
-        rows_o = _call_tushare(
-            "fund_basic",
-            {"market": "O"},
-            "ts_code,name",
-        )
-        # 场内基金（E=Exchange）
-        rows_e = _call_tushare(
-            "fund_basic",
-            {"market": "E"},
-            "ts_code,name",
-        )
-        rows = (rows_o or []) + (rows_e or [])
-        if not rows:
-            # fund_basic 可能权限不足返空，降级放行
-            return {"valid": None, "reason": "基金数据源暂不可用，跳过校验"}
-        # fund ts_code 格式为 "110020.OF" 或 "510300.SH"
-        mapping = {}
-        for r in rows:
-            ts = r.get("ts_code", "")
-            name = r.get("name", "")
-            # 取纯数字部分
-            pure_code = ts.split(".")[0] if "." in ts else ts
-            mapping[pure_code] = name
-        _stock_name_cache.set(cache_key, mapping, ttl=86400)
-        cached = mapping
-        print(f"[TUSHARE] fund_basic 名称映射: {len(cached)} 只")
+    if cached is not None:
+        return cached
 
-    if code in cached:
-        return {"valid": True, "name": cached[code]}
-    return {"valid": False, "reason": f"代码 {code} 不在公募基金列表中"}
+    # 尝试 .OF（场外）和 .SH/.SZ（场内 ETF）
+    ts_candidates = [f"{code}.OF"]
+    if code.startswith("5"):
+        ts_candidates.append(f"{code}.SH")
+    elif code.startswith("1"):
+        ts_candidates.append(f"{code}.SZ")
+
+    for ts_code in ts_candidates:
+        rows = _call_tushare("fund_basic", {"ts_code": ts_code}, "ts_code,name")
+        if rows:
+            result = {"valid": True, "name": rows[0].get("name", "")}
+            _stock_name_cache.set(cache_key, result, ttl=86400)
+            return result
+
+    # 所有候选都查不到
+    result = {"valid": False, "reason": f"代码 {code} 不在公募基金列表中"}
+    _stock_name_cache.set(cache_key, result, ttl=3600)  # 失败缓存1小时（防误伤新基金）
+    return result
 
 
 def get_main_money_flow(trade_date: str = "") -> dict:
