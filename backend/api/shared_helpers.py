@@ -697,9 +697,10 @@ def _rule_based_reply(msg: str, market_ctx: str, portfolio_ctx: str) -> str:
     # 兜底前检查1：未知代码 — 消息含6位数字且不是已知股票
     import re
     msg_lower = msg.lower()
-    code_match = re.search(r'\b(\d{6})\b', msg)
+    code_match = re.search(r'(\d{6})', msg)
     if code_match:
         unknown_code = code_match.group(1)
+        # 排除已知存在的代码（避免误判用户持仓里的合法代码）
         try:
             from services.tushare_data import validate_stock_code, validate_fund_code
             stock_check = validate_stock_code(unknown_code)
