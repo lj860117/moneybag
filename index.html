@@ -26,6 +26,8 @@
 <div id="app"></div>
 <!-- 核心层（必须先加载） -->
 <script src="app.js?v=9.2.4"></script>
+<!-- v9.3.0 共享组件库（依赖 app.js 的全局函数，页面模块调用） -->
+<script src="pages/_components.js?v=9.3.0"></script>
 <!-- 页面模块（顺序无关，都依赖 app.js 的全局变量） -->
 <script src="pages/landing.js?v=9.2.4"></script>
 <script src="pages/alloc.js?v=9.2.4"></script>
