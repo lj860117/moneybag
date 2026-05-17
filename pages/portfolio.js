@@ -46,28 +46,23 @@ $('#app').innerHTML=`<div class="portfolio-page fade-up" style="padding-bottom:c
   </div>
 </section>
 
-<!-- 双账户卡（永远渲染） -->
-<section class="mb-card--ghost" style="margin-bottom:14px">
+<!-- 双账户卡（异步加载家庭数据） -->
+<section class="mb-card--ghost" style="margin-bottom:14px" id="familyHoldingsCard">
   <div class="mb-flex mb-flex--between mb-mb-3">
     <b style="font-size:12px">👨‍👩 家庭持仓</b>
-    <span class="mb-text-tertiary" style="font-size:10px">2 人</span>
+    <span class="mb-text-tertiary" style="font-size:10px">加载中...</span>
   </div>
-  <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px">
+  <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px" id="familyMembersGrid">
     <div class="mb-card--ghost" style="padding:10px">
       <div class="mb-flex mb-gap-2 mb-mb-1">
         <div class="mb-avatar mb-avatar--xs mb-avatar--leijiang">L</div>
-        <b style="font-size:11px">LeiJiang</b>
+        <b style="font-size:11px">${getProfileId()||'我'}</b>
       </div>
       <div class="mb-money mb-money--sm">¥${fmtMoney(Math.round(tc))}</div>
-      <div class="mb-caption">占比 ${tc>0?'100':'0'}%</div>
+      <div class="mb-caption">本机数据</div>
     </div>
-    <div class="mb-card--ghost" style="padding:10px">
-      <div class="mb-flex mb-gap-2 mb-mb-1">
-        <div class="mb-avatar mb-avatar--xs mb-avatar--buluogeli">B</div>
-        <b style="font-size:11px">BuLuoGeLi</b>
-      </div>
-      <div class="mb-money mb-money--sm">¥0</div>
-      <div class="mb-caption">占比 0%</div>
+    <div class="mb-card--ghost" style="padding:10px;opacity:.5">
+      <div style="font-size:11px;color:var(--text-tertiary);text-align:center;padding:8px">加载家庭成员...</div>
     </div>
   </div>
 </section>
@@ -129,8 +124,41 @@ if(r.ok){const pnl=await r.json();
 const pe=document.getElementById('pnlSum');
 if(pe){const sg=pnl.totalPnl>=0?'+':'';const cls=pnl.totalPnl>=0?'mb-pill--bull':'mb-pill--bear';
 pe.innerHTML=`<span class="mb-pill ${cls}">${sg}${fmtFull(Math.round(pnl.totalPnl))}(${sg}${pnl.totalPnlPct.toFixed(2)}%)</span><span class="mb-text-tertiary" style="font-size:var(--fs-sm,11px)">当前市值${fmtFull(Math.round(pnl.totalMarket))}</span>`}}}catch{}}
+// 异步加载家庭持仓数据
+if(API_AVAILABLE){_loadFamilyPortfolio()}
 // 异步加载风控指标
 if(API_AVAILABLE){loadRiskMetrics();loadRiskActions()}}
+
+// 加载家庭持仓汇总（从后端拉取所有家庭成员数据）
+async function _loadFamilyPortfolio(){
+  try{
+    const r=await fetch(API_BASE+'/family/portfolio-summary?userId='+encodeURIComponent(getProfileId()),{signal:AbortSignal.timeout(10000)});
+    if(!r.ok)return;
+    const d=await r.json();
+    if(!d.available||!d.members)return;
+    const card=document.getElementById('familyHoldingsCard');
+    if(!card)return;
+    const members=d.members;
+    const total=d.familyTotal||0;
+    card.innerHTML=`
+      <div class="mb-flex mb-flex--between mb-mb-3">
+        <b style="font-size:12px">👨‍👩 家庭持仓</b>
+        <span class="mb-text-tertiary" style="font-size:10px">${members.length} 人 · 合计 ¥${fmtMoney(Math.round(total))}</span>
+      </div>
+      <div style="display:grid;grid-template-columns:${members.length>1?'1fr 1fr':'1fr'};gap:8px">
+        ${members.map(m=>{
+          const pct=total>0?Math.round(m.investTotal/total*100):0;
+          const initial=m.userId.charAt(0).toUpperCase();
+          return`<div class="mb-card--ghost" style="padding:10px">
+            <div class="mb-flex mb-gap-2 mb-mb-1">
+              <div class="mb-avatar mb-avatar--xs" style="background:linear-gradient(135deg,${m.userId===getProfileId()?'#F59E0B,#D97706':'#A855F7,#7C3AED'})">${initial}</div>
+              <b style="font-size:11px">${m.userId}</b>
+            </div>
+            <div class="mb-money mb-money--sm">¥${fmtMoney(Math.round(m.investTotal))}</div>
+            <div class="mb-caption">📊${m.stockCount||0}只股票 · 💼${m.fundCount||0}只基金 · 占比${pct}%</div>
+          </div>`}).join('')}
+      </div>`;
+  }catch(e){console.warn('[Family]',e)}}
 
 // Tab 切换辅助
 function showStockHoldings(){
