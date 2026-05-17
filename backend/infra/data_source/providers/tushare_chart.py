@@ -35,14 +35,29 @@ def _get_api() -> Any:
 
 
 def _fund_code_to_ts_code(code: str) -> str:
+    """代码转Tushare格式。
+    对于 000xxx 这类歧义代码（既有股票又有基金），
+    先查 stock_basic 缓存判断是否为上市股票。
+    """
     if "." in code: return code
-    # 场内ETF：51xxxx(上海) / 15xxxx(深圳)
-    if code.startswith("5") and code[1] in "0123": return f"{code}.SH"
-    if code.startswith("15"): return f"{code}.SZ"
-    # A股股票：6/9开头(上海) / 0/3开头(深圳)
-    if code.startswith(("6", "9")): return f"{code}.SH"
-    if code.startswith(("0", "3")) and not code.startswith("0000"): return f"{code}.SZ"
-    # 其余均视为场外基金(.OF)：11xxxx / 00xxxx / 05xxxx 等
+    # 明确的上海：6开头股票 / 51开头ETF
+    if code.startswith("6") or code.startswith("9"): return f"{code}.SH"
+    if code.startswith("51"): return f"{code}.SH"
+    # 明确的深圳ETF：159开头
+    if code.startswith("159"): return f"{code}.SZ"
+    # 创业板：300/301
+    if code.startswith("30"): return f"{code}.SZ"
+    # 000xxx / 001xxx / 002xxx — 可能是股票也可能是基金
+    # 用 stock_basic 缓存判断
+    if code.startswith("00") and len(code) == 6:
+        try:
+            from services.tushare_data import validate_stock_code
+            check = validate_stock_code(code)
+            if check.get("valid") is True:
+                return f"{code}.SZ"
+        except Exception:
+            pass
+    # 其余全部视为场外基金
     return f"{code}.OF"
 
 
