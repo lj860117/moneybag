@@ -400,7 +400,7 @@ window.showFundDetailModal = async function(code, name) {
     // 重仓持仓
     if (d.top_holdings && d.top_holdings.length) {
       html += `<div style="font-size:12px;font-weight:700;margin-bottom:6px">🏦 重仓持仓 TOP5</div>`;
-      html += d.top_holdings.map(h => `<div style="display:flex;justify-content:space-between;padding:4px 0;font-size:12px;border-bottom:1px solid var(--border-subtle,rgba(255,255,255,.04))"><span>${h.symbol}</span><span style="color:var(--text-tertiary)">${h.ratio?h.ratio+'%':''}</span></div>`).join('');
+      html += d.top_holdings.map(h => `<div style="display:flex;justify-content:space-between;padding:4px 0;font-size:12px;border-bottom:1px solid var(--border-subtle,rgba(255,255,255,.04))"><span>${h.name||''} <span style="color:var(--text-tertiary);font-size:10px">${h.symbol}</span></span><span style="color:var(--text-tertiary)">${h.ratio?h.ratio+'%':''}</span></div>`).join('');
       html += '<div style="margin-bottom:14px"></div>';
     }
 

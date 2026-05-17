@@ -29,6 +29,49 @@ def _set_cached(key: str, val):
     _detail_cache[key] = {"v": val, "t": time.time()}
 
 
+def _resolve_stock_names(symbols: list[str]) -> dict[str, str]:
+    """将股票代码列表解析为 {symbol: name} 映射"""
+    if not symbols:
+        return {}
+    cache_key = "stock_names_map"
+    name_map = _get_cached(cache_key) or {}
+
+    # 找出缓存中缺失的代码
+    missing = [s for s in symbols if s and s not in name_map]
+    if not missing:
+        return {s: name_map.get(s, "") for s in symbols}
+
+    # 方式1: Tushare stock_basic 批量查
+    try:
+        from services.tushare_data import _call_tushare
+        rows = _call_tushare(
+            "stock_basic",
+            {"exchange": "", "list_status": "L"},
+            "ts_code,name,industry"
+        )
+        if rows:
+            for r in rows:
+                ts_code = r.get("ts_code", "")
+                name_map[ts_code] = r.get("name", "")
+            _set_cached(cache_key, name_map)
+    except Exception:
+        pass
+
+    # 方式2: 还有缺失的尝试单个查询
+    for s in missing:
+        if s not in name_map:
+            try:
+                from services.tushare_data import _call_tushare
+                rows = _call_tushare("stock_basic", {"ts_code": s}, "ts_code,name")
+                if rows:
+                    name_map[s] = rows[0].get("name", "")
+            except Exception:
+                name_map[s] = ""
+
+    _set_cached(cache_key, name_map)
+    return {s: name_map.get(s, "") for s in symbols}
+
+
 # ──────────────────────────────────────────────────────────
 # Phase 1: 基金详情（经理 + 基本信息 + 持仓）
 # ──────────────────────────────────────────────────────────
@@ -118,6 +161,10 @@ def fund_detail(code: str):
     if portfolio_data.get("available"):
         top_holdings = portfolio_data.get("top_holdings", [])[:5]
 
+    # 解析持仓股票名称
+    holding_symbols = [h.get("symbol", "") for h in top_holdings if h.get("symbol")]
+    stock_names = _resolve_stock_names(holding_symbols)
+
     result = {
         "code": code,
         "name": info.get("name", code),
@@ -130,7 +177,7 @@ def fund_detail(code: str):
         "returns": info.get("returns", {}),
         "manager": manager,
         "top_holdings": [
-            {"symbol": h.get("symbol", ""), "ratio": h.get("stk_mkv_ratio", "")}
+            {"symbol": h.get("symbol", ""), "name": stock_names.get(h.get("symbol", ""), ""), "ratio": h.get("stk_mkv_ratio", "")}
             for h in top_holdings
         ],
         "source": "tushare+天天基金",

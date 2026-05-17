@@ -184,8 +184,8 @@ const r=await fetch(API_BASE+'/recommend/stocks?userId='+uid+'&topN=10&period=me
 if(!r.ok){el.innerHTML='<div style="text-align:center;padding:20px;color:var(--text2)">推荐数据暂不可用'+(r.status===504?' (周末数据源不活跃)':'')+'<br><button onclick="renderInsight()" style="margin-top:8px;padding:6px 16px;border-radius:8px;border:none;background:var(--accent);color:#fff;cursor:pointer">🔄 重试</button></div>';return}
 const d=await r.json();
 if(d.from_cache)console.log('[推荐] 来自缓存');
-const recs=d.recommendations||[];
-if(!recs.length){const wn=d._weekend_note||'';el.innerHTML='<div style="text-align:center;padding:40px;color:var(--text2)">'+(wn?'<div style="font-size:24px;margin-bottom:8px">📅</div><div style="font-size:13px;line-height:1.6">'+wn+'</div>':'暂无推荐'+(d.error?'：'+d.error:''))+'</div>';return}
+const recs=d.recommendations||d.stocks||[];
+if(!recs.length){const wn=d._weekend_note||'';const msg=d.message||'';el.innerHTML='<div style="text-align:center;padding:40px;color:var(--text2)">'+(d.computing?'<div style="font-size:24px;margin-bottom:8px">⏳</div><div style="font-size:13px;line-height:1.6">'+(msg||'推荐列表正在后台计算，请稍后刷新')+'</div><br><button onclick="insightTab=\'recommend\';renderInsight()" style="padding:6px 16px;border-radius:8px;border:none;background:var(--accent);color:#fff;cursor:pointer;font-size:12px">🔄 刷新</button>':wn?'<div style="font-size:24px;margin-bottom:8px">📅</div><div style="font-size:13px;line-height:1.6">'+wn+'</div>':'暂无推荐'+(d.error?'：'+d.error:''))+'</div>';return}
 let html='<div class="dashboard-card" style="border-left:3px solid var(--accent)"><div class="dashboard-card-title">💎 AI 推荐 <span style="font-size:11px;color:var(--text2);font-weight:400">'+
 (d.period_label||'中线')+'</span></div><div style="font-size:12px;color:var(--text2);margin-bottom:8px">候选'+d.pool_size+'只 → 评分'+d.scored_count+'只 → Top '+recs.length+'</div></div>';
 recs.forEach((r,i)=>{

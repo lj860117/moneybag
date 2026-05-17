@@ -151,9 +151,9 @@ async def api_recommend_stocks(userId: str = "", topN: int = 10, pool: str = "ho
     """股票推荐 — 缓存优先+后台异步更新，前端秒回
 
     策略：
-    1. 有缓存 → 立即返回（<50ms）
-    2. 无缓存 → 返回"计算中"提示 + 后台启动异步计算
-    3. 下次请求时缓存已就绪
+    1. 有 precomputed 缓存 → 立即返回（<50ms）
+    2. 有 file_cache 缓存 → 兜底返回
+    3. 无缓存 → 返回"计算中"提示 + 后台启动异步计算
     """
     from services.precomputed_cache import get_precomputed, save_precomputed
     cached = get_precomputed("recommendations")
@@ -164,6 +164,25 @@ async def api_recommend_stocks(userId: str = "", topN: int = 10, pool: str = "ho
         if _time.time() - cached.get("ts", 0) > 7200:
             _trigger_recommend_update(userId, topN, pool, period)
         return cached
+
+    # 兜底：尝试从 recommend_engine 的 file_cache 读取
+    try:
+        from pathlib import Path
+        from config import DATA_DIR
+        import json as _json
+        _file_cache_dir = Path(DATA_DIR) / "_cache"
+        # 找最近的有效推荐缓存文件（任何用户的都行，因为候选池是一样的）
+        cache_files = sorted(_file_cache_dir.glob("recommend_rec_*.json"), key=lambda f: f.stat().st_mtime, reverse=True)
+        for cf in cache_files[:5]:
+            payload = _json.loads(cf.read_text())
+            result = payload.get("data", payload)
+            recs = result.get("recommendations", result.get("stocks", []))
+            if recs:
+                result["from_cache"] = True
+                result["_note"] = "来自历史缓存"
+                return result
+    except Exception:
+        pass
 
     # 无缓存：后台触发计算，立即返回友好提示
     _trigger_recommend_update(userId, topN, pool, period)
@@ -191,9 +210,10 @@ def _trigger_recommend_update(userId: str, topN: int, pool: str, period: str):
             from services.recommend_engine import get_stock_recommendations
             from services.precomputed_cache import save_precomputed
             result = get_stock_recommendations(userId, topN, pool, period)
-            if result and result.get("stocks"):
+            if result and (result.get("recommendations") or result.get("stocks")):
                 save_precomputed("recommendations", result)
-                print(f"[RECOMMEND] 后台计算完成: {len(result['stocks'])} 只")
+                count = len(result.get("recommendations", result.get("stocks", [])))
+                print(f"[RECOMMEND] 后台计算完成: {count} 只")
         except Exception as e:
             print(f"[RECOMMEND] 后台计算失败: {e}")
         finally:
