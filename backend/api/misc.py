@@ -148,14 +148,35 @@ def api_dcf(code: str):
 
 @router.get("/api/recommend/stocks")
 def api_recommend_stocks(userId: str = "", topN: int = 10, pool: str = "hot", period: str = "medium"):
-    """股票推荐（优先凌晨预计算缓存，否则实时算）"""
+    """股票推荐（优先凌晨预计算缓存，否则实时算，硬超时 20s）"""
     from services.precomputed_cache import get_precomputed
     cached = get_precomputed("recommendations")
     if cached:
         cached["from_cache"] = True
         return cached
+    # 实时计算加硬超时保护（避免 150s+ 卡死）
+    import concurrent.futures
     from services.recommend_engine import get_stock_recommendations
-    return get_stock_recommendations(userId, topN, pool, period)
+    try:
+        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool_exec:
+            future = pool_exec.submit(get_stock_recommendations, userId, topN, pool, period)
+            return future.result(timeout=20)
+    except concurrent.futures.TimeoutError:
+        print("[RECOMMEND] get_stock_recommendations timeout 20s")
+        return {
+            "stocks": [],
+            "total": 0,
+            "error": "推荐计算超时，请稍后重试或等待凌晨预计算完成。",
+            "source": "timeout",
+        }
+    except Exception as e:
+        print(f"[RECOMMEND] error: {e}")
+        return {
+            "stocks": [],
+            "total": 0,
+            "error": f"推荐计算失败: {str(e)[:100]}",
+            "source": "error",
+        }
 
 
 @router.get("/api/decisions")

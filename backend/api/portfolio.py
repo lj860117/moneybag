@@ -188,6 +188,11 @@ def add_or_update_asset(req: AssetRequest):
     if abs(value) > 1_000_000_000:
         raise HTTPException(400, "金额异常，请确认是否正确（超过10亿）")
 
+    # 大额警告标记
+    _large_amount_warning = None
+    if abs(value) > 10_000_000:  # > 1000万
+        _large_amount_warning = f"⚠️ 金额较大（¥{abs(value):,.0f}），请确认是否正确。"
+
     user = load_user(req.userId)
     user = ensure_v4_portfolio(user)
     p = user["portfolio"]
@@ -215,7 +220,10 @@ def add_or_update_asset(req: AssetRequest):
         invalidate_networth_cache(req.userId)
     except Exception:
         pass
-    return {"status": "ok", "asset": asset}
+    result = {"status": "ok", "asset": asset}
+    if _large_amount_warning:
+        result["warning"] = _large_amount_warning
+    return result
 
 
 @router.delete("/api/assets/{asset_id}")

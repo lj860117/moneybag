@@ -81,14 +81,15 @@ def analyze_idle_cash(cash_amount: float, monthly_expense: float = 0, risk_profi
     if cash_amount <= 0:
         return {"advice": "暂无存款数据", "source": "none"}
 
+    # FIX: 统一从 config 读取常量
+    from config import CASH_MGMT_DEFAULTS as _CASH
+
     # 计算应急储备（3-6 个月支出）
     if monthly_expense > 0:
         emergency_fund = monthly_expense * 6
         idle_cash = max(0, cash_amount - emergency_fund)
     else:
         # 没有支出数据，按默认比例作为应急
-        # FIX 2026-04-19 V7.2: 从 config 读取
-        from config import CASH_MGMT_DEFAULTS as _CASH
         emergency_fund = cash_amount * _CASH["emergency_ratio"]
         idle_cash = cash_amount * (1 - _CASH["emergency_ratio"])
 

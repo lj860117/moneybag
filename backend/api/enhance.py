@@ -49,11 +49,15 @@ def ai_comment_fund(code: str, name: str = "", score: float = 0,
 @router.post("/api/assets/advice")
 def get_asset_advice(req: dict):
     """存款智能建议 — DeepSeek 分析闲置资金配置"""
-    return analyze_idle_cash(
-        cash_amount=float(req.get("cashAmount", 0)),
-        monthly_expense=float(req.get("monthlyExpense", 0)),
-        risk_profile=req.get("riskProfile", "稳健型"),
-    )
+    try:
+        return analyze_idle_cash(
+            cash_amount=float(req.get("cashAmount", 0)),
+            monthly_expense=float(req.get("monthlyExpense", 0)),
+            risk_profile=req.get("riskProfile", "稳健型"),
+        )
+    except Exception as e:
+        print(f"[ASSETS-ADVICE] error: {e}")
+        return {"advice": "暂无建议，请稍后重试。", "source": "fallback", "error": str(e)}
 
 
 @router.post("/api/ds/asset-diagnosis")
