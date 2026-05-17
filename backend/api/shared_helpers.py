@@ -359,12 +359,12 @@ def _build_system_prompt(market_ctx: str, portfolio_ctx: str) -> str:
 # ========================================================
 
 _INTENT_RULES = [
-    (["入场", "时机", "现在适合买", "该买吗", "能买吗", "进场", "能进场", "抄底"], "timing", "/api/timing"),
+    (["入场", "时机", "现在适合买", "适合买", "该买吗", "能买吗", "进场", "能进场", "抄底", "适合入"], "timing", "/api/timing"),
     (["定投", "DCA", "每月投", "定投多少", "怎么投", "投多少"], "smart_dca", "/api/smart-dca"),
-    (["止盈", "止损", "卖出", "该卖吗", "减仓", "该出", "锁定利润"], "take_profit", None),
+    (["止盈", "止损", "该卖吗", "减仓", "该出", "锁定利润"], "take_profit", None),
     (["持仓分析", "诊断", "体检", "检查持仓"], "portfolio_doctor", "/api/portfolio-doctor/diagnose"),
     (["配置建议", "资产配置", "怎么分配"], "allocation", None),
-    (["新闻", "今天发生", "消息面", "市场怎么样"], "news", None),
+    (["新闻", "今天发生", "消息面", "利空", "利好", "什么情况"], "news", None),
     (["宏观", "GDP", "CPI", "利率", "经济", "PMI", "通胀", "M2"], "macro", None),
     (["估值", "PE", "PB", "贵不贵"], "valuation", None),
     (["基金", "选基", "推荐基金"], "fund", None),
@@ -374,11 +374,31 @@ _INTENT_RULES = [
 
 
 def classify_chat_intent(msg: str) -> dict:
-    """规则引擎意图分类（不调 LLM，毫秒级）"""
+    """规则引擎意图分类（不调 LLM，毫秒级）
+
+    增加否定约束检测：如果消息包含"不要/别给/不需要"+ 关键词，不触发对应意图
+    """
     msg_lower = msg.lower()
+
+    # 否定模式：如果用户说"不要买卖建议"，不应触发 take_profit
+    _NEGATION_PATTERNS = ["不要", "别给", "不需要", "不用", "不想要", "禁止"]
+    has_negation = any(neg in msg_lower for neg in _NEGATION_PATTERNS)
+
     for keywords, intent, api in _INTENT_RULES:
         for kw in keywords:
             if kw in msg_lower:
+                # 如果带否定词且关键词紧跟否定词，跳过
+                if has_negation:
+                    for neg in _NEGATION_PATTERNS:
+                        if neg in msg_lower:
+                            neg_pos = msg_lower.index(neg)
+                            kw_pos = msg_lower.index(kw)
+                            # 否定词在关键词前面20字以内，认为是否定
+                            if 0 <= kw_pos - neg_pos <= 20:
+                                break
+                    else:
+                        return {"intent": intent, "keyword": kw, "api": api}
+                    continue  # 被否定了，跳过这个意图
                 return {"intent": intent, "keyword": kw, "api": api}
     return {"intent": "general", "keyword": None, "api": None}
 
@@ -453,7 +473,44 @@ def _rule_based_reply_structured(msg: str, market_ctx: str, portfolio_ctx: str) 
         return {"text": text, "confidence": 0.85, "intent": "macro_summary"}
 
     # 新闻/资讯
-    if any(k in msg_lower for k in ["新闻", "资讯", "消息", "发生", "怎么了", "什么情况", "为什么"]):
+    if any(k in msg_lower for k in ["新闻", "资讯", "消息", "发生", "怎么了", "什么情况", "为什么", "利空", "利好"]):
+        # 检查是否有个股实体（如果问"茅台有什么利空"，只返回茅台相关新闻）
+        _STOCK_NAMES = {"茅台": "600519", "宁德": "300750", "比亚迪": "002594",
+                        "腾讯": "00700", "阿里": "09988", "中兴": "000063",
+                        "平安": "601318", "招商": "600036", "格力": "000651"}
+        entity_name = None
+        entity_code = None
+        for name, code in _STOCK_NAMES.items():
+            if name in msg:
+                entity_name = name
+                entity_code = code
+                break
+        # 如果没匹配到常见股票名，尝试从用户持仓匹配
+        if not entity_name and portfolio_ctx:
+            import re
+            # 从 portfolio_ctx 里提取股票名
+            stock_matches = re.findall(r'股票：(.+?)\((\d{6})\)', portfolio_ctx)
+            for sname, scode in stock_matches:
+                if sname[:2] in msg or sname in msg:
+                    entity_name = sname
+                    entity_code = scode
+                    break
+
+        if entity_name:
+            # 个股新闻查询：只返回该股票相关的
+            try:
+                from services.news_data import get_stock_news
+                stock_news = get_stock_news(entity_code, limit=5)
+                if stock_news:
+                    news_lines = [f"📰 {n.get('title', '')}（{n.get('source', '')}）" for n in stock_news[:5]]
+                    text = f"📰 {entity_name}最新消息：\n\n" + "\n".join(news_lines) + "\n\n⚠️ 以上仅供参考，不构成投资建议。"
+                else:
+                    text = f"📰 当前没有检索到与{entity_name}直接相关的重大新闻/利空。\n\n如果你听到某个消息想确认，可以直接告诉我具体内容，我来帮你分析真假和影响。\n\n⚠️ 以上仅供参考。"
+                return {"text": text, "confidence": 0.80, "intent": "stock_news"}
+            except Exception:
+                pass
+
+        # 泛市场新闻
         news = get_market_news(5)
         news_lines = []
         for n in news[:5]:
