@@ -154,6 +154,8 @@ const value=parseFloat(document.getElementById('assetValue')?.value);
 const note=document.getElementById('assetNote')?.value?.trim()||'';
 if(!name){alert('请输入名称');return}
 if(!value||value<=0){alert('请输入金额');return}
+// 大额预警：>1000万前端先确认
+if(Math.abs(value)>10000000){if(!confirm(`⚠️ 金额较大（¥${Math.abs(value).toLocaleString()}），确认无误？`))return}
 const assets=loadAssets();
 assets.push({id:'ast_'+Date.now().toString(36)+'_'+Math.random().toString(36).slice(2,6),type,name,value,note,createdAt:new Date().toISOString(),updatedAt:new Date().toISOString()});
 saveAssets(assets);

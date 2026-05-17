@@ -365,9 +365,12 @@ def wxwork_test(req: dict = {}):
 
 
 @router.post("/daily-report")
-def wxwork_daily_report():
-    """手动触发市场日报推送（给所有绑定企微的用户）"""
-    if not wxwork_configured():
+def wxwork_daily_report(dryRun: bool = False):
+    """手动触发市场日报推送（给所有绑定企微的用户）
+
+    dryRun=true: 只生成内容不实际发送，用于测试预览
+    """
+    if not dryRun and not wxwork_configured():
         return {"ok": False, "error": "企业微信未配置"}
     try:
         from api.shared_helpers import _build_market_context
@@ -386,6 +389,8 @@ def wxwork_daily_report():
             lines.append("暂无市场数据")
         lines.append(f"\n⏰ {time.strftime('%Y-%m-%d %H:%M')}")
         content = "\n".join(lines)
+        if dryRun:
+            return {"ok": True, "dryRun": True, "content": content, "would_send_to": "@all"}
         result = send_markdown(content, user_id="@all")
         return {"ok": result.get("ok", False), "data": result}
     except Exception as e:

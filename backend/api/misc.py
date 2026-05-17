@@ -148,38 +148,58 @@ def api_dcf(code: str):
 
 @router.get("/api/recommend/stocks")
 async def api_recommend_stocks(userId: str = "", topN: int = 10, pool: str = "hot", period: str = "medium"):
-    """股票推荐（优先凌晨预计算缓存，否则实时算，硬超时 20s）"""
-    from services.precomputed_cache import get_precomputed
+    """股票推荐 — 缓存优先+后台异步更新，前端秒回
+
+    策略：
+    1. 有缓存 → 立即返回（<50ms）
+    2. 无缓存 → 返回"计算中"提示 + 后台启动异步计算
+    3. 下次请求时缓存已就绪
+    """
+    from services.precomputed_cache import get_precomputed, save_precomputed
     cached = get_precomputed("recommendations")
     if cached:
         cached["from_cache"] = True
+        # 后台静默刷新（如果缓存超过2小时）
+        import time as _time
+        if _time.time() - cached.get("ts", 0) > 7200:
+            _trigger_recommend_update(userId, topN, pool, period)
         return cached
-    # 实时计算加硬超时保护（避免 150s+ 卡死）
-    import asyncio
-    from services.recommend_engine import get_stock_recommendations
-    loop = asyncio.get_event_loop()
-    try:
-        result = await asyncio.wait_for(
-            loop.run_in_executor(None, get_stock_recommendations, userId, topN, pool, period),
-            timeout=20.0,
-        )
-        return result
-    except asyncio.TimeoutError:
-        print("[RECOMMEND] get_stock_recommendations timeout 20s")
-        return {
-            "stocks": [],
-            "total": 0,
-            "error": "推荐计算超时，请稍后重试或等待凌晨预计算完成。",
-            "source": "timeout",
-        }
-    except Exception as e:
-        print(f"[RECOMMEND] error: {e}")
-        return {
-            "stocks": [],
-            "total": 0,
-            "error": f"推荐计算失败: {str(e)[:100]}",
-            "source": "error",
-        }
+
+    # 无缓存：后台触发计算，立即返回友好提示
+    _trigger_recommend_update(userId, topN, pool, period)
+    return {
+        "stocks": [],
+        "total": 0,
+        "computing": True,
+        "message": "📊 推荐列表正在后台计算（约20秒），请稍后刷新查看。",
+        "source": "computing",
+    }
+
+
+_recommend_computing = False  # 防止重复触发
+
+def _trigger_recommend_update(userId: str, topN: int, pool: str, period: str):
+    """后台线程异步计算推荐结果并写入缓存"""
+    global _recommend_computing
+    if _recommend_computing:
+        return  # 已有计算在跑，不重复触发
+    _recommend_computing = True
+    import threading
+    def _do_compute():
+        global _recommend_computing
+        try:
+            from services.recommend_engine import get_stock_recommendations
+            from services.precomputed_cache import save_precomputed
+            result = get_stock_recommendations(userId, topN, pool, period)
+            if result and result.get("stocks"):
+                save_precomputed("recommendations", result)
+                print(f"[RECOMMEND] 后台计算完成: {len(result['stocks'])} 只")
+        except Exception as e:
+            print(f"[RECOMMEND] 后台计算失败: {e}")
+        finally:
+            _recommend_computing = False
+    t = threading.Thread(target=_do_compute, daemon=True, name="recommend-bg")
+    t.start()
 
 
 @router.get("/api/decisions")
