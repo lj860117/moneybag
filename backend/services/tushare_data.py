@@ -1020,7 +1020,8 @@ def validate_fund_code(code: str) -> dict:
         )
         rows = (rows_o or []) + (rows_e or [])
         if not rows:
-            return {"valid": None, "reason": "无法连接数据源校验"}
+            # fund_basic 可能权限不足返空，降级放行
+            return {"valid": None, "reason": "基金数据源暂不可用，跳过校验"}
         # fund ts_code 格式为 "110020.OF" 或 "510300.SH"
         mapping = {}
         for r in rows:
