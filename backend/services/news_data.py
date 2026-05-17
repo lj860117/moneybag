@@ -388,7 +388,10 @@ _stock_news_cache = MemoryCache(default_ttl=NEWS_CACHE_TTL)  # {code: {"data": [
 _STOCK_NEWS_TTL = 900  # 15 分钟缓存
 
 def get_stock_news_by_code(code: str, limit: int = 8) -> list:
-    """拉取个股新闻（AKShare stock_news_em），15 分钟缓存"""
+    """拉取个股新闻（AKShare stock_news_em），15 分钟缓存
+
+    新增：相关性过滤 — 只保留标题中包含股票名/代码/关键词的新闻
+    """
     import time
     now = time.time()
     cached = _stock_news_cache.get(code)
@@ -403,19 +406,56 @@ def get_stock_news_by_code(code: str, limit: int = 8) -> list:
             time_col = [c for c in df.columns if "时间" in c or "date" in c.lower()]
             source_col = [c for c in df.columns if "来源" in c or "source" in c.lower()]
             if title_col:
+                # 获取股票名称用于相关性过滤
+                stock_name = _get_stock_name_for_filter(code)
                 news = []
-                for _, row in df.head(limit).iterrows():
-                    item = {"title": str(row[title_col[0]])}
+                for _, row in df.head(limit * 3).iterrows():  # 多拉一些用于过滤
+                    title = str(row[title_col[0]])
+                    # 相关性过滤：标题必须包含股票名/代码/关联关键词
+                    if stock_name and not _is_relevant_news(title, code, stock_name):
+                        continue
+                    item = {"title": title}
                     if time_col:
                         item["time"] = str(row[time_col[0]])
                     if source_col:
                         item["source"] = str(row[source_col[0]])
                     news.append(item)
+                    if len(news) >= limit:
+                        break
                 _stock_news_cache.set(code, news)
                 return news
     except Exception as e:
         print(f"[NEWS] stock_news {code}: {e}")
     return []
+
+
+def _get_stock_name_for_filter(code: str) -> str:
+    """获取股票名（用于新闻相关性过滤）"""
+    try:
+        from services.tushare_data import validate_stock_code
+        check = validate_stock_code(code)
+        if check.get("valid") and check.get("name"):
+            return check["name"]
+    except Exception:
+        pass
+    return ""
+
+
+def _is_relevant_news(title: str, code: str, stock_name: str) -> bool:
+    """判断新闻标题是否与目标股票相关"""
+    # 包含代码
+    if code in title:
+        return True
+    # 包含股票名（如"贵州茅台"）
+    if stock_name and stock_name in title:
+        return True
+    # 包含简称（如"茅台"）— 取名称前2-3个字
+    if stock_name and len(stock_name) >= 4:
+        short_name = stock_name[:2]
+        if short_name in title:
+            return True
+    # 宽泛匹配失败 → 不相关
+    return False
 
 
 def get_holdings_news(stock_holdings: list, fund_holdings: list, limit_per: int = 3) -> dict:

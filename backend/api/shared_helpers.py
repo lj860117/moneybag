@@ -564,9 +564,9 @@ def _rule_based_reply_structured(msg: str, market_ctx: str, portfolio_ctx: str) 
                 stock_news = get_stock_news_by_code(entity_code, limit=5)
                 if stock_news:
                     news_lines = [f"📰 {n.get('title', '')}（{n.get('source', '')}）" for n in stock_news[:5]]
-                    text = f"📰 {entity_name}最新消息：\n\n" + "\n".join(news_lines) + "\n\n⚠️ 以上仅供参考，不构成投资建议。"
+                    text = f"📰 {entity_name}最新消息：\n\n" + "\n".join(news_lines) + f"\n\n📌 数据来源：东方财富新闻 · 已过滤与{entity_name}无关内容\n⚠️ 单条新闻不应直接触发买卖决策，请以公告和权威来源为准。"
                 else:
-                    text = f"📰 当前没有检索到与{entity_name}直接相关的重大新闻/利空。\n\n如果你听到某个消息想确认，可以直接告诉我具体内容，我来帮你分析真假和影响。\n\n⚠️ 以上仅供参考。"
+                    text = f"📰 当前没有检索到与{entity_name}直接相关的重大新闻。\n\n如果你听到了某个消息想确认真假和影响，可以直接告诉我具体内容。\n\n📌 未检索到≠没有发生，可能是数据源延迟。\n⚠️ 以上仅供参考。"
                 return {"text": text, "confidence": 0.80, "intent": "stock_news"}
             except Exception:
                 pass
