@@ -17,12 +17,26 @@ from __future__ import annotations
 import time
 from datetime import datetime, timedelta
 
+from infra.cache import MemoryCache
+
+# CFO Summary 结果缓存：60秒内相同用户直接返回（首页高频刷新场景）
+_cfo_cache = MemoryCache(default_ttl=60)
+
 
 def generate_cfo_summary(user_id: str) -> dict:
     """聚合首页全部数据，单个模块失败不影响整体。
 
-    性能优化：并行获取外部数据（恐贪/期货/净资产/估值），避免串行等待。
+    性能优化：
+    1. 结果级缓存 60s（用户刷新首页不重复计算）
+    2. 并行获取外部数据（恐贪/期货/净资产/估值），避免串行等待
     """
+    # ── 缓存命中 → <5ms 返回 ──
+    cache_key = f"cfo_{user_id}"
+    cached = _cfo_cache.get(cache_key)
+    if cached is not None:
+        cached["from_cache"] = True
+        return cached
+
     import concurrent.futures
     start = time.time()
     result = {
@@ -126,6 +140,9 @@ def generate_cfo_summary(user_id: str) -> dict:
         print(f"[CFO] todos failed: {e}")
 
     result["elapsed"] = round(time.time() - start, 2)
+    result["from_cache"] = False
+    # 缓存结果（60s 内重复请求直接返回）
+    _cfo_cache.set(cache_key, result, ttl=60)
     return result
 
 
