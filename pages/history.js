@@ -116,7 +116,10 @@ el.innerHTML='<div style="text-align:center;padding:20px"><div class="loading-sp
 // ★ 缓存检查
 const cached=getCached('broker');if(cached){el.innerHTML=cached;return}
 try{
-const[cr,lr]=await Promise.all([fetch('/api/broker/consensus').then(r=>r.json()),fetch('/api/broker/latest?limit=15').then(r=>r.json())]);
+const[cr,lr]=await Promise.all([
+  fetch('/api/broker/consensus').then(r=>{if(!r.ok)throw new Error('API不可用');return r.json()}),
+  fetch('/api/broker/latest?limit=15').then(r=>{if(!r.ok)throw new Error('API不可用');return r.json()})
+]);
 let html='';
 if(cr.available){
 const bc=cr.bullish_count||0,brc=cr.bearish_count||0,nc=cr.neutral_count||0;
