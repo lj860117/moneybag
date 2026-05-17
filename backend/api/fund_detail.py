@@ -29,19 +29,19 @@ def _set_cached(key: str, val):
     _detail_cache[key] = {"v": val, "t": time.time()}
 
 
-def _resolve_stock_names(symbols: list[str]) -> dict[str, str]:
-    """将股票代码列表解析为 {symbol: name} 映射"""
+def _resolve_stock_names(symbols: list[str]) -> dict[str, dict]:
+    """将股票代码列表解析为 {symbol: {"name": ..., "industry": ...}} 映射"""
     if not symbols:
         return {}
-    cache_key = "stock_names_map"
-    name_map = _get_cached(cache_key) or {}
+    cache_key = "stock_info_map"
+    info_map = _get_cached(cache_key) or {}
 
     # 找出缓存中缺失的代码
-    missing = [s for s in symbols if s and s not in name_map]
+    missing = [s for s in symbols if s and s not in info_map]
     if not missing:
-        return {s: name_map.get(s, "") for s in symbols}
+        return {s: info_map.get(s, {"name": "", "industry": ""}) for s in symbols}
 
-    # 方式1: Tushare stock_basic 批量查
+    # Tushare stock_basic 批量查（含行业）
     try:
         from services.tushare_data import _call_tushare
         rows = _call_tushare(
@@ -52,24 +52,27 @@ def _resolve_stock_names(symbols: list[str]) -> dict[str, str]:
         if rows:
             for r in rows:
                 ts_code = r.get("ts_code", "")
-                name_map[ts_code] = r.get("name", "")
-            _set_cached(cache_key, name_map)
+                info_map[ts_code] = {
+                    "name": r.get("name", ""),
+                    "industry": r.get("industry", ""),
+                }
+            _set_cached(cache_key, info_map)
     except Exception:
         pass
 
-    # 方式2: 还有缺失的尝试单个查询
+    # 还有缺失的尝试单个查询
     for s in missing:
-        if s not in name_map:
+        if s not in info_map:
             try:
                 from services.tushare_data import _call_tushare
-                rows = _call_tushare("stock_basic", {"ts_code": s}, "ts_code,name")
+                rows = _call_tushare("stock_basic", {"ts_code": s}, "ts_code,name,industry")
                 if rows:
-                    name_map[s] = rows[0].get("name", "")
+                    info_map[s] = {"name": rows[0].get("name", ""), "industry": rows[0].get("industry", "")}
             except Exception:
-                name_map[s] = ""
+                info_map[s] = {"name": "", "industry": ""}
 
-    _set_cached(cache_key, name_map)
-    return {s: name_map.get(s, "") for s in symbols}
+    _set_cached(cache_key, info_map)
+    return {s: info_map.get(s, {"name": "", "industry": ""}) for s in symbols}
 
 
 # ──────────────────────────────────────────────────────────
@@ -161,9 +164,21 @@ def fund_detail(code: str):
     if portfolio_data.get("available"):
         top_holdings = portfolio_data.get("top_holdings", [])[:5]
 
-    # 解析持仓股票名称
+    # 解析持仓股票名称 + 行业
     holding_symbols = [h.get("symbol", "") for h in top_holdings if h.get("symbol")]
-    stock_names = _resolve_stock_names(holding_symbols)
+    stock_info = _resolve_stock_names(holding_symbols)
+
+    # 从持仓行业推导经理投资偏好
+    industries = [stock_info.get(s, {}).get("industry", "") for s in holding_symbols]
+    industries = [i for i in industries if i]
+    # 统计行业频次，取前3个
+    from collections import Counter
+    industry_counter = Counter(industries)
+    manager_focus = [ind for ind, _ in industry_counter.most_common(3)]
+
+    # 写入经理信息
+    if manager:
+        manager["focus_industries"] = manager_focus
 
     result = {
         "code": code,
@@ -177,7 +192,12 @@ def fund_detail(code: str):
         "returns": info.get("returns", {}),
         "manager": manager,
         "top_holdings": [
-            {"symbol": h.get("symbol", ""), "name": stock_names.get(h.get("symbol", ""), ""), "ratio": h.get("stk_mkv_ratio", "")}
+            {
+                "symbol": h.get("symbol", ""),
+                "name": stock_info.get(h.get("symbol", ""), {}).get("name", ""),
+                "industry": stock_info.get(h.get("symbol", ""), {}).get("industry", ""),
+                "ratio": h.get("stk_mkv_ratio", ""),
+            }
             for h in top_holdings
         ],
         "source": "tushare+天天基金",

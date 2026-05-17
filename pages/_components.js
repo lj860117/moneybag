@@ -383,6 +383,9 @@ window.showFundDetailModal = async function(code, name) {
     // 基金经理卡
     if (d.manager) {
       const m = d.manager;
+      const focusHtml = m.focus_industries && m.focus_industries.length
+        ? '<div style="display:flex;gap:4px;flex-wrap:wrap;margin-top:6px">' + m.focus_industries.map(ind => '<span style="font-size:10px;padding:2px 8px;border-radius:10px;background:rgba(99,102,241,.1);color:#818CF8">' + ind + '</span>').join('') + '</div>'
+        : '';
       html += `<div class="mb-card--ghost" style="padding:12px;margin-bottom:14px">
         <div class="mb-flex mb-gap-3 mb-mb-3">
           <div class="mb-avatar mb-avatar--md" style="background:linear-gradient(135deg,#5C6BC0,#283593)">👤</div>
@@ -391,6 +394,7 @@ window.showFundDetailModal = async function(code, name) {
             <div style="font-size:11px;color:var(--text-tertiary);margin-top:2px">任期 ${m.tenure_years} 年${d.scale_billion?' · 管理 '+d.scale_billion+'亿':''}</div>
           </div>
         </div>
+        ${focusHtml?'<div style="font-size:10px;color:var(--text-tertiary);margin-bottom:4px">🎯 侧重行业</div>'+focusHtml:''}
         ${m.resume?'<div style="font-size:11px;color:var(--text-secondary);line-height:1.5;margin-top:6px">'+m.resume+'</div>':''}
         <button class="mb-btn mb-btn--ghost mb-btn--sm" style="margin-top:8px;width:100%" onclick="loadManagerTrack('${code}','${m.name}')">📊 查看规模-业绩对照</button>
         <div id="managerTrackArea"></div>
@@ -400,7 +404,7 @@ window.showFundDetailModal = async function(code, name) {
     // 重仓持仓
     if (d.top_holdings && d.top_holdings.length) {
       html += `<div style="font-size:12px;font-weight:700;margin-bottom:6px">🏦 重仓持仓 TOP5</div>`;
-      html += d.top_holdings.map(h => `<div style="display:flex;justify-content:space-between;padding:4px 0;font-size:12px;border-bottom:1px solid var(--border-subtle,rgba(255,255,255,.04))"><span>${h.name||''} <span style="color:var(--text-tertiary);font-size:10px">${h.symbol}</span></span><span style="color:var(--text-tertiary)">${h.ratio?h.ratio+'%':''}</span></div>`).join('');
+      html += d.top_holdings.map(h => `<div style="display:flex;justify-content:space-between;align-items:center;padding:5px 0;font-size:12px;border-bottom:1px solid var(--border-subtle,rgba(255,255,255,.04))"><div><span style="font-weight:600">${h.name||''}</span> <span style="color:var(--text-tertiary);font-size:10px">${h.symbol}</span>${h.industry?'<span style="font-size:9px;margin-left:4px;padding:1px 5px;border-radius:8px;background:rgba(99,102,241,.08);color:#818CF8">'+h.industry+'</span>':''}</div><span style="color:var(--text-tertiary);font-weight:600">${h.ratio?h.ratio+'%':''}</span></div>`).join('');
       html += '<div style="margin-bottom:14px"></div>';
     }
 
