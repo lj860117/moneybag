@@ -8,44 +8,98 @@ const ASSET_TYPES=[
 {id:'liability',icon:'💳',label:'负债/贷款',color:'var(--red)'}];
 
 function renderAssets(){currentPage='assets';renderNav();
-// 先渲染骨架 UI（加载中…），然后异步拉取服务端数据
-$('#app').innerHTML=`<div class="result-page fade-up">
-<div class="pnl-hero" style="margin-bottom:16px">
-<div class="pnl-label">🏦 统一净资产 <span style="font-size:11px;color:var(--text2)">(投资+资产-负债)</span></div>
-<div class="pnl-total-value" id="assetPageNW">加载中…</div>
-<div id="assetPageHealth" style="font-size:12px;color:var(--text2);margin-top:4px"></div>
-<div id="assetPageRing" style="display:flex;justify-content:center;margin-top:12px"></div>
-<div id="assetPageBuckets" style="display:flex;gap:8px;justify-content:center;margin-top:8px;font-size:11px;flex-wrap:wrap"></div>
-</div>
+// 先渲染骨架 UI，然后异步拉取服务端数据
+$('#app').innerHTML=`<div class="result-page fade-up" style="padding-bottom:calc(var(--tabbar-height,76px) + 16px)">
+
+<!-- Hero 净资产（与首页风格一致但色调略偏紫，区分） -->
+<section class="mb-hero" style="margin-bottom:14px;background:linear-gradient(140deg,#0F0E1B 0%,#0E1019 60%,#0A0C14 100%);border-color:rgba(139,111,230,.18)">
+  <div class="mb-hero__label" style="display:flex;align-items:center;gap:6px">🏦 统一净资产 <span class="mb-pill mb-pill--ai" style="font-size:9px;padding:2px 6px" id="assetHealthPill">加载中</span></div>
+  <h2 class="mb-hero__num" id="assetPageNW">¥0</h2>
+  <div id="assetPageHealth" style="font-size:var(--fs-sm,11px);color:var(--text-tertiary,#7A8499);margin-top:4px"></div>
+  <div class="mb-hero__splits" id="assetPageBuckets">
+    <div class="mb-hero__split"><div class="mb-hero__split-label">📈 投资</div><div class="mb-hero__split-value">¥0</div></div>
+    <div class="mb-hero__split"><div class="mb-hero__split-label">🏠 实物</div><div class="mb-hero__split-value">¥0</div></div>
+    <div class="mb-hero__split"><div class="mb-hero__split-label">💳 负债</div><div class="mb-hero__split-value mb-hero__split-value--dn">-¥0</div></div>
+  </div>
+</section>
+
+<!-- 6 类资产网格 -->
+<section style="margin-bottom:14px">
+  <div style="font-size:12px;font-weight:700;margin-bottom:10px">📋 资产分类</div>
+  <div class="mb-cat-grid" style="display:grid;grid-template-columns:repeat(3,1fr);gap:8px">
+    <a class="mb-card--ghost" style="padding:14px 8px;text-align:center;cursor:pointer;text-decoration:none" onclick="showAddAssetOfType('property')">
+      <div style="width:36px;height:36px;border-radius:10px;margin:0 auto 6px;display:grid;place-items:center;font-size:16px;background:rgba(255,183,85,.12)">🏠</div>
+      <div style="font-size:11px;font-weight:600;color:var(--text-primary,#F0F2F7)">房产</div>
+      <div style="font-size:10px;color:var(--text-tertiary,#7A8499);margin-top:2px" id="catValProperty">未添加</div>
+    </a>
+    <a class="mb-card--ghost" style="padding:14px 8px;text-align:center;cursor:pointer;text-decoration:none" onclick="showAddAssetOfType('cash')">
+      <div style="width:36px;height:36px;border-radius:10px;margin:0 auto 6px;display:grid;place-items:center;font-size:16px;background:rgba(0,229,160,.12)">💵</div>
+      <div style="font-size:11px;font-weight:600;color:var(--text-primary,#F0F2F7)">现金</div>
+      <div style="font-size:10px;color:var(--text-tertiary,#7A8499);margin-top:2px" id="catValCash">未添加</div>
+    </a>
+    <a class="mb-card--ghost" style="padding:14px 8px;text-align:center;cursor:pointer;text-decoration:none" onclick="showAddAssetOfType('insurance')">
+      <div style="width:36px;height:36px;border-radius:10px;margin:0 auto 6px;display:grid;place-items:center;font-size:16px;background:rgba(139,111,230,.12)">🛡️</div>
+      <div style="font-size:11px;font-weight:600;color:var(--text-primary,#F0F2F7)">保险</div>
+      <div style="font-size:10px;color:var(--text-tertiary,#7A8499);margin-top:2px" id="catValInsurance">未添加</div>
+    </a>
+    <a class="mb-card--ghost" style="padding:14px 8px;text-align:center;cursor:pointer;text-decoration:none" onclick="showAddAssetOfType('car')">
+      <div style="width:36px;height:36px;border-radius:10px;margin:0 auto 6px;display:grid;place-items:center;font-size:16px;background:rgba(59,130,246,.12)">🚗</div>
+      <div style="font-size:11px;font-weight:600;color:var(--text-primary,#F0F2F7)">车辆</div>
+      <div style="font-size:10px;color:var(--text-tertiary,#7A8499);margin-top:2px" id="catValCar">未添加</div>
+    </a>
+    <a class="mb-card--ghost" style="padding:14px 8px;text-align:center;cursor:pointer;text-decoration:none" onclick="showAddAssetOfType('other')">
+      <div style="width:36px;height:36px;border-radius:10px;margin:0 auto 6px;display:grid;place-items:center;font-size:16px;background:rgba(255,138,177,.12)">📦</div>
+      <div style="font-size:11px;font-weight:600;color:var(--text-primary,#F0F2F7)">收藏品</div>
+      <div style="font-size:10px;color:var(--text-tertiary,#7A8499);margin-top:2px" id="catValOther">未添加</div>
+    </a>
+    <a class="mb-card--ghost" style="padding:14px 8px;text-align:center;cursor:pointer;text-decoration:none" onclick="showAddAssetOfType('liability')">
+      <div style="width:36px;height:36px;border-radius:10px;margin:0 auto 6px;display:grid;place-items:center;font-size:16px;background:rgba(255,107,107,.12)">💳</div>
+      <div style="font-size:11px;font-weight:600;color:var(--text-primary,#F0F2F7)">负债</div>
+      <div style="font-size:10px;color:var(--text-tertiary,#7A8499);margin-top:2px" id="catValLiability">未添加</div>
+    </a>
+  </div>
+</section>
 
 <div id="aiAssetAdvice" style="display:none"></div>
 <div id="cashAdviceCard" style="display:none"></div>
 
-<div class="section-title" style="display:flex;justify-content:space-between;align-items:center">📋 我的资产<button style="background:none;border:none;color:var(--accent);font-size:13px;cursor:pointer" onclick="showAddAsset()">+ 添加</button></div>
-<div id="assetListContainer"><div style="text-align:center;padding:24px;color:var(--text2);font-size:13px">加载中…</div></div>
+<!-- 资产明细列表 -->
+<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
+  <span style="font-size:12px;font-weight:700">📋 我的资产</span>
+  <button class="mb-btn mb-btn--ghost mb-btn--sm" onclick="showAddAsset()">+ 添加</button>
+</div>
+<div id="assetListContainer"><div style="text-align:center;padding:24px;color:var(--text-secondary,#9AA1AC);font-size:13px">加载中…</div></div>
 
-<div style="display:flex;gap:10px;margin-top:16px">
-<button style="flex:1;padding:14px;border-radius:12px;border:none;background:var(--accent);color:#000;font-size:15px;font-weight:700;cursor:pointer;display:flex;align-items:center;justify-content:center;gap:6px" onclick="toggleLedgerPanel()">📝 记账</button>
-<button style="flex:1;padding:14px;border-radius:12px;border:none;background:var(--card);color:var(--text);font-size:15px;font-weight:600;cursor:pointer;border:1px solid var(--border);display:flex;align-items:center;justify-content:center;gap:6px" onclick="showAddAsset()">➕ 添加资产</button>
+<div class="mb-flex mb-gap-3" style="margin-top:14px">
+<button class="mb-btn mb-btn--primary mb-btn--block" onclick="toggleLedgerPanel()">📝 记账</button>
+<button class="mb-btn mb-btn--secondary mb-btn--block" onclick="showAddAsset()">➕ 添加资产</button>
 </div>
 
 <div id="ledgerPanelInAssets" style="display:none;margin-top:16px"></div>
 
+<!-- 我的记录 -->
 <div style="margin-top:20px">
 <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px">
 <span style="font-size:13px;font-weight:700">📋 我的记录</span>
-<a onclick="navigateTo('history')" style="font-size:11px;color:var(--accent);cursor:pointer">全部 →</a>
+<a onclick="navigateTo('history')" style="font-size:11px;color:var(--color-brand-500,#FFB755);cursor:pointer">全部 →</a>
 </div>
-<div id="assetPageHistory" style="font-size:12px;color:var(--text2)">加载中…</div>
+<div id="assetPageHistory" style="font-size:12px;color:var(--text-secondary,#9AA1AC)">加载中…</div>
 </div>
 
-<div style="text-align:center;margin-top:16px;font-size:12px;color:var(--text2);line-height:1.8">
+<div style="text-align:center;margin-top:16px;font-size:12px;color:var(--text-tertiary,#7A8499);line-height:1.8">
 💡 投资持仓在「📊 持仓」页管理<br>
 所有数据自动汇总到统一净资产</div></div>`;
 // 异步加载全部数据
 loadAssetPageFull();
 // 异步加载最近分析记录（我的记录）
 loadAssetPageHistory();
+}
+
+// 快捷添加指定类型资产
+function showAddAssetOfType(type){
+  showAddAsset();
+  // 延迟设置 select 值（等 DOM 渲染完）
+  setTimeout(()=>{const sel=document.getElementById('assetType');if(sel)sel.value=type},100);
 }
 // 资产页：异步加载全部数据（服务端资产列表 + 统一净资产 + AI 建议）
 async function loadAssetPageFull(){
@@ -94,31 +148,40 @@ if(listEl){
 if(nwData){
   const el=document.getElementById('assetPageNW');if(el)el.textContent=`¥${fmtMoney(Math.round(nwData.netWorth))}`;
   const hel=document.getElementById('assetPageHealth');
-  if(hel)hel.innerHTML=`${nwData.healthGrade||''} · ${nwData.healthScore||0}分${(nwData.healthIssues||[]).length?` · <span style="color:var(--red);font-size:11px">${nwData.healthIssues[0]}</span>`:''}`;
-  // SVG 环形图
-  const ring=document.getElementById('assetPageRing');
-  if(ring&&nwData.allocation){const al=nwData.allocation;const segs=[
-    {pct:al.investment||0,color:'#F59E0B',label:'投资'},{pct:al.cash||0,color:'#10B981',label:'现金'},
-    {pct:al.property||0,color:'#3B82F6',label:'房产'},{pct:(al.car||0)+(al.insurance||0)+(al.other||0),color:'#6B7280',label:'其他'}
-  ].filter(s=>s.pct>0);
-  let offset=0;const r=50,cx=60,cy=60,C=2*Math.PI*r;
-  let paths='';segs.forEach(s=>{const len=s.pct/100*C;paths+=`<circle cx="${cx}" cy="${cy}" r="${r}" fill="none" stroke="${s.color}" stroke-width="12" stroke-dasharray="${len} ${C-len}" stroke-dashoffset="${-offset}" transform="rotate(-90 ${cx} ${cy})"/>`;offset+=len});
-  ring.innerHTML=`<svg width="120" height="120" viewBox="0 0 120 120">${paths}<text x="${cx}" y="${cy-4}" text-anchor="middle" fill="var(--text)" font-size="11" font-weight="700">¥${nwData.netWorth>10000?(nwData.netWorth/10000).toFixed(1)+'万':Math.round(nwData.netWorth)}</text><text x="${cx}" y="${cy+10}" text-anchor="middle" fill="var(--text2)" font-size="9">净资产</text></svg>`}
-  // 分桶标签
+  if(hel)hel.innerHTML=`${nwData.healthGrade||''} · ${nwData.healthScore||0}分${(nwData.healthIssues||[]).length?` · <span style="color:var(--color-bear,#FF6B6B);font-size:11px">${nwData.healthIssues[0]}</span>`:''}`;
+  const pill=document.getElementById('assetHealthPill');
+  if(pill)pill.textContent=`${nwData.healthScore||0}分`;
+  // 更新三栏 splits
   const bk=document.getElementById('assetPageBuckets');
-  if(bk&&nwData.breakdown){const b=nwData.breakdown;const items=[
-    {icon:'📈',label:'投资',val:(b.investment||{}).total||0,color:'#F59E0B'},
-    {icon:'💵',label:'现金',val:(b.cash||{}).total||0,color:'#10B981'},
-    {icon:'🏠',label:'房产',val:(b.property||{}).total||0,color:'#3B82F6'},
-    {icon:'💳',label:'负债',val:(b.liability||{}).total||0,color:'#EF4444'}
-  ].filter(i=>i.val>0);
-  bk.innerHTML=items.map(i=>`<span style="background:${i.color}15;color:${i.color};padding:2px 8px;border-radius:6px;border:1px solid ${i.color}30">${i.icon} ${i.label} ¥${fmtMoney(Math.round(i.val))}</span>`).join('')}
+  if(bk&&nwData.breakdown){const b=nwData.breakdown;
+    const inv=(b.investment||{}).total||0;
+    const prop=(b.property||{}).total||0;const cash=(b.cash||{}).total||0;const car=(b.car||{}).total||0;
+    const ins=(b.insurance||{}).total||0;const other=(b.other||{}).total||0;
+    const liab=(b.liability||{}).total||0;
+    const realAssets=prop+car+ins+other+cash;
+    bk.innerHTML=`
+      <div class="mb-hero__split"><div class="mb-hero__split-label">📈 投资</div><div class="mb-hero__split-value">¥${fmtMoney(Math.round(inv))}</div></div>
+      <div class="mb-hero__split"><div class="mb-hero__split-label">🏠 实物</div><div class="mb-hero__split-value">¥${fmtMoney(Math.round(realAssets))}</div></div>
+      <div class="mb-hero__split"><div class="mb-hero__split-label">💳 负债</div><div class="mb-hero__split-value mb-hero__split-value--dn">-¥${fmtMoney(Math.round(liab))}</div></div>`;
+    // 更新 6 类网格的分类金额
+    const catMap={property:prop,cash:cash,insurance:ins,car:car,other:other,liability:liab};
+    Object.entries(catMap).forEach(([key,val])=>{
+      const catEl=document.getElementById('catVal'+key.charAt(0).toUpperCase()+key.slice(1));
+      if(catEl)catEl.textContent=val>0?'¥'+fmtMoney(Math.round(val)):'未添加';
+    });
+  }
 } else {
   // 后端不可用 → 本地计算
   const assetTotal=assets.filter(a=>a.type!=='liability').reduce((s,a)=>s+(a.value||0),0);
   const liabTotal=assets.filter(a=>a.type==='liability').reduce((s,a)=>s+(a.value||0),0);
   const el=document.getElementById('assetPageNW');if(el)el.textContent=`¥${fmtMoney(Math.round(assetTotal-liabTotal))}`;
   const hel=document.getElementById('assetPageHealth');if(hel)hel.textContent='⚠️ 离线模式（不含投资持仓）';
+  // 本地数据更新 6 类网格
+  ASSET_TYPES.forEach(t=>{
+    const total=assets.filter(a=>a.type===t.id).reduce((s,a)=>s+(a.value||0),0);
+    const catEl=document.getElementById('catVal'+t.id.charAt(0).toUpperCase()+t.id.slice(1));
+    if(catEl)catEl.textContent=total>0?'¥'+fmtMoney(Math.round(total)):'未添加';
+  });
 }
 
 // 5. AI 存款建议（有现金时自动触发）
