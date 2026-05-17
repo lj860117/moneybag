@@ -1123,3 +1123,19 @@ def get_main_money_flow(trade_date: str = "") -> dict:
     print(f"[TUSHARE] moneyflow {trade_date}: 全市场净流{total_net:.1f}亿, "
           f"TOP流入={top_in[0]['name'] if top_in else 'N/A'}")
     return result
+
+
+def get_fund_extra_info_ak(code: str) -> dict:
+    """AKShare 兜底：获取基金规模/经理/类型等补充信息
+
+    返回 dict 格式与 AKShare fund_individual_basic_info_xq 的 item→value 映射一致。
+    如果 AKShare 不可用或失败，返回空 dict。
+    """
+    try:
+        import akshare as ak
+        df = ak.fund_individual_basic_info_xq(symbol=code)
+        if df is not None and len(df) > 0:
+            return dict(zip(df['item'], df['value']))
+    except Exception:
+        pass
+    return {}

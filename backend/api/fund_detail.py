@@ -134,10 +134,9 @@ def fund_detail(code: str):
     ak_extra = {}
     if scale_billion is None or manager is None:
         try:
-            import akshare as ak
-            df = ak.fund_individual_basic_info_xq(symbol=code)
-            if df is not None and len(df) > 0:
-                ak_extra = dict(zip(df['item'], df['value']))
+            from services.tushare_data import get_fund_extra_info_ak
+            ak_extra = get_fund_extra_info_ak(code)
+            if ak_extra:
                 # 解析规模
                 if scale_billion is None and ak_extra.get('最新规模'):
                     scale_str = str(ak_extra['最新规模']).replace('亿', '').strip()
