@@ -48,6 +48,9 @@ def _fmt(d: str) -> str:
 
 def fetch_daily_kline(ts_code: str, start_date: str, end_date: str) -> list[KLinePoint]:
     try:
+        # 场外基金(.OF)用 fund_nav 接口获取净值走势
+        if ts_code.endswith(".OF"):
+            return _fetch_fund_nav_kline(ts_code, start_date, end_date)
         df = _get_api().daily(ts_code=ts_code, start_date=start_date, end_date=end_date)
         if df is None or df.empty: return []
         df = df.sort_values("trade_date")
@@ -58,8 +61,31 @@ def fetch_daily_kline(ts_code: str, start_date: str, end_date: str) -> list[KLin
         return []
 
 
+def _fetch_fund_nav_kline(ts_code: str, start_date: str, end_date: str) -> list[KLinePoint]:
+    """场外基金用 fund_nav 接口获取净值，转为简化K线（open=close=nav）"""
+    try:
+        df = _get_api().fund_nav(ts_code=ts_code, start_date=start_date, end_date=end_date)
+        if df is None or df.empty: return []
+        df = df.sort_values("ann_date")
+        result = []
+        for _, r in df.iterrows():
+            nav = float(r.get("unit_nav") or r.get("adj_nav") or 0)
+            if nav <= 0:
+                continue
+            d = _fmt(str(r.get("ann_date", r.get("end_date", ""))))
+            # 场外基金无盘中数据，OHLC 都用净值
+            result.append(KLinePoint(d, nav, nav, nav, nav))
+        return result
+    except Exception as e:
+        logger.warning("_fetch_fund_nav_kline(%s): %s", ts_code, e)
+        return []
+
+
 def fetch_daily_volume(ts_code: str, start_date: str, end_date: str) -> list[VolumePoint]:
     try:
+        # 场外基金无成交量数据
+        if ts_code.endswith(".OF"):
+            return []
         df = _get_api().daily(ts_code=ts_code, start_date=start_date, end_date=end_date)
         if df is None or df.empty: return []
         df = df.sort_values("trade_date")
