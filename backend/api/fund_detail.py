@@ -336,3 +336,51 @@ def policy_beneficiaries(topic: str = "数字基建"):
 
     except Exception as e:
         return {"available": False, "reason": f"分析失败: {str(e)[:100]}"}
+
+
+# ──────────────────────────────────────────────────────────
+# Phase 4: 政策标签聚合（选基/选股列表小徽章用）
+# ──────────────────────────────────────────────────────────
+# 热门政策主题列表（可后续配置化）
+_HOT_POLICY_TOPICS = ["数字基建", "AI算力", "新能源", "半导体", "国产替代"]
+
+
+@router.get("/api/policy/tags")
+def policy_tags():
+    """聚合所有热门政策主题的受益标的 code→[topic] 映射，供前端列表打标签"""
+    cache_key = "policy_tags_all"
+    cached = _get_cached(cache_key)
+    if cached:
+        return cached
+
+    code_tags: dict[str, list[str]] = {}
+
+    for topic in _HOT_POLICY_TOPICS:
+        # 复用已有的 policy_beneficiaries 逻辑（带缓存）
+        benef = policy_beneficiaries(topic)
+        if not benef.get("available"):
+            continue
+        # 提取基金代码
+        for f in benef.get("funds", []):
+            c = str(f.get("code", "")).strip()
+            if c:
+                code_tags.setdefault(c, []).append(topic)
+        # 提取股票代码
+        for s in benef.get("stocks", []):
+            c = str(s.get("code", "")).strip()
+            if c:
+                code_tags.setdefault(c, []).append(topic)
+
+    # 去重
+    for c in code_tags:
+        code_tags[c] = list(dict.fromkeys(code_tags[c]))
+
+    result = {
+        "available": True,
+        "topics": _HOT_POLICY_TOPICS,
+        "code_tags": code_tags,
+        "total_codes": len(code_tags),
+        "updatedAt": datetime.now().strftime("%Y-%m-%d %H:%M"),
+    }
+    _set_cached(cache_key, result)
+    return result

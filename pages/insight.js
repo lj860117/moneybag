@@ -302,9 +302,33 @@ if(impact.analysis){const analysisHtml=typeof mdLite==='function'?mdLite(impact.
 el.innerHTML=h;setCached('global',h);
 }catch(e){el.innerHTML=typeof renderFetchError==='function'?renderFetchError('全球数据加载失败',"renderInsightGlobal(document.getElementById('insightContent'))"):'<div class="mb-empty"><div class="mb-empty__icon">🌐</div><div class="mb-empty__title">全球数据暂不可用</div></div>'}}
 
+// 政策标签缓存（选基/选股列表徽章用）
+let _policyTagsCache=null;let _policyTagsLoading=false;
+async function _loadPolicyTags(){
+if(_policyTagsCache)return _policyTagsCache;
+if(_policyTagsLoading)return null;
+_policyTagsLoading=true;
+try{const r=await fetch(API_BASE+'/api/policy/tags',{signal:AbortSignal.timeout(15000)});
+if(!r.ok)throw new Error('policy tags fetch failed');
+const data=await r.json();
+if(data.available){_policyTagsCache=data.code_tags||{};
+// 标签加载完后，如果正在选基/选股页面，刷新列表展示徽章
+if(insightTab==='fundpick'){const el=document.getElementById('fundPickList');if(el&&el.children.length>1)renderFundPickResult()}
+if(insightTab==='stockpick'){const el=document.getElementById('stockPickList');if(el&&el.children.length>1){const cached=getCached('stock_screen');if(cached)_fillStockList(cached)}}
+}}catch(e){console.warn('Policy tags load failed:',e)}
+_policyTagsLoading=false;
+return _policyTagsCache}
+// 启动时异步预加载政策标签（不阻塞渲染）
+setTimeout(()=>_loadPolicyTags(),2000);
+function _policyBadgesHTML(code){
+if(!_policyTagsCache)return '';
+const topics=_policyTagsCache[code];
+if(!topics||!topics.length)return '';
+return topics.map(t=>'<span style="font-size:10px;padding:2px 6px;border-radius:4px;background:rgba(245,158,11,.12);color:#FBBF24">🏷️'+t+'</span>').join('')}
+
 // 基金智能筛选页
 let fundPickType='all';let fundPickSort='score';
-function _fundTagsHTML(f){const r=f.returns;const tags=[];if(r['1y']!=null&&r['3m']!=null&&r['6m']!=null&&r['1y']>0&&r['3m']>0&&r['6m']>0)tags.push('📈稳定上涨');if(r['1y']!=null&&r['1y']>15)tags.push('\u{1F525}高收益');if(f.fee&&parseFloat(f.fee)<0.5)tags.push('💰低费率');if(r['3y']!=null&&r['3y']>30)tags.push('⭐长期优秀');let h='';if(tags.length)h+='<div style="display:flex;gap:4px;flex-wrap:wrap;margin-bottom:4px">'+tags.map(t=>'<span style="font-size:10px;padding:2px 6px;border-radius:4px;background:rgba(16,185,129,.1);color:#6EE7B7">'+t+'</span>').join('')+'</div>';if(f.aiComment){let cmt=f.aiComment.replace(/^[\s\S]*?(?:逐只思考[：:]?\s*|思考[：:]?\s*|分析[：:]?\s*)/,'').trim();if(cmt&&cmt.length>2)h+='<div style="font-size:12px;color:#E0E7FF;padding:6px 10px;background:rgba(99,102,241,.08);border-radius:8px;line-height:1.5">\u{1F916} '+cmt+'</div>';}return h?'<div style="padding:4px 12px 8px 32px">'+h+'</div>':''}
+function _fundTagsHTML(f){const r=f.returns;const tags=[];if(r['1y']!=null&&r['3m']!=null&&r['6m']!=null&&r['1y']>0&&r['3m']>0&&r['6m']>0)tags.push('📈稳定上涨');if(r['1y']!=null&&r['1y']>15)tags.push('\u{1F525}高收益');if(f.fee&&parseFloat(f.fee)<0.5)tags.push('💰低费率');if(r['3y']!=null&&r['3y']>30)tags.push('⭐长期优秀');const policyBadges=_policyBadgesHTML(f.code);let h='';if(tags.length||policyBadges)h+='<div style="display:flex;gap:4px;flex-wrap:wrap;margin-bottom:4px">'+tags.map(t=>'<span style="font-size:10px;padding:2px 6px;border-radius:4px;background:rgba(16,185,129,.1);color:#6EE7B7">'+t+'</span>').join('')+policyBadges+'</div>';if(f.aiComment){let cmt=f.aiComment.replace(/^[\s\S]*?(?:逐只思考[：:]?\s*|思考[：:]?\s*|分析[：:]?\s*)/,'').trim();if(cmt&&cmt.length>2)h+='<div style="font-size:12px;color:#E0E7FF;padding:6px 10px;background:rgba(99,102,241,.08);border-radius:8px;line-height:1.5">\u{1F916} '+cmt+'</div>';}return h?'<div style="padding:4px 12px 8px 32px">'+h+'</div>':''}
 function _fundPickBtnsHTML(){
 return `<div id="fundPickTypeBar" style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:10px">
 ${[['all','全部'],['stock','股票型'],['bond','债券型'],['index','指数型'],['qdii','QDII']].map(([k,l])=>`<button class="section-tab ${fundPickType===k?'active':''}" onclick="fundPickType='${k}';_updateFundPickBtns();renderFundPickResult()" style="font-size:12px;padding:5px 10px">${l}</button>`).join('')}
@@ -369,7 +393,7 @@ setExplain('fund_'+f.code,f.name+' ('+f.code+')',
 })}
 
 // AI 多因子选股页
-function _stockTagsHTML(s){const sc=s.scores||{};const tags=[];if(sc.value>=70)tags.push('💰低估值');if(sc.momentum>=70)tags.push('📈强动量');if(sc.liquidity>=70)tags.push('🏦高流动');if(sc.risk>=80)tags.push('🛡️低风险');if(sc.quality>=75)tags.push('⭐高质量');if(sc.growth>=70)tags.push('🚀高成长');if(s.roe&&s.roe>20)tags.push('💎ROE>20%');if(s.gross_margin&&s.gross_margin>50)tags.push('🏆高毛利');let h='';if(tags.length)h+='<div style="display:flex;gap:4px;flex-wrap:wrap;margin-bottom:4px">'+tags.map(t=>'<span style="font-size:10px;padding:2px 6px;border-radius:4px;background:rgba(99,102,241,.1);color:#818CF8">'+t+'</span>').join('')+'</div>';if(s.aiComment)h+='<div style="font-size:12px;color:#E0E7FF;padding:6px 10px;background:rgba(99,102,241,.08);border-radius:8px;line-height:1.5">\u{1F916} '+s.aiComment+'</div>';return h?'<div style="padding:4px 0 8px 34px;border-bottom:1px solid rgba(148,163,184,.04)">'+h+'</div>':''}
+function _stockTagsHTML(s){const sc=s.scores||{};const tags=[];if(sc.value>=70)tags.push('💰低估值');if(sc.momentum>=70)tags.push('📈强动量');if(sc.liquidity>=70)tags.push('🏦高流动');if(sc.risk>=80)tags.push('🛡️低风险');if(sc.quality>=75)tags.push('⭐高质量');if(sc.growth>=70)tags.push('🚀高成长');if(s.roe&&s.roe>20)tags.push('💎ROE>20%');if(s.gross_margin&&s.gross_margin>50)tags.push('🏆高毛利');const policyBadges=_policyBadgesHTML(s.code?s.code.replace(/^(sh|sz)/i,''):'');let h='';if(tags.length||policyBadges)h+='<div style="display:flex;gap:4px;flex-wrap:wrap;margin-bottom:4px">'+tags.map(t=>'<span style="font-size:10px;padding:2px 6px;border-radius:4px;background:rgba(99,102,241,.1);color:#818CF8">'+t+'</span>').join('')+policyBadges+'</div>';if(s.aiComment)h+='<div style="font-size:12px;color:#E0E7FF;padding:6px 10px;background:rgba(99,102,241,.08);border-radius:8px;line-height:1.5">\u{1F916} '+s.aiComment+'</div>';return h?'<div style="padding:4px 0 8px 34px;border-bottom:1px solid rgba(148,163,184,.04)">'+h+'</div>':''}
 async function renderStockPick(el){
 el.innerHTML=`<div class="dashboard-card" style="overflow:hidden">
 <div class="dashboard-card-title">🧠 AI 多因子选股</div>
