@@ -432,9 +432,12 @@ def _rule_based_reply_structured(msg: str, market_ctx: str, portfolio_ctx: str) 
         return {"text": text, "confidence": 0.95, "intent": "safety_refusal"}
 
     # ★ 最高优先级2：用户持仓/资产查询（必须基于真实数据回答）
-    # 排除：问"老婆/家人"的持仓 — 应交给 LLM 说"无法查看其他账号"
-    _OTHER_PERSON_KW = ["老婆", "老公", "家人", "她的", "他的", "对方"]
+    # 排除：问"老婆/家人"的持仓 — 直接规则拒绝
+    _OTHER_PERSON_KW = ["老婆", "老公", "家人", "她的", "他的", "对方", "主账号", "另一个账号"]
     _asking_about_others = any(k in msg_lower for k in _OTHER_PERSON_KW)
+    if _asking_about_others and any(k in msg_lower for k in ["持有", "资产", "持仓", "买了", "有什么"]):
+        text = "🔒 当前钱袋子系统只能查看**你自己账号**的数据，无法读取其他家庭成员的持仓。\n\n如果想查看对方的资产，需要切换到对方的账号登录。\n\n⚠️ 账号之间数据完全隔离，互不可见。"
+        return {"text": text, "confidence": 0.90, "intent": "cross_account_refusal"}
 
     _HOLDING_QUERY_KW = ["我有什么", "我的持仓", "我的资产",
                           "现在还在", "我刚才", "录入的", "我当前",
@@ -649,6 +652,14 @@ def _rule_based_reply(msg: str, market_ctx: str, portfolio_ctx: str) -> str:
     result = _rule_based_reply_structured(msg, market_ctx, portfolio_ctx)
     if result:
         return result["text"]
+
+    # 兜底前检查：如果用户问的是持仓/标的相关 + portfolio为空 → 直接说无持仓
+    msg_lower = msg.lower()
+    _ASSET_HINTS = ["持有", "持仓", "资产", "还在", "删除", "茅台", "宁德", "基金", "股票", "买了"]
+    if any(k in msg_lower for k in _ASSET_HINTS):
+        if "没有任何持仓" in portfolio_ctx or "没有持仓" in portfolio_ctx or "尚未录入" in portfolio_ctx or "尚未建仓" in portfolio_ctx:
+            return "📋 当前你的钱袋子系统中**没有持仓/资产记录**。\n\n如果之前有数据但已删除，确认已清空。\n如果是新账号，去 持仓页 或 资产页 添加数据即可。\n\n⚠️ 仅基于钱袋子系统记录。"
+
     # 兜底回复（不倾倒市场概况，简短引导用户提出更明确的问题）
     return "🤔 这个问题我需要更多上下文才能精准回答。\n\n你可以试试这些问法：\n📰 「最近有什么新闻？」\n📊 「技术指标怎么样？」\n🎯 「现在适合入场吗？」\n💰 「什么时候该卖？」\n🧠 「定投多少合适？」\n🔍 「茅台有什么利空？」（指定个股）\n\n或者直接告诉我你想了解的股票/基金代码，我来帮你查。\n\n⚠️ 以上仅供参考，不构成投资建议。"
 
