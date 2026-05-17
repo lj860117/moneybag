@@ -471,12 +471,10 @@ async function runDataAudit(){const btn=document.getElementById('auditBtn');if(b
 function renderNav(){let n=document.getElementById('btmNav');if(!n){n=document.createElement('div');n.id='btmNav';n.className='bottom-nav';document.body.appendChild(n)}
 const tabs=[
   {id:'landing',icon:'🏠',label:'首页'},
-  {id:'stocks',icon:'📈',label:'持仓'},
+  {id:'portfolio',icon:'📊',label:'持仓'},
   {id:'insight',icon:'📰',label:'资讯'},
-  {id:'chat',icon:'🤖',label:'AI分析'},
-  {id:'history',icon:'📋',label:'历史'},
-  {id:'assets',icon:'🏦',label:'资产'},
-  {id:'weekly-lesson',icon:'📚',label:'小课'}
+  {id:'chat',icon:'🤖',label:'AI'},
+  {id:'assets',icon:'💰',label:'资产'}
 ];
 n.innerHTML=tabs.map(t=>`<div class="nav-item ${currentPage===t.id?'active':''}" onclick="navigateTo('${t.id}')"><div class="nav-icon">${t.icon}</div><div>${t.label}</div></div>`).join('');
 // 顶部用户名条（2026-04-19 V7.7: 只在首页显示，其他页面隐藏省屏幕空间）
@@ -562,6 +560,7 @@ function navigateTo(p){
   else if(p==='todos')renderTodos();
   else if(p==='behavior-history')renderBehaviorHistory();
   else if(p==='monthly-rebalance')renderMonthlyRebalance();
+  else if(p==='settings')renderSettings();
 }
 
 

@@ -31,11 +31,21 @@ $('#app').innerHTML=`<div class="result-page fade-up">
 
 <div id="ledgerPanelInAssets" style="display:none;margin-top:16px"></div>
 
+<div style="margin-top:20px">
+<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px">
+<span style="font-size:13px;font-weight:700">📋 我的记录</span>
+<a onclick="navigateTo('history')" style="font-size:11px;color:var(--accent);cursor:pointer">全部 →</a>
+</div>
+<div id="assetPageHistory" style="font-size:12px;color:var(--text2)">加载中…</div>
+</div>
+
 <div style="text-align:center;margin-top:16px;font-size:12px;color:var(--text2);line-height:1.8">
 💡 投资持仓在「📊 持仓」页管理<br>
 所有数据自动汇总到统一净资产</div></div>`;
 // 异步加载全部数据
 loadAssetPageFull();
+// 异步加载最近分析记录（我的记录）
+loadAssetPageHistory();
 }
 // 资产页：异步加载全部数据（服务端资产列表 + 统一净资产 + AI 建议）
 async function loadAssetPageFull(){
@@ -196,3 +206,30 @@ if(API_AVAILABLE)fetch(API_BASE+'/assets/'+id+'?userId='+getUserId(),{method:'DE
 renderAssets();
 _refreshNetWorthAfterAssetChange()}
 
+// 我的记录：异步加载最近 3 条分析历史
+async function loadAssetPageHistory(){
+  const el=document.getElementById('assetPageHistory');if(!el)return;
+  const uid=getProfileId();
+  try{
+    const r=await fetch(`/api/analysis/history?userId=${uid}&source=&days=30`);
+    const d=await r.json();
+    if(!d.records||d.records.length===0){
+      el.innerHTML='<div style="padding:12px;text-align:center;color:var(--text2);font-size:12px">暂无分析记录</div>';
+      return;
+    }
+    const recent=d.records.slice(0,3);
+    el.innerHTML=recent.map(rec=>{
+      const srcIcon=rec.source==='deepseek'?'🤖':rec.source==='claude'?'🧠':'📝';
+      const time=rec.created_at?.slice(0,16).replace('T',' ')||'';
+      return `<div style="padding:8px 0;border-bottom:1px solid var(--bg3,rgba(255,255,255,.06));cursor:pointer" onclick="navigateTo('history')">
+        <div style="display:flex;justify-content:space-between;align-items:center">
+          <span>${srcIcon} ${rec.source_label||rec.source}</span>
+          <span style="font-size:10px;color:var(--text2)">${time}</span>
+        </div>
+        <div style="font-size:11px;color:var(--text2);margin-top:2px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${rec.preview||''}</div>
+      </div>`;
+    }).join('');
+  }catch(e){
+    el.innerHTML='<div style="font-size:11px;color:var(--text2)">记录加载失败</div>';
+  }
+}

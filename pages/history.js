@@ -1,5 +1,5 @@
 function renderHistory(){currentPage='history';renderNav();
-$('#app').innerHTML=`<div class="insight-page fade-up"><div class="insight-header"><h2>📋 分析历史</h2><p>AI/Claude/机构 分析记录</p></div>
+$('#app').innerHTML=`<div class="insight-page fade-up"><div style="display:flex;align-items:center;gap:10px;margin-bottom:12px"><a onclick="navigateTo('assets')" style="font-size:18px;cursor:pointer;color:var(--text2);text-decoration:none">←</a><h2 style="font-size:16px;font-weight:700;margin:0">📋 分析历史</h2></div><p style="font-size:12px;color:var(--text2);margin-bottom:12px">AI/Claude/机构 分析记录</p>
 <div class="section-tab-bar"><button class="section-tab ${historyTab==='all'?'active':''}" onclick="historyTab='all';loadHistory()">全部</button><button class="section-tab ${historyTab==='deepseek'?'active':''}" onclick="historyTab='deepseek';loadHistory()">DeepSeek</button><button class="section-tab ${historyTab==='claude'?'active':''}" onclick="historyTab='claude';loadHistory()">Claude</button><button class="section-tab ${historyTab==='broker'?'active':''}" onclick="historyTab='broker';loadHistory()">机构</button></div>
 <div id="historyContent"><div style="text-align:center;padding:40px;color:var(--text2)"><div class="loading-spinner" style="width:32px;height:32px;margin:0 auto 12px;border-width:3px"></div>加载中...</div></div></div>`;
 loadHistory()}
@@ -865,11 +865,15 @@ async function renderWeeklyLesson() {
   currentPage = 'weekly-lesson';
   renderNav();
 
+  // 返回箭头（从设置页进入）
+  const backBar = `<div style="display:flex;align-items:center;gap:10px;margin-bottom:12px"><a onclick="navigateTo('settings')" style="font-size:18px;cursor:pointer;color:var(--text2);text-decoration:none">←</a><span style="font-size:14px;font-weight:600">📚 财商小课</span></div>`;
+
   // Auth check: must be logged in
   const pid = getProfileId();
   if (!pid || pid === 'default') {
     $('#app').innerHTML = `
       <div class="page-container fade-up" style="text-align:center;padding:60px 20px">
+        ${backBar}
         <div style="font-size:48px;margin-bottom:16px">📚</div>
         <div style="font-size:18px;font-weight:700;color:var(--text1);margin-bottom:8px">登录后查看小课</div>
         <div style="font-size:14px;color:var(--text2);margin-bottom:24px">每周金融小课需要登录才能查看</div>
@@ -897,6 +901,7 @@ async function renderWeeklyLesson() {
   // Render skeleton immediately
   $('#app').innerHTML = `
     <div class="page-container fade-up">
+      ${backBar}
       <div class="wl-header">
         <div class="wl-week-badge">📅 ${weekLabel}</div>
         <div class="wl-greeting">嗨 ${profileName}，本周的金融小课来了 👇</div>
