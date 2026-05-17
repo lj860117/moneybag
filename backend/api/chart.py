@@ -36,11 +36,20 @@ async def get_chart_data(
 
 
 def _get_cost(code: str, uid: str) -> Optional[float]:
+    # 先查基金持仓
     try:
         from services.fund_monitor import load_fund_holdings
         for h in load_fund_holdings(uid):
             if h.get("code") == code and h.get("costNav"):
                 return float(h["costNav"])
+    except Exception:
+        pass
+    # 再查股票持仓
+    try:
+        from services.stock_monitor import load_stock_holdings
+        for h in load_stock_holdings(uid):
+            if h.get("code") == code and h.get("costPrice"):
+                return float(h["costPrice"])
     except Exception:
         pass
     return None
@@ -50,6 +59,12 @@ def _get_name(code: str, uid: str) -> str:
     try:
         from services.fund_monitor import load_fund_holdings
         for h in load_fund_holdings(uid):
+            if h.get("code") == code: return h.get("name", code)
+    except Exception:
+        pass
+    try:
+        from services.stock_monitor import load_stock_holdings
+        for h in load_stock_holdings(uid):
             if h.get("code") == code: return h.get("name", code)
     except Exception:
         pass
