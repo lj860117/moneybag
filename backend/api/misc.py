@@ -147,7 +147,7 @@ def api_dcf(code: str):
 # ---- 推荐引擎 + 买卖决策 ----
 
 @router.get("/api/recommend/stocks")
-def api_recommend_stocks(userId: str = "", topN: int = 10, pool: str = "hot", period: str = "medium"):
+async def api_recommend_stocks(userId: str = "", topN: int = 10, pool: str = "hot", period: str = "medium"):
     """股票推荐（优先凌晨预计算缓存，否则实时算，硬超时 20s）"""
     from services.precomputed_cache import get_precomputed
     cached = get_precomputed("recommendations")
@@ -155,13 +155,16 @@ def api_recommend_stocks(userId: str = "", topN: int = 10, pool: str = "hot", pe
         cached["from_cache"] = True
         return cached
     # 实时计算加硬超时保护（避免 150s+ 卡死）
-    import concurrent.futures
+    import asyncio
     from services.recommend_engine import get_stock_recommendations
+    loop = asyncio.get_event_loop()
     try:
-        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool_exec:
-            future = pool_exec.submit(get_stock_recommendations, userId, topN, pool, period)
-            return future.result(timeout=20)
-    except concurrent.futures.TimeoutError:
+        result = await asyncio.wait_for(
+            loop.run_in_executor(None, get_stock_recommendations, userId, topN, pool, period),
+            timeout=20.0,
+        )
+        return result
+    except asyncio.TimeoutError:
         print("[RECOMMEND] get_stock_recommendations timeout 20s")
         return {
             "stocks": [],
