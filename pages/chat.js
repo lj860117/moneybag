@@ -4,7 +4,7 @@ let chatModelList=[];
 async function loadModelList(){try{const r=await fetch(API_BASE+'/models',{signal:AbortSignal.timeout(5000)});if(r.ok){const d=await r.json();chatModelList=d.models||[];if(d.default)chatModel=localStorage.getItem('chatModel')||d.default}}catch{chatModelList=[{id:'deepseek-v4-flash',name:'DeepSeek V4',provider:'deepseek'}]}}
 function renderChat(){currentPage='chat';renderNav();const sugs=['现在适合入场吗？','什么时候该卖出？','智能定投怎么投？','最近有什么新闻？','政策对我持仓有啥影响？','关税贸易战利好利空啥？','技术指标怎么样？','宏观经济怎么样？','今天市场怎么样？','黄金还能买吗？'];
 const modelSelector=chatModelList.length>0?`<select id="modelSelect" onchange="chatModel=this.value;localStorage.setItem('chatModel',this.value)" style="background:var(--bg2);color:var(--text);border:1px solid var(--bg3);border-radius:8px;padding:4px 8px;font-size:11px;margin-left:8px">${chatModelList.map(m=>`<option value="${m.id}" ${m.id===chatModel?'selected':''}>${m.name}</option>`).join('')}</select>`:'';
-$('#app').innerHTML=`<div class="chat-page"><div class="chat-header"><h2>🤖 AI理财分析师</h2><p>${API_AVAILABLE?'连接实时数据分析':'后端离线，部分功能受限'}${modelSelector}</p></div><div class="chat-messages" id="chatMsgs"><div class="chat-msg bot">你好！我是钱袋子AI分析师，内置巴菲特、格雷厄姆、林奇、塔勒布四位大师的投资框架 🧠\n\n问我关于市场行情、持仓、买卖建议等问题。\n\n所有建议仅供参考 😊<div class="src-tag">系统</div></div>${chatMessages.map(m=>`<div class="chat-msg ${m.role}">${m.text}${m.src?`<div class="src-tag">${m.src==='ai'?'AI分析':'规则引擎'}</div>`:''}</div>`).join('')}</div><div class="chat-suggestions" id="chatSugs">${sugs.map(s=>`<button class="chat-suggest-btn" onclick="sendChat('${s}')">${s}</button>`).join('')}</div><div class="chat-input-bar"><input class="chat-input" id="chatIn" placeholder="问点什么..." onkeydown="if(event.key==='Enter')sendChat()"><button class="chat-send" onclick="sendChat()">→</button></div></div>`;scrollChat()}
+$('#app').innerHTML=`<div class="chat-page"><div class="chat-header"><h2>🤖 AI理财分析师</h2><p>${API_AVAILABLE?'连接实时数据分析':'后端离线，部分功能受限'}${modelSelector}</p></div><div class="chat-messages" id="chatMsgs"><div class="chat-msg bot">你好！我是钱袋子AI分析师，内置巴菲特、格雷厄姆、林奇、塔勒布四位大师的投资框架 🧠\n\n问我关于市场行情、持仓、买卖建议等问题。\n\n所有建议仅供参考 😊<div class="src-tag">系统</div></div>${chatMessages.map(m=>`<div class="chat-msg ${m.role}">${m.text}${m.src?`<div class="src-tag">${m.src==='ai'?'🤖 AI · DeepSeek':'📐 规则引擎 · 实时数据'}</div>`:''}</div>`).join('')}</div><div class="chat-suggestions" id="chatSugs">${sugs.map(s=>`<button class="chat-suggest-btn" onclick="sendChat('${s}')">${s}</button>`).join('')}</div><div class="chat-input-bar"><input class="chat-input" id="chatIn" placeholder="问点什么..." onkeydown="if(event.key==='Enter')sendChat()"><button class="chat-send" onclick="sendChat()">→</button></div></div>`;scrollChat()}
 
 let _chatSending=false;
 function _setChatLock(locked){
@@ -47,17 +47,17 @@ botDiv.innerHTML=thinkBlock+fullText+'<span class="stream-cursor">▊</span>';sc
 }}
 if(d.done){
 const thinkBlock=thinkText?`<details style="font-size:11px;color:var(--text2);margin-bottom:8px;border:1px solid var(--bg3);border-radius:8px;padding:6px 8px"><summary style="cursor:pointer;opacity:0.7">🧠 查看思考过程</summary><div style="margin-top:4px;white-space:pre-wrap;opacity:0.6">${thinkText}</div></details>`:'';
-botDiv.innerHTML=thinkBlock+fullText+`<div class="src-tag">${source==='ai'?'AI分析':'规则引擎'}</div>`;scrollChat()}}catch{}}}
+botDiv.innerHTML=thinkBlock+fullText+`<div class="src-tag">${source==='ai'?'🤖 AI · DeepSeek':'📐 规则引擎 · 实时数据'}</div>`;scrollChat()}}catch{}}}
 // 处理剩余 buffer
 if(buf.startsWith('data: ')){try{const d=JSON.parse(buf.slice(6));if(d.delta){if(d.phase==='thinking')thinkText+=d.delta;else fullText+=d.delta}if(d.source)source=d.source}catch{}}
-botDiv.innerHTML=fullText+`<div class="src-tag">${source==='ai'?'AI分析':'规则引擎'}</div>`;scrollChat();
+botDiv.innerHTML=fullText+`<div class="src-tag">${source==='ai'?'🤖 AI · DeepSeek':'📐 规则引擎 · 实时数据'}</div>`;scrollChat();
 chatMessages.push({role:'bot',text:fullText,src:source});_saveChatHistory();_setChatLock(false);return}
 // 非流式降级（旧接口兼容）
 if(r.ok){const d=await r.json();chatMessages.push({role:'bot',text:d.reply,src:d.source});_saveChatHistory();appendMsg('bot',d.reply,d.source);_setChatLock(false);return}
 }catch(e){console.warn('Chat stream error:',e)}}
 rmTyping();const fb='后端未连接，无法获取实时数据。请确保后端运行中。';chatMessages.push({role:'bot',text:fb,src:'offline'});_saveChatHistory();appendMsg('bot',fb,'offline');_setChatLock(false)}
 
-function appendMsg(r,t,src){const el=document.getElementById('chatMsgs');if(!el)return;const d=document.createElement('div');d.className='chat-msg '+r;d.innerHTML=t+(src?`<div class="src-tag">${src==='ai'?'AI分析':src==='rules'?'规则引擎':'离线'}</div>`:'');el.appendChild(d);scrollChat()}
+function appendMsg(r,t,src){const el=document.getElementById('chatMsgs');if(!el)return;const d=document.createElement('div');d.className='chat-msg '+r;d.innerHTML=t+(src?`<div class="src-tag">${src==='ai'?'🤖 AI · DeepSeek':src==='rules'?'📐 规则引擎 · 实时数据':'离线'}</div>`:'');el.appendChild(d);scrollChat()}
 let _thinkTimer=null;
 function appendTyping(){const el=document.getElementById('chatMsgs');if(!el)return;const d=document.createElement('div');d.className='chat-typing';d.id='chatTyp';d.innerHTML='<span></span><span></span><span></span>';el.appendChild(d);scrollChat()}
 function rmTyping(){if(_thinkTimer){clearInterval(_thinkTimer);_thinkTimer=null}const el=document.getElementById('chatTyp');if(el)el.remove()}

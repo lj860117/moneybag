@@ -17,8 +17,12 @@ from services.steward import get_steward
 from services.regime_engine import classify as classify_regime
 from services.llm_gateway import llm_usage
 from services.weekly_report import generate as generate_weekly, get_history as get_weekly_history
+from infra.cache import MemoryCache
 
 router = APIRouter()
+
+# steward/review 结果缓存（5分钟），避免短时间重复计算
+_review_cache = MemoryCache(default_ttl=300)
 
 
 @router.post("/api/steward/ask")
@@ -54,9 +58,17 @@ def steward_briefing_history(userId: str = "", days: int = 7):
 
 @router.get("/api/steward/review")
 async def steward_review(userId: str = ""):
-    """管家收盘复盘（完整版，含体检）— 30s 硬超时保护"""
+    """管家收盘复盘（完整版，含体检）— 5分钟缓存 + 30s 硬超时"""
     if not userId:
         raise HTTPException(400, "userId required")
+
+    # 缓存命中直接返回
+    cache_key = f"review_{userId}"
+    cached = _review_cache.get(cache_key)
+    if cached is not None:
+        cached["from_cache"] = True
+        return cached
+
     import asyncio
     steward = get_steward()
     loop = asyncio.get_event_loop()
@@ -65,6 +77,8 @@ async def steward_review(userId: str = ""):
             loop.run_in_executor(None, steward.review, userId),
             timeout=30.0,
         )
+        # 成功结果写入缓存
+        _review_cache.set(cache_key, result, ttl=300)
         return result
     except asyncio.TimeoutError:
         print(f"[STEWARD] review timeout 30s for {userId}")
