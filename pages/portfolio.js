@@ -60,7 +60,7 @@ $('#app').innerHTML=`<div class="portfolio-page fade-up" style="padding-bottom:c
 <!-- 股票⇄基金 pill 切换 -->
 <div class="mb-flex mb-gap-3" style="margin-bottom:14px">
   <a class="mb-pill mb-pill--on" id="tabStockBtn" onclick="showStockHoldings()" style="cursor:pointer">📊 股票</a>
-  <a class="mb-pill" id="tabFundBtn" onclick="showStockHoldings()" style="cursor:pointer">💼 基金</a>
+  <a class="mb-pill" id="tabFundBtn" onclick="showFundHoldings()" style="cursor:pointer">💼 基金</a>
   <a class="mb-pill" id="tabTxnBtn" onclick="showTxnHistory()" style="cursor:pointer;margin-left:auto">📋 记录</a>
 </div>
 
@@ -130,12 +130,23 @@ function showStockHoldings(){
   document.getElementById('holdingsContent').style.display='';
   document.getElementById('txnContent').style.display='none';
   document.getElementById('tabStockBtn').className='mb-pill mb-pill--on';
+  document.getElementById('tabFundBtn').className='mb-pill';
+  document.getElementById('tabTxnBtn').className='mb-pill';
+}
+function showFundHoldings(){
+  // 基金和股票共用同一个持仓列表（当前不区分），切换只改高亮态
+  // TODO: 后续可按 category 过滤 stock vs fund
+  document.getElementById('holdingsContent').style.display='';
+  document.getElementById('txnContent').style.display='none';
+  document.getElementById('tabStockBtn').className='mb-pill';
+  document.getElementById('tabFundBtn').className='mb-pill mb-pill--on';
   document.getElementById('tabTxnBtn').className='mb-pill';
 }
 function showTxnHistory(){
   document.getElementById('holdingsContent').style.display='none';
   document.getElementById('txnContent').style.display='';
   document.getElementById('tabStockBtn').className='mb-pill';
+  document.getElementById('tabFundBtn').className='mb-pill';
   document.getElementById('tabTxnBtn').className='mb-pill mb-pill--on';
 }
 
