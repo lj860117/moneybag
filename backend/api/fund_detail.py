@@ -84,6 +84,34 @@ def fund_detail(code: str):
         nav = info["nav"]
         scale_billion = round(shares_yi * nav, 2)  # 亿份 × 元/份 = 亿元
 
+    # AKShare 兜底：fund_individual_basic_info_xq 拿规模 + 补充经理/类型
+    ak_extra = {}
+    if scale_billion is None or manager is None:
+        try:
+            import akshare as ak
+            df = ak.fund_individual_basic_info_xq(symbol=code)
+            if df is not None and len(df) > 0:
+                ak_extra = dict(zip(df['item'], df['value']))
+                # 解析规模
+                if scale_billion is None and ak_extra.get('最新规模'):
+                    scale_str = str(ak_extra['最新规模']).replace('亿', '').strip()
+                    try:
+                        scale_billion = round(float(scale_str), 2)
+                    except (ValueError, TypeError):
+                        pass
+                # 补充经理信息
+                if manager is None and ak_extra.get('基金经理'):
+                    mgr_names = str(ak_extra['基金经理']).split()
+                    manager = {
+                        "name": mgr_names[0] if mgr_names else "未知",
+                        "gender": "",
+                        "begin_date": "",
+                        "tenure_years": 0,
+                        "resume": "",
+                    }
+        except Exception:
+            pass
+
     # 持仓明细
     portfolio_data = get_fund_portfolio(code)
     top_holdings = []
@@ -96,6 +124,9 @@ def fund_detail(code: str):
         "nav": info.get("nav"),
         "fee": info.get("fee", ""),
         "scale_billion": scale_billion,
+        "fund_type": ak_extra.get("基金类型", ""),
+        "founded": ak_extra.get("成立时间", ""),
+        "company": ak_extra.get("基金公司", ""),
         "returns": info.get("returns", {}),
         "manager": manager,
         "top_holdings": [
