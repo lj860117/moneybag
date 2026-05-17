@@ -1,5 +1,5 @@
 // 钱袋子 Service Worker — 离线缓存 + PWA 支持
-const CACHE_NAME = 'moneybag-v917-cache';
+const CACHE_NAME = 'moneybag-v918-cache';
 const STATIC_ASSETS = [
   '/',
   '/index.html',
