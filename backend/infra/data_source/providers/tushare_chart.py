@@ -36,9 +36,13 @@ def _get_api() -> Any:
 
 def _fund_code_to_ts_code(code: str) -> str:
     if "." in code: return code
-    if code.startswith("5"): return f"{code}.SH"
-    if code.startswith("1"): return f"{code}.SZ"
+    # 场内ETF：51xxxx(上海) / 15xxxx(深圳)
+    if code.startswith("5") and code[1] in "0123": return f"{code}.SH"
+    if code.startswith("15"): return f"{code}.SZ"
+    # A股股票：6/9开头(上海) / 0/3开头(深圳)
     if code.startswith(("6", "9")): return f"{code}.SH"
+    if code.startswith(("0", "3")) and not code.startswith("0000"): return f"{code}.SZ"
+    # 其余均视为场外基金(.OF)：11xxxx / 00xxxx / 05xxxx 等
     return f"{code}.OF"
 
 
