@@ -79,9 +79,6 @@ def step_parallel_modules(ctx: DecisionContext) -> DecisionContext:
     class _ModuleTimeout(Exception):
         pass
 
-    def _timeout_handler(signum, frame):
-        raise _ModuleTimeout("module timeout 5s")
-
     try:
         from services.module_registry import ModuleRegistry
         registry = ModuleRegistry.instance()
@@ -106,17 +103,17 @@ def step_parallel_modules(ctx: DecisionContext) -> DecisionContext:
                 ctx.modules_called.append(name)
 
             try:
-                # 设置 5 秒单模块超时（仅 Unix 有效）
-                old_handler = signal.signal(signal.SIGALRM, _timeout_handler)
-                signal.alarm(5)
-                try:
-                    ctx = enrich_fn(ctx)
-                finally:
-                    signal.alarm(0)
-                    signal.signal(signal.SIGALRM, old_handler)
+                # 使用 threading 超时（兼容 uvicorn worker 线程）
+                import concurrent.futures
+                with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
+                    future = executor.submit(enrich_fn, ctx)
+                    try:
+                        ctx = future.result(timeout=8)
+                    except concurrent.futures.TimeoutError:
+                        raise _ModuleTimeout("timeout 8s")
             except _ModuleTimeout:
-                err_msg = "timeout 5s"
-                print(f"[PIPELINE] module {name}.enrich() timeout 5s, skipped")
+                err_msg = "timeout 8s"
+                print(f"[PIPELINE] module {name}.enrich() timeout 8s, skipped")
                 ctx.modules_results[name] = {"available": False, "error": err_msg}
                 ctx.modules_errors[name] = err_msg
             except Exception as e:

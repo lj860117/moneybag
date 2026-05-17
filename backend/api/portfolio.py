@@ -550,15 +550,13 @@ def get_risk_actions_get(userId: str = ""):
 
 @router.post("/api/allocation-advice")
 def get_allocation_advice_api(req: dict):
-    """大类资产配置建议（股/债/现金目标比例+偏离度）"""
+    """大类资产配置建议（股/债/现金目标比例+偏离度）
+
+    优先从 unified-networth + stock/fund holdings 获取真实资产分布，
+    旧 transactions 作为降级方案。
+    """
     user_id = req.get("userId", "")
-    if not user_id:
-        txs = req.get("transactions", [])
-    else:
-        user = load_user(user_id)
-        user = ensure_v4_portfolio(user)
-        portfolio = user.get("portfolio") or {}
-        txs = portfolio.get("transactions", [])
+
     try:
         vp = get_valuation_percentile()
         val_pct = vp.get("percentile", 50) if isinstance(vp, dict) else 50
@@ -569,6 +567,81 @@ def get_allocation_advice_api(req: dict):
         fg_val = fgi.get("score", 50) if isinstance(fgi, dict) else 50
     except Exception:
         fg_val = 50
+
+    # 尝试从真实 holdings/assets 计算配置
+    if user_id:
+        try:
+            from services.unified_networth import calc_unified_networth
+            nw = calc_unified_networth(user_id)
+            if nw and nw.get("netWorth", 0) > 0:
+                breakdown = nw.get("breakdown", {})
+                inv = (breakdown.get("investment") or {}).get("total", 0)
+                cash = (breakdown.get("cash") or {}).get("total", 0)
+                liability = (breakdown.get("liability") or {}).get("total", 0)
+                total = inv + cash  # 不含负债的总资产
+
+                if total > 0:
+                    # 简单分类：投资=股票类，现金=现金类（后续可细分债券）
+                    current_pct = {
+                        "stock": round(inv / total * 100, 1),
+                        "bond": 0,
+                        "cash": round(cash / total * 100, 1),
+                    }
+                    # 动态目标
+                    if val_pct > 70:
+                        target = {"stock": 40, "bond": 35, "cash": 25}
+                        zone = "高估"
+                    elif val_pct < 30:
+                        target = {"stock": 70, "bond": 20, "cash": 10}
+                        zone = "低估"
+                    else:
+                        target = {"stock": 55, "bond": 30, "cash": 15}
+                        zone = "适中"
+
+                    deviation = {
+                        "stock": round(current_pct["stock"] - target["stock"], 1),
+                        "bond": round(current_pct["bond"] - target["bond"], 1),
+                        "cash": round(current_pct["cash"] - target["cash"], 1),
+                    }
+
+                    advice = []
+                    for asset, label in [("stock", "股票类"), ("bond", "债券类"), ("cash", "现金类")]:
+                        d = deviation[asset]
+                        if abs(d) > 10:
+                            if d > 0:
+                                advice.append({"asset": asset, "direction": "reduce",
+                                    "message": f"📉 {label}超配{d:.0f}%，建议减持至{target[asset]}%"})
+                            else:
+                                advice.append({"asset": asset, "direction": "increase",
+                                    "message": f"📈 {label}欠配{abs(d):.0f}%，可增持至{target[asset]}%"})
+
+                    result = {
+                        "target": target,
+                        "current": current_pct,
+                        "deviation": deviation,
+                        "advice": advice,
+                        "valuation_zone": zone,
+                        "valuation_pct": round(val_pct, 1),
+                        "fear_greed": round(fg_val, 1),
+                        "total_market": round(total, 2),
+                        "summary": f"✅ 资产配置分析（估值{zone} {val_pct:.0f}%）" if not advice else f"⚠️ 有{len(advice)}项需调整",
+                    }
+                    market_ctx = _build_market_context()
+                    result = enhance_allocation_advice(result, market_ctx=market_ctx)
+                    return result
+        except Exception as e:
+            print(f"[ALLOC] unified-networth approach failed: {e}")
+
+    # 降级：旧 transactions 方式
+    txs = []
+    if user_id:
+        user = load_user(user_id)
+        user = ensure_v4_portfolio(user)
+        portfolio = user.get("portfolio") or {}
+        txs = portfolio.get("transactions", [])
+    else:
+        txs = req.get("transactions", [])
+
     result = generate_allocation_advice(txs, val_pct, fg_val)
     market_ctx = _build_market_context()
     result = enhance_allocation_advice(result, market_ctx=market_ctx)

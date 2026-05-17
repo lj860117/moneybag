@@ -256,7 +256,7 @@ def _build_portfolio_context(p=None, user_id: str = "default") -> str:
         except Exception:
             pass
         if not _has_data:
-            lines.append("用户尚未录入持仓/资产数据。")
+            lines.append("【重要】当前用户在钱袋子中没有任何持仓/资产记录。如果用户问'我持有什么'，必须回答'当前记录中没有持仓数据'。不要用市场新闻或泛数据来替代回答。")
 
     # 2. 风控状态
     vp_val = 50
