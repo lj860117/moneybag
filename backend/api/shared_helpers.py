@@ -565,12 +565,53 @@ def _rule_based_reply_structured(msg: str, market_ctx: str, portfolio_ctx: str) 
             try:
                 from services.news_data import get_stock_news_by_code
                 stock_news = get_stock_news_by_code(entity_code, limit=5)
+
+                # 判断用户是否在问特定方向（利空/利好）
+                asking_bearish = any(k in msg_lower for k in ["利空", "坏消息", "负面", "风险", "暴雷"])
+                asking_bullish = any(k in msg_lower for k in ["利好", "好消息", "正面"])
+
                 if stock_news:
-                    news_lines = [f"📰 {n.get('title', '')}（{n.get('source', '')}）" for n in stock_news[:5]]
-                    text = f"📰 {entity_name}最新消息：\n\n" + "\n".join(news_lines) + f"\n\n📌 数据来源：东方财富新闻 · 已过滤与{entity_name}无关内容\n⚠️ 单条新闻不应直接触发买卖决策，请以公告和权威来源为准。"
+                    # 对每条新闻做简单情感标注
+                    _BULL_KW = ["上涨", "涨价", "增长", "利润", "突破", "新高", "利好", "上调", "买入"]
+                    _BEAR_KW = ["下跌", "暴跌", "亏损", "减持", "处罚", "退市", "利空", "下调", "卖出", "刑拘"]
+                    tagged_news = []
+                    bull_count = 0
+                    bear_count = 0
+                    for n in stock_news[:5]:
+                        title = n.get("title", "")
+                        if any(k in title for k in _BEAR_KW):
+                            tag = "🔴"
+                            bear_count += 1
+                        elif any(k in title for k in _BULL_KW):
+                            tag = "🟢"
+                            bull_count += 1
+                        else:
+                            tag = "⚪"
+                        tagged_news.append(f"{tag} {title}（{n.get('source', '')}）")
+
+                    news_text = "\n".join(tagged_news)
+
+                    # 根据用户问题方向给出结论
+                    if asking_bearish:
+                        if bear_count > 0:
+                            conclusion = f"**结论：** 检索到 {bear_count} 条可能偏负面的消息，建议关注但不必恐慌。"
+                        else:
+                            conclusion = f"**结论：** 当前检索到的 {len(stock_news)} 条{entity_name}相关新闻中，**未发现明确的重大利空**。"
+                    elif asking_bullish:
+                        if bull_count > 0:
+                            conclusion = f"**结论：** 检索到 {bull_count} 条偏正面的消息。"
+                        else:
+                            conclusion = f"**结论：** 当前新闻中未发现明确利好信号。"
+                    else:
+                        conclusion = f"**结论：** 检索到 {len(stock_news)} 条{entity_name}相关消息（🟢利好{bull_count} 🔴利空{bear_count} ⚪中性{len(stock_news)-bull_count-bear_count}）。"
+
+                    text = f"{conclusion}\n\n**近期消息：**\n{news_text}\n\n📌 数据来源：东方财富新闻 · 已过滤无关内容 · 情感标注仅供参考\n⚠️ 单条新闻不应直接触发买卖决策，请以公告和权威来源为准。"
                 else:
-                    text = f"📰 当前没有检索到与{entity_name}直接相关的重大新闻。\n\n如果你听到了某个消息想确认真假和影响，可以直接告诉我具体内容。\n\n📌 未检索到≠没有发生，可能是数据源延迟。\n⚠️ 以上仅供参考。"
-                return {"text": text, "confidence": 0.80, "intent": "stock_news"}
+                    if asking_bearish:
+                        text = f"**结论：** 当前没有检索到与{entity_name}直接相关的利空/负面新闻。\n\n📌 未检索到≠没有发生，可能是数据源延迟或信息尚未公开。\n💡 如果你听到了具体消息，可以告诉我内容，我来帮你判断真假和可能影响。\n⚠️ 以上仅供参考。"
+                    else:
+                        text = f"**结论：** 当前没有检索到与{entity_name}直接相关的重大新闻。\n\n📌 未检索到≠没有发生，可能是数据源延迟。\n⚠️ 以上仅供参考。"
+                return {"text": text, "confidence": 0.85, "intent": "stock_news"}
             except Exception:
                 pass
 
