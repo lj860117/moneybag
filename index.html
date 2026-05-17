@@ -12,7 +12,12 @@
 <link rel="manifest" href="manifest.json">
 <link rel="apple-touch-icon" href="icons/icon-192.png">
 <link rel="icon" type="image/png" sizes="192x192" href="icons/icon-192.png">
-<!-- Google Fonts 国内不稳定，改用系统字体栈 -->
+<!-- Google Fonts：Inter（正文）+ DM Serif Display（金额衬线数字） -->
+<!-- 国内加载失败时自动 fallback 到 Noto Sans SC / Noto Serif SC（design-tokens 已配系统字体兜底） -->
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=DM+Serif+Display&display=swap" rel="stylesheet">
+<!-- v9.3.0 Design System：tokens 在前，components 在后，现有 styles.css 最后（可覆盖） -->
+<link rel="stylesheet" href="styles/design-tokens.css?v=9.3.0">
+<link rel="stylesheet" href="styles/components.css?v=9.3.0">
 <link rel="stylesheet" href="styles.css?v=9.2.4">
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.4/dist/chart.umd.min.js"></script>
 <script src="https://unpkg.com/lightweight-charts@4.1.1/dist/lightweight-charts.standalone.production.js"></script>

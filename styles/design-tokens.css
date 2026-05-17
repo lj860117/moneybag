@@ -1,0 +1,210 @@
+/* =========================================================
+ * MoneyBag v9.3.0 · Design Tokens
+ * --------------------------------------------------------
+ * 整个产品所有颜色/字号/间距的"唯一真理"
+ * 任何样式必须通过这里的 var(--xxx) 引用，禁止硬编码
+ * 维护者：Jax · 2026-05-17
+ * ========================================================= */
+
+:root {
+  /* ---------- COLORS · 主调色盘 ---------- */
+
+  /* 主品牌色：金橙（净资产、行动按钮、关键数据） */
+  --color-brand-50:  #FFF6E5;
+  --color-brand-100: #FFE5C2;
+  --color-brand-300: #FFD08A;
+  --color-brand-500: #FFB755;   /* 主色 */
+  --color-brand-600: #FF7A4D;
+  --color-brand-700: #E6541F;
+  --color-brand-gradient: linear-gradient(135deg, #FFB755 0%, #FF7A4D 100%);
+
+  /* AI 紫（AI 模块专属，禁止用于非 AI 场景） */
+  --color-ai-100: #E0D6FF;
+  --color-ai-300: #B89DFF;      /* 文字 / 描边 */
+  --color-ai-500: #8B6FE6;      /* 主调 */
+  --color-ai-700: #4527A0;
+  --color-ai-gradient: linear-gradient(135deg, #B89DFF 0%, #6B4FD9 100%);
+
+  /* 数据语义色 */
+  --color-bull:    #00E5A0;     /* 涨/正面 */
+  --color-bull-bg: rgba(0, 229, 160, 0.12);
+  --color-bear:    #FF6B6B;     /* 跌/负面 */
+  --color-bear-bg: rgba(255, 107, 107, 0.12);
+  --color-warn:    #FFB800;     /* 警示 */
+  --color-warn-bg: rgba(255, 184, 0, 0.12);
+  --color-info:    #00B8D9;     /* 中性提示 */
+  --color-info-bg: rgba(0, 184, 217, 0.12);
+
+  /* 双账户头像渐变（核心视觉资产，全局复用） */
+  --color-avatar-leijiang:   linear-gradient(135deg, #FFB755 0%, #FF7A4D 100%);
+  --color-avatar-buluogeli:  linear-gradient(135deg, #FF8AB1 0%, #C770EB 100%);
+
+  /* ---------- SURFACES · 表面色（深色主题，默认） ---------- */
+  --bg-base:       #06080F;     /* 页面底色 */
+  --bg-elevated:   #10131C;     /* 一级卡片 */
+  --bg-elevated-2: #161A26;     /* 二级卡片（嵌套） */
+  --bg-input:      rgba(255, 255, 255, 0.04);
+  --bg-overlay:    rgba(10, 12, 18, 0.85);  /* tabbar 半透明 */
+  --bg-radial-glow: radial-gradient(circle at 50% -10%, rgba(255, 183, 85, 0.06) 0%, transparent 50%);
+
+  /* 描边 */
+  --border-subtle:  rgba(255, 255, 255, 0.05);
+  --border-default: rgba(255, 255, 255, 0.08);
+  --border-strong:  rgba(255, 255, 255, 0.14);
+  --border-brand:   rgba(255, 183, 85, 0.18);
+  --border-ai:      rgba(184, 157, 255, 0.20);
+
+  /* ---------- TEXT · 文字色 ---------- */
+  --text-primary:   #F0F2F7;    /* 主标题 / 重要数据 */
+  --text-default:   #D8DCE5;    /* 正文 */
+  --text-secondary: #9AA1AC;    /* 副文 */
+  --text-tertiary:  #7A8499;    /* 提示 / 时间戳 */
+  --text-disabled:  #5A6275;
+  --text-on-brand:  #0a0a0a;    /* 金橙按钮上的字 */
+
+  /* ---------- TYPOGRAPHY · 字体 ---------- */
+  --font-sans:    'Inter', 'Noto Sans SC', -apple-system, BlinkMacSystemFont, system-ui, sans-serif;
+  --font-mono:    'SF Mono', 'JetBrains Mono', Menlo, Consolas, monospace;
+  --font-display: 'DM Serif Display', 'Noto Serif SC', Georgia, serif;
+  /* font-display 用法：所有"重要金额"（净资产、健康分、估值分位）必须使用 */
+
+  /* 字号阶梯（Type Scale 1.250 Major Third） */
+  --fs-xs:   10px;
+  --fs-sm:   11px;
+  --fs-base: 13px;       /* 默认正文 */
+  --fs-md:   15px;
+  --fs-lg:   18px;
+  --fs-xl:   22px;
+  --fs-2xl:  28px;
+  --fs-3xl:  38px;
+  --fs-4xl:  48px;       /* 净资产大数字 */
+
+  --fw-normal:    400;
+  --fw-medium:    500;
+  --fw-semibold:  600;
+  --fw-bold:      700;
+  --fw-extrabold: 800;
+
+  --lh-tight:   1.1;     /* 大标题 / 数字 */
+  --lh-snug:    1.4;     /* 标题 */
+  --lh-normal:  1.6;     /* 正文 */
+  --lh-relaxed: 1.8;     /* AI 对话 */
+
+  /* 字间距 */
+  --ls-tight:  -0.02em;  /* 衬线大数字 */
+  --ls-normal: 0;
+  --ls-wide:   0.5px;    /* 副文 */
+  --ls-wider:  1px;      /* 标签 */
+  --ls-widest: 2px;      /* 全大写副标题 */
+
+  /* ---------- SPACING · 间距 ---------- */
+  --space-1:  4px;
+  --space-2:  6px;
+  --space-3:  8px;
+  --space-4:  10px;
+  --space-5:  12px;
+  --space-6:  14px;
+  --space-7:  16px;       /* 卡片默认 padding */
+  --space-8:  20px;
+  --space-9:  24px;
+  --space-10: 32px;
+
+  /* ---------- RADIUS · 圆角 ---------- */
+  --radius-xs:   4px;
+  --radius-sm:   6px;     /* tag / pill */
+  --radius-md:   10px;    /* 按钮 */
+  --radius-lg:   14px;    /* 二级卡片 */
+  --radius-xl:   18px;    /* 主卡片 */
+  --radius-2xl:  22px;    /* Hero 卡 */
+  --radius-pill: 999px;
+
+  /* ---------- SHADOWS · 阴影 ---------- */
+  --shadow-sm:    0 1px 2px rgba(0, 0, 0, 0.2);
+  --shadow-md:    0 4px 12px rgba(0, 0, 0, 0.25);
+  --shadow-lg:    0 8px 24px rgba(0, 0, 0, 0.30);
+  --shadow-xl:    0 20px 60px rgba(0, 0, 0, 0.40);
+  --shadow-glow-brand: 0 0 24px rgba(255, 183, 85, 0.25);
+  --shadow-glow-ai:    0 0 24px rgba(184, 157, 255, 0.25);
+  --shadow-inset:      0 0 0 1px rgba(255, 255, 255, 0.04) inset;
+
+  /* ---------- ANIMATION ---------- */
+  --duration-fast:   120ms;
+  --duration-base:   200ms;
+  --duration-slow:   400ms;
+  --ease-out:        cubic-bezier(0.16, 1, 0.3, 1);
+  --ease-in-out:     cubic-bezier(0.4, 0, 0.2, 1);
+
+  /* ---------- LAYOUT · 布局 ---------- */
+  --tabbar-height: 76px;       /* 含 safe area */
+  --topbar-height: 56px;
+  --content-max:   480px;      /* 移动端内容最大宽（桌面预览时居中） */
+
+  --safe-area-top:    env(safe-area-inset-top, 0);
+  --safe-area-bottom: env(safe-area-inset-bottom, 0);
+
+  /* ---------- Z-INDEX ---------- */
+  --z-base:    1;
+  --z-card:    10;
+  --z-tabbar:  50;
+  --z-sticky:  100;
+  --z-modal:   1000;
+  --z-toast:   2000;
+}
+
+/* ========================================================
+ * 浅色主题（用户点顶部那个显示器图标切换）
+ * ======================================================== */
+[data-theme="light"] {
+  --bg-base:       #FAF9F6;
+  --bg-elevated:   #FFFFFF;
+  --bg-elevated-2: #F5F2EC;
+  --bg-input:      rgba(0, 0, 0, 0.03);
+  --bg-overlay:    rgba(255, 255, 255, 0.85);
+  --bg-radial-glow: radial-gradient(circle at 50% -10%, rgba(255, 183, 85, 0.10) 0%, transparent 50%);
+
+  --border-subtle:  rgba(0, 0, 0, 0.05);
+  --border-default: rgba(0, 0, 0, 0.08);
+  --border-strong:  rgba(0, 0, 0, 0.14);
+
+  --text-primary:   #1A1D24;
+  --text-default:   #2E3340;
+  --text-secondary: #5A6275;
+  --text-tertiary:  #8A93A3;
+  --text-disabled:  #B0B5BF;
+}
+
+/* ========================================================
+ * ⚠️ 注意：本文件【不包含】全局 reset
+ *
+ * 原因：design-tokens.css 是基建阶段（PR-1）注入的，
+ * 在现有 styles.css 之前加载。如果在这里加 * { margin:0; padding:0 }
+ * 会覆盖现有页面布局。reset 必须由 styles.css 自己负责。
+ *
+ * 仅在 html/body 上设置基础字体/背景（不影响子元素）
+ * ======================================================== */
+
+html,
+body {
+  font-family: var(--font-sans);
+  font-size: var(--fs-base);
+  line-height: var(--lh-normal);
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  text-rendering: optimizeLegibility;
+}
+
+/* 系统级数字使用 tabular-nums，财务场景必备 */
+.num,
+.numeric,
+[data-numeric="true"] {
+  font-variant-numeric: tabular-nums;
+  font-feature-settings: 'tnum' 1;
+}
+
+/* 衬线大数字快捷类 */
+.display {
+  font-family: var(--font-display);
+  font-weight: var(--fw-normal);
+  letter-spacing: var(--ls-tight);
+  line-height: var(--lh-tight);
+}
