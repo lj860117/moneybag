@@ -157,9 +157,10 @@ def ensure_v4_portfolio(user_data: dict) -> dict:
                         tx["nav"] = 1.0
                         tx["shares"] = tx["amount"]
     else:
+        # 保留原有的 transactions 和 assets（修复：之前会丢掉已有交易）
         user_data["portfolio"] = {
-            "transactions": [],
-            "assets": [],
+            "transactions": p.get("transactions", []),
+            "assets": p.get("assets", []),
             "profile": p.get("profile"),
             "history": p.get("history", []),
             "version": 4,
