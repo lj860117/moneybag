@@ -28,6 +28,8 @@ MODULE_META = {
 from services.holdings_bridge import unified_load_stock_holdings, unified_load_fund_holdings
 from services.stock_monitor import scan_all_holdings
 from services.fund_monitor import scan_all_fund_holdings
+# FIX 2026-05-20 MB-008: 导入统一的基金分类器，避免代码重复
+from services.fund_classifier import classify_and_allocate
 
 
 def get_portfolio_overview(user_id: str = "default") -> dict:
@@ -44,14 +46,15 @@ def get_portfolio_overview(user_id: str = "default") -> dict:
         # market value 需要 scan 才有，这里先用 cost 估算
         stock_total_mv += h.get("costPrice", 0) * h.get("shares", 0)
 
-    # 2. 基金持仓
+    # 2. 基金持仓 — FIX 2026-05-20 MB-008: 使用新的分类器，支持混合/QDII 基金
     fund_holdings = unified_load_fund_holdings(user_id)
     fund_total_mv = 0
     fund_total_cost = 0
     fund_count = 0
-    fund_stock_type = 0  # 股票型/混合型基金的市值
-    fund_bond_type = 0   # 债券型基金的市值
-    fund_money_type = 0  # 货币基金的市值
+    fund_equity = 0      # 基金中的股票类占比
+    fund_bond = 0        # 基金中的债券类占比
+    fund_money = 0       # 基金中的现金类占比
+    fund_gold = 0        # 基金中的黄金占比
 
     for h in fund_holdings:
         cost = h.get("costNav", 0) * h.get("shares", 0)
@@ -59,14 +62,17 @@ def get_portfolio_overview(user_id: str = "default") -> dict:
         fund_total_mv += cost  # 先用成本估算，scan 会更新
         fund_count += 1
 
-        # 按基金名称粗分类型
-        name = (h.get("name") or "").lower()
-        if any(k in name for k in ["货币", "money", "余额", "现金"]):
-            fund_money_type += cost
-        elif any(k in name for k in ["债", "bond", "纯债", "信用"]):
-            fund_bond_type += cost
-        else:
-            fund_stock_type += cost
+        # 使用新分类器，支持混合/QDII 基金的比例分配
+        allocation = classify_and_allocate(
+            code=h.get("code", ""),
+            name=h.get("name", ""),
+            nav_cost=h.get("costNav", 0),
+            shares=h.get("shares", 0),
+        )
+        fund_equity += allocation["equity"]
+        fund_bond += allocation["bond"]
+        fund_money += allocation["money"]
+        fund_gold += allocation["gold"]
 
     # 3. 总资产
     total_mv = stock_total_mv + fund_total_mv
@@ -75,9 +81,10 @@ def get_portfolio_overview(user_id: str = "default") -> dict:
     total_pnl_pct = (total_pnl / total_cost * 100) if total_cost > 0 else 0
 
     # 4. 资产配置占比（股票类/债券类/现金类）
-    equity = stock_total_mv + fund_stock_type  # 股票持仓 + 股票型基金
-    bond = fund_bond_type
-    cash = fund_money_type
+    # 金融资产 = 股票 + 混合基金的股票部分 + 黄金
+    equity = stock_total_mv + fund_equity + fund_gold
+    bond = fund_bond
+    cash = fund_money
     total_for_alloc = equity + bond + cash
 
     allocation = {

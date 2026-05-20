@@ -26,64 +26,32 @@ from config import (
 )
 from services.portfolio_calc import calc_holdings_from_transactions
 from services.data_layer import get_fund_nav
+# FIX 2026-05-20 MB-008: 导入统一的基金分类器
+from services.fund_classifier import classify_fund
 
 
 # ============================================================
-# FIX 2026-04-19 F6: 基金资产类型判断（替代硬编码代码列表）
+# FIX 2026-05-20 MB-008: 使用 fund_classifier 统一分类逻辑
+# 保留 _classify_asset 兼容层但委托给 classify_fund
 # ============================================================
-
-# 已知基金类型映射（手动维护常见基金，未知的按 name 关键字推断）
-_KNOWN_FUND_TYPES = {
-    # 股票/指数 ETF
-    "110020": "equity", "050025": "equity", "008114": "equity",
-    "510300": "equity", "510500": "equity", "510050": "equity",
-    "159915": "equity", "159919": "equity",
-    # 债券
-    "217022": "bond", "519736": "bond", "003376": "bond",
-    # 黄金
-    "000216": "gold", "518880": "gold",
-    # 货币
-    "000198": "money", "003474": "money",
-}
-
-_EQUITY_KEYWORDS = ["股票", "沪深", "创业", "科创", "医药", "消费", "新能源", "半导体", "ETF", "300", "500", "50"]
-_BOND_KEYWORDS = ["债券", "债A", "债B", "债C", "纯债", "利率债", "信用债", "可转债"]
-_GOLD_KEYWORDS = ["黄金", "金ETF"]
-_MONEY_KEYWORDS = ["货币", "余额宝", "现金", "宝宝"]
-
 
 def _classify_asset(h: dict) -> str:
-    """根据代码和名称判断资产类型：equity / bond / gold / money / unknown"""
+    """
+    根据代码和名称判断资产类型：equity / bond / gold / money / unknown
+    
+    FIX 2026-05-20: 现在委托给 fund_classifier.classify_fund，支持混合/QDII 基金
+    对于简单的二值类型检查，返回 equity/bond/money/gold/unknown
+    """
     code = str(h.get("code", ""))
     name = str(h.get("name", ""))
-
-    if code in _KNOWN_FUND_TYPES:
-        return _KNOWN_FUND_TYPES[code]
-
-    # 特殊：余额宝
-    if code == "余额宝" or "余额宝" in name:
-        return "money"
-
-    # 按名称关键字推断
-    for kw in _GOLD_KEYWORDS:
-        if kw in name:
-            return "gold"
-    for kw in _BOND_KEYWORDS:
-        if kw in name:
-            return "bond"
-    for kw in _MONEY_KEYWORDS:
-        if kw in name:
-            return "money"
-    for kw in _EQUITY_KEYWORDS:
-        if kw in name:
-            return "equity"
-
-    # A 股股票代码（6 位数字，6/0/3 开头）默认权益
-    if code.isdigit() and len(code) == 6:
-        if code[0] in ("6", "3") or code.startswith("000") or code.startswith("002"):
-            return "equity"
-
-    return "unknown"
+    
+    classification = classify_fund(code, name)
+    fund_type = classification["type"]
+    
+    # 对于 mixed 类型，保守返回 equity（因为风控往往需要更激进的假设）
+    if fund_type == "mixed":
+        return "equity"
+    return fund_type
 
 
 def _calc_real_peak(active: list) -> float:
