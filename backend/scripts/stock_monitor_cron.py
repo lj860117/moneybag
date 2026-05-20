@@ -227,24 +227,127 @@ def run_scan():
 
 
 def _format_review_for_push(review: dict) -> str:
-    """把 steward review 结构化结果翻译成人话，避免推送原始 JSON"""
-    direction_map = {"bullish": "偏多", "bearish": "偏空", "neutral": "中性"}
+    """把 steward review 结构化结果翻译成普通人能看懂的推送文本
+
+    原则：不暴露系统变量（direction/confidence/score），用大白话说清楚"发生了什么"+"你该怎么办"
+    """
     direction = review.get("direction", "neutral")
-    confidence = review.get("confidence", 0)
     conclusion = review.get("conclusion", "")
     reasoning = review.get("reasoning", "")
 
-    # 方向 emoji
+    # 第一行：emoji + 通俗结论
     emoji = "📈" if direction == "bullish" else "📉" if direction == "bearish" else "⚖️"
+    # 把结论中的术语翻译掉
+    headline = _humanize_conclusion(conclusion, direction)
 
-    parts = []
-    if conclusion:
-        parts.append(f"{emoji} {_humanize_terms(conclusion)}")
-    parts.append(f"方向：{direction_map.get(direction, direction)}｜置信度：{confidence}%")
-    if reasoning:
-        # reasoning 可能很长，截取关键部分，翻译术语
-        parts.append(f"依据：{_humanize_terms(reasoning[:150])}")
+    parts = [f"{emoji} {headline}"]
+
+    # 中间段：从 reasoning 提取关键信息，翻译为大白话要点
+    bullet_points = _extract_human_points(reasoning, review)
+    if bullet_points:
+        parts.append("\n🔍 怎么回事：")
+        for point in bullet_points[:3]:
+            parts.append(f"  • {point}")
+
+    # 结尾：基于方向给白话建议
+    advice = _direction_to_advice(direction)
+    if advice:
+        parts.append(f"\n💡 {advice}")
+
     return "\n".join(parts)
+
+
+def _humanize_conclusion(conclusion: str, direction: str) -> str:
+    """把 LLM 仲裁的结论翻译成口语化的一句话"""
+    if not conclusion:
+        if direction == "bullish":
+            return "今天市场偏强，氛围不错"
+        elif direction == "bearish":
+            return "今天市场偏弱，小心一点"
+        return "今天市场没什么大动静"
+
+    # 清理常见术语
+    text = _humanize_terms(conclusion)
+    # 去掉括号里的系统变量（如 "score=80"、"一票否决"）
+    import re
+    text = re.sub(r'[（(][^）)]*?(?:score|分数|一票否决|门控|直出)[^）)]*?[）)]', '', text)
+    # 去掉残留的英文变量
+    text = re.sub(r'\b[a-z_]+\s*=\s*\d+', '', text)
+    return text.strip() or "今天市场有变化，看看详情"
+
+
+def _extract_human_points(reasoning: str, review: dict) -> list:
+    """从 reasoning 和模块结果中提取 2-3 条普通人能懂的信息点"""
+    points = []
+    if not reasoning:
+        return points
+
+    text = _humanize_terms(reasoning)
+    import re
+
+    # 提取北向资金信息
+    north_match = re.search(r'北向资金[^，。；]*?(-?\d+\.?\d*)\s*亿', text)
+    if north_match:
+        val = float(north_match.group(1))
+        if val < -100:
+            points.append(f"外资5天卖了{abs(val):.0f}亿，还在撤退")
+        elif val < 0:
+            points.append(f"外资小幅卖出{abs(val):.0f}亿，情绪一般")
+        elif val > 100:
+            points.append(f"外资5天买入{val:.0f}亿，在加仓")
+
+    # 提取地缘风险
+    if "地缘" in text:
+        geo_match = re.search(r'地缘[^，。；]{0,30}', text)
+        if geo_match:
+            geo_text = geo_match.group(0)
+            # 简化表述
+            if any(w in geo_text for w in ["极高", "高", "严重", "加剧"]):
+                points.append("地缘局势紧张，市场避险情绪重")
+            elif "中等" in geo_text:
+                points.append("地缘局势有些不确定性")
+
+    # 提取涨跌比/广度
+    breadth_match = re.search(r'涨跌比[^，。；]*?(\d+)%', text)
+    if breadth_match:
+        ratio = int(breadth_match.group(1))
+        if ratio < 40:
+            points.append(f"全场只有{ratio}%的股票在涨，跌的比涨的多")
+        elif ratio > 60:
+            points.append(f"有{ratio}%的股票在涨，多数票走强")
+
+    # 提取轮动/防御信息（区分进攻/防御）
+    direction = review.get("direction", "neutral")
+    if "防御" in text:
+        points.append("资金在往防御板块（银行/公用事业）躲")
+    elif "进攻" in text or "领涨" in text:
+        points.append("资金偏进攻，往成长板块走")
+    elif "轮动" in text and direction == "bearish":
+        points.append("资金在板块间轮动，缺乏主线")
+
+    # 如果没提取到足够要点，用简化版 reasoning
+    if len(points) < 2 and reasoning:
+        # 按分号/句号切分，取前2段做简化
+        segments = re.split(r'[；;。]', text)
+        for seg in segments:
+            seg = seg.strip()
+            if len(seg) > 8 and seg not in points and len(points) < 3:
+                # 去掉括号里的数字噪音
+                seg = re.sub(r'[（(][^）)]*?\d[^）)]*?[）)]', '', seg).strip()
+                if seg:
+                    points.append(seg)
+
+    return points[:3]
+
+
+def _direction_to_advice(direction: str) -> str:
+    """根据方向给出一句白话建议"""
+    if direction == "bearish":
+        return "观望为主，别急着抄底。等市场情绪稳一稳再看。"
+    elif direction == "bullish":
+        return "氛围还行，手里有仓位可以继续拿着。但别追高。"
+    else:
+        return "不上不下的行情，没啥操作的必要，安心等就好。"
 
 
 # 模块/技术术语 → 中文映射（用于推送文本人话化）
@@ -455,7 +558,7 @@ def run_close_review():
         sys.path.insert(0, str(Path(__file__).parent.parent))
         from services.geopolitical import get_geopolitical_risk_score
         geo = get_geopolitical_risk_score()
-        severity = geo.get("severity", 0)
+        severity = geo.get("max_severity", 0)
         if severity >= 3:
             from services.wxwork_push import is_configured, send_daily_report_to
             if is_configured():

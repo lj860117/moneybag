@@ -82,6 +82,13 @@ def get_stock_data() -> dict:
         _provider_cache.set(_CACHE_KEY, result)
         return result
 
+    # 降级源 3：Tushare（5000积分，稳定无反爬，收盘后数据可用）
+    print("[DATA_PROVIDER] 新浪+雪球也不可用，降级到 Tushare")
+    result = _try_tushare_source()
+    if result and len(result["stocks"]) > 100:
+        _provider_cache.set(_CACHE_KEY, result)
+        return result
+
     # 所有源都失败
     return {"stocks": [], "source": "none", "count": 0, "elapsed": 0,
             "error": "所有数据源均不可用，请稍后重试"}
@@ -423,3 +430,183 @@ def _tushare_enrich_pe(stocks: list) -> list:
     except Exception as e:
         print(f"[DATA_PROVIDER] Tushare enrich failed: {e}")
         return stocks
+
+
+def _try_tushare_source() -> dict | None:
+    """Tushare 全量源：daily + daily_basic 合并（5000积分兜底）
+
+    优点：稳定无反爬、2-3秒返回、PE/PB/市值等字段全
+    限制：只有收盘后数据（盘中不更新），适合晚间/凌晨场景
+    """
+    try:
+        import os
+        from pathlib import Path
+        from datetime import datetime, timedelta
+
+        # 加载 .env
+        env_file = Path(__file__).parent.parent / ".env"
+        if env_file.exists():
+            for line in env_file.read_text().splitlines():
+                line = line.strip()
+                if line and not line.startswith("#") and "=" in line:
+                    k, v = line.split("=", 1)
+                    k, v = k.strip(), v.strip()
+                    if k and v:
+                        os.environ.setdefault(k, v)
+
+        token = os.getenv("TUSHARE_TOKEN", "")
+        if not token:
+            print("[DATA_PROVIDER] Tushare token 未配置，跳过")
+            return None
+
+        import tushare as ts
+        ts.set_token(token)
+        pro = ts.pro_api()
+
+        t0 = time.time()
+        print("[DATA_PROVIDER] Trying Tushare 全量...")
+
+        # 找最近的交易日（今天或往前推5天）
+        today = datetime.now()
+        df_daily = None
+        df_basic = None
+        trade_date = None
+
+        for i in range(5):
+            td = (today - timedelta(days=i)).strftime("%Y%m%d")
+            try:
+                df_daily = pro.daily(trade_date=td,
+                                     fields="ts_code,open,close,high,low,vol,amount,pct_chg")
+                if df_daily is not None and len(df_daily) > 100:
+                    trade_date = td
+                    break
+            except Exception:
+                continue
+
+        if df_daily is None or len(df_daily) < 100:
+            print("[DATA_PROVIDER] Tushare daily 无数据")
+            return None
+
+        # 拉 daily_basic 补 PE/PB/市值/换手率
+        try:
+            df_basic = pro.daily_basic(trade_date=trade_date,
+                                       fields="ts_code,pe_ttm,pb,total_mv,turnover_rate_f")
+        except Exception as e:
+            print(f"[DATA_PROVIDER] Tushare daily_basic 失败: {e}")
+            df_basic = None
+
+        # 构建 basic 映射
+        basic_map = {}
+        if df_basic is not None and len(df_basic) > 0:
+            for _, row in df_basic.iterrows():
+                code = str(row.get("ts_code", "")).split(".")[0]
+                basic_map[code] = {
+                    "pe": row.get("pe_ttm"),
+                    "pb": row.get("pb"),
+                    "total_mv": row.get("total_mv"),  # 万元
+                    "turnover": row.get("turnover_rate_f"),
+                }
+
+        # 拉股票名称（用 stock_basic，有缓存）
+        name_map = _get_tushare_name_map(pro)
+
+        # 组装标准格式
+        stocks = []
+        for _, row in df_daily.iterrows():
+            try:
+                ts_code = str(row.get("ts_code", ""))
+                code = ts_code.split(".")[0]
+                # 排除 ST（通过名称判断）
+                name = name_map.get(code, "")
+                if "ST" in name:
+                    continue
+
+                price = float(row.get("close", 0))
+                if price <= 0:
+                    continue
+
+                basic = basic_map.get(code, {})
+                mv = basic.get("total_mv")
+                market_cap = round(float(mv) / 10000, 1) if mv else None  # 万元→亿元
+
+                stocks.append({
+                    "code": code,
+                    "name": name,
+                    "price": price,
+                    "change_pct": float(row.get("pct_chg", 0)),
+                    "pe": _safe_pe(basic.get("pe")),
+                    "pb": _safe_pb(basic.get("pb")),
+                    "turnover": round(float(basic.get("turnover", 0)), 2) if basic.get("turnover") else None,
+                    "market_cap": market_cap,
+                    "volume": float(row.get("vol", 0)),
+                    "amount": float(row.get("amount", 0)) * 1000,  # Tushare amount 单位是千元
+                    "high": float(row.get("high", 0)),
+                    "low": float(row.get("low", 0)),
+                    "open": float(row.get("open", 0)),
+                    "amplitude": None,
+                    "change_5d": None,
+                    "change_20d": None,
+                    "change_60d": None,
+                })
+            except Exception:
+                continue
+
+        elapsed = time.time() - t0
+        print(f"[DATA_PROVIDER] Tushare 全量 OK: {len(stocks)} stocks in {elapsed:.1f}s (trade_date={trade_date})")
+        return {"stocks": stocks, "source": "tushare", "count": len(stocks), "elapsed": round(elapsed, 1)}
+
+    except Exception as e:
+        print(f"[DATA_PROVIDER] Tushare 全量 FAIL: {str(e)[:150]}")
+        traceback.print_exc()
+        return None
+
+
+# Tushare 名称缓存（stock_basic 一天只需拉一次）
+_ts_name_cache = MemoryCache(default_ttl=86400)  # 24小时
+
+
+def _get_tushare_name_map(pro) -> dict:
+    """获取 A 股代码→名称映射（有缓存）"""
+    cached = _ts_name_cache.get("name_map")
+    if cached is not None:
+        return cached
+
+    try:
+        df = pro.stock_basic(exchange='', list_status='L', fields='ts_code,name')
+        if df is not None and len(df) > 0:
+            name_map = {}
+            for _, row in df.iterrows():
+                code = str(row.get("ts_code", "")).split(".")[0]
+                name_map[code] = str(row.get("name", ""))
+            _ts_name_cache.set("name_map", name_map)
+            return name_map
+    except Exception as e:
+        print(f"[DATA_PROVIDER] Tushare stock_basic 失败: {e}")
+
+    return {}
+
+
+def _safe_pe(val) -> float | None:
+    """安全转换 PE，过滤异常值"""
+    if val is None:
+        return None
+    try:
+        pe = float(val)
+        if 0 < pe < 10000:
+            return round(pe, 2)
+    except (ValueError, TypeError):
+        pass
+    return None
+
+
+def _safe_pb(val) -> float | None:
+    """安全转换 PB，过滤异常值"""
+    if val is None:
+        return None
+    try:
+        pb = float(val)
+        if 0 < pb < 1000:
+            return round(pb, 2)
+    except (ValueError, TypeError):
+        pass
+    return None

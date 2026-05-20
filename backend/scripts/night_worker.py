@@ -82,10 +82,39 @@ def _call_v3(prompt, max_tokens=500, system=""):
         if result.get("fallback") or not result.get("content"):
             log(f"  V3 gateway fallback: {result.get('source')}")
             return ""
-        return result["content"]
+        return _clean_llm_output(result["content"])
     except Exception as e:
         log(f"  V3 调用失败: {e}")
     return ""
+
+
+def _clean_llm_output(text: str) -> str:
+    """清洗 DeepSeek 输出，去除偶尔泄露的推理过程/元文本
+
+    DeepSeek V3 偶尔会在正文中输出思考过程（"我们基于..."、"注意：这里..."），
+    这些不应出现在面向用户的简报中。
+    """
+    import re
+    if not text:
+        return text
+
+    # 1. 去除 <think>...</think> 标签包裹的内容（DeepSeek 格式）
+    text = re.sub(r'<think>.*?</think>', '', text, flags=re.DOTALL).strip()
+
+    # 2. 去除开头的推理前缀（常见模式：模型自述分析过程）
+    reasoning_prefixes = [
+        r'^我们基于.*?进行分析。.*?(?=\n\n|\n[一二三四五六七八九十\d【\[])',
+        r'^(?:数据包括|数据分析|根据提供的数据)[:：].*?(?=\n\n|\n[一二三四五六七八九十\d【\[])',
+        r'^(?:要求|注意|说明)[:：].*?(?=\n\n|\n[一二三四五六七八九十\d【\[])',
+    ]
+    for pattern in reasoning_prefixes:
+        text = re.sub(pattern, '', text, flags=re.DOTALL).strip()
+
+    # 3. 去除行内的元注释（括号内的自言自语）
+    #    例如："极高（注意：这里严重度是0/5但标题说极高，可能矛盾？...）"
+    text = re.sub(r'（[^）]*?(?:可能矛盾|按原文|我们按|注意：)[^）]*?）', '', text)
+
+    return text.strip()
 
 
 # ============================================================
@@ -202,7 +231,7 @@ def step_r1_phase1():
     fgi = {"score": 50, "level": "中性"}
     val = {"percentile": 50, "level": ""}
     north = {"net_flow_5d": 0, "trend": "中性"}
-    geo = {"level": "低", "severity": 0}
+    geo = {"level": "低", "max_severity": 0}
     sr = {"available": False}
     br = {"consensus": "未知"}
     margin = {"balance": 0, "change_5d_pct": 0}
@@ -272,33 +301,45 @@ def step_r1_phase1():
 - 北向资金: 5日{north.get('net_flow_5d', 0):.1f}亿 ({north.get('trend', '中性')})
 - 资金面(银行间利率): {shibor.get('overnight', 0)}% ({shibor.get('trend', '')})
 - 融资余额5日变化: {margin.get('change_5d_pct', 0):.1f}%
-- 地缘风险: {geo_cn_for_llm}（严重度{geo.get('severity', 0)}/5）
+- 地缘风险: {geo_cn_for_llm}（严重度{geo.get('max_severity', 0)}/5）
 - 行业热点: {sector_text}
 - 机构共识: {br.get('consensus', '未知')}
 - 今日要闻: {'; '.join(news_titles[:3]) if news_titles else '暂无'}"""
 
     # LLM 研判（可选，失败也不影响简报生成）
     # 严格约束：只基于已提供数据分析，禁止编造任何未提供的数字或事件
-    ANTI_HALLUCINATION_SYSTEM = """你是 A 股宏观策略分析师。你有一条铁律：
+    ANTI_HALLUCINATION_SYSTEM = """你是家庭理财管家，帮普通人看懂市场。你有铁律：
 1. 只能基于用户提供的数据进行分析，禁止编造任何数据点
 2. 禁止提及以下未提供的信息：MLF操作、OMO规模、逆回购、出口数据、新增贷款、PMI、CPI
 3. 禁止输出任何精确数字（百分比/亿元），除非数据中已明确给出
 4. 如果要做推测，必须用"可能""或许"等不确定性词语
-5. 违反以上规则等于失职"""
+5. 用最简单的中文，像朋友聊天一样，不要金融术语和英文
+6. 不要输出你的分析过程/思考过程，直接给结论
+7. 违反以上规则等于失职"""
 
-    prompt = f"""请基于以下数据写一段 200 字以内的市场研判。
+    prompt = f"""请基于以下数据，用200字以内给我一段市场小结。
+要求像朋友帮你看盘后的微信消息，通俗易懂。
 
 {data_text}
 
-要求:
-1. 1句话结论（仅基于上述数据）
-2. 3个要点（每个要点标注[数据]或[推测]前缀）
-3. 风险提示
+格式（不用 markdown，纯文本即可）：
+一句话：<今天/近期市场怎么样，一句话说清楚>
+看点：
+- <第1个要点，说清楚对普通人意味着什么>
+- <第2个要点>
+- <第3个要点>
+建议：<一句话，当前该怎么做>
 
-重要: 上述数据就是全部信息，你不知道央行今日有无操作、不知道出口数据、不知道 PMI/CPI。
-如果某个维度数据缺失，直接跳过，不要臆测。
+示例风格（内容不要照抄，根据实际数据写）：
+一句话：今天盘面偏弱但没大问题，外资在卖但国内资金还稳。
+看点：
+- 外资连续5天卖出，总量接近470亿，情绪偏谨慎
+- 地缘局势让避险资金往银行、黄金跑
+- 好消息是市场整体不贵，跌不深
+建议：不用慌，持有为主。如果情绪很恐慌了再考虑捡便宜。
 
-语言: 用普通人能看懂的大白话，不要英文术语和专业缩写"""
+重要: 上述数据就是全部信息。如果某个维度数据缺失，直接跳过不提。
+禁止: 不要写"我来分析"之类的前缀，直接从"一句话："开始。"""
 
     analysis = _call_v3(prompt, 400, system=ANTI_HALLUCINATION_SYSTEM)
     if analysis:
@@ -306,7 +347,7 @@ def step_r1_phase1():
         log(f"  ✅ 宏观研判: {len(analysis)}字")
     else:
         # LLM 不可用，生成纯数据版研判
-        results["macro_analysis"] = f"恐贪{fgi.get('score', 50)}({fgi.get('level', '中性')}), 北向5日{north.get('net_flow_5d', 0):.1f}亿, 行业热点:{sector_text}"
+        results["macro_analysis"] = f"市场情绪{fgi.get('level', '中性')}({fgi.get('score', 50)}分), 外资5日{north.get('net_flow_5d', 0):.0f}亿, 热点:{sector_text}"
         log(f"  ⚠️ LLM 不可用，使用纯数据版")
 
     return results
@@ -492,15 +533,28 @@ def step_generate_products(phase1, phase2, phase3):
         for i, f in enumerate(fund_recs[:3])
     ) if fund_recs else "  暂无基金推荐"
 
-    # ---- 市场温度 ----
+    # ---- 市场温度（普通人看得懂的版本）----
     temp_parts = []
-    temp_parts.append(f"恐贪指数(自研): {fgi.get('score', '?')}({fgi.get('level', '中性')})")
+    temp_parts.append(f"市场情绪: {fgi.get('level', '中性')}({fgi.get('score', '?')}分)")
     if north.get("net_flow_5d"):
-        temp_parts.append(f"北向5日: {north['net_flow_5d']:+.1f}亿(Tushare口径)")
+        flow = north['net_flow_5d']
+        if flow < 0:
+            temp_parts.append(f"外资动向: 5天净卖出{abs(flow):.0f}亿")
+        else:
+            temp_parts.append(f"外资动向: 5天净买入{flow:.0f}亿")
     if margin.get("change_5d_pct"):
-        temp_parts.append(f"融资5日: {margin['change_5d_pct']:+.1f}%")
+        pct = margin['change_5d_pct']
+        if pct > 1:
+            margin_desc = "明显增加"
+        elif pct > 0:
+            margin_desc = "小幅增加"
+        elif pct < -1:
+            margin_desc = "明显减少"
+        else:
+            margin_desc = "小幅减少"
+        temp_parts.append(f"杠杆资金: {margin_desc}")
     if shibor.get("overnight"):
-        # SHIBOR = 银行间隔夜拆借利率，普通人看不懂，翻译为「资金面」
+        # SHIBOR = 银行间隔夜拆借利率，翻译为「资金面」
         rate = shibor['overnight']
         if rate > 2.5:
             shibor_desc = "偏紧"
@@ -508,7 +562,7 @@ def step_generate_products(phase1, phase2, phase3):
             shibor_desc = "宽松"
         else:
             shibor_desc = "正常"
-        temp_parts.append(f"资金面: {shibor_desc}({rate}%)")
+        temp_parts.append(f"资金面: {shibor_desc}")
     temp_text = " | ".join(temp_parts) if temp_parts else "数据获取中"
 
     # ---- 行业热点 ----
@@ -529,7 +583,7 @@ def step_generate_products(phase1, phase2, phase3):
                      "elevated": "偏高", "high": "高", "extreme": "极高", "critical": "极高"}
     geo_cn = geo_level_map.get(geo.get('level', ''), geo.get('level', '低'))
     geo_text = f"地缘风险: {geo_cn}"
-    if geo.get('severity', 0) >= 3:
+    if geo.get('max_severity', 0) >= 3:
         geo_text += " ⚠️"
     # 附上具体事件摘要（有的话）
     top_events = geo.get("top_events", [])

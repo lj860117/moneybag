@@ -229,6 +229,7 @@ def get_geopolitical_risk_score() -> dict:
     return {
         "score": score,
         "level": level,
+        "max_severity": geo_data["max_severity"],  # 0-5 原始严重度
         "top_events": [
             {"title": e["title"][:60], "severity": e["severity"], "category": e["categories"][0]}
             for e in geo_data["events"][:3]

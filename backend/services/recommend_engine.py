@@ -764,7 +764,7 @@ def _score_risk(stock: dict) -> int:
     try:
         from services.geopolitical import get_geopolitical_risk_score
         geo = get_geopolitical_risk_score()
-        severity = geo.get("severity", 0)
+        severity = geo.get("max_severity", 0)
         if severity >= 4:
             score = max(10, score - 30)
         elif severity >= 2:
