@@ -112,7 +112,7 @@ def generate_cfo_summary(user_id: str) -> dict:
     # ── C. 资产配置（从已获取数据构建，不再重复调接口）──
     allocation_data = None
     try:
-        allocation_data = _build_allocation(nw_data, val_pct)
+        allocation_data = _build_allocation(nw_data, val_pct, user_id)
         result["allocation"] = allocation_data
     except Exception as e:
         print(f"[CFO] allocation failed: {e}")
@@ -271,8 +271,12 @@ def _estimate_monthly_expense(user_id: str, net_worth: dict) -> float:
 # C. 资产配置
 # ============================================================
 
-def _build_allocation(nw, val_pct: int = 50) -> dict | None:
-    """从已获取的 unified-networth + 估值百分位构建配置数据（不再重复调接口）"""
+def _build_allocation(nw, val_pct: int = 50, user_id: str = "") -> dict | None:
+    """从已获取的 unified-networth + 估值百分位构建配置数据
+
+    优先用 portfolio_overview 的精确分配（fund_classifier 拆分基金为股/债/现金），
+    fallback 到旧逻辑（全部投资当权益）。
+    """
     try:
         if not nw or nw.get("netWorth", 0) <= 0:
             return None
@@ -284,12 +288,39 @@ def _build_allocation(nw, val_pct: int = 50) -> dict | None:
         if total <= 0:
             return None
 
-        equity_pct = round(inv / total * 100, 1)
+        # 优先用 portfolio_overview 的精确分配（fund_classifier 正确拆分混合/QDII基金）
+        equity_pct = 0.0
+        bond_pct = 0.0
         cash_pct = round(cash / total * 100, 1)
+        used_precise = False
+
+        if user_id:
+            try:
+                from services.portfolio_overview import get_portfolio_overview
+                overview = get_portfolio_overview(user_id)
+                alloc = overview.get("allocation", {})
+                if alloc.get("equity", 0) > 0 or alloc.get("bond", 0) > 0:
+                    # portfolio_overview 返回的是投资部分内部的比例
+                    # 需要按 inv/total 比例缩放到含现金的整体比例
+                    inv_ratio = inv / total if total > 0 else 0
+                    equity_pct = round(alloc["equity"] * inv_ratio / 100 * 100, 1)
+                    bond_pct = round(alloc["bond"] * inv_ratio / 100 * 100, 1)
+                    # 现金 = 用户手动现金 + 基金中的现金部分
+                    cash_from_fund = round(alloc.get("cash", 0) * inv_ratio / 100 * 100, 1)
+                    cash_pct = round(cash_pct + cash_from_fund, 1)
+                    used_precise = True
+            except Exception as e:
+                print(f"[CFO] portfolio_overview fallback: {e}")
+
+        if not used_precise:
+            # fallback: 所有投资当权益（旧逻辑）
+            equity_pct = round(inv / total * 100, 1)
+            bond_pct = 0.0
+
         current = {
             "stock": equity_pct,   # 兼容旧前端
-            "equity": equity_pct,  # 新字段：含股票+基金+黄金等权益类
-            "bond": 0,
+            "equity": equity_pct,
+            "bond": bond_pct,
             "cash": cash_pct,
         }
 

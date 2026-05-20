@@ -144,6 +144,7 @@ def calc_unified_networth(user_id: str, force: bool = False) -> dict:
 
     # ---- 4. 基金交易流水持仓（V4 旧系统，非盯盘系统） ----
     txn_fund_total = 0
+    txn_fund_count = 0  # 统计V4交易流水中的活跃基金数量
     transactions = portfolio.get("transactions", [])
     if transactions:
         # 如果有交易流水但没在盯盘系统，也算进来
@@ -154,6 +155,7 @@ def calc_unified_networth(user_id: str, force: bool = False) -> dict:
         for h in holdings_result.get("active", []):
             if h["code"] not in fund_codes_in_monitor:
                 txn_fund_total += h.get("totalCost", 0)
+                txn_fund_count += 1
 
     # ---- 5. 记账收支（仅展示参考，不计入净资产防重复） ----
     ledger = user_data.get("ledger") or []
@@ -244,7 +246,7 @@ def calc_unified_networth(user_id: str, force: bool = False) -> dict:
                 "fundTotal": round(fund_total, 2),
                 "txnFundTotal": round(txn_fund_total, 2),
                 "stockCount": len(stock_items),
-                "fundCount": len(fund_items),
+                "fundCount": len(fund_items) + txn_fund_count,  # 合并盯盘+V4交易两个来源
                 "stockItems": stock_items[:10],  # 前端展示最多 10 只
                 "fundItems": fund_items[:10],
             },
