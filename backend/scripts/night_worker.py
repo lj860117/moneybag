@@ -253,6 +253,28 @@ def step_data_warm():
     return warmed
 
 
+def step_fund_rank_refresh():
+    """基金排行榜定期刷新 — 每 3 天自动执行一次
+
+    fund_rank_ts.json 用于晨报基金推荐，过旧会被 72h 时效检查跳过。
+    每周一/周四凌晨自动刷新，保证数据不超过 3 天。
+    """
+    # 仅在周一和周四执行（一周两次，覆盖 72h 时效）
+    if date.today().weekday() not in (0, 3):  # 0=周一, 3=周四
+        return
+
+    log("📊 01:45 基金排行榜刷新")
+    try:
+        from scripts.fund_rank_build import build_rank
+        code = build_rank()
+        if code == 0:
+            log("  ✅ 基金排行榜刷新成功")
+        else:
+            log(f"  ⚠️ 基金排行榜刷新失败 (code={code})")
+    except Exception as e:
+        log(f"  ❌ 基金排行榜刷新异常: {e}")
+
+
 # ============================================================
 # 02:00 R1 Phase 1: 宏观+地缘+行业
 # ============================================================
@@ -538,7 +560,7 @@ def _get_fund_recommendations(top_n=5, category="stock"):
         filtered = [f for f in category_list
                     if 5 <= (f.get("return_1y") or 0) <= 100]
         # 附带数据更新日期供下游标注
-        update_date = data.get("updated_at", "")
+        update_date = data.get("generated_at", data.get("trade_date", ""))
         for f in filtered:
             f["_data_date"] = update_date
         return filtered[:top_n]
@@ -1008,6 +1030,9 @@ def run_night_worker():
 
     # 01:30 数据预热
     step_data_warm()
+
+    # 01:45 基金排行榜刷新（周一/周四执行，保证 72h 内有效）
+    step_fund_rank_refresh()
 
     # ★ 预热后立即保存因子缓存
     try:
