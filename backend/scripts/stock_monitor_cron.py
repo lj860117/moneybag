@@ -228,33 +228,36 @@ def run_scan():
 
 def _sanitize_reasoning_for_extraction(reasoning: str) -> str:
     """清理 reasoning 中的调试信息，防止"我们被问到"等debug文本泄露
-    
+
     【FIX #2】移除调试信息避免用户看到系统细节
     """
     import re
-    
+
     if not reasoning:
         return ""
-    
+
     # 1. 去掉问题上下文（"我们被问到...","用户提问","Pipeline..."）
     reasoning = re.sub(r'我们被问到[^。]*?。', '', reasoning)
     reasoning = re.sub(r'用户提问[^。]*?。', '', reasoning)
     reasoning = re.sub(r'Pipeline[^。]*?。', '', reasoning)
-    
-    # 2. 去掉技术细节（括号内的layer/step/score等）
+
+    # 2. 先清括号内的技术指标（整体移除，避免残留 =value）
     reasoning = re.sub(r'[（(]Layer\d+[^）)]*?[）)]', '', reasoning)
     reasoning = re.sub(r'[（(]Step\d+[^）)]*?[）)]', '', reasoning)
     reasoning = re.sub(r'[（(][^）)]*?(?:score|分数|权重|门控|直出)[^）)]*?[）)]', '', reasoning)
-    
-    # 3. 去掉残留的 JSON 片段（如 {"direction": "bear}）
+
+    # 3. 去掉关键词到句末（贪婪匹配）
+    reasoning = re.sub(r'(?:gate_decision|gate_reason|divergence|confidence_score)[^。；\n]*[。；]?', '', reasoning)
+
+    # 4. 去掉残留的 JSON 片段（如 {"direction": "bear}）
     reasoning = re.sub(r'\{[^}]*?"(?:direction|regime|confidence)[^}]*?\}', '', reasoning)
-    
-    # 4. 去掉结构化数据片段（如 score=80, confidence=0.95）
+
+    # 5. 去掉结构化数据片段（如 score=80, confidence=0.95）
     reasoning = re.sub(r'\b[a-z_]+\s*=\s*[0-9.]+\b', '', reasoning)
-    
-    # 5. 压缩多余空白
+
+    # 6. 压缩多余空白
     reasoning = ' '.join(reasoning.split()).strip()
-    
+
     return reasoning
 
 

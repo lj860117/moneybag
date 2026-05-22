@@ -74,19 +74,20 @@ def _sanitize_reasoning_for_user(reasoning: str) -> str:
     reasoning = re.sub(r'用户问题[：:]\s*[^。]*?[。；]', '', reasoning)
     reasoning = re.sub(r'我们被问到[^。]*?[。；]', '', reasoning)
     reasoning = re.sub(r'(?:Pipeline|管线|流程)(?:执行|运行)[^。]*?[。；]', '', reasoning)
-    
-    # 2. 去掉技术层细节
-    reasoning = re.sub(r'\[?(?:Layer|Step|Stage)\d+[^\]]*?\]?', '', reasoning)
-    reasoning = re.sub(r'(?:gate_decision|gate_reason|divergence|confidence_score)[^。]*?[。；]?', '', reasoning)
-    
-    # 3. 去掉括号内的技术指标
+
+    # 2. 先清括号内的技术指标（含 score/分数 等关键词触发整体移除）
     reasoning = re.sub(r'[（(][^）)]*?(?:score|分数|权重|门控|直出|一票否决)[^）)]*?[）)]', '', reasoning)
     reasoning = re.sub(r'[（(](?:\d+[%]?|0\.\d+)[）)]', '', reasoning)
-    
+
+    # 3. 去掉技术层细节（贪婪匹配到句末，避免残留 =value）
+    reasoning = re.sub(r'\[(?:Layer|Step|Stage)\d+[^\]]*\]', '', reasoning)
+    reasoning = re.sub(r'(?:Layer|Step|Stage)\d+\s*[^。；\n]*[。；]?', '', reasoning)
+    reasoning = re.sub(r'(?:gate_decision|gate_reason|divergence|confidence_score)[^。；\n]*[。；]?', '', reasoning)
+
     # 4. 去掉 JSON 结构
     reasoning = re.sub(r'\{[^}]*?["\':].*?\}', '', reasoning)
     reasoning = re.sub(r'\[[^\]]*?\]', '', reasoning)
-    
+
     # 5. 清理单独的 key=value
     reasoning = re.sub(r'\b[a-z_]+\s*=\s*(?:[0-9.]+|["\'`].*?["\'`]|\w+)', '', reasoning, flags=re.IGNORECASE)
     
