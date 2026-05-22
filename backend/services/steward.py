@@ -189,9 +189,14 @@ class Steward:
             })
         except Exception as e:
             print(f"[STEWARD] judgment record failed: {e}")
-        
+
+        # 清理调试信息防止泄露（与 review() 一致）
+        if ctx.final_reasoning:
+            ctx.final_reasoning = _sanitize_reasoning_for_user(ctx.final_reasoning)
+        if ctx.reasoning:
+            ctx.reasoning = _sanitize_reasoning_for_user(ctx.reasoning)
         return ctx.to_user_response()
-    
+
     def briefing(self, user_id: str) -> dict:
         """
         每日简报（精简版）

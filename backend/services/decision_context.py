@@ -222,9 +222,8 @@ class DecisionContext:
         
         # 5. 推理过程验证
         if self.final_reasoning:
-            # 检测 JSON 残留
-            if "{" in self.final_reasoning and ":" in self.final_reasoning:
-                # 可能是 JSON，尝试清理
+            # 检测明确的 JSON 残留（{"key": 格式），避免误杀含冒号的正常文本
+            if re.search(r'\{\s*"[a-z_]+":', self.final_reasoning):
                 self.final_reasoning = re.sub(r'\{[^}]*?\}', '', self.final_reasoning)
             # 截断过长
             if len(self.final_reasoning) > 1000:

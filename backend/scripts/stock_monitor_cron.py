@@ -356,13 +356,14 @@ def _format_review_for_push(review_input) -> str:
         parts.append(f"\n💡 {advice}")
     
     result = "\n".join(parts)
-    
-    # 最终检查：防止 JSON 泄露
-    if result.strip().startswith("{") or ("{" in result and ":" in result):
-        # 检测到可能的 JSON 泄露
+
+    # 最终检查：防止 JSON 泄露（仅检测明确的 JSON 结构，避免误杀正常文本）
+    import re as _re
+    if result.strip().startswith("{") or _re.search(r'\{\s*"[a-z_]+":', result):
+        # 检测到明确的 JSON 泄露（{"key": 格式）
         print(f"[ALERT] Detected JSON leak in formatted result: {result[:100]}")
         return "📊 收盘复盘完成，请打开钱袋子查看详情"
-    
+
     return result
 
 
