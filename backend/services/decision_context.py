@@ -178,8 +178,68 @@ class DecisionContext:
 
         return "\n".join(lines)
 
+    def _validate_and_sanitize_output(self) -> dict:
+        """【FIX #3】验证和清理输出，确保用户看到的是有效、清晰、可读的内容
+        
+        检查项：
+        1. 关键字段非空（direction, conclusion 等）
+        2. 无 JSON 残留（{, }, 未闭合括号等）
+        3. 无技术术语或代码片段泄露
+        4. 无超长字符串
+        5. 字段值类型正确
+        """
+        import re
+        
+        # 1. 方向字段验证
+        if not self.direction or self.direction not in ["bullish", "bearish", "neutral", "blocked"]:
+            self.direction = self.final_direction or "neutral"
+        if self.direction not in ["bullish", "bearish", "neutral", "blocked"]:
+            self.direction = "neutral"
+        
+        # 2. 置信度清理
+        if not (0 <= self.confidence <= 100):
+            self.confidence = self.final_confidence if (0 <= self.final_confidence <= 100) else 50
+        
+        # 3. 结论字段验证 & 清理
+        if not self.conclusion:
+            self.conclusion = self.final_conclusion
+        
+        # 检查 JSON 泄露
+        if self.conclusion and ("{" in self.conclusion or "}" in self.conclusion):
+            # 可能的 JSON 泄露，提取纯文本
+            self.conclusion = re.sub(r'\{[^}]*?\}', '', self.conclusion)
+            self.conclusion = re.sub(r'[{}\[\]]', '', self.conclusion)
+            self.conclusion = ' '.join(self.conclusion.split()).strip()
+        
+        # 截断过长的结论（防止显示异常）
+        if len(self.conclusion) > 200:
+            self.conclusion = self.conclusion[:200] + "..."
+        
+        # 4. Regime 与 Direction 冲突检查（本应由 ask() 处理，但这是防线）
+        if self.regime and self.regime not in ["trending_bull", "oscillating", "high_vol_bear", "rotation"]:
+            print(f"[WARN] Invalid regime: {self.regime}")
+            self.regime = ""
+        
+        # 5. 推理过程验证
+        if self.final_reasoning:
+            # 检测 JSON 残留
+            if "{" in self.final_reasoning and ":" in self.final_reasoning:
+                # 可能是 JSON，尝试清理
+                self.final_reasoning = re.sub(r'\{[^}]*?\}', '', self.final_reasoning)
+            # 截断过长
+            if len(self.final_reasoning) > 1000:
+                self.final_reasoning = self.final_reasoning[:1000] + "..."
+        
+        return True
+
+
     def to_user_response(self) -> dict:
-        """视图2: 给前端展示的结果（脱敏、结构化）"""
+        """视图2: 给前端展示的结果（脱敏、结构化）
+        
+        【FIX #3】在返回前进行验证和清理，确保无 JSON 泄露、字段完整、值有效
+        """
+        # 执行验证和清理
+        self._validate_and_sanitize_output()
         # FIX 2026-04-19 F14: 透出模块执行状态（成功/失败/跳过），让前端知道哪些维度缺失
         modules_status = {
             "called": len(self.modules_called),

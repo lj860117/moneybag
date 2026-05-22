@@ -226,35 +226,145 @@ def run_scan():
     cleanup_old_snapshots()
 
 
-def _format_review_for_push(review: dict) -> str:
+def _sanitize_reasoning_for_extraction(reasoning: str) -> str:
+    """清理 reasoning 中的调试信息，防止"我们被问到"等debug文本泄露
+    
+    【FIX #2】移除调试信息避免用户看到系统细节
+    """
+    import re
+    
+    if not reasoning:
+        return ""
+    
+    # 1. 去掉问题上下文（"我们被问到...","用户提问","Pipeline..."）
+    reasoning = re.sub(r'我们被问到[^。]*?。', '', reasoning)
+    reasoning = re.sub(r'用户提问[^。]*?。', '', reasoning)
+    reasoning = re.sub(r'Pipeline[^。]*?。', '', reasoning)
+    
+    # 2. 去掉技术细节（括号内的layer/step/score等）
+    reasoning = re.sub(r'[（(]Layer\d+[^）)]*?[）)]', '', reasoning)
+    reasoning = re.sub(r'[（(]Step\d+[^）)]*?[）)]', '', reasoning)
+    reasoning = re.sub(r'[（(][^）)]*?(?:score|分数|权重|门控|直出)[^）)]*?[）)]', '', reasoning)
+    
+    # 3. 去掉残留的 JSON 片段（如 {"direction": "bear}）
+    reasoning = re.sub(r'\{[^}]*?"(?:direction|regime|confidence)[^}]*?\}', '', reasoning)
+    
+    # 4. 去掉结构化数据片段（如 score=80, confidence=0.95）
+    reasoning = re.sub(r'\b[a-z_]+\s*=\s*[0-9.]+\b', '', reasoning)
+    
+    # 5. 压缩多余空白
+    reasoning = ' '.join(reasoning.split()).strip()
+    
+    return reasoning
+
+
+
+def _format_review_for_push(review_input) -> str:
     """把 steward review 结构化结果翻译成普通人能看懂的推送文本
 
     原则：不暴露系统变量（direction/confidence/score），用大白话说清楚"发生了什么"+"你该怎么办"
+    
+    【FIX #1】Priority 1 修复：
+    - 防御性类型检查（处理 JSON 字符串或完整的 25+ 字段 dict）
+    - 清理 reasoning 中的调试信息（防止debug文本泄露）
+    - 正确处理缺失字段的回退机制
+    - 区分 direction（投资信号）和 regime（市场阶段）
+    - 最终检查防止 JSON 泄露
     """
-    direction = review.get("direction", "neutral")
-    conclusion = review.get("conclusion", "")
-    reasoning = review.get("reasoning", "")
-
+    
+    # ---- 防御性输入处理 ----
+    review = {}
+    
+    # 情况1：输入是 JSON 字符串
+    if isinstance(review_input, str):
+        try:
+            review = json.loads(review_input)
+        except (json.JSONDecodeError, TypeError, ValueError):
+            # JSON 解析失败，返回友好提示
+            print(f"[WARN] 无法解析 review 输入: {review_input[:100]}")
+            return "📊 收盘复盘完成，请打开钱袋子查看详情"
+    
+    # 情况2：输入是 dict
+    elif isinstance(review_input, dict):
+        review = review_input
+    
+    # 情况3：无效输入
+    else:
+        print(f"[WARN] 无效的 review 输入类型: {type(review_input)}")
+        return "📊 收盘复盘完成，请打开钱袋子查看详情"
+    
+    # 情况4：空 dict（所有字段都缺失）
+    if not review or (not review.get("direction") and not review.get("final_direction") and 
+                      not review.get("conclusion") and not review.get("final_conclusion")):
+        print(f"[WARN] review 输入为空或所有关键字段缺失")
+        return "📊 收盘复盘完成，请打开钱袋子查看详情"
+    
+    # ---- 提取关键字段 ----
+    # 注意：direction 是投资方向（bullish/bearish/neutral），不要与 regime 混淆
+    direction = review.get("direction") or review.get("final_direction", "neutral")
+    conclusion = review.get("conclusion") or review.get("final_conclusion", "")
+    reasoning = review.get("reasoning") or review.get("final_reasoning", "")
+    
+    # 清理 reasoning 中的调试信息
+    if reasoning:
+        reasoning = _sanitize_reasoning_for_extraction(reasoning)
+    
+    # ---- 回退机制：如果关键字段缺失，尝试从其他字段恢复 ----
+    if not direction or direction not in ["bullish", "bearish", "neutral"]:
+        # 尝试从 confidence 推断
+        confidence = review.get("confidence") or review.get("final_confidence", 0)
+        regime = review.get("regime", "")
+        
+        if confidence > 60 and regime in ["trending_bull"]:
+            direction = "bullish"
+        elif confidence > 60 and regime in ["high_vol_bear", "oscillating"]:
+            direction = "bearish"
+        else:
+            direction = "neutral"
+    
+    if not conclusion:
+        # 尝试从 modules_results 补充
+        modules = review.get("modules_results", {})
+        if modules:
+            # 简单启发式：统计模块的方向
+            bullish_count = sum(1 for r in modules.values() 
+                               if isinstance(r, dict) and r.get("direction") == "bullish")
+            bearish_count = sum(1 for r in modules.values() 
+                               if isinstance(r, dict) and r.get("direction") == "bearish")
+            if bullish_count > bearish_count:
+                direction = "bullish"
+            elif bearish_count > bullish_count:
+                direction = "bearish"
+    
+    # ---- 组装推送文本 ----
     # 第一行：emoji + 通俗结论
     emoji = "📈" if direction == "bullish" else "📉" if direction == "bearish" else "⚖️"
-    # 把结论中的术语翻译掉
     headline = _humanize_conclusion(conclusion, direction)
-
+    
     parts = [f"{emoji} {headline}"]
-
+    
     # 中间段：从 reasoning 提取关键信息，翻译为大白话要点
     bullet_points = _extract_human_points(reasoning, review)
     if bullet_points:
         parts.append("\n🔍 怎么回事：")
         for point in bullet_points[:3]:
             parts.append(f"  • {point}")
-
+    
     # 结尾：基于方向给白话建议
     advice = _direction_to_advice(direction)
     if advice:
         parts.append(f"\n💡 {advice}")
+    
+    result = "\n".join(parts)
+    
+    # 最终检查：防止 JSON 泄露
+    if result.strip().startswith("{") or ("{" in result and ":" in result):
+        # 检测到可能的 JSON 泄露
+        print(f"[ALERT] Detected JSON leak in formatted result: {result[:100]}")
+        return "📊 收盘复盘完成，请打开钱袋子查看详情"
+    
+    return result
 
-    return "\n".join(parts)
 
 
 def _humanize_conclusion(conclusion: str, direction: str) -> str:

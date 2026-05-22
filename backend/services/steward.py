@@ -56,6 +56,48 @@ def _extract_cache_date(filename: str) -> str:
     if len(parts) >= 2:
         return parts[-1]
     return ""
+def _sanitize_reasoning_for_user(reasoning: str) -> str:
+    """【FIX #2】清理 reasoning 中的系统级调试信息
+    
+    防止以下内容泄露到用户：
+    - 问题上下文（"我们被问到..."）
+    - Pipeline 执行细节（Layer/Step）
+    - 技术指标（score, confidence, gate_decision）
+    - JSON 片段和结构化数据
+    """
+    import re
+    
+    if not reasoning:
+        return ""
+    
+    # 1. 去掉问题上下文
+    reasoning = re.sub(r'用户问题[：:]\s*[^。]*?[。；]', '', reasoning)
+    reasoning = re.sub(r'我们被问到[^。]*?[。；]', '', reasoning)
+    reasoning = re.sub(r'(?:Pipeline|管线|流程)(?:执行|运行)[^。]*?[。；]', '', reasoning)
+    
+    # 2. 去掉技术层细节
+    reasoning = re.sub(r'\[?(?:Layer|Step|Stage)\d+[^\]]*?\]?', '', reasoning)
+    reasoning = re.sub(r'(?:gate_decision|gate_reason|divergence|confidence_score)[^。]*?[。；]?', '', reasoning)
+    
+    # 3. 去掉括号内的技术指标
+    reasoning = re.sub(r'[（(][^）)]*?(?:score|分数|权重|门控|直出|一票否决)[^）)]*?[）)]', '', reasoning)
+    reasoning = re.sub(r'[（(](?:\d+[%]?|0\.\d+)[）)]', '', reasoning)
+    
+    # 4. 去掉 JSON 结构
+    reasoning = re.sub(r'\{[^}]*?["\':].*?\}', '', reasoning)
+    reasoning = re.sub(r'\[[^\]]*?\]', '', reasoning)
+    
+    # 5. 清理单独的 key=value
+    reasoning = re.sub(r'\b[a-z_]+\s*=\s*(?:[0-9.]+|["\'`].*?["\'`]|\w+)', '', reasoning, flags=re.IGNORECASE)
+    
+    # 6. 压缩多余空白和标点
+    reasoning = re.sub(r'[，；。]{2,}', '。', reasoning)
+    reasoning = ' '.join(reasoning.split()).strip()
+    reasoning = reasoning.rstrip('，；。')
+    
+    return reasoning if reasoning else ""
+
+
 
 
 class Steward:
@@ -307,6 +349,11 @@ class Steward:
         except Exception as e:
             print(f"[STEWARD] judgment record failed: {e}")
         
+        # 【FIX #2】清理调试信息防止泄露
+        if ctx.final_reasoning:
+            ctx.final_reasoning = _sanitize_reasoning_for_user(ctx.final_reasoning)
+        if ctx.reasoning:
+            ctx.reasoning = _sanitize_reasoning_for_user(ctx.reasoning)
         return ctx.to_user_response()
 
     def briefing_history(self, user_id: str, days: int = 7) -> list:
