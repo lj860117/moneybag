@@ -117,6 +117,27 @@ def _clean_llm_output(text: str) -> str:
     return text.strip()
 
 
+def _truncate_at_sentence(text: str, max_chars: int = 3800) -> str:
+    """在句子边界截断文本，避免断句
+
+    企微文本消息限制 4096 字符，默认 3800 留余量给 emoji 编码膨胀。
+    在最后一个完整句子处截断（。！？\\n），附加省略提示。
+    """
+    if len(text) <= max_chars:
+        return text
+    # 在 max_chars 范围内找最后一个句子结束符
+    truncated = text[:max_chars]
+    # 从末尾向前找句子边界
+    for i in range(len(truncated) - 1, max(len(truncated) - 200, 0), -1):
+        if truncated[i] in '。！？\n':
+            return truncated[:i + 1] + "\n\n...（完整内容请打开钱袋子查看）"
+    # 找不到句子边界，至少在空格/逗号处截断
+    for i in range(len(truncated) - 1, max(len(truncated) - 100, 0), -1):
+        if truncated[i] in '，、 ':
+            return truncated[:i] + "...（完整内容请打开钱袋子查看）"
+    return truncated + "..."
+
+
 # ============================================================
 # 01:00 数据源健康巡检
 # ============================================================
@@ -272,11 +293,31 @@ def step_r1_phase1():
     except Exception as e:
         log(f"  ⚠️ 研报共识失败: {e}")
 
+    # 获取前一交易日 A 股三大指数涨跌（防止 LLM 在大盘下跌时误判"亮眼"）
+    indices = {}
+    try:
+        from services.tushare_data import is_configured as ts_ok, get_index_daily
+        if ts_ok():
+            for code, name in [("000001.SH", "上证指数"), ("399001.SZ", "深证成指"), ("399006.SZ", "创业板指")]:
+                rows = get_index_daily(code, days=5)
+                if rows and len(rows) >= 2:
+                    latest = rows[-1]
+                    prev = rows[-2]
+                    chg_pct = (latest['close'] - prev['close']) / prev['close'] * 100
+                    indices[code] = {"name": name, "close": latest['close'], "change_pct": round(chg_pct, 2)}
+                    time.sleep(0.2)  # Tushare 限频
+            if indices:
+                idx_str = ", ".join(f"{v['name']}{v['change_pct']:+.2f}%" for v in indices.values())
+                log(f"  A股指数: {idx_str}")
+    except Exception as e:
+        log(f"  ⚠️ 指数数据失败: {e}")
+
     # 保存原始数据供 step_generate_products 使用
     results["raw"] = {
         "fgi": fgi, "val": val, "north": north,
         "geo": geo, "sr": sr, "br": br,
         "margin": margin, "shibor": shibor,
+        "indices": indices,
     }
 
     # 收集新闻
@@ -295,10 +336,15 @@ def step_r1_phase1():
     _geo_level_map = {"low": "低", "normal": "低", "moderate": "中等",
                       "elevated": "偏高", "high": "高", "extreme": "极高", "critical": "极高"}
     geo_cn_for_llm = _geo_level_map.get(geo.get('level', ''), geo.get('level', '低'))
+    # 北向数据：stale 时明确告知 LLM 数据不可用，防止编造
+    north_text = f"5日{north.get('net_flow_5d', 0):.1f}亿 ({north.get('trend', '中性')})" if not north.get('stale') else "数据暂不可用（交易所停止披露）"
+    # A 股指数涨跌（关键：让 LLM 知道大盘方向，避免在下跌日误判"亮眼"）
+    indices_text = ", ".join(f"{v['name']}{v['change_pct']:+.2f}%" for v in indices.values()) if indices else "暂无"
     data_text = f"""宏观数据快照:
+- A股指数(前一交易日): {indices_text}
 - 恐贪指数: {fgi.get('score', 50)} ({fgi.get('level', '中性')})
 - 估值百分位: {val.get('percentile', 50)}% ({val.get('level', '')})
-- 北向资金: 5日{north.get('net_flow_5d', 0):.1f}亿 ({north.get('trend', '中性')})
+- 北向资金: {north_text}
 - 资金面(银行间利率): {shibor.get('overnight', 0)}% ({shibor.get('trend', '')})
 - 融资余额5日变化: {margin.get('change_5d_pct', 0):.1f}%
 - 地缘风险: {geo_cn_for_llm}（严重度{geo.get('max_severity', 0)}/5）
@@ -461,6 +507,13 @@ def _get_fund_recommendations(top_n=5, category="stock"):
             rank_file = Path("./data/fund_rank_ts.json")
         if not rank_file.exists():
             return []
+
+        # 时效校验：文件超过 72 小时不使用（收益率数据已过旧）
+        file_age_hours = (time.time() - os.path.getmtime(rank_file)) / 3600
+        if file_age_hours > 72:
+            log(f"  ⚠️ fund_rank_ts.json 已过期 {file_age_hours:.0f}小时（>72h），跳过基金推荐")
+            return []
+
         data = _json.loads(rank_file.read_text(encoding="utf-8"))
         ranks = data.get("ranks", {})
         if not isinstance(ranks, dict):
@@ -471,6 +524,10 @@ def _get_fund_recommendations(top_n=5, category="stock"):
         # 过滤极端涨幅：只推荐 5%-100% 区间的基金
         filtered = [f for f in category_list
                     if 5 <= (f.get("return_1y") or 0) <= 100]
+        # 附带数据更新日期供下游标注
+        update_date = data.get("updated_at", "")
+        for f in filtered:
+            f["_data_date"] = update_date
         return filtered[:top_n]
     except Exception as e:
         log(f"  基金推荐失败: {e}")
@@ -528,20 +585,28 @@ def step_generate_products(phase1, phase2, phase3):
 
     # ---- 基金推荐 ----
     fund_recs = _get_fund_recommendations(top_n=3, category="stock")
-    fund_rec_text = "\n".join(
-        f"  {i+1}. {f.get('name', '')}（{f.get('code', '')}）近1年+{f.get('return_1y', '?')}%"
-        for i, f in enumerate(fund_recs[:3])
-    ) if fund_recs else "  暂无基金推荐"
+    if fund_recs:
+        fund_data_date = fund_recs[0].get('_data_date', '')
+        fund_rec_text = "\n".join(
+            f"  {i+1}. {f.get('name', '')}（{f.get('code', '')}）近1年+{f.get('return_1y', '?')}%"
+            for i, f in enumerate(fund_recs[:3])
+        )
+        if fund_data_date:
+            fund_rec_text += f"\n  （数据更新: {fund_data_date}，实际收益以基金公司披露为准）"
+    else:
+        fund_rec_text = "  暂无基金推荐"
 
     # ---- 市场温度（普通人看得懂的版本）----
     temp_parts = []
     temp_parts.append(f"市场情绪: {fgi.get('level', '中性')}({fgi.get('score', '?')}分)")
-    if north.get("net_flow_5d"):
+    if north.get("net_flow_5d") and not north.get("stale"):
         flow = north['net_flow_5d']
         if flow < 0:
             temp_parts.append(f"外资动向: 5天净卖出{abs(flow):.0f}亿")
         else:
             temp_parts.append(f"外资动向: 5天净买入{flow:.0f}亿")
+    elif north.get("stale"):
+        temp_parts.append("外资动向: 数据暂不可用（数据源更新滞后）")
     if margin.get("change_5d_pct"):
         pct = margin['change_5d_pct']
         if pct > 1:
@@ -886,8 +951,8 @@ def step_push_briefing(briefings):
             wxid = p.get("wxworkUserId", "")
             if not wxid or uid not in briefings:
                 continue
-            # 企微限制字数，截断
-            msg = briefings[uid][:2000]
+            # 企微文本消息限制 4096 字符，留余量 3800；在句子边界截断避免断句
+            msg = _truncate_at_sentence(briefings[uid], 3800)
             # wxworkUserId 无效时降级为 @all
             result = send_daily_report_to(wxid, msg)
             if result.get("ok"):
@@ -1025,11 +1090,29 @@ def push_morning():
     """08:30 推送早安简报（独立 cron 调用）
 
     由 crontab '30 8 * * 1-5' 触发，读取凌晨生成的简报文件并推送。
+    关键修复：推送前重新拉外盘数据（01:00 凌晨美盘还在交易，数据不准）
     """
     log("📤 08:30 推送早安简报")
     briefing_file = NIGHT_LOG_DIR / f"briefings_{date.today()}.json"
     if briefing_file.exists():
         briefings = json.loads(briefing_file.read_text(encoding="utf-8"))
+
+        # 08:30 重新拉外盘数据（此时美盘已收盘 4.5 小时，数据为最终结算价）
+        try:
+            fresh_overnight = step_overnight_check()
+            if fresh_overnight:
+                OVERNIGHT_MARKER = "🌍 【外盘速览】"
+                for uid in list(briefings.keys()):
+                    if OVERNIGHT_MARKER in briefings[uid]:
+                        # 替换旧的外盘部分
+                        before = briefings[uid].split(OVERNIGHT_MARKER)[0]
+                        briefings[uid] = before + OVERNIGHT_MARKER + "\n" + fresh_overnight
+                    else:
+                        briefings[uid] += f"\n\n{OVERNIGHT_MARKER}\n{fresh_overnight}"
+                log("  ✅ 外盘数据已刷新为最终结算价")
+        except Exception as e:
+            log(f"  ⚠️ 外盘刷新失败（使用凌晨版本）: {e}")
+
         step_push_briefing(briefings)
     else:
         log("  ⚠️ 无简报文件，凌晨流程可能未执行")
