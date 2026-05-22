@@ -89,6 +89,15 @@ def _load_profiles() -> list:
     return []
 
 
+def _user_has_account(user_id: str) -> bool:
+    """检查用户是否已注册/登录（用户数据文件存在即视为已注册）"""
+    import hashlib
+    from config import USERS_DIR
+    safe_id = hashlib.sha256(user_id.encode()).hexdigest()[:16]
+    user_file = USERS_DIR / f"{safe_id}.json"
+    return user_file.exists()
+
+
 def scan_user(user_id: str) -> dict:
     """扫描单个用户的全持仓（股票+基金）
 
@@ -534,7 +543,12 @@ def run_close_review():
         uid = p["id"]
         name = p.get("name", uid)
         wxwork_uid = p.get("wxworkUserId", "")
-        
+
+        # 未注册/登录的用户跳过（避免推送给无账号用户）
+        if not _user_has_account(uid):
+            print(f"  [跳过] {name}: 未注册/登录，不推送")
+            continue
+
         # ---- V4 新增：steward 收盘 review ----
         print(f"  [复盘] {name}: steward review...")
         review_text = ""

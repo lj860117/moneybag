@@ -138,6 +138,19 @@ def _truncate_at_sentence(text: str, max_chars: int = 3800) -> str:
     return truncated + "..."
 
 
+def _user_has_account(user_id: str) -> bool:
+    """检查用户是否已注册/登录（即用户数据文件是否存在）
+
+    未注册的用户不应收到晨报推送，避免打扰。
+    判断标准：data/users/SHA256(userId)[:16].json 文件存在
+    """
+    import hashlib
+    from config import USERS_DIR
+    safe_id = hashlib.sha256(user_id.encode()).hexdigest()[:16]
+    user_file = USERS_DIR / f"{safe_id}.json"
+    return user_file.exists()
+
+
 # ============================================================
 # 01:00 数据源健康巡检
 # ============================================================
@@ -951,6 +964,12 @@ def step_push_briefing(briefings):
             wxid = p.get("wxworkUserId", "")
             if not wxid or uid not in briefings:
                 continue
+
+            # 用户账号存在性检查：未注册/登录的用户不推送
+            if not _user_has_account(uid):
+                log(f"  ⏭️ {p.get('name', uid)}: 未注册/登录，跳过推送")
+                continue
+
             # 企微文本消息限制 4096 字符，留余量 3800；在句子边界截断避免断句
             msg = _truncate_at_sentence(briefings[uid], 3800)
             # wxworkUserId 无效时降级为 @all
