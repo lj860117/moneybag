@@ -325,6 +325,9 @@ async def chat_analysis_stream(req: ChatRequest):
             "访华", "峰会", "制裁", "开战", "停火", "选举", "当选",
             "发布", "声明", "降息", "加息", "降准", "暴跌", "暴涨",
             "崩盘", "跳水", "熔断", "退市", "IPO", "收购", "合并",
+            # 影响分析类：用户问某事件对市场的影响，需要先搜事件本身
+            "影响", "进展", "动态", "怎么了", "怎么回事", "谈判",
+            "关税", "贸易战", "地缘", "芯片禁令", "制裁",
         ]
         _need_finance_search = any(kw in user_msg for kw in _EVENT_SEARCH_KW)
 
@@ -393,10 +396,15 @@ async def chat_analysis_stream(req: ChatRequest):
         if _need_finance_search:
             try:
                 from services.web_search import search_web, format_search_for_prompt
-                # 搜索 query 优化：去掉尾部疑问词，取前30字作为搜索词
                 import re as _re
+                # 搜索 query 构建：提取事件核心词，去掉提问句式
+                # 步骤1：去掉尾部疑问语气词
                 _search_query = _re.sub(r'[？?呢吗吧啊哦嘛]$', '', user_msg.strip())
-                _search_query = _re.sub(r'(有什么|怎么样|如何|是否|能不能|对.*影响).*$', '', _search_query)
+                # 步骤2：去掉"对X有什么影响/有什么新闻"等提问尾巴，保留事件主体
+                _q_trimmed = _re.sub(r'(有什么|怎么样|如何|是否|能不能|对[^对]{0,10}影响|对[^对]{0,10}有什么).*$', '', _search_query)
+                # 步骤3：如果截后太短（<4字）或截没了，回退用原句
+                if len(_q_trimmed.strip()) >= 4:
+                    _search_query = _q_trimmed.strip()
                 _search_query = _search_query[:30] if len(_search_query) > 30 else _search_query
                 results = search_web(_search_query, limit=3)
                 if results:
