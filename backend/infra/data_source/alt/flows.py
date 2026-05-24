@@ -219,12 +219,31 @@ def get_north_net_flow() -> Any:
         DataFrame with daily northbound net flow.
         None on failure.
     """
-    # Primary: AKShare
+    # Primary: AKShare (v1.18+ 用 stock_hsgt_hist_em，旧接口 stock_hsgt_north_net_flow_in_em 已废弃)
     try:
         import akshare as ak
-        result = ak.stock_hsgt_north_net_flow_in_em()
-        if result is not None and len(result) > 0:
-            return result
+        import pandas as pd
+        # 用沪股通+深股通合并计算北向净流入
+        # stock_hsgt_hist_em symbol 支持: 沪股通/深股通/沪深股通/港股通（沪）/港股通（深）
+        df_sh = ak.stock_hsgt_hist_em(symbol="沪股通")
+        df_sz = ak.stock_hsgt_hist_em(symbol="深股通")
+        if df_sh is not None and df_sz is not None and len(df_sh) > 0:
+            # 列名可能是中文，找净买入列
+            net_col_sh = next((c for c in df_sh.columns if "净" in str(c) or "net" in str(c).lower()), None)
+            date_col_sh = "日期" if "日期" in df_sh.columns else df_sh.columns[0]
+            if net_col_sh is None:
+                # 找第一个数值列
+                numeric_cols = df_sh.select_dtypes(include="number").columns
+                net_col_sh = numeric_cols[0] if len(numeric_cols) > 0 else None
+            if net_col_sh:
+                net_col_sz = next((c for c in df_sz.columns if "净" in str(c)), net_col_sh)
+                merged = pd.DataFrame({
+                    "日期": df_sh[date_col_sh],
+                    "北向资金(亿)": (df_sh[net_col_sh].fillna(0) + df_sz.reindex(df_sh.index)[net_col_sz].fillna(0)),
+                    "沪股通(亿)": df_sh[net_col_sh],
+                    "深股通(亿)": df_sz.reindex(df_sh.index)[net_col_sz],
+                })
+                return merged
     except Exception as e:
         print(f"[DATA_SOURCE/ALT] get_north_net_flow (AKShare failed): {e}")
     
