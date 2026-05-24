@@ -130,7 +130,7 @@ ${!isTradeDay?`<div style="background:linear-gradient(90deg,rgba(255,183,85,.08)
     <b style="font-size:12px">AI 管家 · 想问什么？</b>
     <span style="margin-left:auto;font-size:9px;color:var(--color-bull,#00E5A0);display:flex;align-items:center;gap:4px"><span class="mb-live-dot"></span>在线</span>
   </div>
-  <div style="font-size:12px;line-height:1.7;color:var(--text-default,#D8DCE5);position:relative;z-index:1">嗨，我是钱袋子 AI 管家，内置 <strong style="color:var(--text-primary,#F0F2F7);background:rgba(0,229,160,.12);padding:1px 4px;border-radius:3px">巴菲特 · 格雷厄姆 · 林奇 · 塔勒布</strong> 四位大师的投资框架。问我关于市场行情 / 持仓 / 买卖建议的任何事吧。</div>
+  <div style="font-size:12px;line-height:1.7;color:var(--text-default,#D8DCE5);position:relative;z-index:1">嗨，我是钱袋子 AI 管家。投资决策问题自动<strong style="color:var(--text-primary,#F0F2F7);background:rgba(0,229,160,.12);padding:1px 4px;border-radius:3px">多视角会诊</strong>（巴菲特·格雷厄姆·林奇·塔勒布 + AI综合），日常问题直接回答。</div>
   <div onclick="navigateTo('chat')" style="margin-top:12px;background:rgba(255,255,255,.04);border:1px solid rgba(255,255,255,.06);border-radius:999px;padding:8px 14px;font-size:11px;color:var(--text-tertiary,#7A8499);display:flex;align-items:center;gap:6px;position:relative;z-index:1;cursor:pointer">问点什么…<span style="margin-left:auto;width:24px;height:24px;border-radius:50%;background:linear-gradient(135deg,#00E5A0,#00B8D9);display:grid;place-items:center;font-size:11px;color:#0a0a0a">→</span></div>
 </section>
 
