@@ -362,6 +362,47 @@ def _build_portfolio_context(p=None, user_id: str = "default") -> str:
         except Exception:
             pass
 
+    # 7. 今日晨报结论 + 上周复盘摘要（让 AI 知道"昨天的判断是什么"）
+    if user_id and user_id != "default":
+        try:
+            import json as _json
+            from pathlib import Path as _Path
+            from datetime import date as _date
+            _data_dir = _Path(os.environ.get("DATA_DIR", "data"))
+
+            # 今日晨报（先找 user_id，找不到找 default）
+            _today = _date.today().strftime("%Y%m%d")
+            for _bfname in [f"{user_id}_{_today}.json", f"default_{_today}.json"]:
+                _bfp = _data_dir / "briefings" / _bfname
+                if _bfp.exists():
+                    _bf = _json.loads(_bfp.read_text(encoding="utf-8"))
+                    _regime = _bf.get("regime_description", "")
+                    _one_line = _bf.get("one_line", "")
+                    _risk = _bf.get("risk_level", "")
+                    if _one_line or _regime:
+                        lines.append("\n【今日晨报结论】")
+                        if _one_line:
+                            lines.append(f"  一句话：{_one_line}")
+                        if _regime:
+                            lines.append(f"  市场机制：{_regime}")
+                        if _risk and _risk != "normal":
+                            lines.append(f"  风险等级：{_risk}")
+                    break
+
+            # 最近一期周报摘要
+            _rpt_dir = _data_dir / user_id / "reports"
+            if _rpt_dir.exists():
+                _weekly_files = sorted(_rpt_dir.glob("week_*.json"), reverse=True)
+                if _weekly_files:
+                    _wr = _json.loads(_weekly_files[0].read_text(encoding="utf-8"))
+                    _summary = _wr.get("summary", "") or _wr.get("one_line", "")
+                    _period = _wr.get("period", "") or _wr.get("week_start", "")
+                    if _summary:
+                        lines.append(f"\n【上期周报摘要（{_period}）】")
+                        lines.append(f"  {str(_summary)[:200]}")
+        except Exception:
+            pass
+
     return "\n".join(lines) if lines else "用户尚未建仓。"
 
 

@@ -418,15 +418,17 @@ def run_fc_agent_stream(
     user_id: str,
     model: str = "deepseek-v4-flash",
     history: list | None = None,
-    max_rounds: int = 3,
+    max_rounds: int = 4,
 ) -> Iterator[dict]:
     """运行 Function Calling Agent 循环，yield SSE 格式 dict。
 
     流程：
       1. 发消息给 LLM（带 tools）
-      2. 如果 LLM 返回 tool_calls → 执行工具 → 把结果加回 messages → 再次调用
+      2. 如果 LLM 返回 tool_calls → 执行工具 → 自我纠正检测 → 把结果加回 messages → 再次调用
       3. 如果 LLM 返回正常文本 → 流式 yield 给前端
       最多循环 max_rounds 次防止死循环。
+
+    自我纠正：工具返回"数据不可用/失败/无结果"时，自动注入提示让 LLM 用 search_web 补充。
     """
     api_key = os.environ.get("LLM_API_KEY", "") or os.environ.get("OPENAI_API_KEY", "")
     api_base = os.environ.get("LLM_API_BASE", "https://api.deepseek.com/v1")
@@ -504,6 +506,9 @@ def run_fc_agent_stream(
                     }
 
                 # 执行工具，把结果加回 messages
+                _has_weak_result = False  # 标记是否有"数据不可用"的工具结果
+                _weak_topics = []          # 哪些主题拿不到数据，待用 search_web 补充
+
                 for tc in tool_calls:
                     fn_name = tc["function"]["name"]
                     try:
@@ -512,11 +517,38 @@ def run_fc_agent_stream(
                         fn_args = {}
 
                     result = execute_tool(fn_name, fn_args, user_id)
+
+                    # ★ 自我纠正检测：工具返回"不可用/失败/无数据"时标记
+                    _WEAK_SIGNALS = ["不可用", "失败", "无结果", "暂无", "不存在", "没有记录",
+                                     "数据为空", "not available", "error", "暂不可用"]
+                    if any(s in result for s in _WEAK_SIGNALS) and fn_name != "search_web":
+                        _has_weak_result = True
+                        # 提取搜索关键词：从用户消息或工具参数中取
+                        _q = fn_args.get("fund_code") or fn_args.get("query") or user_msg[:20]
+                        _weak_topics.append(_q)
+
                     messages.append({
                         "role": "tool",
                         "tool_call_id": tc["id"],
                         "content": result,
                     })
+
+                # ★ 自我纠正：有工具数据不足时，注入提示让 LLM 用 search_web 补充
+                if _has_weak_result and _weak_topics and round_num < max_rounds - 1:
+                    _supplement_hint = (
+                        f"注意：上述部分工具返回了空数据。"
+                        f"请使用 search_web 工具搜索 '{_weak_topics[0]}' 来补充获取实时信息，"
+                        f"然后综合所有数据给出回答。"
+                    )
+                    messages.append({"role": "user", "content": _supplement_hint})
+                    yield {
+                        "type": "tool_call",
+                        "tool": "search_web",
+                        "label": "🔍 数据不足，补充联网搜索...",
+                        "done": False,
+                        "delta": "",
+                        "phase": "tool_call",
+                    }
 
                 # 继续下一轮
                 continue
