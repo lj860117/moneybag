@@ -150,34 +150,35 @@ def _perspective_buffett(modules: dict, regime: str) -> str:
     """巴菲特视角：估值是否合理？长期价值如何？"""
     parts = []
 
-    # 估值数据
-    val_mod = modules.get("valuation_engine") or modules.get("market_data", {})
-    val_detail = val_mod.get("detail", {})
-    if not isinstance(val_detail, dict):
-        val_detail = {}
+    # 直接调估值数据（模块 detail 可能是字符串）
+    try:
+        from services.market_data import get_valuation_percentile
+        val = get_valuation_percentile() or {}
+        pct = val.get("percentile", 0)
+        pe = val.get("pe", 0)
 
-    # 尝试从不同层级获取估值数据
-    pct = val_detail.get("percentile") or val_detail.get("valuation", {}).get("percentile", 0)
-    pe = val_detail.get("pe") or val_detail.get("valuation", {}).get("pe", 0)
-
-    if pct:
-        if pct > 80:
-            parts.append(f"估值百分位{pct}%，市场整体偏贵，安全边际不足")
-        elif pct > 60:
-            parts.append(f"估值百分位{pct}%，不算便宜但也没泡沫")
-        elif pct > 30:
-            parts.append(f"估值百分位{pct}%，估值合理，适合优质资产")
-        else:
-            parts.append(f"估值百分位{pct}%，市场低估，价值投资者的好时机")
+        if pct:
+            if pct > 80:
+                parts.append(f"估值百分位{pct}%，市场整体偏贵，安全边际不足")
+            elif pct > 60:
+                parts.append(f"估值百分位{pct}%，不算便宜但也没泡沫")
+            elif pct > 30:
+                parts.append(f"估值百分位{pct}%，估值合理，适合优质资产")
+            else:
+                parts.append(f"估值百分位{pct}%，市场低估，价值投资者的好时机")
+        if pe:
+            parts.append(f"当前PE={pe:.1f}")
+    except Exception as e:
+        print(f"[PANEL] buffett valuation: {e}")
 
     # 股息/分红信息
     dividend_mod = modules.get("dividend", {})
-    dy = dividend_mod.get("detail", {}).get("yield")
-    if dy:
-        if dy > 3:
-            parts.append(f"股息率{dy:.1f}%，分红回报不错")
-        else:
-            parts.append(f"股息率{dy:.1f}%，分红偏低")
+    if isinstance(dividend_mod, dict):
+        div_detail = dividend_mod.get("detail", {})
+        if isinstance(div_detail, dict):
+            dy = div_detail.get("yield")
+            if dy and dy > 3:
+                parts.append(f"股息率{dy:.1f}%，分红回报不错")
 
     # 结论
     if not parts:
@@ -195,39 +196,44 @@ def _perspective_graham(modules: dict, regime: str, data: dict) -> str:
     """格雷厄姆视角：资金面安全吗？下行风险多大？"""
     parts = []
 
-    # 资金面（北向 + 融资 + SHIBOR）
-    factor_mod = modules.get("factor_data", {})
-    factor_detail = factor_mod.get("detail", {})
-    if not isinstance(factor_detail, dict):
-        factor_detail = {}
+    # 直接调 Tushare 北向数据（模块 detail 是字符串摘要，不够用）
+    try:
+        from services.factor_data import get_northbound_flow, get_shibor, get_margin_trading
+        north = get_northbound_flow() or {}
+        if north.get("available") and north.get("net_flow_5d"):
+            flow_5d = north["net_flow_5d"]
+            if flow_5d < -200:
+                parts.append(f"北向5日净流出{abs(flow_5d):.0f}亿，外资大幅撤退，防守为主")
+            elif flow_5d < -50:
+                parts.append(f"北向5日净流出{abs(flow_5d):.0f}亿，情绪偏谨慎")
+            elif flow_5d > 100:
+                parts.append(f"北向5日净流入{flow_5d:.0f}亿，资金面偏暖")
+            else:
+                parts.append("北向资金小幅波动，无明显方向")
+        elif north.get("stale") or not north.get("available"):
+            parts.append("北向数据暂不可用（数据源更新滞后）")
 
-    north = factor_detail.get("northbound", factor_detail.get("north", {}))
-    if isinstance(north, dict):
-        flow_5d = north.get("net_flow_5d", 0)
-        if flow_5d < -200:
-            parts.append(f"北向5日净流出{abs(flow_5d):.0f}亿，外资在撤退，防守为主")
-        elif flow_5d < -50:
-            parts.append(f"北向小幅流出{abs(flow_5d):.0f}亿，情绪偏谨慎")
-        elif flow_5d > 100:
-            parts.append(f"北向5日净流入{flow_5d:.0f}亿，资金面偏暖")
-        else:
-            parts.append("北向资金平稳，无明显信号")
+        margin = get_margin_trading() or {}
+        if margin.get("change_5d_pct"):
+            chg = margin["change_5d_pct"]
+            if chg > 2:
+                parts.append("融资余额快速增加，杠杆资金激进")
+            elif chg < -2:
+                parts.append("融资余额萎缩，场内去杠杆")
+            else:
+                parts.append(f"融资余额5日变化{chg:+.1f}%，杠杆平稳")
 
-    margin = factor_detail.get("margin", {})
-    if isinstance(margin, dict) and margin.get("change_5d_pct"):
-        chg = margin["change_5d_pct"]
-        if chg > 2:
-            parts.append("融资余额快速增加，杠杆资金激进")
-        elif chg < -2:
-            parts.append("融资余额萎缩，场内去杠杆")
-
-    shibor = factor_detail.get("shibor", {})
-    if isinstance(shibor, dict) and shibor.get("overnight"):
-        rate = shibor["overnight"]
-        if rate > 2.5:
-            parts.append(f"银行间利率{rate}%偏高，资金面紧张")
-        elif rate < 1.5:
-            parts.append(f"银行间利率{rate}%，流动性充裕")
+        shibor = get_shibor() or {}
+        if shibor.get("overnight"):
+            rate = shibor["overnight"]
+            if rate > 2.5:
+                parts.append(f"银行间利率{rate}%偏高，资金面紧张")
+            elif rate < 1.5:
+                parts.append(f"银行间利率{rate}%，流动性充裕")
+            else:
+                parts.append(f"银行间利率{rate}%，资金面正常")
+    except Exception as e:
+        print(f"[PANEL] graham data fetch: {e}")
 
     # 风控
     risk_level = data.get("risk_level", "normal")
