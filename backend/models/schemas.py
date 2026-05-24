@@ -12,9 +12,11 @@ class Holding(BaseModel):
     code: str
     name: str
     category: str
-    targetPct: float
+    targetPct: float = 0
     amount: float
-    buyDate: str
+    buyDate: str = ""
+    shares: Optional[float] = None      # 持仓份额（优先用 shares * current_nav 计算市值）
+    cost_nav: Optional[float] = None    # 买入均价净值（有则用 (current_nav - cost_nav) / cost_nav 算收益率）
 
 class Portfolio(BaseModel):
     """V3 兼容 Portfolio — 旧的 holdings 快照模式"""

@@ -364,7 +364,9 @@ if(assetNW&&d&&d.netWorth)assetNW.textContent=fmtFull(Math.round(d.netWorth));
 async function loadDailyFocus(){
 const el=document.getElementById('dailyFocusSection');if(!el||!API_AVAILABLE)return;
 try{const r=await fetch(`${API_BASE}/daily-focus`,{signal:AbortSignal.timeout(15000)});
-if(!r.ok)return;const d=await r.json();const tips=d.tips||[];
+if(!r.ok)return;const d=await r.json();
+// 过滤掉无效 tip（空字符串/单emoji/长度<=2）
+const tips=(d.tips||[]).filter(t=>t&&t.trim().length>4);
 if(tips.length){el.style.display='';el.innerHTML=`<div style="background:rgba(99,102,241,.06);border:1px solid rgba(99,102,241,.15);border-radius:12px;padding:12px 14px;margin-bottom:12px"><div style="font-size:13px;font-weight:700;margin-bottom:8px">🎯 今日关注 <span style="font-size:10px;color:var(--text2);font-weight:400">${d.source==='ai'?'AI':'默认'}</span></div>${tips.map(t=>`<div style="font-size:12px;line-height:1.8">${t}</div>`).join('')}</div>`}
 }catch(e){console.warn('dailyFocus:',e)}}
 

@@ -121,7 +121,13 @@ if(window._portfolioTab==='fund'){
 // 异步更新实时盈亏
 if(API_AVAILABLE&&useV4){
 try{
-const body={holdings:displayHoldings.map(h=>({code:h.code,name:h.name,category:h.category,amount:Math.round(h.totalCost),targetPct:0,buyDate:new Date().toISOString()}))};
+// 传 shares + cost_nav（买入均价净值），接口优先用 shares*current_nav 精确计算市值
+const body={holdings:displayHoldings.map(h=>({
+  code:h.code,name:h.name,category:h.category,amount:Math.round(h.totalCost),targetPct:0,
+  shares:h.shares&&h.shares>0?h.shares:undefined,          // 份额（有则传）
+  cost_nav:h.avgPrice&&h.avgPrice>0?h.avgPrice:undefined,  // 买入均价净值（有则传）
+  buyDate:''  // 不传今天日期，避免干扰历史净值查找
+}))};
 const r=await fetch(API_BASE+'/portfolio/pnl',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body),signal:AbortSignal.timeout(15000)});
 if(r.ok){const pnl=await r.json();
 // 存储单只盈亏数据供列表渲染

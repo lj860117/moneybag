@@ -490,11 +490,33 @@ def calc_portfolio_pnl(portfolio: Portfolio):
             total_market += market_val
             continue
 
-        buy_nav = _get_nav_on_date(h.code, h.buyDate)
+        buy_nav = None
+        # 优先路径：前端传了 cost_nav（买入均价净值）→ 直接用 (current-cost)/cost 算收益率
+        if h.cost_nav and h.cost_nav > 0:
+            buy_nav = h.cost_nav
+        # 次选路径：buyDate 有效且不是今天 → 查历史净值
+        elif h.buyDate:
+            try:
+                buy_dt = datetime.fromisoformat(h.buyDate.replace("Z", "+00:00"))
+                today = datetime.now(buy_dt.tzinfo).date()
+                if buy_dt.date() < today:  # 只有历史日期才查，今天传今天必然查不到
+                    buy_nav = _get_nav_on_date(h.code, h.buyDate)
+            except Exception:
+                pass
+
         if buy_nav and buy_nav > 0:
             growth = (current_nav - buy_nav) / buy_nav
-            market_val = cost * (1 + growth)
+            if h.shares and h.shares > 0:
+                # 有份额：market_val = shares * current_nav
+                market_val = h.shares * current_nav
+            else:
+                # 无份额：用增长率推算
+                market_val = cost * (1 + growth)
+        elif h.shares and h.shares > 0:
+            # 只有份额（无买入净值）：market_val = shares * current_nav
+            market_val = h.shares * current_nav
         else:
+            # 无任何参考：保持成本不变（pnl=0），等用户补录数据
             market_val = cost
 
         pnl = market_val - cost
