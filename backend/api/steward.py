@@ -132,6 +132,21 @@ def market_panorama():
     聚合：市场温度 + 热点板块 + 重要新闻 + 资产判断 + 机构观点
     全部纯规则/缓存，不调 LLM。
     """
+    import json, time, os
+    from pathlib import Path
+
+    # 优先读文件缓存（cache_warmer after_close/weekend 写入）
+    cache_fp = Path(os.environ.get("DATA_DIR", "data")) / "_cache" / "market_panorama.json"
+    try:
+        if cache_fp.exists():
+            payload = json.loads(cache_fp.read_text(encoding="utf-8"))
+            if time.time() < payload.get("expires_at", 0):
+                data = payload.get("data", {})
+                data["from_cache"] = True
+                return data
+    except Exception:
+        pass
+
     from services.market_panorama import generate_market_panorama
     return generate_market_panorama()
 

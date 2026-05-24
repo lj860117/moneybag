@@ -93,7 +93,17 @@ def warm_after_close():
         _save_cache("stock_screen_50", result, ttl)
     except Exception as e:
         print(f"  ❌ 选股失败: {e}")
-    
+
+    # 1.5. 市场全景（1-2秒 → 缓存后 <50ms）
+    print("  🌐 市场全景...")
+    try:
+        from services.market_panorama import generate_market_panorama
+        panorama = generate_market_panorama()
+        _save_cache("market_panorama", panorama, ttl)
+        print("  ✅ market_panorama 完成")
+    except Exception as e:
+        print(f"  ❌ market_panorama: {e}")
+
     # 2. Dashboard 11源聚合（15-20秒 → 0秒）
     print("  📊 Dashboard...")
     try:
@@ -415,7 +425,36 @@ def warm_weekend():
     
     ttl = 72  # 周六 → 周一 = ~48h，留余量72h
     
-    # 0. 股票筛选（最慢 30-40 秒，周六上午 10:00 跑，不影响用户）
+    # 0. precomputed 数据（dashboard 用，工作日盘中更新，周末必须手动生成）
+    print("  📊 precomputed 数据（恐贪/估值/北向）...")
+    try:
+        from services.precomputed_cache import save_precomputed
+        from services.market_data import get_valuation_percentile, get_fear_greed_index
+        from services.factor_data import get_northbound_flow, get_margin_trading
+        fgi = get_fear_greed_index()
+        if fgi:
+            save_precomputed("fear_greed", fgi)
+        val = get_valuation_percentile()
+        if val:
+            save_precomputed("valuation", val)
+        nb = get_northbound_flow() or {}
+        margin = get_margin_trading() or {}
+        save_precomputed("factors", {"northbound": nb, "margin": margin})
+        print(f"  ✅ precomputed 完成（fgi={fgi.get('score') if fgi else 'N/A'}, val={val.get('percentile') if val else 'N/A'}）")
+    except Exception as e:
+        print(f"  ❌ precomputed: {e}")
+
+    # 0.5. market-panorama 文件缓存
+    print("  🌐 市场全景 market-panorama...")
+    try:
+        from services.market_panorama import generate_market_panorama
+        panorama = generate_market_panorama()
+        _save_cache("market_panorama", panorama, ttl)
+        print("  ✅ market_panorama 完成")
+    except Exception as e:
+        print(f"  ❌ market_panorama: {e}")
+
+    # 1. 股票筛选（最慢 30-40 秒，周六上午 10:00 跑，不影响用户）
     print("  🔍 选股（stock_screen，需要 30-40s）...")
     try:
         from services.stock_screen import screen_stocks
@@ -425,7 +464,7 @@ def warm_weekend():
     except Exception as e:
         print(f"  ❌ stock_screen: {e}")
 
-    # 1. 宏观数据（月更，但每周检查一次）
+    # 2. 宏观数据（月更，但每周检查一次）
     print("  🏛️ 宏观...")
     try:
         from services.macro_data import get_macro_calendar
