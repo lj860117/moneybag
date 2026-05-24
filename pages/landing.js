@@ -16,8 +16,9 @@ const weekdays=['SUNDAY','MONDAY','TUESDAY','WEDNESDAY','THURSDAY','FRIDAY','SAT
 const months=['JAN','FEB','MAR','APR','MAY','JUN','JUL','AUG','SEP','OCT','NOV','DEC'];
 const dateStr=weekdays[now.getDay()]+' · '+months[now.getMonth()]+' '+now.getDate();
 const isTradeDay=now.getDay()>=1&&now.getDay()<=5;
+const isMasked=localStorage.getItem('moneybag_money_masked')==='1';
 
-$('#app').innerHTML=`<div class="result-page fade-up" style="padding-bottom:calc(var(--tabbar-height,76px) + 16px)">
+$('#app').innerHTML=`<div class="result-page fade-up${isMasked?' money-masked':''}" style="padding-bottom:calc(var(--tabbar-height,76px) + 16px)" id="landingRoot">
 
 <!-- 顶部条 -->
 <header class="mb-flex mb-flex--between" style="padding:6px 4px 14px">
@@ -40,18 +41,55 @@ ${!isTradeDay?`<div style="background:linear-gradient(90deg,rgba(255,183,85,.08)
 <section class="mb-hero">
   <div class="mb-flex mb-flex--between">
     <span class="mb-hero__label">💰 家庭净资产</span>
-    <span class="mb-pill" style="font-size:10px;cursor:pointer" data-action="toggle-money-mask">👁 隐藏</span>
+    <span class="mb-pill" style="font-size:10px;cursor:pointer" data-action="toggle-money-mask">${isMasked?'👁 显示':'👁 隐藏'}</span>
   </div>
   <h1 class="mb-hero__num mb-numeric" id="heroNetWorth"><span class="mb-money__symbol">¥</span><span class="mb-money__num">${Math.round(nw.netWorth).toLocaleString('zh-CN')}</span><small>.00</small></h1>
   <div class="mb-hero__delta" id="heroDelta">
-    <span class="mb-pill mb-pill--bull">▲ +¥0</span>
-    <span class="mb-text-tertiary">今日 · 较昨日收盘</span>
+    <span class="mb-pill" style="opacity:.5">加载中...</span>
   </div>
   <div class="mb-hero__splits" id="heroBreakdown">
     <div class="mb-hero__split" style="cursor:pointer" onclick="_showInvestBreakdown()"><div class="mb-hero__split-label">📈 投资</div><div class="mb-hero__split-value">¥${fmtMoney(Math.round(nw.fundValue))}</div></div>
     <div class="mb-hero__split"><div class="mb-hero__split-label">💵 现金</div><div class="mb-hero__split-value">¥${fmtMoney(Math.round(nw.assetTotal))}</div></div>
     <div class="mb-hero__split"><div class="mb-hero__split-label">📋 负债</div><div class="mb-hero__split-value mb-hero__split-value--dn">-¥${fmtMoney(Math.round(nw.liabilities))}</div></div>
   </div>
+</section>
+
+<!-- 大盘指数条（异步填充） -->
+<section id="cfoIndices" style="display:flex;justify-content:space-between;padding:8px 12px;margin-bottom:14px;background:rgba(255,255,255,.02);border:1px solid var(--border-subtle,rgba(255,255,255,.05));border-radius:var(--radius-md,10px)">
+  <span style="font-size:11px;color:var(--text-tertiary,#7A8499)">大盘加载中...</span>
+</section>
+
+<!-- 快捷网格 -->
+<section style="display:grid;grid-template-columns:repeat(4,1fr);gap:8px;margin-bottom:14px">
+  <div style="background:rgba(255,255,255,.03);border:1px solid rgba(255,255,255,.05);border-radius:14px;padding:12px 4px;text-align:center;cursor:pointer" onclick="navigateTo('portfolio')">
+    <div style="width:36px;height:36px;border-radius:10px;margin:0 auto 6px;display:grid;place-items:center;font-size:16px;background:rgba(0,229,160,.18)">📊</div>
+    <div style="font-size:11px;font-weight:600;color:#F0F2F7;line-height:1.3">持仓</div>
+    <div style="font-size:9px;color:#7A8499;margin-top:2px" id="quickHoldingCount">—</div>
+  </div>
+  <div style="background:rgba(255,255,255,.03);border:1px solid rgba(255,255,255,.05);border-radius:14px;padding:12px 4px;text-align:center;cursor:pointer" onclick="navigateTo('market-panorama')">
+    <div style="width:36px;height:36px;border-radius:10px;margin:0 auto 6px;display:grid;place-items:center;font-size:16px;background:rgba(139,111,230,.18)">📈</div>
+    <div style="font-size:11px;font-weight:600;color:#F0F2F7;line-height:1.3">大盘</div>
+    <div style="font-size:9px;color:#7A8499;margin-top:2px" id="quickMarketStatus">—</div>
+  </div>
+  <div style="background:rgba(255,255,255,.03);border:1px solid rgba(255,255,255,.05);border-radius:14px;padding:12px 4px;text-align:center;cursor:pointer" onclick="navigateTo('insight')">
+    <div style="width:36px;height:36px;border-radius:10px;margin:0 auto 6px;display:grid;place-items:center;font-size:16px;background:rgba(255,183,85,.18)">💡</div>
+    <div style="font-size:11px;font-weight:600;color:#F0F2F7;line-height:1.3">资讯</div>
+    <div style="font-size:9px;color:#7A8499;margin-top:2px">选基选股</div>
+  </div>
+  <div style="background:rgba(255,255,255,.03);border:1px solid rgba(255,255,255,.05);border-radius:14px;padding:12px 4px;text-align:center;cursor:pointer" onclick="navigateTo('assets')">
+    <div style="width:36px;height:36px;border-radius:10px;margin:0 auto 6px;display:grid;place-items:center;font-size:16px;background:rgba(255,138,177,.18)">💰</div>
+    <div style="font-size:11px;font-weight:600;color:#F0F2F7;line-height:1.3">资产</div>
+    <div style="font-size:9px;color:#7A8499;margin-top:2px">管理</div>
+  </div>
+</section>
+
+<!-- AI 提醒卡 -->
+<section class="mb-card--ai-tip" id="cfoAlerts" style="margin-bottom:14px">
+  <div class="mb-flex mb-gap-3 mb-mb-3">
+    <div class="mb-avatar mb-avatar--xs mb-avatar--ai">✨</div>
+    <b style="font-size:12px;color:var(--color-ai-300,#B89DFF)">💡 今日提醒</b>
+  </div>
+  <p style="font-size:var(--fs-sm,11px);color:var(--text-default,#D8DCE5);line-height:var(--lh-normal,1.6)">加载中...</p>
 </section>
 
 <!-- 双账户卡（异步从后端加载家庭数据） -->
@@ -80,39 +118,6 @@ ${!isTradeDay?`<div style="background:linear-gradient(90deg,rgba(255,183,85,.08)
   </div>
 </section>
 
-<!-- AI 提醒卡 -->
-<section class="mb-card--ai-tip" id="cfoAlerts" style="margin-bottom:14px">
-  <div class="mb-flex mb-gap-3 mb-mb-3">
-    <div class="mb-avatar mb-avatar--xs mb-avatar--ai">✨</div>
-    <b style="font-size:12px;color:var(--color-ai-300,#B89DFF)">💡 今日提醒</b>
-  </div>
-  <p style="font-size:var(--fs-sm,11px);color:var(--text-default,#D8DCE5);line-height:var(--lh-normal,1.6)">加载中...</p>
-</section>
-
-<!-- 快捷网格 -->
-<section style="display:grid;grid-template-columns:repeat(4,1fr);gap:8px;margin-bottom:14px">
-  <div style="background:rgba(255,255,255,.03);border:1px solid rgba(255,255,255,.05);border-radius:14px;padding:12px 4px;text-align:center;cursor:pointer" onclick="navigateTo('portfolio')">
-    <div style="width:36px;height:36px;border-radius:10px;margin:0 auto 6px;display:grid;place-items:center;font-size:16px;background:rgba(255,183,85,.18)">🥨</div>
-    <div style="font-size:11px;font-weight:600;color:#F0F2F7;line-height:1.3">资产配置</div>
-    <div style="font-size:9px;color:#7A8499;margin-top:2px" id="quickAllocStatus">未测评</div>
-  </div>
-  <div style="background:rgba(255,255,255,.03);border:1px solid rgba(255,255,255,.05);border-radius:14px;padding:12px 4px;text-align:center;cursor:pointer" onclick="navigateTo('portfolio')">
-    <div style="width:36px;height:36px;border-radius:10px;margin:0 auto 6px;display:grid;place-items:center;font-size:16px;background:rgba(0,229,160,.18)">📊</div>
-    <div style="font-size:11px;font-weight:600;color:#F0F2F7;line-height:1.3">查看持仓</div>
-    <div style="font-size:9px;color:#7A8499;margin-top:2px">0 只</div>
-  </div>
-  <div style="background:rgba(255,255,255,.03);border:1px solid rgba(255,255,255,.05);border-radius:14px;padding:12px 4px;text-align:center;cursor:pointer" onclick="navigateTo('market-panorama')">
-    <div style="width:36px;height:36px;border-radius:10px;margin:0 auto 6px;display:grid;place-items:center;font-size:16px;background:rgba(139,111,230,.18)">🌐</div>
-    <div style="font-size:11px;font-weight:600;color:#F0F2F7;line-height:1.3">市场全景</div>
-    <div style="font-size:9px;color:#7A8499;margin-top:2px">已更新</div>
-  </div>
-  <div style="background:rgba(255,255,255,.03);border:1px solid rgba(255,255,255,.05);border-radius:14px;padding:12px 4px;text-align:center;cursor:pointer" onclick="navigateTo('assets')">
-    <div style="width:36px;height:36px;border-radius:10px;margin:0 auto 6px;display:grid;place-items:center;font-size:16px;background:rgba(255,138,177,.18)">🏛</div>
-    <div style="font-size:11px;font-weight:600;color:#F0F2F7;line-height:1.3">管理资产</div>
-    <div style="font-size:9px;color:#7A8499;margin-top:2px">添加</div>
-  </div>
-</section>
-
 <!-- 情绪温度计 -->
 <section id="cfoEmotion" style="background:linear-gradient(135deg,rgba(255,183,85,.08),rgba(255,138,177,.05));border:1px solid var(--border-subtle,rgba(255,255,255,.05));border-radius:var(--radius-xl,18px);padding:16px;margin-bottom:14px;display:flex;gap:12px;align-items:center">
   <div style="font-size:32px">🌤</div>
@@ -127,18 +132,31 @@ ${!isTradeDay?`<div style="background:linear-gradient(90deg,rgba(255,183,85,.08)
   <div style="position:absolute;left:-30px;top:-30px;width:100px;height:100px;background:radial-gradient(circle,rgba(0,229,160,.25),transparent 70%);filter:blur(15px)"></div>
   <div class="mb-flex mb-gap-3" style="margin-bottom:10px;position:relative;z-index:1">
     <div class="mb-avatar mb-avatar--sm mb-avatar--ai">🤖</div>
-    <b style="font-size:12px">AI 管家 · 想问什么？</b>
+    <b style="font-size:12px">AI 管家</b>
     <span style="margin-left:auto;font-size:9px;color:var(--color-bull,#00E5A0);display:flex;align-items:center;gap:4px"><span class="mb-live-dot"></span>在线</span>
   </div>
-  <div style="font-size:12px;line-height:1.7;color:var(--text-default,#D8DCE5);position:relative;z-index:1">嗨，我是钱袋子 AI 管家。投资决策问题自动<strong style="color:var(--text-primary,#F0F2F7);background:rgba(0,229,160,.12);padding:1px 4px;border-radius:3px">多视角会诊</strong>（巴菲特·格雷厄姆·林奇·塔勒布 + AI综合），日常问题直接回答。</div>
-  <div onclick="navigateTo('chat')" style="margin-top:12px;background:rgba(255,255,255,.04);border:1px solid rgba(255,255,255,.06);border-radius:999px;padding:8px 14px;font-size:11px;color:var(--text-tertiary,#7A8499);display:flex;align-items:center;gap:6px;position:relative;z-index:1;cursor:pointer">问点什么…<span style="margin-left:auto;width:24px;height:24px;border-radius:50%;background:linear-gradient(135deg,#00E5A0,#00B8D9);display:grid;place-items:center;font-size:11px;color:#0a0a0a">→</span></div>
+  <div style="font-size:12px;line-height:1.7;color:var(--text-default,#D8DCE5);position:relative;z-index:1">投资问题自动<strong style="color:var(--text-primary,#F0F2F7);background:rgba(0,229,160,.12);padding:1px 4px;border-radius:3px">多视角会诊</strong>，日常问题随时问。</div>
+  <div onclick="navigateTo('chat')" style="margin-top:12px;background:rgba(255,255,255,.04);border:1px solid rgba(255,255,255,.06);border-radius:999px;padding:8px 14px;font-size:11px;color:var(--text-tertiary,#7A8499);display:flex;align-items:center;gap:6px;position:relative;z-index:1;cursor:pointer">试试：现在能入场吗 / 持仓怎么调<span style="margin-left:auto;width:24px;height:24px;border-radius:50%;background:linear-gradient(135deg,#00E5A0,#00B8D9);display:grid;place-items:center;font-size:11px;color:#0a0a0a">→</span></div>
 </section>
 
 <!-- 本周待办 + 资产配置：API 有数据时才显示，初始隐藏 -->
 <div id="cfoTodos" class="mb-card" style="margin-bottom:14px;display:none"></div>
 <div id="cfoAllocation" class="mb-card" style="margin-bottom:14px;display:none"></div>
 
-</div>`;renderNav();loadUnifiedHero();_loadCfoSummary();_loadLandingFamilyData()}
+</div>`;renderNav();_initMoneyMask();loadUnifiedHero();_loadCfoSummary();_loadLandingFamilyData()}
+
+// ---- 首页：金额隐藏/显示 toggle ----
+function _initMoneyMask(){
+  const btn=document.querySelector('[data-action="toggle-money-mask"]');
+  if(!btn)return;
+  btn.addEventListener('click',()=>{
+    const root=document.getElementById('landingRoot');
+    if(!root)return;
+    const isMasked=root.classList.toggle('money-masked');
+    localStorage.setItem('moneybag_money_masked',isMasked?'1':'0');
+    btn.textContent=isMasked?'👁 显示':'👁 隐藏';
+  });
+}
 
 // ---- 首页：加载 CFO 聚合数据 ----
 async function _loadCfoSummary(){
@@ -148,22 +166,34 @@ const r=await fetch(`${API_BASE}/cfo-summary?userId=${getProfileId()}`,{signal:A
 if(!r.ok)return;
 const d=await r.json();
 
+// A. 累计盈亏（更新 heroDelta）
+const deltaEl=document.getElementById('heroDelta');
+if(deltaEl&&d.net_worth){
+  const pnl=d.net_worth.total_pnl||0;
+  const pnlPct=d.net_worth.total_pnl_pct||0;
+  if(pnl!==0){
+    const isUp=pnl>0;
+    deltaEl.innerHTML=`<span class="mb-pill ${isUp?'mb-pill--bull':'mb-pill--bear'}">${isUp?'▲':'▼'} ${isUp?'+':''}¥${Math.abs(pnl).toFixed(0)} (${isUp?'+':''}${pnlPct.toFixed(1)}%)</span><span class="mb-text-tertiary">累计盈亏</span>`;
+  }else{
+    deltaEl.innerHTML=`<span class="mb-pill" style="opacity:.6">持平</span><span class="mb-text-tertiary">累计盈亏</span>`;
+  }
+}
+
 // B. 今日提醒
 const alertsEl=document.getElementById('cfoAlerts');
-const marketLink=`<div class="mb-flex mb-gap-3" style="margin-top:12px"><a class="mb-btn mb-btn--secondary mb-btn--sm" onclick="event.preventDefault()">稍后处理</a></div>`;
 if(alertsEl&&d.alerts&&d.alerts.length){
 const levelIcon={danger:'🔴',warning:'⚠️',opportunity:'🟢',info:'💡'};
 alertsEl.innerHTML=`<div class="mb-flex mb-gap-3 mb-mb-3"><div class="mb-avatar mb-avatar--xs mb-avatar--ai">✨</div><b style="font-size:12px;color:var(--color-ai-300,#B89DFF)">💡 今日提醒</b></div>`+
 `<div style="font-size:var(--fs-sm,11px);color:var(--text-default,#D8DCE5);line-height:var(--lh-normal,1.6)">`+
-d.alerts.map(a=>`<div style="padding:4px 0">${levelIcon[a.level]||'📌'} ${a.text}</div>`).join('')+`</div>`+marketLink;
+d.alerts.map(a=>`<div style="padding:4px 0">${levelIcon[a.level]||'📌'} ${a.text}</div>`).join('')+`</div>`;
 }else if(alertsEl){
 const hasNetWorth=d.net_worth&&d.net_worth.total>0;
 const hasAlloc=d.allocation&&d.allocation.current&&d.allocation.total_market>0;
 const isEmptyUser=!hasNetWorth&&!hasAlloc;
 if(isEmptyUser){
-alertsEl.innerHTML=`<div class="mb-flex mb-gap-3 mb-mb-3"><div class="mb-avatar mb-avatar--xs mb-avatar--ai">✨</div><b style="font-size:12px;color:var(--color-ai-300,#B89DFF)">💡 今日提醒</b></div><p style="font-size:var(--fs-sm,11px);color:var(--text-default,#D8DCE5);line-height:var(--lh-normal,1.6)">📝 还没有录入资产数据，<span onclick="navigateTo('portfolio')" style="text-decoration:underline;cursor:pointer;color:var(--color-brand-500,#FFB755)">去录入持仓</span> 或 <span onclick="navigateTo('assets')" style="text-decoration:underline;cursor:pointer;color:var(--color-brand-500,#FFB755)">添加资产</span> 后，这里会显示个性化提醒。</p>`+marketLink;
+alertsEl.innerHTML=`<div class="mb-flex mb-gap-3 mb-mb-3"><div class="mb-avatar mb-avatar--xs mb-avatar--ai">✨</div><b style="font-size:12px;color:var(--color-ai-300,#B89DFF)">💡 今日提醒</b></div><p style="font-size:var(--fs-sm,11px);color:var(--text-default,#D8DCE5);line-height:var(--lh-normal,1.6)">📝 还没有录入资产数据，<span onclick="navigateTo('portfolio')" style="text-decoration:underline;cursor:pointer;color:var(--color-brand-500,#FFB755)">去录入持仓</span> 或 <span onclick="navigateTo('assets')" style="text-decoration:underline;cursor:pointer;color:var(--color-brand-500,#FFB755)">添加资产</span> 后，这里会显示个性化提醒。</p>`;
 }else{
-alertsEl.innerHTML=`<div class="mb-flex mb-gap-3 mb-mb-3"><div class="mb-avatar mb-avatar--xs mb-avatar--ai">✨</div><b style="font-size:12px;color:var(--color-ai-300,#B89DFF)">💡 今日提醒</b></div><p style="font-size:var(--fs-sm,11px);color:var(--color-bull,#00E5A0);line-height:var(--lh-normal,1.6)">✅ 今天一切正常，没有需要特别注意的事项。</p>`+marketLink;
+alertsEl.innerHTML=`<div class="mb-flex mb-gap-3 mb-mb-3"><div class="mb-avatar mb-avatar--xs mb-avatar--ai">✨</div><b style="font-size:12px;color:var(--color-ai-300,#B89DFF)">💡 今日提醒</b></div><p style="font-size:var(--fs-sm,11px);color:var(--color-bull,#00E5A0);line-height:var(--lh-normal,1.6)">✅ 今天一切正常，没有需要特别注意的事项。</p>`;
 }
 }
 
@@ -188,7 +218,6 @@ html+=`<div style="display:flex;align-items:center;gap:8px;margin:8px 0">
 allocEl.innerHTML=html;
 allocEl.style.display='';
 }else if(allocEl){
-// 无配置数据时也不显示，配置入口已在快捷格"资产配置"里
 allocEl.style.display='none';
 }
 
@@ -208,11 +237,34 @@ emotionEl.innerHTML=`
 const todosEl=document.getElementById('cfoTodos');
 if(todosEl&&d.todos&&d.todos.length){
 todosEl.style.display='';
-todosEl.innerHTML=`<div style="font-size:12px;font-weight:700;margin-bottom:8px;display:flex;align-items:center;gap:6px">👨‍👩 本周待办</div>`+
+todosEl.innerHTML=`<div style="font-size:12px;font-weight:700;margin-bottom:8px;display:flex;align-items:center;gap:6px">📋 本周待办</div>`+
 d.todos.map(t=>`<div style="font-size:13px;line-height:1.8;padding:6px 10px;margin-bottom:4px;background:linear-gradient(135deg,rgba(139,111,230,.06),rgba(255,183,85,.04));border:1px solid var(--border-subtle,rgba(255,255,255,.05));border-radius:var(--radius-md,10px)">❤️ ${t}</div>`).join('');
 }else if(todosEl){
-// 无待办时隐藏整个卡片，不显示空壳
 todosEl.style.display='none';
+}
+
+// F. 大盘指数条
+const idxEl=document.getElementById('cfoIndices');
+if(idxEl&&d.indices&&d.indices.length){
+idxEl.innerHTML=d.indices.map(idx=>{
+  const c=idx.pct>=0?'var(--color-bull,#00E5A0)':'var(--color-bear,#FF6B6B)';
+  const sign=idx.pct>=0?'+':'';
+  return`<span style="font-size:11px;display:flex;align-items:center;gap:4px"><span style="color:var(--text-tertiary,#7A8499)">${idx.name}</span><span style="color:${c};font-weight:600">${sign}${idx.pct.toFixed(2)}%</span></span>`;
+}).join('');
+}else if(idxEl){
+idxEl.innerHTML=`<span style="font-size:11px;color:var(--text-tertiary,#7A8499)">指数数据暂不可用</span>`;
+}
+
+// G. 快捷格动态状态
+const nwData=d.net_worth||{};
+const holdCount=(nwData.fund_count||0)+(nwData.stock_count||0);
+const qHold=document.getElementById('quickHoldingCount');
+if(qHold)qHold.textContent=holdCount>0?`${holdCount}只持仓`:'未录入';
+const qMarket=document.getElementById('quickMarketStatus');
+if(qMarket&&d.indices&&d.indices.length){
+  const main=d.indices[0];
+  const c=main.pct>=0?'#00E5A0':'#FF6B6B';
+  qMarket.innerHTML=`<span style="color:${c}">${main.pct>=0?'+':''}${main.pct.toFixed(1)}%</span>`;
 }
 
 }catch(e){console.warn('[CFO]',e)}}
@@ -637,13 +689,14 @@ async function _loadLandingFamilyData(){
           const pct=total>0?Math.round(m.netWorth/total*100):0;
           const initial=m.userId.charAt(0).toUpperCase();
           const isMe=m.userId===getProfileId();
+          const isEmpty=m.netWorth===0&&(m.fundCount||0)===0&&(m.stockCount||0)===0;
           return`<div class="mb-card--ghost" style="padding:10px">
             <div class="mb-flex mb-gap-2 mb-mb-1">
               <div class="mb-avatar mb-avatar--xs" style="background:linear-gradient(135deg,${isMe?'#F59E0B,#D97706':'#A855F7,#7C3AED'})">${initial}</div>
               <b style="font-size:11px">${m.userId}</b>
             </div>
-            <div class="mb-money mb-money--sm">¥${fmtMoney(Math.round(m.netWorth))}</div>
-            <div class="mb-caption">占比 ${pct}%</div>
+            <div class="mb-money mb-money--sm">${isEmpty?'<span style="color:var(--text-tertiary,#7A8499);font-size:12px">待录入</span>':'¥'+fmtMoney(Math.round(m.netWorth))}</div>
+            ${isEmpty?'':'<div class="mb-caption">占比 '+pct+'%</div>'}
           </div>`}).join('')}
       </div>`;
   }catch(e){console.warn('[Family landing]',e)}}

@@ -477,3 +477,13 @@ body{font-family:var(--font-sans,-apple-system,BlinkMacSystemFont,'PingFang SC',
   .wl-card-footer{flex-direction:column;align-items:flex-start}
   .wl-read-btn{width:100%;text-align:center}
 }
+
+/* ---- 金额隐藏（首页"👁 隐藏"按钮触发）---- */
+.money-masked .mb-money__num,
+.money-masked .mb-hero__split-value,
+.money-masked .mb-money--sm,
+.money-masked [data-money]{
+  filter:blur(8px);
+  user-select:none;
+  pointer-events:none;
+}

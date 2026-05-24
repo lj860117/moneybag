@@ -6,12 +6,13 @@
 全部纯规则计算，不调 LLM。每个模块独立 try/except，
 单个模块失败不影响其他模块返回。
 
-输出 5 个区块：
-A. net_worth — 家庭净资产 + 分项
+输出 6 个区块：
+A. net_worth — 家庭净资产 + 分项 + 累计盈亏
 B. alerts — 今日 1-3 条人话提醒
 C. allocation — 资产配置占比
 D. emotion — 情绪提醒（基于恐贪+涨跌）
 E. todos — 本周待办
+F. indices — 大盘指数今日涨跌（沪深300/上证/创业板）
 """
 from __future__ import annotations
 import time
@@ -45,6 +46,7 @@ def generate_cfo_summary(user_id: str) -> dict:
         "allocation": None,
         "emotion": None,
         "todos": [],
+        "indices": [],
         "timestamp": datetime.now().isoformat(),
     }
 
@@ -70,11 +72,34 @@ def generate_cfo_summary(user_id: str) -> dict:
         from services.market_data import get_valuation_percentile
         return get_valuation_percentile()
 
-    with concurrent.futures.ThreadPoolExecutor(max_workers=4) as pool:
+    def _fetch_indices():
+        """获取三大指数今日涨跌幅"""
+        from infra.data_source.market.stocks import get_index_daily
+        indices = []
+        symbols = [
+            ("沪深300", "sh000300"),
+            ("上证", "sh000001"),
+            ("创业板", "sz399006"),
+        ]
+        for name, symbol in symbols:
+            try:
+                df = get_index_daily(symbol)
+                if df is not None and len(df) >= 2:
+                    today_close = float(df.iloc[-1]["close"])
+                    yesterday_close = float(df.iloc[-2]["close"])
+                    if yesterday_close > 0:
+                        pct = round((today_close - yesterday_close) / yesterday_close * 100, 2)
+                        indices.append({"name": name, "pct": pct})
+            except Exception:
+                pass
+        return indices
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=5) as pool:
         f_fgi = pool.submit(_fetch_fear_greed)
         f_futures = pool.submit(_fetch_futures)
         f_nw = pool.submit(_fetch_networth)
         f_val = pool.submit(_fetch_valuation)
+        f_idx = pool.submit(_fetch_indices)
 
     # 收集结果（每个独立 try/except，单个失败不影响其他）
     try:
@@ -102,6 +127,14 @@ def generate_cfo_summary(user_id: str) -> dict:
             val_pct = val_result.get("percentile", 50)
     except Exception as e:
         print(f"[CFO] valuation fetch failed: {e}")
+
+    # ── F. 大盘指数 ──
+    try:
+        idx_result = f_idx.result(timeout=5)
+        if idx_result:
+            result["indices"] = idx_result
+    except Exception as e:
+        print(f"[CFO] indices fetch failed: {e}")
 
     # ── A. 净资产（从已获取数据构建）──
     try:
@@ -151,19 +184,41 @@ def generate_cfo_summary(user_id: str) -> dict:
 # ============================================================
 
 def _format_net_worth(nw) -> dict:
-    """从已获取的 unified-networth 数据格式化输出"""
+    """从已获取的 unified-networth 数据格式化输出，含累计盈亏"""
     if not nw:
         return {"total": 0, "breakdown": {}}
 
     breakdown = nw.get("breakdown", {})
+    invest_data = breakdown.get("investment") or {}
+
+    # 计算累计盈亏：市值 - 成本
+    total_market = invest_data.get("total", 0)
+    total_cost = 0
+    fund_items = invest_data.get("fundItems") or []
+    for item in fund_items:
+        shares = item.get("shares", 0) or 0
+        cost_nav = item.get("costNav", 0) or 0
+        total_cost += shares * cost_nav
+    # 股票也算进来
+    stock_items = invest_data.get("stockItems") or []
+    for item in stock_items:
+        total_cost += item.get("totalCost", 0) or 0
+
+    total_pnl = round(total_market - total_cost, 2) if total_cost > 0 else 0
+    total_pnl_pct = round(total_pnl / total_cost * 100, 2) if total_cost > 0 else 0
+
     return {
         "total": nw.get("netWorth", 0),
-        "investment": (breakdown.get("investment") or {}).get("total", 0),
+        "investment": total_market,
         "cash": (breakdown.get("cash") or {}).get("total", 0),
         "property": (breakdown.get("property") or {}).get("total", 0),
         "liability": (breakdown.get("liability") or {}).get("total", 0),
         "health_grade": nw.get("healthGrade", ""),
         "health_score": nw.get("healthScore", 0),
+        "total_pnl": total_pnl,
+        "total_pnl_pct": total_pnl_pct,
+        "fund_count": len(fund_items),
+        "stock_count": len(stock_items),
     }
 
 
