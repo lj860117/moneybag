@@ -331,6 +331,31 @@ def api_backtest_portfolio(req: dict):
 @router.get("/api/fund-screen")
 def get_fund_screen(fund_type: str = "all", sort_by: str = "score", top_n: int = 20, userId: str = ""):
     """基金智能筛选：多维打分排序 + 质量过滤 + 用户持仓去重 + 时机粗评 + 行业解读 + 持仓关联分析"""
+
+    # ★ 优先读文件缓存（cache_warmer 在 after_close/weekend 时写入）
+    cache_key = f"fund_screen_{fund_type}"
+    try:
+        cache_fp = Path(os.environ.get("DATA_DIR", "data")) / "_cache" / f"{cache_key}.json"
+        if cache_fp.exists():
+            payload = json.loads(cache_fp.read_text(encoding="utf-8"))
+            if time.time() < payload.get("expires_at", 0):
+                data = payload.get("data", {})
+                # 有缓存：只补充实时的 market_timing + 持仓关联（个人化数据不能缓存）
+                if data.get("funds"):
+                    from services.industry_templates import enrich_fund_with_industry, get_fund_industry
+                    for f in data["funds"]:
+                        if not f.get("timing_label"):
+                            f["timing_label"] = _fund_timing_label(f)
+                        enrich_fund_with_industry(f)
+                    _enrich_fund_holding_relation(data["funds"], userId, get_fund_industry)
+                    data["my_holdings_summary"] = _get_my_fund_holdings_summary(userId, get_fund_industry)
+                data["market_timing"] = _get_market_timing_summary()
+                data["style_timing"] = _get_style_timing_summary()
+                data["from_cache"] = True
+                return data
+    except Exception as e:
+        print(f"[FUND_SCREEN] 文件缓存读取失败，降级实时计算: {e}")
+
     result = screen_funds(fund_type, sort_by, top_n, user_id=userId)
     if result.get("funds"):
         result["funds"] = comment_fund_picks(result["funds"])
@@ -338,52 +363,70 @@ def get_fund_screen(fund_type: str = "all", sort_by: str = "score", top_n: int =
         for f in result["funds"]:
             f["timing_label"] = _fund_timing_label(f)
             enrich_fund_with_industry(f)
+        _enrich_fund_holding_relation(result["funds"], userId, get_fund_industry)
+        result["my_holdings_summary"] = _get_my_fund_holdings_summary(userId, get_fund_industry)
 
-        # ★ 持仓关联分析：标注推荐基金与用户现有持仓的重合/互补程度
-        if userId:
-            try:
-                from services.fund_monitor import load_fund_holdings
-                my_funds = load_fund_holdings(userId) or []
-                if my_funds:
-                    # 提取已持仓的行业标签
-                    my_tags = set()
-                    my_codes = {f.get("code", "") for f in my_funds}
-                    for mf in my_funds:
-                        match = get_fund_industry(mf.get("name", ""))
-                        if match.get("tag"):
-                            my_tags.add(match["tag"])
-
-                    for f in result["funds"]:
-                        code = f.get("code", "")
-                        f_tag = f.get("industry_tag", "")
-
-                        if code in my_codes:
-                            f["holding_relation"] = "🔵 已持仓"
-                            f["holding_hint"] = "你已经持有这只基金"
-                        elif f_tag and f_tag in my_tags:
-                            f["holding_relation"] = "🟡 风格重叠"
-                            f["holding_hint"] = f"你已有{f_tag}方向的基金，买入会加重该方向集中度"
-                        elif f_tag:
-                            f["holding_relation"] = "🟢 新敞口"
-                            f["holding_hint"] = f"你目前没有{f_tag}方向，可作为分散配置考虑"
-                        else:
-                            f["holding_relation"] = "⚪ 未分类"
-                            f["holding_hint"] = "无法判断与持仓关系，请自行评估"
-
-                    # 在结果摘要里加持仓概览
-                    result["my_holdings_summary"] = {
-                        "count": len(my_funds),
-                        "tags": sorted(my_tags),
-                        "hint": f"你已持有 {len(my_funds)} 只基金，覆盖方向：{', '.join(sorted(my_tags)) or '未分类'}",
-                    }
-            except Exception as e:
-                print(f"[FUND_SCREEN] holding_relation failed: {e}")
-
-    # 大盘时机
+    # 大盘时机 + 行业/风格估值分位
     result["market_timing"] = _get_market_timing_summary()
-    # ★ 行业/风格估值分位（改动A）
     result["style_timing"] = _get_style_timing_summary()
     return result
+
+
+def _enrich_fund_holding_relation(funds: list, user_id: str, get_fund_industry_fn) -> None:
+    """给推荐基金列表标注与用户持仓的关联（已持仓/风格重叠/新敞口）。可复用于缓存和实时两条路径。"""
+    if not user_id or not funds:
+        return
+    try:
+        from services.fund_monitor import load_fund_holdings
+        my_funds = load_fund_holdings(user_id) or []
+        if not my_funds:
+            return
+        my_tags: set = set()
+        my_codes = {f.get("code", "") for f in my_funds}
+        for mf in my_funds:
+            match = get_fund_industry_fn(mf.get("name", ""))
+            if match.get("tag"):
+                my_tags.add(match["tag"])
+        for f in funds:
+            code = f.get("code", "")
+            f_tag = f.get("industry_tag", "")
+            if code in my_codes:
+                f["holding_relation"] = "🔵 已持仓"
+                f["holding_hint"] = "你已经持有这只基金"
+            elif f_tag and f_tag in my_tags:
+                f["holding_relation"] = "🟡 风格重叠"
+                f["holding_hint"] = f"你已有{f_tag}方向的基金，买入会加重该方向集中度"
+            elif f_tag:
+                f["holding_relation"] = "🟢 新敞口"
+                f["holding_hint"] = f"你目前没有{f_tag}方向，可作为分散配置考虑"
+            else:
+                f["holding_relation"] = "⚪ 未分类"
+                f["holding_hint"] = "无法判断与持仓关系，请自行评估"
+    except Exception as e:
+        print(f"[FUND_SCREEN] holding_relation failed: {e}")
+
+
+def _get_my_fund_holdings_summary(user_id: str, get_fund_industry_fn) -> dict:
+    """获取用户基金持仓摘要（用于选基 my_holdings_summary 字段）。"""
+    if not user_id:
+        return {}
+    try:
+        from services.fund_monitor import load_fund_holdings
+        my_funds = load_fund_holdings(user_id) or []
+        if not my_funds:
+            return {"count": 0, "tags": [], "hint": "暂无基金持仓记录"}
+        my_tags: set = set()
+        for mf in my_funds:
+            match = get_fund_industry_fn(mf.get("name", ""))
+            if match.get("tag"):
+                my_tags.add(match["tag"])
+        return {
+            "count": len(my_funds),
+            "tags": sorted(my_tags),
+            "hint": f"你已持有 {len(my_funds)} 只基金，覆盖方向：{', '.join(sorted(my_tags)) or '未分类'}",
+        }
+    except Exception as e:
+        return {}
 
 
 @router.get("/api/stock-screen")
