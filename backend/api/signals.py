@@ -387,8 +387,8 @@ def get_fund_screen(fund_type: str = "all", sort_by: str = "score", top_n: int =
 
 
 @router.get("/api/stock-screen")
-def get_stock_screen(top_n: int = 50):
-    """AI多因子选股：30因子7维打分 V2 + DeepSeek 点评 TOP5 + 时机粗评 + 行业标签"""
+def get_stock_screen(top_n: int = 50, userId: str = ""):
+    """AI多因子选股：30因子7维打分 V2 + DeepSeek 点评 + 时机粗评 + 行业标签 + 持仓关联"""
     # 优先读 cache_warmer 写入的文件缓存，避免每次实时计算（30-40秒）
     try:
         cache_fp = Path(os.environ.get("DATA_DIR", "data")) / "_cache" / "stock_screen_50.json"
@@ -397,9 +397,10 @@ def get_stock_screen(top_n: int = 50):
             if time.time() < payload.get("expires_at", 0):
                 data = payload.get("data", {})
                 data["from_cache"] = True
-                # 补充时机标签 + 行业
                 _enrich_stock_labels(data.get("stocks", []))
                 data["market_timing"] = _get_market_timing_summary()
+                _enrich_stock_holding_relation(data.get("stocks", []), userId)
+                data["my_stock_summary"] = _get_my_stock_summary(userId)
                 return data
     except Exception as e:
         print(f"[STOCK_SCREEN] 读文件缓存失败: {e}")
@@ -408,7 +409,9 @@ def get_stock_screen(top_n: int = 50):
     if result.get("stocks"):
         result["stocks"] = comment_stock_picks(result["stocks"])
         _enrich_stock_labels(result["stocks"])
+        _enrich_stock_holding_relation(result["stocks"], userId)
     result["market_timing"] = _get_market_timing_summary()
+    result["my_stock_summary"] = _get_my_stock_summary(userId)
     return result
 
 
@@ -551,21 +554,38 @@ def _get_style_timing_summary() -> dict:
 
 
 def _stock_timing_label(stock: dict) -> str:
-    """个股时机粗评 — 基于 value 维度评分 + PE"""
-    scores = stock.get("scores", {})
-    value_score = scores.get("value", 50) if isinstance(scores, dict) else 50
+    """个股时机粗评 — 综合 value/momentum/quality 三个维度 + PE + 涨跌幅，输出有实际意义的标签"""
+    scores = stock.get("scores", {}) or {}
+    value_score = scores.get("value", 50)
+    momentum_score = scores.get("momentum", 50)
+    quality_score = scores.get("quality", 50)
     pe = stock.get("pe")
+    change_pct = stock.get("change_pct", 0) or 0  # 今日涨跌幅
 
-    # value 维度 > 70 说明估值偏低（多因子已综合PE/PB/股息率）
-    if value_score >= 70:
-        return "💚 偏便宜"
-    elif value_score >= 45:
-        return "⚪ 合理"
-    else:
-        # PE 极高也标注
-        if pe and pe > 50:
-            return "🔴 偏贵"
-        return "🟡 略贵"
+    # ---- 优质 + 便宜 + 上涨动量 = 最佳买点 ----
+    if value_score >= 65 and momentum_score >= 55 and quality_score >= 65:
+        return "💚 质优低估"
+
+    # ---- 估值低但动量弱（可能还在下跌） ----
+    if value_score >= 65 and momentum_score < 40:
+        return "💛 低估震荡"
+
+    # ---- 高质量但价格合理（好公司，不便宜） ----
+    if quality_score >= 80 and value_score >= 40:
+        return "⚪ 质优合理"
+
+    # ---- 估值偏贵 ----
+    if value_score < 30:
+        if pe and pe > 60:
+            return "🔴 高估高PE"
+        return "🔴 估值偏贵"
+
+    # ---- 动量强但估值偏高（追高风险） ----
+    if momentum_score >= 70 and value_score < 40:
+        return "🟡 动量追高"
+
+    # ---- 默认合理区间 ----
+    return "⚪ 均衡"
 
 
 def _fund_timing_label(fund: dict) -> str:
@@ -593,6 +613,62 @@ def _fund_timing_label(fund: dict) -> str:
             return "🟡 注意止盈"
 
     return "⚪ 正常"
+
+
+def _enrich_stock_holding_relation(stocks: list, user_id: str) -> None:
+    """给每只推荐股票标注与用户持仓的关联：已持有 / 同行业 / 新方向"""
+    if not user_id or not stocks:
+        return
+    try:
+        from services.stock_monitor import load_stock_holdings
+        my_stocks = load_stock_holdings(user_id) or []
+        if not my_stocks:
+            return
+
+        # 提取已持仓的代码 + 行业
+        my_codes = set()
+        my_industries = set()
+        for ms in my_stocks:
+            c = ms.get("code", "").replace("sh", "").replace("sz", "")
+            my_codes.add(c)
+            ind = ms.get("industry", "")
+            if ind:
+                my_industries.add(ind)
+
+        for s in stocks:
+            code = s.get("code", "").replace("sh", "").replace("sz", "")
+            industry = s.get("industry", "")
+
+            if code in my_codes:
+                s["stock_relation"] = "🔵 已持有"
+                s["stock_relation_hint"] = "你已经持有这只股票"
+            elif industry and industry in my_industries:
+                s["stock_relation"] = "🟡 同行业"
+                s["stock_relation_hint"] = f"你已有 {industry} 行业持仓，集中度会增加"
+            else:
+                s["stock_relation"] = "🟢 新方向"
+                s["stock_relation_hint"] = f"{industry or '未知行业'}，与你现有持仓无重叠"
+    except Exception as e:
+        print(f"[STOCK_SCREEN] holding_relation failed: {e}")
+
+
+def _get_my_stock_summary(user_id: str) -> dict:
+    """获取用户股票持仓摘要"""
+    if not user_id:
+        return {}
+    try:
+        from services.stock_monitor import load_stock_holdings
+        stocks = load_stock_holdings(user_id) or []
+        if not stocks:
+            return {"count": 0, "hint": "暂无股票持仓记录"}
+        industries = list({s.get("industry", "") for s in stocks if s.get("industry")})
+        return {
+            "count": len(stocks),
+            "industries": industries,
+            "hint": f"你已持有 {len(stocks)} 只股票，行业：{', '.join(industries) or '未分类'}",
+        }
+    except Exception as e:
+        return {}
 
 
 # ---- 行业信息补充（Tushare stock_basic 缓存） ----
