@@ -1,4 +1,17 @@
 // ---- AI聊天页 ----
+// 轻量 Markdown → HTML 转换（标题/粗体/列表/换行）
+function _md(text){
+  if(!text)return'';
+  return text
+    .replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')
+    .replace(/^### (.+)$/gm,'<div style="font-size:14px;font-weight:700;margin:8px 0 4px">$1</div>')
+    .replace(/^## (.+)$/gm,'<div style="font-size:15px;font-weight:700;margin:10px 0 4px">$1</div>')
+    .replace(/^# (.+)$/gm,'<div style="font-size:16px;font-weight:800;margin:12px 0 6px">$1</div>')
+    .replace(/\*\*(.+?)\*\*/g,'<strong>$1</strong>')
+    .replace(/^\s*[-•]\s+(.+)$/gm,'<div style="padding-left:12px;text-indent:-8px">• $1</div>')
+    .replace(/^\s*(\d+)\.\s+(.+)$/gm,'<div style="padding-left:12px">$1. $2</div>')
+    .replace(/\n/g,'<br>');
+}
 let chatModel='deepseek-v4-flash';
 let chatModelList=[];
 async function loadModelList(){try{const r=await fetch(API_BASE+'/models',{signal:AbortSignal.timeout(5000)});if(r.ok){const d=await r.json();chatModelList=d.models||[];if(d.default)chatModel=localStorage.getItem('chatModel')||d.default}}catch{chatModelList=[{id:'deepseek-v4-flash',name:'DeepSeek V4',provider:'deepseek'}]}}
@@ -31,7 +44,7 @@ $('#app').innerHTML=`<div class="chat-page" style="display:flex;flex-direction:c
 <!-- 对话区域 -->
 <div class="chat-messages" id="chatMsgs" style="flex:1;overflow-y:auto;padding:0 16px 16px;scroll-behavior:smooth">
   <div class="mb-bubble mb-bubble--ai">你好！我是钱袋子 AI 分析师 🧠\n\n问投资决策问题（如"现在能入场吗"）我会自动多视角会诊；普通问题直接回答。所有建议仅供参考 😊</div>
-  ${chatMessages.map(m=>m.role==='user'?`<div class="mb-bubble mb-bubble--user">${m.text}</div>`:`<div class="mb-bubble mb-bubble--ai">${m.text}${m.src?`<div style="margin-top:6px;font-size:10px;color:var(--text-tertiary,#7A8499)">${m.src==='ai'?'🤖 AI · DeepSeek':'📐 规则引擎'}</div>`:''}</div>`).join('')}
+  ${chatMessages.map(m=>m.role==='user'?`<div class="mb-bubble mb-bubble--user">${m.text}</div>`:`<div class="mb-bubble mb-bubble--ai">${_md(m.text)}${m.src?`<div style="margin-top:6px;font-size:10px;color:var(--text-tertiary,#7A8499)">${m.src==='ai'?'🤖 AI · DeepSeek':'📐 规则引擎'}</div>`:''}</div>`).join('')}
 </div>
 
 <!-- 常见问题 -->
@@ -98,19 +111,19 @@ if(d.type==='stream'||d.delta){
 const delta=d.delta||'';
 if(delta){fullText+=delta;
   if(panelHtml){
-    botDiv.innerHTML=panelHtml+'<div class="panel-synthesis" style="margin-top:12px;padding:12px;background:rgba(255,183,85,.06);border:1px solid rgba(255,183,85,.15);border-radius:12px"><div style="font-size:11px;font-weight:700;color:var(--color-brand-500,#FFB755);margin-bottom:6px">🤖 综合判断</div><div style="font-size:13px;line-height:1.8;color:var(--text-primary,#F0F2F7)">'+fullText+'</div></div><span class="stream-cursor">▊</span>';
+    botDiv.innerHTML=panelHtml+'<div class="panel-synthesis" style="margin-top:12px;padding:12px;background:rgba(255,183,85,.06);border:1px solid rgba(255,183,85,.15);border-radius:12px"><div style="font-size:11px;font-weight:700;color:var(--color-brand-500,#FFB755);margin-bottom:6px">🤖 综合判断</div><div style="font-size:13px;line-height:1.8;color:var(--text-primary,#F0F2F7)">'+_md(fullText)+'</div></div><span class="stream-cursor">▊</span>';
   }else{
     const thinkBlock=thinkText?`<details style="font-size:11px;color:var(--text2);margin-bottom:8px;border:1px solid var(--bg3);border-radius:8px;padding:6px 8px"><summary style="cursor:pointer;opacity:0.7">🧠 查看思考过程</summary><div style="margin-top:4px;white-space:pre-wrap;opacity:0.6">${thinkText}</div></details>`:'';
-    botDiv.innerHTML=thinkBlock+fullText+'<span class="stream-cursor">▊</span>';
+    botDiv.innerHTML=thinkBlock+_md(fullText)+'<span class="stream-cursor">▊</span>';
   }
   scrollChat();
 }
 if(d.done){
   if(panelHtml){
-    botDiv.innerHTML=panelHtml+'<div class="panel-synthesis" style="margin-top:12px;padding:12px;background:rgba(255,183,85,.06);border:1px solid rgba(255,183,85,.15);border-radius:12px"><div style="font-size:11px;font-weight:700;color:var(--color-brand-500,#FFB755);margin-bottom:6px">🤖 综合判断</div><div style="font-size:13px;line-height:1.8;color:var(--text-primary,#F0F2F7)">'+fullText+'</div></div><div class="src-tag">🎯 投资会诊 · 多视角分析</div>';
+    botDiv.innerHTML=panelHtml+'<div class="panel-synthesis" style="margin-top:12px;padding:12px;background:rgba(255,183,85,.06);border:1px solid rgba(255,183,85,.15);border-radius:12px"><div style="font-size:11px;font-weight:700;color:var(--color-brand-500,#FFB755);margin-bottom:6px">🤖 综合判断</div><div style="font-size:13px;line-height:1.8;color:var(--text-primary,#F0F2F7)">'+_md(fullText)+'</div></div><div class="src-tag">🎯 投资会诊 · 多视角分析</div>';
   }else{
     const thinkBlock=thinkText?`<details style="font-size:11px;color:var(--text2);margin-bottom:8px;border:1px solid var(--bg3);border-radius:8px;padding:6px 8px"><summary style="cursor:pointer;opacity:0.7">🧠 查看思考过程</summary><div style="margin-top:4px;white-space:pre-wrap;opacity:0.6">${thinkText}</div></details>`:'';
-    botDiv.innerHTML=thinkBlock+fullText+`<div class="src-tag">${source==='ai'?'🤖 AI · DeepSeek':source==='panel'?'🎯 投资会诊':'📐 规则引擎 · 实时数据'}</div>`;
+    botDiv.innerHTML=thinkBlock+_md(fullText)+`<div class="src-tag">${source==='ai'?'🤖 AI · DeepSeek':source==='panel'?'🎯 投资会诊':'📐 规则引擎 · 实时数据'}</div>`;
   }
   scrollChat();
 }
@@ -126,21 +139,21 @@ botDiv.innerHTML=`<div style="font-size:11px;color:var(--text2);opacity:0.7;bord
 if(_r1Thinking){_r1Thinking=false;fullText=''}
 fullText+=d.delta;
 const thinkBlock=thinkText?`<details style="font-size:11px;color:var(--text2);margin-bottom:8px;border:1px solid var(--bg3);border-radius:8px;padding:6px 8px"><summary style="cursor:pointer;opacity:0.7">🧠 查看思考过程</summary><div style="margin-top:4px;white-space:pre-wrap;opacity:0.6">${thinkText}</div></details>`:'';
-botDiv.innerHTML=thinkBlock+fullText+'<span class="stream-cursor">▊</span>';scrollChat()
+botDiv.innerHTML=thinkBlock+_md(fullText)+'<span class="stream-cursor">▊</span>';scrollChat()
 }}
 if(d.done){
 const thinkBlock=thinkText?`<details style="font-size:11px;color:var(--text2);margin-bottom:8px;border:1px solid var(--bg3);border-radius:8px;padding:6px 8px"><summary style="cursor:pointer;opacity:0.7">🧠 查看思考过程</summary><div style="margin-top:4px;white-space:pre-wrap;opacity:0.6">${thinkText}</div></details>`:'';
-botDiv.innerHTML=thinkBlock+fullText+`<div class="src-tag">${source==='ai'?'🤖 AI · DeepSeek':'📐 规则引擎 · 实时数据'}</div>`;scrollChat()}}catch{}}}
+botDiv.innerHTML=thinkBlock+_md(fullText)+`<div class="src-tag">${source==='ai'?'🤖 AI · DeepSeek':'📐 规则引擎 · 实时数据'}</div>`;scrollChat()}}catch{}}}
 // 处理剩余 buffer
 if(buf.startsWith('data: ')){try{const d=JSON.parse(buf.slice(6));if(d.delta){if(d.phase==='thinking')thinkText+=d.delta;else fullText+=d.delta}if(d.source)source=d.source}catch{}}
-botDiv.innerHTML=fullText+`<div class="src-tag">${source==='ai'?'🤖 AI · DeepSeek':'📐 规则引擎 · 实时数据'}</div>`;scrollChat();
+botDiv.innerHTML=_md(fullText)+`<div class="src-tag">${source==='ai'?'🤖 AI · DeepSeek':'📐 规则引擎 · 实时数据'}</div>`;scrollChat();
 chatMessages.push({role:'bot',text:fullText,src:source});_saveChatHistory();_setChatLock(false);return}
 // 非流式降级（旧接口兼容）
 if(r.ok){const d=await r.json();chatMessages.push({role:'bot',text:d.reply,src:d.source});_saveChatHistory();appendMsg('bot',d.reply,d.source);_setChatLock(false);return}
 }catch(e){console.warn('Chat stream error:',e)}}
 rmTyping();const fb='后端未连接，无法获取实时数据。请确保后端运行中。';chatMessages.push({role:'bot',text:fb,src:'offline'});_saveChatHistory();appendMsg('bot',fb,'offline');_setChatLock(false)}
 
-function appendMsg(r,t,src){const el=document.getElementById('chatMsgs');if(!el)return;const d=document.createElement('div');d.className=r==='user'?'mb-bubble mb-bubble--user':'mb-bubble mb-bubble--ai';d.innerHTML=t+(src?`<div style="margin-top:6px;font-size:10px;color:var(--text-tertiary,#7A8499)">${src==='ai'?'🤖 AI · DeepSeek':src==='rules'?'📐 规则引擎':'离线'}</div>`:'');el.appendChild(d);scrollChat()}
+function appendMsg(r,t,src){const el=document.getElementById('chatMsgs');if(!el)return;const d=document.createElement('div');d.className=r==='user'?'mb-bubble mb-bubble--user':'mb-bubble mb-bubble--ai';d.innerHTML=(r==='user'?t:_md(t))+(src?`<div style="margin-top:6px;font-size:10px;color:var(--text-tertiary,#7A8499)">${src==='ai'?'🤖 AI · DeepSeek':src==='rules'?'📐 规则引擎':'离线'}</div>`:'');el.appendChild(d);scrollChat()}
 let _thinkTimer=null;
 function appendTyping(){const el=document.getElementById('chatMsgs');if(!el)return;const d=document.createElement('div');d.className='chat-typing';d.id='chatTyp';d.innerHTML='<span></span><span></span><span></span>';el.appendChild(d);scrollChat()}
 function rmTyping(){if(_thinkTimer){clearInterval(_thinkTimer);_thinkTimer=null}const el=document.getElementById('chatTyp');if(el)el.remove()}
