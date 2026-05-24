@@ -244,7 +244,8 @@ class LLMGateway:
     def stream_sync(self, prompt: str, *, system: str = "",
                     model_tier: str = "llm_light",
                     user_id: str = "", module: str = "",
-                    max_tokens: int = 1200):
+                    max_tokens: int = 1200,
+                    history: list | None = None):
         """流式调用 LLM，yield 标准化的 chunk dict。
 
         返回同步 Generator[dict, None, None]。
@@ -252,6 +253,7 @@ class LLMGateway:
         最后一个 chunk: {"delta": "", "done": True, "usage": {...}}
         错误时: {"delta": "", "done": True, "error": str, "fallback": True}
 
+        history: 多轮对话历史，格式 [{"role":"user"|"assistant","content":str}]
         不走缓存（streaming 场景缓存无意义），但走限流和计费。
         """
         # 0. 日期重置
@@ -273,10 +275,17 @@ class LLMGateway:
         model = MODEL_ROUTING.get(model_tier, "deepseek-v4-flash")
         api_base = os.environ.get("LLM_API_BASE", "https://api.deepseek.com/v1")
 
-        # 4. 构建 messages
+        # 4. 构建 messages（支持多轮历史）
         messages = []
         if system:
             messages.append({"role": "system", "content": system})
+        # 注入多轮对话历史（最多10条，奇偶交替 user/assistant）
+        if history:
+            for h in history[-10:]:
+                role = h.get("role", "user") if isinstance(h, dict) else h.role
+                content = h.get("content", "") if isinstance(h, dict) else h.content
+                if role in ("user", "assistant") and content:
+                    messages.append({"role": role, "content": content})
         messages.append({"role": "user", "content": prompt})
 
         # 5. 流式调用

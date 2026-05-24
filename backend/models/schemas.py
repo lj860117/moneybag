@@ -81,11 +81,17 @@ class UserData(BaseModel):
     createdAt: Optional[str] = None
     updatedAt: Optional[str] = None
 
+class ChatHistoryMessage(BaseModel):
+    """多轮对话历史条目"""
+    role: Literal["user", "assistant"]
+    content: str
+
 class ChatRequest(BaseModel):
     message: str
     portfolio: Optional[Portfolio] = None
     model: Optional[str] = None  # 前端可指定模型，如 "deepseek-v4-flash"
     userId: Optional[str] = None  # 多用户隔离
+    history: Optional[list[ChatHistoryMessage]] = None  # 多轮对话历史（最近5轮）
 
 class LedgerEntry(BaseModel):
     userId: str

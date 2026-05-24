@@ -23,6 +23,46 @@ from api.shared_helpers import (
 
 router = APIRouter()
 
+
+def _extract_and_save_memory(user_id: str, user_msg: str, reply: str) -> None:
+    """后台线程：用轻量 LLM 提取本次对话的关键决策/偏好，存入 pending_insights。
+
+    只提取有价值的信息（投资偏好、明确决定、重要约束），忽略闲聊。
+    失败时静默，不影响主流程。
+    """
+    try:
+        from services.llm_gateway import LLMGateway
+        from domain.services.user_preference_service import add_pending_insight
+
+        extract_prompt = (
+            f"用户问：{user_msg[:200]}\n"
+            f"AI答：{reply[:400]}\n\n"
+            "请提取本次对话中用户透露的**投资偏好/明确决定/重要约束**，一句话（<25字）。\n"
+            "示例：「用户风险偏好保守，不接受单仓超20%」「用户决定本月暂停加仓等待回调」\n"
+            "如果本次对话没有重要信息，直接输出：无"
+        )
+
+        gw = LLMGateway.instance()
+        result = gw.call_sync(
+            extract_prompt,
+            model_tier="llm_light",
+            user_id=user_id,
+            module="memory_extract",
+            max_tokens=40,
+        )
+        content = result.get("content", "").strip()
+        if content and content != "无" and len(content) > 4:
+            add_pending_insight(user_id, {
+                "type": "chat_extract",
+                "text": content,
+                "source_q": user_msg[:80],
+                "created_at": datetime.now().isoformat(),
+            })
+            print(f"[MEMORY] 提取记忆: {content[:60]}")
+    except Exception as e:
+        print(f"[MEMORY] 记忆提取失败（静默）: {e}")
+
+
 # 快速路径意图 — 这些 intent 优先走规则引擎（毫秒级），不命中再 fall through 到 LLM
 FAST_PATH_INTENTS = {"safety_refusal", "holdings_query", "empty_holdings_query",
                      "cross_account_refusal",
@@ -497,6 +537,8 @@ async def chat_analysis_stream(req: ChatRequest):
                                  headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
 
     async def stream_gen():
+        nonlocal _search_banner
+        _full_reply = []  # 累积完整回复，用于回复完成后提取记忆
         try:
             # 如果有搜索来源，先推一条 banner 让用户知道搜到了什么
             if _search_banner:
@@ -508,6 +550,7 @@ async def chat_analysis_stream(req: ChatRequest):
                 user_id=uid,
                 module="chat_stream",
                 max_tokens=1200,
+                history=[h.dict() for h in req.history] if req.history else None,
             ):
                 if chunk.get("fallback"):
                     # gateway 限流/错误 → 降级规则引擎
@@ -516,6 +559,15 @@ async def chat_analysis_stream(req: ChatRequest):
                     return
                 if chunk.get("done"):
                     yield f"data: {json.dumps({'delta': '', 'source': 'ai', 'done': True, 'served_by': 'llm'}, ensure_ascii=False)}\n\n"
+                    # ★ 回复完成后，后台轻量提取关键决策/偏好存入记忆
+                    _full_reply_text = "".join(_full_reply)
+                    if uid and uid != "default" and _full_reply_text and len(user_msg) > 6:
+                        import threading
+                        threading.Thread(
+                            target=_extract_and_save_memory,
+                            args=(uid, user_msg, _full_reply_text),
+                            daemon=True
+                        ).start()
                     return
                 # 正常 chunk（thinking / answering）
                 delta = chunk.get("delta", "")
@@ -527,6 +579,7 @@ async def chat_analysis_stream(req: ChatRequest):
                     # 流式级过滤：替换禁止短语
                     delta = delta.replace("我无法访问你的账户", "当前系统记录显示")
                     delta = delta.replace("我无法查看你的", "当前系统记录的")
+                    _full_reply.append(delta)  # 累积完整回复
                     yield f"data: {json.dumps({'delta': delta, 'source': 'ai', 'done': False, 'phase': phase}, ensure_ascii=False)}\n\n"
         except Exception as e:
             print(f"[CHAT-STREAM] LLM stream failed: {e}")
