@@ -168,7 +168,9 @@ def comment_fund_picks(funds: list) -> list:
         # 先过滤所有异常行
         bad_keywords = ["我们要求", "一句话点评", "15字", "格式", "注意：", "要求：",
                         "需要根据", "以下是", "点评如下", "好的", "以上是",
-                        "写5条", "写10条", "写3条", "条：", "如下："]
+                        "写5条", "写10条", "写3条", "条：", "如下：",
+                        "分析每只", "分析如下", "针对每只", "对于每只", "逐一分析",
+                        "基金点评", "评价如下", "简评如下"]
         # 基金名称关键词（LLM 容易输出其他基金名而非点评）
         fund_name_keywords = ["混合", "债券", "指数", "ETF", "联接", "增强",
                               "精选", "优选", "灵活配置", "QDII", "LOF", "FOF"]
@@ -338,7 +340,9 @@ def comment_stock_picks(stocks: list) -> list:
         lines = [l.strip() for l in result.strip().split("\n") if l.strip()]
         # 先过滤异常行
         bad_keywords = ["我们要求", "一句话点评", "15字", "格式", "注意：", "要求：",
-                        "需要根据", "以下是", "点评如下"]
+                        "需要根据", "以下是", "点评如下", "好的", "以上是",
+                        "分析每只", "分析如下", "针对每只", "对于每只", "逐一分析",
+                        "股票点评", "评价如下", "简评如下", "逐一点评"]
         clean_lines = []
         for line in lines:
             comment = line.lstrip("0123456789.、）) -").strip()
@@ -361,7 +365,33 @@ def comment_stock_picks(stocks: list) -> list:
         for i, s in enumerate(top10):
             if i < len(clean_lines):
                 s["aiComment"] = clean_lines[i]
+            else:
+                # 规则兜底
+                s["aiComment"] = _rule_stock_comment(s)
+    else:
+        # LLM 不可用，全部用规则
+        for s in top10:
+            s["aiComment"] = _rule_stock_comment(s)
     return stocks
+
+
+def _rule_stock_comment(s: dict) -> str:
+    """规则兜底：根据 PE/ROE/涨跌生成简单评语"""
+    pe = s.get("pe")
+    roe = s.get("roe")
+    chg = s.get("change_pct", 0)
+
+    if pe and pe < 15 and roe and roe > 10:
+        return "低估值高盈利，性价比突出"
+    elif pe and pe > 60:
+        return "估值较高，追入需谨慎"
+    elif roe and roe > 20:
+        return "盈利能力强劲，护城河深"
+    elif chg and chg < -3:
+        return "短期回调，关注支撑位"
+    elif chg and chg > 5:
+        return "强势上涨，注意追高风险"
+    return "综合评分靠前，可关注"
 
 
 def comment_single_stock(code: str, name: str = "", extra: dict = None) -> str:
