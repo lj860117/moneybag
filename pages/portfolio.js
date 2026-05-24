@@ -134,7 +134,7 @@ if(r.ok){const pnl=await r.json();
 window._holdingsPnl={};
 // 接口返回 pnl.holdings（不是 pnl.details）
 const _pnlList = pnl.holdings||pnl.details||[];
-_pnlList.forEach(d=>{window._holdingsPnl[d.code]={marketValue:d.marketValue||d.market_value||0,pnlPct:d.pnlPct||d.pnl_pct||0,pnl:d.pnl||0,nav:d.nav||0,dayChange:d.dayChange||0}})
+_pnlList.forEach(d=>{window._holdingsPnl[d.code]={marketValue:d.marketValue||d.market_value||0,pnlPct:d.pnlPct||d.pnl_pct||0,pnl:d.pnl||0,nav:d.nav||0,dayChange:d.dayChange||0,navDate:d.navDate||d.nav_date||''}})
 // 刷新持仓列表（带盈亏）
 _renderFilteredHoldings();
 const pe=document.getElementById('pnlSum');
@@ -215,9 +215,13 @@ function _renderFilteredHoldings(){
       const pnlData=window._holdingsPnl?.[h.code];
       const mvStr=pnlData?`¥${fmtMoney(Math.round(pnlData.marketValue))}`:`¥${fmtMoney(Math.round(h.totalCost))}`;
       const pnlStr=pnlData?`<span style="color:${pnlData.pnlPct>=0?'var(--color-bull,#00E5A0)':'var(--color-bear,#FF6B6B)'};font-size:12px;font-weight:700">${pnlData.pnlPct>=0?'+':''}${pnlData.pnlPct.toFixed(2)}%</span>`:'';
-      const dayStr=pnlData&&pnlData.dayChange!=null&&pnlData.dayChange!==0?` <span style="font-size:10px;color:${pnlData.dayChange>=0?'var(--color-bull,#00E5A0)':'var(--color-bear,#FF6B6B)'}">今日${pnlData.dayChange>=0?'+':''}${pnlData.dayChange.toFixed(2)}%</span>`:'';
+      const dayStr=pnlData&&pnlData.dayChange!=null&&pnlData.dayChange!==0?(()=>{
+        // 显示真实净值日期而不是"今日"，避免周末显示"今日涨幅"误导
+        const dateLabel=pnlData.navDate?pnlData.navDate.slice(5):'净值日';  // "05-22" 格式
+        return ` <span style="font-size:10px;color:${pnlData.dayChange>=0?'var(--color-bull,#00E5A0)':'var(--color-bear,#FF6B6B)'}">${dateLabel} ${pnlData.dayChange>=0?'+':''}${pnlData.dayChange.toFixed(2)}%</span>`;
+      })():'';
       const navStr=pnlData&&pnlData.nav?`净值 ${pnlData.nav} · `:'';
-      return`<div class="mb-card" style="margin-bottom:8px;padding:12px;cursor:pointer" onclick="showHoldingActions('${h.code}')">
+            return`<div class="mb-card" style="margin-bottom:8px;padding:12px;cursor:pointer" onclick="showHoldingActions('${h.code}')">
 <div class="mb-flex mb-flex--between">
 <div><div style="font-size:var(--fs-md,14px);font-weight:var(--fw-semibold,600)">${h.name}</div>
 <div class="mb-caption">${navStr}${h.category||assetLabel}${h.shares?' · '+h.shares.toFixed(2)+'份':''}${h.avgPrice?' · 成本¥'+h.avgPrice.toFixed(4):''}${dayStr}</div></div>

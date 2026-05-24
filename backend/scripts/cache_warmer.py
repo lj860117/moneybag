@@ -426,10 +426,10 @@ def warm_weekend():
     ttl = 72  # 周六 → 周一 = ~48h，留余量72h
     
     # 0. precomputed 数据（dashboard 用，工作日盘中更新，周末必须手动生成）
-    print("  📊 precomputed 数据（恐贪/估值/北向）...")
+    print("  📊 precomputed 数据（恐贪/估值/北向/技术指标）...")
     try:
         from services.precomputed_cache import save_precomputed
-        from services.market_data import get_valuation_percentile, get_fear_greed_index
+        from services.market_data import get_valuation_percentile, get_fear_greed_index, get_technical_indicators
         from services.factor_data import get_northbound_flow, get_margin_trading
         fgi = get_fear_greed_index()
         if fgi:
@@ -440,7 +440,11 @@ def warm_weekend():
         nb = get_northbound_flow() or {}
         margin = get_margin_trading() or {}
         save_precomputed("factors", {"northbound": nb, "margin": margin})
-        print(f"  ✅ precomputed 完成（fgi={fgi.get('score') if fgi else 'N/A'}, val={val.get('percentile') if val else 'N/A'}）")
+        # ★ 新增 technical 指标（RSI/MACD/布林线）
+        tech = get_technical_indicators()
+        if tech:
+            save_precomputed("technical", tech)
+        print(f"  ✅ precomputed 完成（fgi={fgi.get('score') if fgi else 'N/A'}, val={val.get('percentile') if val else 'N/A'}, rsi={tech.get('rsi') if tech else 'N/A'}）")
     except Exception as e:
         print(f"  ❌ precomputed: {e}")
 

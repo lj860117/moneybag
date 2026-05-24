@@ -127,9 +127,11 @@ async def get_market_dashboard():
         pc_val = get_precomputed("valuation")
 
         if pc_factors and pc_fgi and pc_val:
+            pc_tech = get_precomputed("technical") or {}
             return {
                 "valuation": pc_val,
                 "fear_greed": pc_fgi,
+                "technical": pc_tech,
                 "northbound": pc_factors.get("northbound", {}),
                 "margin": pc_factors.get("margin", {}),
                 "shibor": pc_factors.get("shibor", {}),
