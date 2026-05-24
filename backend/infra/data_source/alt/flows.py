@@ -224,26 +224,36 @@ def get_north_net_flow() -> Any:
         import akshare as ak
         import pandas as pd
         # 用沪股通+深股通合并计算北向净流入
-        # stock_hsgt_hist_em symbol 支持: 沪股通/深股通/沪深股通/港股通（沪）/港股通（深）
         df_sh = ak.stock_hsgt_hist_em(symbol="沪股通")
         df_sz = ak.stock_hsgt_hist_em(symbol="深股通")
         if df_sh is not None and df_sz is not None and len(df_sh) > 0:
-            # 列名可能是中文，找净买入列
-            net_col_sh = next((c for c in df_sh.columns if "净" in str(c) or "net" in str(c).lower()), None)
-            date_col_sh = "日期" if "日期" in df_sh.columns else df_sh.columns[0]
-            if net_col_sh is None:
-                # 找第一个数值列
-                numeric_cols = df_sh.select_dtypes(include="number").columns
-                net_col_sh = numeric_cols[0] if len(numeric_cols) > 0 else None
-            if net_col_sh:
-                net_col_sz = next((c for c in df_sz.columns if "净" in str(c)), net_col_sh)
+            # 列结构：[日期, 当日净买额, 买入成交额, 卖出成交额, ...]
+            # 第 0 列是日期，第 1 列是当日净买额（单位亿），用列位置取（列名可能是中文，env 环境渲染可能乱码）
+            date_col = df_sh.columns[0]
+            # 取第一个 numeric 列（就是净买额）
+            numeric_cols_sh = df_sh.select_dtypes(include="number").columns.tolist()
+            numeric_cols_sz = df_sz.select_dtypes(include="number").columns.tolist()
+            if numeric_cols_sh:
+                net_col_sh = numeric_cols_sh[0]  # 当日净买额（亿）
+                net_col_sz = numeric_cols_sz[0] if numeric_cols_sz else net_col_sh
+                # 按日期对齐，合并北向
+                df_sh_idx = df_sh.set_index(date_col)
+                df_sz_idx = df_sz.set_index(df_sz.columns[0])
+                combined = df_sh_idx[[net_col_sh]].join(
+                    df_sz_idx[[net_col_sz]].rename(columns={net_col_sz: "_sz"}),
+                    how="left"
+                )
+                combined["_sz"] = combined["_sz"].fillna(0)
                 merged = pd.DataFrame({
-                    "日期": df_sh[date_col_sh],
-                    "北向资金(亿)": (df_sh[net_col_sh].fillna(0) + df_sz.reindex(df_sh.index)[net_col_sz].fillna(0)),
-                    "沪股通(亿)": df_sh[net_col_sh],
-                    "深股通(亿)": df_sz.reindex(df_sh.index)[net_col_sz],
+                    "日期": combined.index,
+                    "北向资金(亿)": (combined[net_col_sh].fillna(0) + combined["_sz"]).values,
+                    "沪股通(亿)": combined[net_col_sh].values,
+                    "深股通(亿)": combined["_sz"].values,
                 })
-                return merged
+                # 过滤掉净流入全0的行（可能是最近没有数据的行）
+                merged = merged[merged["北向资金(亿)"] != 0].tail(30)
+                if len(merged) > 0:
+                    return merged
     except Exception as e:
         print(f"[DATA_SOURCE/ALT] get_north_net_flow (AKShare failed): {e}")
     

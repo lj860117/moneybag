@@ -75,13 +75,22 @@ def get_northbound_flow_detail() -> dict:
             df = get_north_net_flow()
             if df is not None and len(df) > 0:
                 latest = df.tail(20)
-                result["trend"] = [
-                    {
-                        "date": str(row.get("date", row.get("日期", ""))),
-                        "net_flow": float(row.get("value", row.get("当日净流入", 0))) if not _is_nan(row.get("value", row.get("当日净流入", 0))) else 0
-                    }
-                    for _, row in latest.iterrows()
-                ]
+                result["trend"] = []
+                for _, row in latest.iterrows():
+                    # 兼容多种列名：value / 当日净流入 / 北向资金(亿) / 第一个数值列
+                    net_val = (
+                        row.get("value") or
+                        row.get("当日净流入") or
+                        row.get("北向资金(亿)") or
+                        row.get("北向资金") or
+                        # 找第一个非日期数值
+                        next((v for k, v in row.items() if isinstance(v, float) and not _is_nan(v)), None)
+                    )
+                    date_val = str(row.get("date") or row.get("日期") or "")
+                    result["trend"].append({
+                        "date": date_val,
+                        "net_flow": float(net_val) if net_val is not None and not _is_nan(net_val) else 0
+                    })
         except Exception:
             pass
 
