@@ -1,7 +1,7 @@
 """
-auto_extract 凌晨批量处理 cron — 每天 02:00 跑
+auto_extract 批量处理 cron — 每天 08:00 跑
 
-V7.6 新增：把白天对话收集的原始对话片段集中在凌晨统一提炼，降低白天 API 压力。
+V7.6 新增：把白天对话收集的原始对话片段集中在统一提炼，降低实时 API 压力。
 
 职责：
   1. 扫所有用户（data/*/memory/extract_queue.json）
@@ -9,8 +9,12 @@ V7.6 新增：把白天对话收集的原始对话片段集中在凌晨统一提
   3. 入 pending_insights 待审队列（同时走家庭主账号路由）
   4. 清空原队列
 
-建议 crontab：
-  0 2 * * * cd /opt/moneybag/backend && python -m scripts.auto_extract_cron >> /var/log/moneybag/auto_extract.log 2>&1
+注：如果队列为空（用户当天未产生新的待提炼条目），则跳过，属正常情况。
+    _extract_and_save_memory 在 AI 对话后实时处理，extract_queue 是冷备路径。
+
+实际 crontab（server）：
+  0 8 * * * cd /opt/moneybag/backend && set -a && . /opt/moneybag/backend/.env && set +a && \\
+    /opt/moneybag/venv/bin/python -m scripts.auto_extract_cron >> /var/log/moneybag/auto_extract.log 2>&1
 
 手动跑：
   cd backend && python -m scripts.auto_extract_cron
@@ -66,6 +70,11 @@ def main():
         users = [args.user]
     else:
         users = discover_users_with_queue()
+        if not users:
+            # 队列全空是正常情况：_extract_and_save_memory 已在对话后实时处理
+            print("队列非空用户：0 个（所有用户队列均为空，_extract_and_save_memory 已实时处理）")
+            print(f"===== 正常退出，无需批量提炼 =====")
+            return
         print(f"队列非空用户：{len(users)} 个 → {users}")
 
     if args.dry_run:
