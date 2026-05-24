@@ -3,13 +3,18 @@
 ============================================================
 意图分流中"非理财问题"需要实时信息时调用。
 
-降级链: 秘塔 Metaso（中文最好）→ wttr.in（天气专用兜底）
+降级链（按优先级）：
+  1. 秘塔 Metaso — 中文最好，需配置 METASO_API_KEY
+  2. 东方财富新闻搜索 — 无需 key，国内稳定，财经新闻质量高
+  3. Bing 中国搜索 — 免费兜底，结果质量较差
 
-配置: 环境变量 METASO_API_KEY（秘塔开放平台获取）
+配置: 环境变量 METASO_API_KEY（秘塔开放平台获取，可选）
 
 Invariant #5: 外部数据源走 infra/data_source
 """
 import os
+import re
+import json
 import httpx
 from infra.cache import MemoryCache
 
@@ -21,9 +26,9 @@ def _get_metaso_key() -> str:
 
 
 def search_web(query: str, limit: int = 5) -> list:
-    """联网搜索，返回 [{title, snippet, url}, ...]
+    """联网搜索，返回 [{title, snippet, url, date?}, ...]
 
-    降级链: 秘塔 → DuckDuckGo（免费无需Key）→ 空列表
+    降级链: 秘塔 → 东方财富 → Bing → 空列表
     """
     cached = _cache.get(f"search_{query}")
     if cached is not None:
@@ -31,7 +36,10 @@ def search_web(query: str, limit: int = 5) -> list:
 
     results = _search_metaso(query, limit)
     if not results:
-        results = _search_duckduckgo(query, limit)
+        results = _search_eastmoney(query, limit)
+    if not results:
+        results = _search_bing(query, limit)
+
     if results:
         _cache.set(f"search_{query}", results)
     return results
@@ -47,7 +55,6 @@ def search_weather(city: str) -> str:
         return cached
 
     try:
-        # wttr.in 支持中文城市名
         resp = httpx.get(
             f"https://wttr.in/{city}?format=%l:+%c+%t+%w+%h&lang=zh",
             timeout=8,
@@ -67,7 +74,6 @@ def _search_metaso(query: str, limit: int = 5) -> list:
     """秘塔搜索 API（官方: metaso.cn/api/v1/search）"""
     api_key = _get_metaso_key()
     if not api_key:
-        print("[SEARCH] METASO_API_KEY 未配置，尝试 DuckDuckGo")
         return []
 
     try:
@@ -81,15 +87,18 @@ def _search_metaso(query: str, limit: int = 5) -> list:
             data = resp.json()
             # 秘塔返回结构: {webpages: [{title, link, snippet, score}, ...]}
             items = data.get("webpages", [])
-            return [
+            results = [
                 {
                     "title": item.get("title", ""),
                     "snippet": item.get("snippet", "")[:200],
                     "url": item.get("link", ""),
                 }
                 for item in items[:limit]
-                if isinstance(item, dict)
+                if isinstance(item, dict) and item.get("title")
             ]
+            if results:
+                print(f"[SEARCH] Metaso: {len(results)} 条结果")
+            return results
         else:
             print(f"[SEARCH] Metaso {resp.status_code}: {resp.text[:200]}")
     except Exception as e:
@@ -98,18 +107,90 @@ def _search_metaso(query: str, limit: int = 5) -> list:
     return []
 
 
-def _search_duckduckgo(query: str, limit: int = 5) -> list:
-    """Bing 中国搜索（免费，无需 API Key，国内服务器可达）
+def _search_eastmoney(query: str, limit: int = 5) -> list:
+    """东方财富新闻搜索（无需 Key，国内服务器稳定可达）
 
-    通过 cn.bing.com 获取搜索结果。
+    适合财经新闻、政策、宏观、国际时事等查询。
+    """
+    try:
+        param = json.dumps({
+            "uid": "",
+            "keyword": query,
+            "type": ["cmsArticleWebOld"],
+            "client": "web",
+            "clientType": "web",
+            "clientVersion": "curr",
+            "param": {
+                "cmsArticleWebOld": {
+                    "from": 0,
+                    "size": limit,
+                    "returnFields": ["title", "content", "date", "url", "mediaName"]
+                }
+            }
+        }, ensure_ascii=False)
+
+        resp = httpx.get(
+            "https://search-api-web.eastmoney.com/search/jsonp",
+            params={"param": param, "cb": "cb"},
+            timeout=10,
+            headers={
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+                "Referer": "https://so.eastmoney.com/",
+            },
+        )
+        if resp.status_code != 200:
+            print(f"[SEARCH] EastMoney HTTP {resp.status_code}")
+            return []
+
+        # 去掉 JSONP 包装：cb({...})
+        m = re.search(r'cb\((.*)\)\s*$', resp.text, re.DOTALL)
+        if not m:
+            return []
+
+        data = json.loads(m.group(1))
+        articles = data.get("result", {}).get("cmsArticleWebOld", [])
+        if not isinstance(articles, list):
+            return []
+
+        results = []
+        for art in articles[:limit]:
+            title = re.sub(r'<[^>]+>', '', art.get("title", "")).strip()
+            snippet = re.sub(r'<[^>]+>', '', art.get("content", "")).strip()[:200]
+            url = art.get("url", "")
+            date = art.get("date", "")[:10]  # 只取日期部分
+            source = art.get("mediaName", "")
+
+            if not title or len(title) < 4:
+                continue
+            results.append({
+                "title": title,
+                "snippet": snippet,
+                "url": url,
+                "date": date,
+                "source": source,
+            })
+
+        if results:
+            print(f"[SEARCH] EastMoney: {len(results)} 条结果")
+        return results
+
+    except Exception as e:
+        print(f"[SEARCH] EastMoney failed: {e}")
+    return []
+
+
+def _search_bing(query: str, limit: int = 5) -> list:
+    """Bing 中国搜索兜底（免费，无需 API Key）
+
+    使用更精准的选择器，过滤导航/广告。
     """
     try:
         resp = httpx.get(
             "https://cn.bing.com/search",
-            params={"q": query, "setlang": "zh-cn", "count": str(limit)},
+            params={"q": query, "setlang": "zh-cn", "count": str(limit * 3)},
             timeout=10,
             headers={
-                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
                 "Accept": "text/html,application/xhtml+xml",
                 "Accept-Language": "zh-CN,zh;q=0.9",
             },
@@ -119,48 +200,48 @@ def _search_duckduckgo(query: str, limit: int = 5) -> list:
             print(f"[SEARCH] Bing HTTP {resp.status_code}")
             return []
 
-        # 简单 HTML 解析（不引入 BeautifulSoup 依赖）
-        import re
         html = resp.text
         results = []
 
-        # 提取所有 <h2> 中的链接作为搜索结果
-        # Bing 结构: <h2><a href="url" ...>title</a></h2>
-        h2_links = re.findall(
-            r'<h2[^>]*>\s*<a[^>]*href="([^"]*)"[^>]*>(.*?)</a>',
+        # Bing 自然结果结构：<li class="b_algo"><h2><a href="...">title</a></h2>
+        # 用更精准的 class="b_algo" 匹配，过滤广告/导航
+        algo_blocks = re.findall(
+            r'<li[^>]+class="[^"]*b_algo[^"]*"[^>]*>(.*?)</li>',
             html, re.DOTALL
         )
 
-        for url, title in h2_links[:limit]:
-            # 过滤非结果链接（广告、导航等）
-            if not url.startswith("http"):
+        for block in algo_blocks:
+            # 提取链接和标题
+            link_m = re.search(r'<h2[^>]*>\s*<a[^>]+href="([^"]+)"[^>]*>(.*?)</a>', block, re.DOTALL)
+            if not link_m:
                 continue
-            # 清理 HTML 标签和实体
-            title_clean = re.sub(r'<[^>]+>', '', title).strip()
-            title_clean = title_clean.replace("&#183;", "·").replace("&amp;", "&")
-            if not title_clean or len(title_clean) < 5:
+            url, title_raw = link_m.group(1), link_m.group(2)
+
+            # 只要 http(s) 链接，排除 Bing 内部
+            if not url.startswith("http") or "bing.com" in url:
                 continue
 
-            # 尝试在 title 附近找摘要
+            title = re.sub(r'<[^>]+>', '', title_raw).strip()
+            title = title.replace("&#183;", "·").replace("&amp;", "&").replace("&lt;", "<").replace("&gt;", ">")
+            if not title or len(title) < 5:
+                continue
+
+            # 摘要：找 <p class="b_lineclamp..."> 或 <div class="b_caption">
             snippet = ""
-            # 在整个 HTML 中找到这个链接后面的 <p> 标签
-            title_pos = html.find(title[:20])
-            if title_pos > 0:
-                nearby = html[title_pos:title_pos + 1000]
-                p_match = re.search(r'<p[^>]*>(.*?)</p>', nearby, re.DOTALL)
-                if p_match:
-                    snippet = re.sub(r'<[^>]+>', '', p_match.group(1)).strip()[:200]
+            snippet_m = re.search(r'<p[^>]+class="[^"]*b_lineclamp[^"]*"[^>]*>(.*?)</p>', block, re.DOTALL)
+            if not snippet_m:
+                snippet_m = re.search(r'<div[^>]+class="[^"]*b_caption[^"]*"[^>]*>.*?<p[^>]*>(.*?)</p>', block, re.DOTALL)
+            if snippet_m:
+                snippet = re.sub(r'<[^>]+>', '', snippet_m.group(1)).strip()[:200]
 
-            results.append({
-                "title": title_clean[:100],
-                "snippet": snippet,
-                "url": url,
-            })
+            results.append({"title": title[:100], "snippet": snippet, "url": url})
+            if len(results) >= limit:
+                break
 
         if results:
             print(f"[SEARCH] Bing: {len(results)} 条结果")
         else:
-            print("[SEARCH] Bing: 无结果（可能 HTML 结构变化）")
+            print("[SEARCH] Bing: 无结果（页面结构可能变化）")
         return results
 
     except Exception as e:
@@ -174,8 +255,12 @@ def format_search_for_prompt(results: list) -> str:
         return ""
     lines = ["以下是联网搜索到的实时信息："]
     for i, r in enumerate(results[:5], 1):
-        lines.append(f"{i}. {r.get('title', '')}")
+        title = r.get("title", "")
+        date = r.get("date", "")
+        source = r.get("source", "")
+        meta = f"（{date}，{source}）" if date and source else f"（{date}）" if date else f"（{source}）" if source else ""
+        lines.append(f"{i}. {title}{meta}")
         if r.get("snippet"):
             lines.append(f"   {r['snippet']}")
-    lines.append("\n请基于以上搜索结果回答用户问题。")
+    lines.append("\n请基于以上搜索结果回答用户问题，如信息不足请如实说明。")
     return "\n".join(lines)
