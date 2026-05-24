@@ -436,7 +436,10 @@ _showFundData(listEl,data);
 function _showFundData(listEl,data){
 const funds=data.funds||[];
 if(!funds.length){listEl.innerHTML='<div style="text-align:center;padding:20px;color:var(--text2)">暂无符合条件的基金</div>';return}
-listEl.innerHTML=`<div style="font-size:11px;color:var(--text2);margin-bottom:8px">共筛选 ${data.total} 只基金，显示 TOP ${funds.length}</div>
+// 大盘时机横幅
+const mt=data.market_timing||{};
+const timingBanner=mt.signal?`<div style="display:flex;align-items:center;gap:8px;padding:10px 12px;margin-bottom:12px;background:rgba(245,158,11,.06);border:1px solid rgba(245,158,11,.12);border-radius:10px"><span style="font-size:18px">${mt.signal}</span><div><div style="font-size:12px;font-weight:700;color:var(--text1)">大盘时机: ${mt.verdict}</div><div style="font-size:11px;color:var(--text2)">${mt.detail}</div></div></div>`:'';
+listEl.innerHTML=`${timingBanner}<div style="font-size:11px;color:var(--text2);margin-bottom:8px">共筛选 ${data.total} 只基金，显示 TOP ${funds.length}</div>
 ${funds.map((f,i)=>{
 const scoreColor=f.score>15?'var(--green)':f.score>5?'var(--accent)':'var(--red)';
 const r1y=f.returns['1y'];const r3y=f.returns['3y'];const rytd=f.returns.ytd;
@@ -445,7 +448,7 @@ return`<div style="display:flex;align-items:center;gap:10px;padding:10px 0;borde
 <div style="font-size:12px;color:var(--text2);min-width:20px;text-align:center;font-weight:700">${i+1}</div>
 <div style="flex:1;min-width:0">
 <div style="font-size:13px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${f.name}</div>
-<div style="font-size:11px;color:var(--text2);margin-top:2px">${f.code} · 费率${f.fee||'-'}</div></div>
+<div style="font-size:11px;color:var(--text2);margin-top:2px">${f.code} · 费率${f.fee||'-'}${f.timing_label?' · <b>'+f.timing_label+'</b>':''}</div></div>
 <div style="text-align:right;min-width:70px">
 <div style="font-size:14px;font-weight:800;color:${r1yColor}">${r1y!=null?(r1y>0?'+':'')+r1y+'%':'—'}</div>
 <div style="font-size:10px;color:var(--text2)">近1年</div></div>
@@ -486,6 +489,9 @@ if(listEl)listEl.innerHTML='<div style="text-align:center;padding:20px;color:var
 function _fillStockList(data){
 const stocks=data.stocks||[];
 const listEl=document.getElementById('stockPickList');if(!listEl)return;
+// 大盘时机横幅
+const mt=data.market_timing||{};
+const timingBanner=mt.signal?`<div style="display:flex;align-items:center;gap:8px;padding:10px 12px;margin-bottom:10px;background:rgba(245,158,11,.06);border:1px solid rgba(245,158,11,.12);border-radius:10px"><span style="font-size:18px">${mt.signal}</span><div><div style="font-size:12px;font-weight:700;color:var(--text1)">大盘时机: ${mt.verdict}</div><div style="font-size:11px;color:var(--text2)">${mt.detail}</div></div></div>`:'';
 // 展示 V3 动态权重元信息
 const metaEl=document.getElementById('stockScreenMeta');
 if(metaEl&&(data.regime||data.weights)){
@@ -500,7 +506,7 @@ metaEl.style.display='block';
 }
 if(!stocks.length){listEl.innerHTML='<div style="text-align:center;padding:20px;color:var(--text2)">'+(data.error||'暂无数据')+'</div>';return}
 window._stockScreenData=stocks;
-listEl.innerHTML=`<div style="font-size:11px;color:var(--text2);margin-bottom:8px">从 ${data.total} 只股票中筛选 TOP ${stocks.length}</div>
+listEl.innerHTML=`${timingBanner}<div style="font-size:11px;color:var(--text2);margin-bottom:8px">从 ${data.total} 只股票中筛选 TOP ${stocks.length}</div>
 <div style="display:grid;grid-template-columns:30px 1fr 70px 50px 32px;gap:4px;font-size:11px;color:var(--text2);font-weight:600;padding:6px 0;border-bottom:1px solid rgba(148,163,184,.1)">
 <div>#</div><div>股票</div><div style="text-align:right">涨跌</div><div style="text-align:right">评分</div><div></div></div>
 ${stocks.map((s,i)=>{
@@ -509,7 +515,7 @@ const scoreColor=s.score>65?'var(--green)':s.score>50?'var(--accent)':'var(--red
 return`<div style="display:grid;grid-template-columns:30px 1fr 70px 50px 32px;gap:4px;padding:8px 0;border-bottom:1px solid rgba(148,163,184,.04);align-items:center;cursor:pointer" onclick="showStockDetailModal(window._stockScreenData[${i}])">
 <div style="font-size:11px;color:var(--text2);font-weight:700">${i+1}</div>
 <div><div style="font-size:13px;font-weight:600">${s.name}</div>
-<div style="font-size:10px;color:var(--text2)">${s.code.replace(/^(sh|sz)/i,'')} · PE ${s.pe!=null?s.pe:'暂无'} · ${s.market_cap?s.market_cap+'亿':'-'}${s.roe?' · ROE'+s.roe+'%':''}${s.gross_margin?' · 毛利'+s.gross_margin+'%':''}</div></div>
+<div style="font-size:10px;color:var(--text2)">${s.code.replace(/^(sh|sz)/i,'')} · PE ${s.pe!=null?s.pe:'暂无'} · ${s.market_cap?s.market_cap+'亿':'-'}${s.roe?' · ROE'+s.roe+'%':''}${s.timing_label?' · <b>'+s.timing_label+'</b>':''}</div></div>
 <div style="text-align:right;font-size:13px;font-weight:700;color:${chgColor}">${s.change_pct!=null?(s.change_pct>0?'+':'')+s.change_pct+'%':'—'}</div>
 <div style="text-align:right;font-size:13px;font-weight:800;color:${scoreColor}">${s.score}</div>
 <button onclick="event.stopPropagation();showFundChart('${s.code.replace(/^(sh|sz)/i,'')}')" style="padding:2px 4px;font-size:9px;border:1px solid var(--accent);border-radius:3px;background:transparent;color:var(--accent);cursor:pointer">K线</button></div>${_stockTagsHTML(s)}`}).join('')}

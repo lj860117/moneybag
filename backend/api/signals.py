@@ -330,16 +330,21 @@ def api_backtest_portfolio(req: dict):
 
 @router.get("/api/fund-screen")
 def get_fund_screen(fund_type: str = "all", sort_by: str = "score", top_n: int = 20):
-    """基金智能筛选：多维打分排序 + DeepSeek 点评 TOP5"""
+    """基金智能筛选：多维打分排序 + DeepSeek 点评 TOP5 + 时机粗评"""
     result = screen_funds(fund_type, sort_by, top_n)
     if result.get("funds"):
         result["funds"] = comment_fund_picks(result["funds"])
+        # 给每只基金加时机粗评
+        for f in result["funds"]:
+            f["timing_label"] = _fund_timing_label(f)
+    # 大盘时机
+    result["market_timing"] = _get_market_timing_summary()
     return result
 
 
 @router.get("/api/stock-screen")
 def get_stock_screen(top_n: int = 50):
-    """AI多因子选股：30因子7维打分 V2 + DeepSeek 点评 TOP5（优先读凌晨缓存）"""
+    """AI多因子选股：30因子7维打分 V2 + DeepSeek 点评 TOP5 + 时机粗评"""
     # 优先读 cache_warmer 写入的文件缓存，避免每次实时计算（30-40秒）
     try:
         cache_fp = Path(os.environ.get("DATA_DIR", "data")) / "_cache" / "stock_screen_50.json"
@@ -348,6 +353,10 @@ def get_stock_screen(top_n: int = 50):
             if time.time() < payload.get("expires_at", 0):
                 data = payload.get("data", {})
                 data["from_cache"] = True
+                # 补充时机标签
+                for s in data.get("stocks", []):
+                    s["timing_label"] = _stock_timing_label(s)
+                data["market_timing"] = _get_market_timing_summary()
                 return data
     except Exception as e:
         print(f"[STOCK_SCREEN] 读文件缓存失败: {e}")
@@ -355,4 +364,98 @@ def get_stock_screen(top_n: int = 50):
     result = screen_stocks(top_n)
     if result.get("stocks"):
         result["stocks"] = comment_stock_picks(result["stocks"])
+        for s in result["stocks"]:
+            s["timing_label"] = _stock_timing_label(s)
+    result["market_timing"] = _get_market_timing_summary()
     return result
+
+
+# ============================================================
+# 时机粗评辅助函数
+# ============================================================
+
+def _get_market_timing_summary() -> dict:
+    """获取大盘时机摘要（复用 timing API 逻辑）"""
+    try:
+        from services.market_data import get_valuation_percentile, get_fear_greed_index
+        val = get_valuation_percentile() or {}
+        fgi = get_fear_greed_index() or {}
+        pct = val.get("percentile", 50)
+        fgi_score = fgi.get("score", 50)
+
+        # 综合评分（估值占60%，情绪占40%）
+        timing_score = pct * 0.6 + fgi_score * 0.4
+
+        if timing_score > 70:
+            signal = "🔴"
+            verdict = "谨慎观望"
+            detail = f"大盘偏贵（估值{pct:.0f}%分位），不宜追高"
+        elif timing_score > 50:
+            signal = "🟡"
+            verdict = "中性等待"
+            detail = f"估值{pct:.0f}%分位，可小额定投但别重仓"
+        elif timing_score > 30:
+            signal = "🟢"
+            verdict = "可以布局"
+            detail = f"估值{pct:.0f}%分位偏低，适合分批建仓"
+        else:
+            signal = "🟢🟢"
+            verdict = "积极买入"
+            detail = f"估值{pct:.0f}%分位极低，难得的布局机会"
+
+        return {
+            "signal": signal,
+            "verdict": verdict,
+            "detail": detail,
+            "valuation_pct": pct,
+            "fgi": fgi_score,
+            "fgi_level": fgi.get("level", ""),
+        }
+    except Exception as e:
+        print(f"[TIMING] market timing failed: {e}")
+        return {"signal": "⚪", "verdict": "数据加载中", "detail": "", "valuation_pct": 0, "fgi": 0}
+
+
+def _stock_timing_label(stock: dict) -> str:
+    """个股时机粗评 — 基于 value 维度评分 + PE"""
+    scores = stock.get("scores", {})
+    value_score = scores.get("value", 50) if isinstance(scores, dict) else 50
+    pe = stock.get("pe")
+
+    # value 维度 > 70 说明估值偏低（多因子已综合PE/PB/股息率）
+    if value_score >= 70:
+        return "💚 偏便宜"
+    elif value_score >= 45:
+        return "⚪ 合理"
+    else:
+        # PE 极高也标注
+        if pe and pe > 50:
+            return "🔴 偏贵"
+        return "🟡 略贵"
+
+
+def _fund_timing_label(fund: dict) -> str:
+    """基金时机粗评 — 基于近期回撤和收益趋势"""
+    returns = fund.get("returns", {})
+    r3m = returns.get("3m")  # 近3月收益
+    r1y = returns.get("1y")  # 近1年收益
+
+    # 近3月大跌（回撤）= 可能的买点
+    if r3m is not None:
+        if r3m < -10:
+            return "💚 回调买点"
+        elif r3m < -5:
+            return "💚 小幅回调"
+        elif r3m > 20:
+            return "🔴 短期过热"
+        elif r3m > 10:
+            return "🟡 涨幅较大"
+
+    # 近1年涨幅极高
+    if r1y is not None:
+        if r1y > 80:
+            return "🔴 涨幅过大"
+        elif r1y > 50:
+            return "🟡 注意止盈"
+
+    return "⚪ 正常"
