@@ -23,13 +23,15 @@ def _get_metaso_key() -> str:
 def search_web(query: str, limit: int = 5) -> list:
     """联网搜索，返回 [{title, snippet, url}, ...]
 
-    优先秘塔，失败返回空列表（不抛异常）。
+    降级链: 秘塔 → DuckDuckGo（免费无需Key）→ 空列表
     """
     cached = _cache.get(f"search_{query}")
     if cached is not None:
         return cached
 
     results = _search_metaso(query, limit)
+    if not results:
+        results = _search_duckduckgo(query, limit)
     if results:
         _cache.set(f"search_{query}", results)
     return results
@@ -65,7 +67,7 @@ def _search_metaso(query: str, limit: int = 5) -> list:
     """秘塔搜索 API（官方: metaso.cn/api/v1/search）"""
     api_key = _get_metaso_key()
     if not api_key:
-        print("[SEARCH] METASO_API_KEY 未配置，跳过搜索")
+        print("[SEARCH] METASO_API_KEY 未配置，尝试 DuckDuckGo")
         return []
 
     try:
@@ -94,6 +96,76 @@ def _search_metaso(query: str, limit: int = 5) -> list:
         print(f"[SEARCH] Metaso failed: {e}")
 
     return []
+
+
+def _search_duckduckgo(query: str, limit: int = 5) -> list:
+    """Bing 中国搜索（免费，无需 API Key，国内服务器可达）
+
+    通过 cn.bing.com 获取搜索结果。
+    """
+    try:
+        resp = httpx.get(
+            "https://cn.bing.com/search",
+            params={"q": query, "setlang": "zh-cn", "count": str(limit)},
+            timeout=10,
+            headers={
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+                "Accept": "text/html,application/xhtml+xml",
+                "Accept-Language": "zh-CN,zh;q=0.9",
+            },
+            follow_redirects=True,
+        )
+        if resp.status_code != 200:
+            print(f"[SEARCH] Bing HTTP {resp.status_code}")
+            return []
+
+        # 简单 HTML 解析（不引入 BeautifulSoup 依赖）
+        import re
+        html = resp.text
+        results = []
+
+        # 提取所有 <h2> 中的链接作为搜索结果
+        # Bing 结构: <h2><a href="url" ...>title</a></h2>
+        h2_links = re.findall(
+            r'<h2[^>]*>\s*<a[^>]*href="([^"]*)"[^>]*>(.*?)</a>',
+            html, re.DOTALL
+        )
+
+        for url, title in h2_links[:limit]:
+            # 过滤非结果链接（广告、导航等）
+            if not url.startswith("http"):
+                continue
+            # 清理 HTML 标签和实体
+            title_clean = re.sub(r'<[^>]+>', '', title).strip()
+            title_clean = title_clean.replace("&#183;", "·").replace("&amp;", "&")
+            if not title_clean or len(title_clean) < 5:
+                continue
+
+            # 尝试在 title 附近找摘要
+            snippet = ""
+            # 在整个 HTML 中找到这个链接后面的 <p> 标签
+            title_pos = html.find(title[:20])
+            if title_pos > 0:
+                nearby = html[title_pos:title_pos + 1000]
+                p_match = re.search(r'<p[^>]*>(.*?)</p>', nearby, re.DOTALL)
+                if p_match:
+                    snippet = re.sub(r'<[^>]+>', '', p_match.group(1)).strip()[:200]
+
+            results.append({
+                "title": title_clean[:100],
+                "snippet": snippet,
+                "url": url,
+            })
+
+        if results:
+            print(f"[SEARCH] Bing: {len(results)} 条结果")
+        else:
+            print("[SEARCH] Bing: 无结果（可能 HTML 结构变化）")
+        return results
+
+    except Exception as e:
+        print(f"[SEARCH] Bing failed: {e}")
+        return []
 
 
 def format_search_for_prompt(results: list) -> str:

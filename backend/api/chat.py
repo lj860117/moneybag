@@ -371,6 +371,30 @@ async def chat_analysis_stream(req: ChatRequest):
         except Exception:
             pass
 
+        # ★ 理财问题也需要联网搜索：当涉及时事/新闻/最新事件时
+        _EVENT_SEARCH_KW = [
+            "最近", "最新", "刚刚", "要上市", "上市了", "了吗", "了没", "了么",
+            "是真的吗", "怎么回事", "什么时候", "新闻", "消息", "发生",
+            "访华", "峰会", "制裁", "开战", "停火", "选举", "当选",
+            "发布", "声明", "降息", "加息", "降准", "暴跌", "暴涨",
+            "崩盘", "跳水", "熔断", "退市", "IPO", "收购", "合并",
+        ]
+        _need_finance_search = any(kw in user_msg for kw in _EVENT_SEARCH_KW)
+        if _need_finance_search:
+            try:
+                from services.web_search import search_web, format_search_for_prompt
+                # 搜索 query 优化：去掉尾部疑问词，取前30字作为搜索词
+                import re as _re
+                _search_query = _re.sub(r'[？?呢吗吧啊哦嘛]$', '', user_msg.strip())
+                _search_query = _re.sub(r'(有什么|怎么样|如何|是否|能不能|对.*影响).*$', '', _search_query)
+                _search_query = _search_query[:30] if len(_search_query) > 30 else _search_query
+                results = search_web(_search_query, limit=3)
+                if results:
+                    market_ctx += "\n\n## 联网搜索结果（实时）\n" + format_search_for_prompt(results)
+                    print(f"[CHAT-STREAM] 理财+联网搜索: q='{_search_query}', {len(results)} 条结果")
+            except Exception as e:
+                print(f"[CHAT-STREAM] finance search failed: {e}")
+
         system_prompt = _build_system_prompt(market_ctx, portfolio_ctx)
         print(f"[CHAT-STREAM] 理财模式, intent={intent['intent']}")
     else:
