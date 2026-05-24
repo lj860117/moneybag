@@ -557,10 +557,29 @@ def screen_stocks(top_n: int = 50) -> dict:
 
         # Step 0: 获取动态权重
         weights_data = _get_dynamic_weights()
-        regime = weights_data.pop("_regime", "未知") if "_regime" in weights_data else "未知"
+        regime = weights_data.pop("_regime", "") if "_regime" in weights_data else ""
         weight_reason = weights_data.pop("_reason", "") if "_reason" in weights_data else ""
         # 清理非权重 key
         DIM_WEIGHTS = {k: v for k, v in weights_data.items() if not k.startswith("_")}
+
+        # regime 为空或"未知"时，从 /api/regime 的独立计算结果降级
+        if not regime or regime == "未知":
+            try:
+                from services.market_data import get_valuation_percentile, get_fear_greed_index
+                val_pct = (get_valuation_percentile() or {}).get("percentile", 50)
+                fgi = (get_fear_greed_index() or {}).get("score", 50)
+                if val_pct >= 80 and fgi >= 60:
+                    regime = "牛市"
+                elif val_pct <= 30 and fgi <= 30:
+                    regime = "熊市"
+                elif 40 <= val_pct <= 70:
+                    regime = "震荡"
+                else:
+                    regime = "轮动"
+                print(f"[STOCK_SCREEN] regime 从市场数据推断: {regime} (val_pct={val_pct}, fgi={fgi})")
+            except Exception as _e:
+                regime = "震荡"  # 最终兜底，不显示"未知"
+                print(f"[STOCK_SCREEN] regime 推断失败，使用默认: {_e}")
         # 确保有所有必需的 key
         for k in DEFAULT_DIM_WEIGHTS:
             if k not in DIM_WEIGHTS:
