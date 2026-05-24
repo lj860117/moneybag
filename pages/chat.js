@@ -1,24 +1,14 @@
 // ---- AI聊天页 ----
 let chatModel='deepseek-v4-flash';
 let chatModelList=[];
-let chatMaster='plain'; // 当前选中大师
 async function loadModelList(){try{const r=await fetch(API_BASE+'/models',{signal:AbortSignal.timeout(5000)});if(r.ok){const d=await r.json();chatModelList=d.models||[];if(d.default)chatModel=localStorage.getItem('chatModel')||d.default}}catch{chatModelList=[{id:'deepseek-v4-flash',name:'DeepSeek V4',provider:'deepseek'}]}}
 function renderChat(){currentPage='chat';renderNav();
-// 恢复上次选中的大师
-chatMaster=localStorage.getItem('mb-chat-master')||'plain';
 const sugs=[
   {emoji:'📈',text:'现在适合入场吗？'},
   {emoji:'🛡️',text:'我的持仓风险大吗？'},
   {emoji:'💰',text:'智能定投怎么投？'},
   {emoji:'🌐',text:'今天市场怎么样？'},
   {emoji:'🏛️',text:'政策对我有啥影响？'}
-];
-const masters=[
-  {id:'plain',emoji:'🤖',name:'DeepSeek',desc:'纯AI',bg:'linear-gradient(135deg,#4FC3F7,#0277BD)'},
-  {id:'buffett',emoji:'🎩',name:'巴菲特',desc:'价值',bg:'linear-gradient(135deg,#FF8A65,#E64A19)'},
-  {id:'graham',emoji:'📚',name:'格雷厄姆',desc:'安全边际',bg:'linear-gradient(135deg,#5C6BC0,#283593)'},
-  {id:'lynch',emoji:'🔍',name:'林奇',desc:'实地研究',bg:'linear-gradient(135deg,#26A69A,#00695C)'},
-  {id:'taleb',emoji:'🌪',name:'塔勒布',desc:'反脆弱',bg:'linear-gradient(135deg,#7E57C2,#4527A0)'}
 ];
 const modelPill=chatModelList.length>1?`<span class="mb-pill mb-pill--ai" style="font-size:10px;cursor:pointer" onclick="showModelPicker()">${chatModelList.find(m=>m.id===chatModel)?.name||'DeepSeek'}</span>`:'';
 
@@ -31,25 +21,16 @@ $('#app').innerHTML=`<div class="chat-page" style="display:flex;flex-direction:c
       <div class="mb-avatar mb-avatar--sm mb-avatar--ai">🤖</div>
       <div>
         <b style="font-size:14px">AI 分析师</b>
-        <div style="display:flex;align-items:center;gap:4px;margin-top:1px"><span class="mb-live-dot"></span><span style="font-size:10px;color:var(--color-bull,#00E5A0)">在线</span></div>
+        <div style="display:flex;align-items:center;gap:4px;margin-top:1px"><span class="mb-live-dot"></span><span style="font-size:10px;color:var(--color-bull,#00E5A0)">在线</span><span style="font-size:10px;color:var(--text-tertiary,#7A8499);margin-left:4px">投资决策自动多视角会诊</span></div>
       </div>
     </div>
     <div class="mb-flex mb-gap-2">${modelPill}</div>
-  </div>
-
-  <!-- 4 大师切换 -->
-  <div class="mb-master-grid" style="display:grid;grid-template-columns:repeat(5,1fr);gap:6px;margin-bottom:10px">
-    ${masters.map(m=>`<button class="mb-master${m.id===chatMaster?' mb-master--active':''}" data-master="${m.id}" onclick="switchMaster('${m.id}')" style="display:flex;flex-direction:column;align-items:center;gap:3px;padding:8px 4px;border:1px solid ${m.id===chatMaster?'var(--color-brand-500,#FFB755)':'var(--border-subtle,rgba(255,255,255,.05))'};border-radius:var(--radius-lg,14px);background:var(--bg-elevated,#10131C);cursor:pointer;transition:border-color var(--duration-fast,.12s)">
-      <div class="mb-avatar mb-avatar--md" style="background:${m.bg}">${m.emoji}</div>
-      <b style="font-size:10px;color:var(--text-primary,#F0F2F7)">${m.name}</b>
-      <small style="font-size:9px;color:var(--text-tertiary,#7A8499)">${m.desc}</small>
-    </button>`).join('')}
   </div>
 </div>
 
 <!-- 对话区域 -->
 <div class="chat-messages" id="chatMsgs" style="flex:1;overflow-y:auto;padding:0 16px 16px;scroll-behavior:smooth">
-  <div class="mb-bubble mb-bubble--ai">你好！我是钱袋子 AI 分析师 🧠\n\n当前视角：<b data-current-master>${masters.find(m=>m.id===chatMaster)?.name||'巴菲特'}</b>\n\n问我关于市场行情、持仓、买卖建议等问题。所有建议仅供参考 😊</div>
+  <div class="mb-bubble mb-bubble--ai">你好！我是钱袋子 AI 分析师 🧠\n\n问投资决策问题（如"现在能入场吗"）我会自动多视角会诊；普通问题直接回答。所有建议仅供参考 😊</div>
   ${chatMessages.map(m=>m.role==='user'?`<div class="mb-bubble mb-bubble--user">${m.text}</div>`:`<div class="mb-bubble mb-bubble--ai">${m.text}${m.src?`<div style="margin-top:6px;font-size:10px;color:var(--text-tertiary,#7A8499)">${m.src==='ai'?'🤖 AI · DeepSeek':'📐 规则引擎'}</div>`:''}</div>`).join('')}
 </div>
 
@@ -66,22 +47,6 @@ $('#app').innerHTML=`<div class="chat-page" style="display:flex;flex-direction:c
   </div>
 </div>
 </div>`;scrollChat()}
-
-// 切换大师
-function switchMaster(id){
-  chatMaster=id;
-  localStorage.setItem('mb-chat-master',id);
-  // 更新 UI 高亮
-  document.querySelectorAll('.mb-master').forEach(el=>{
-    const isActive=el.dataset.master===id;
-    el.classList.toggle('mb-master--active',isActive);
-    el.style.borderColor=isActive?'var(--color-brand-500,#FFB755)':'var(--border-subtle,rgba(255,255,255,.05))';
-  });
-  // 更新欢迎语中的视角文字
-  const masterNameMap={plain:'DeepSeek',buffett:'巴菲特',graham:'格雷厄姆',lynch:'林奇',taleb:'塔勒布'};
-  const viewLabel=document.querySelector('[data-current-master]');
-  if(viewLabel) viewLabel.textContent=masterNameMap[id]||id;
-}
 
 // 模型选择弹窗
 function showModelPicker(){
@@ -104,26 +69,53 @@ sugs.forEach(s=>{s.disabled=locked;s.style.opacity=locked?'0.4':'1';s.style.poin
 async function sendChat(text){if(_chatSending)return;const inp=document.getElementById('chatIn');const msg=text||(inp?inp.value.trim():'');if(!msg)return;_setChatLock(true);if(inp)inp.value='';
 const sg=document.getElementById('chatSugs');if(sg)sg.style.display='none';
 chatMessages.push({role:'user',text:msg});appendMsg('user',msg);appendTyping();
-// 大师视角前缀（纯AI模式不加前缀）
-const masterNames={buffett:'巴菲特（价值投资）',graham:'格雷厄姆（安全边际）',lynch:'彼得·林奇（实地研究）',taleb:'塔勒布（反脆弱）'};
-const msgWithMaster=chatMaster==='plain'?msg:`（请用${masterNames[chatMaster]||chatMaster}视角回答）`+msg;
+// 直接发送原始消息（后端自动判断是否触发投资会诊）
+const msgToSend=msg;
 // 思考进度计时
 const isR1=chatModel.includes('reasoner');
 let _thinkSec=0;_thinkTimer=setInterval(()=>{_thinkSec++;const el=document.getElementById('chatTyp');if(!el)return;const tips=isR1?['🧠 深度推理模型思考中...','💭 正在多角度分析...','📊 综合大师观点中...','⏳ R1 深度思考需要 15-30 秒，请耐心等待']:['🤖 AI 分析中...','📊 查询实时数据...','💭 综合分析中...'];const tip=tips[Math.min(Math.floor(_thinkSec/5),tips.length-1)];el.innerHTML=`<span></span><span></span><span></span><div style="font-size:11px;color:var(--text2);margin-top:4px">${tip}（${_thinkSec}s）</div>`},1000);
 if(API_AVAILABLE){try{const p=loadPortfolio();
-const r=await fetch(API_BASE+'/chat/stream',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({message:msgWithMaster,model:chatModel,master:chatMaster,portfolio:p.holdings.length?p:null,userId:getProfileId()})});
+const r=await fetch(API_BASE+'/chat/stream',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({message:msgToSend,model:chatModel,portfolio:p.holdings.length?p:null,userId:getProfileId()})});
 rmTyping();
 if(r.ok&&r.body){
 // SSE 流式逐字渲染
 const el=document.getElementById('chatMsgs');if(!el)return;
 const botDiv=document.createElement('div');botDiv.className='mb-bubble mb-bubble--ai';botDiv.innerHTML='<span class="stream-cursor">▊</span>';el.appendChild(botDiv);scrollChat();
-let fullText='',source='ai',thinkText='',_r1Thinking=false;
+let fullText='',source='ai',thinkText='',_r1Thinking=false,panelHtml='';
 const reader=r.body.getReader();const dec=new TextDecoder();let buf='';
 while(true){const{done,value}=await reader.read();if(done)break;
 buf+=dec.decode(value,{stream:true});
 const lines=buf.split('\n');buf=lines.pop()||'';
 for(const line of lines){if(!line.startsWith('data: '))continue;
 try{const d=JSON.parse(line.slice(6));if(d.source)source=d.source;
+// ★ 投资会诊面板事件
+if(d.type==='panel'&&d.perspectives){
+  panelHtml=_renderPanelCards(d.perspectives);
+  botDiv.innerHTML=panelHtml+'<div class="panel-synthesis"><span class="stream-cursor">▊</span></div>';scrollChat();continue;
+}
+// 流式文本（普通模式 或 会诊综合判断）
+if(d.type==='stream'||d.delta){
+const delta=d.delta||'';
+if(delta){fullText+=delta;
+  if(panelHtml){
+    botDiv.innerHTML=panelHtml+'<div class="panel-synthesis" style="margin-top:12px;padding:12px;background:rgba(255,183,85,.06);border:1px solid rgba(255,183,85,.15);border-radius:12px"><div style="font-size:11px;font-weight:700;color:var(--color-brand-500,#FFB755);margin-bottom:6px">🤖 综合判断</div><div style="font-size:13px;line-height:1.8;color:var(--text-primary,#F0F2F7)">'+fullText+'</div></div><span class="stream-cursor">▊</span>';
+  }else{
+    const thinkBlock=thinkText?`<details style="font-size:11px;color:var(--text2);margin-bottom:8px;border:1px solid var(--bg3);border-radius:8px;padding:6px 8px"><summary style="cursor:pointer;opacity:0.7">🧠 查看思考过程</summary><div style="margin-top:4px;white-space:pre-wrap;opacity:0.6">${thinkText}</div></details>`:'';
+    botDiv.innerHTML=thinkBlock+fullText+'<span class="stream-cursor">▊</span>';
+  }
+  scrollChat();
+}
+if(d.done){
+  if(panelHtml){
+    botDiv.innerHTML=panelHtml+'<div class="panel-synthesis" style="margin-top:12px;padding:12px;background:rgba(255,183,85,.06);border:1px solid rgba(255,183,85,.15);border-radius:12px"><div style="font-size:11px;font-weight:700;color:var(--color-brand-500,#FFB755);margin-bottom:6px">🤖 综合判断</div><div style="font-size:13px;line-height:1.8;color:var(--text-primary,#F0F2F7)">'+fullText+'</div></div><div class="src-tag">🎯 投资会诊 · 多视角分析</div>';
+  }else{
+    const thinkBlock=thinkText?`<details style="font-size:11px;color:var(--text2);margin-bottom:8px;border:1px solid var(--bg3);border-radius:8px;padding:6px 8px"><summary style="cursor:pointer;opacity:0.7">🧠 查看思考过程</summary><div style="margin-top:4px;white-space:pre-wrap;opacity:0.6">${thinkText}</div></details>`:'';
+    botDiv.innerHTML=thinkBlock+fullText+`<div class="src-tag">${source==='ai'?'🤖 AI · DeepSeek':source==='panel'?'🎯 投资会诊':'📐 规则引擎 · 实时数据'}</div>`;
+  }
+  scrollChat();
+}
+continue;
+}
 if(d.delta){
 // R1: phase=thinking 是思考过程，phase=answering 是正式回答
 if(d.phase==='thinking'){
@@ -153,6 +145,20 @@ let _thinkTimer=null;
 function appendTyping(){const el=document.getElementById('chatMsgs');if(!el)return;const d=document.createElement('div');d.className='chat-typing';d.id='chatTyp';d.innerHTML='<span></span><span></span><span></span>';el.appendChild(d);scrollChat()}
 function rmTyping(){if(_thinkTimer){clearInterval(_thinkTimer);_thinkTimer=null}const el=document.getElementById('chatTyp');if(el)el.remove()}
 function scrollChat(){const el=document.getElementById('chatMsgs');if(el)setTimeout(()=>el.scrollTop=el.scrollHeight,50)}
+
+// ---- 投资会诊面板卡片渲染 ----
+function _renderPanelCards(perspectives){
+  if(!perspectives||!perspectives.length)return '';
+  const cards=perspectives.map(p=>`<div style="padding:10px 12px;background:var(--bg-elevated,#10131C);border:1px solid var(--border-subtle,rgba(255,255,255,.08));border-radius:10px">
+    <div style="display:flex;align-items:center;gap:6px;margin-bottom:4px">
+      <span style="font-size:16px">${p.emoji}</span>
+      <b style="font-size:12px;color:var(--text-primary,#F0F2F7)">${p.name}</b>
+      <span style="font-size:10px;color:var(--text-tertiary,#7A8499)">${p.focus}</span>
+    </div>
+    <div style="font-size:12px;line-height:1.7;color:var(--text-secondary,#B8BCC8)">${p.text}</div>
+  </div>`).join('');
+  return `<div style="display:flex;flex-direction:column;gap:8px;margin-bottom:4px">${cards}</div>`;
+}
 
 // ---- 白话解释弹窗（数据驱动，避免 onclick 引号冲突）----
 const _EXPLAINS={};

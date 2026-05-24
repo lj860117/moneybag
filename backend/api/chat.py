@@ -246,6 +246,66 @@ async def chat_analysis_stream(req: ChatRequest):
     if not is_finance:
         is_finance = any(kw in user_msg for kw in _FINANCE_KEYWORDS)
 
+    # ★ 投资决策意图检测 — 触发会诊面板
+    _PANEL_INTENTS = {"timing", "take_profit", "allocation", "portfolio_doctor"}
+    _PANEL_KEYWORDS = ["入场", "进场", "能买", "该买", "适合买", "抄底",
+                       "该卖", "减仓", "止盈", "止损", "加仓", "能入",
+                       "怎么配置", "资产配置", "现在适合", "要不要买",
+                       "能不能买", "值得买", "适合入", "能抄底"]
+    is_panel = (intent["intent"] in _PANEL_INTENTS or
+                any(kw in user_msg for kw in _PANEL_KEYWORDS))
+
+    if is_panel:
+        # ---- 投资会诊模式：多大师面板 + LLM 综合 ----
+        print(f"[CHAT-STREAM] ★ 投资会诊模式, intent={intent['intent']}")
+        try:
+            from services.panel_advisor import generate_panel
+            panel = generate_panel(uid, user_msg)
+            perspectives = panel["perspectives"]
+            synthesis_prompt = panel["synthesis_prompt"]
+
+            async def _panel_stream():
+                # 1. 先发送面板数据（前端渲染为卡片）
+                yield f"data: {json.dumps({'type': 'panel', 'perspectives': perspectives, 'done': False}, ensure_ascii=False)}\n\n"
+
+                # 2. 流式发送 AI 综合判断
+                try:
+                    from services.llm_gateway import LLMGateway
+                    gw = LLMGateway.instance()
+                    for chunk in gw.stream_sync(
+                        user_msg,
+                        system=synthesis_prompt,
+                        model_tier="llm_light",
+                        user_id=uid,
+                        module="panel_synthesis",
+                        max_tokens=300,
+                    ):
+                        if chunk.get("fallback"):
+                            # LLM 不可用，用简单结论
+                            direction = panel.get("data_summary", "")
+                            yield f"data: {json.dumps({'type': 'stream', 'delta': '综合来看，建议观望为主，等信号更明确再做决定。', 'done': False}, ensure_ascii=False)}\n\n"
+                            break
+                        if chunk.get("done"):
+                            break
+                        delta = chunk.get("delta", "")
+                        phase = chunk.get("phase", "answering")
+                        if phase == "thinking":
+                            continue
+                        if delta:
+                            yield f"data: {json.dumps({'type': 'stream', 'delta': delta, 'done': False}, ensure_ascii=False)}\n\n"
+                except Exception as e:
+                    print(f"[PANEL] synthesis stream failed: {e}")
+                    yield f"data: {json.dumps({'type': 'stream', 'delta': '综合判断生成失败，请参考上方各视角观点。', 'done': False}, ensure_ascii=False)}\n\n"
+
+                # 3. 结束
+                yield f"data: {json.dumps({'type': 'stream', 'delta': '', 'done': True, 'served_by': 'panel'}, ensure_ascii=False)}\n\n"
+
+            return StreamingResponse(_panel_stream(), media_type="text/event-stream",
+                                     headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
+        except Exception as e:
+            print(f"[CHAT-STREAM] panel generation failed, falling through to normal: {e}")
+            # 面板生成失败，降级到普通 LLM 回答
+
     if is_finance:
         # ---- 理财模式：完整分析 ----
 
