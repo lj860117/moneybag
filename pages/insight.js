@@ -439,9 +439,33 @@ _showFundData(listEl,data);
 function _showFundData(listEl,data){
 const funds=data.funds||[];
 if(!funds.length){listEl.innerHTML='<div style="text-align:center;padding:20px;color:var(--text2)">暂无符合条件的基金</div>';return}
-// 大盘时机横幅
+// 大盘时机横幅（选基版，加 regime_hint 和 style_timing 行业流动提示）
 const mt=data.market_timing||{};
-const timingBanner=mt.signal?`<div style="display:flex;align-items:center;gap:8px;padding:10px 12px;margin-bottom:12px;background:rgba(245,158,11,.06);border:1px solid rgba(245,158,11,.12);border-radius:10px"><span style="font-size:18px">${mt.signal}</span><div><div style="font-size:12px;font-weight:700;color:var(--text1)">大盘时机: ${mt.verdict}</div><div style="font-size:11px;color:var(--text2)">${mt.detail}</div></div></div>`:'';
+// regime_hint 来自接口（今日加了这个字段）
+const regimeHintFund = mt.regime_hint || '';
+// style_timing：高位/低位行业
+const stFund = data.style_timing || {};
+const stylesFund = stFund.styles || [];
+const highFund = stylesFund.filter(s=>(s.avg_3m||0)>12).map(s=>s.style).slice(0,3);
+const lowFund  = stylesFund.filter(s=>(s.avg_3m||0)<-2).map(s=>s.style).slice(0,3);
+let styleHintFund = '';
+if(highFund.length||lowFund.length){
+  const p=[];
+  if(highFund.length) p.push(`高位: ${highFund.join('/')}`);
+  if(lowFund.length)  p.push(`低估: ${lowFund.join('/')}`);
+  styleHintFund = p.join('　');
+}
+const timingBanner=mt.signal?`<div style="padding:10px 12px;margin-bottom:12px;background:rgba(245,158,11,.06);border:1px solid rgba(245,158,11,.12);border-radius:10px">
+  <div style="display:flex;align-items:center;gap:8px">
+    <span style="font-size:18px">${mt.signal}</span>
+    <div>
+      <div style="font-size:12px;font-weight:700;color:var(--text1)">大盘时机: ${mt.verdict}</div>
+      <div style="font-size:11px;color:var(--text2)">${mt.detail}</div>
+    </div>
+  </div>
+  ${regimeHintFund?`<div style="font-size:11px;color:var(--color-brand-400,#FFB755);margin-top:4px;line-height:1.6">${regimeHintFund}</div>`:''}
+  ${styleHintFund?`<div style="font-size:10px;color:var(--text2);margin-top:2px;opacity:0.8">${styleHintFund}</div>`:''}
+</div>`:'';
 const qualityNote=data.quality_note?`<div style="font-size:11px;color:var(--green);margin-bottom:6px;padding:4px 8px;background:rgba(16,185,129,.06);border-radius:6px">🛡️ ${data.quality_note}</div>`:'';
 listEl.innerHTML=`${timingBanner}${qualityNote}<div style="font-size:11px;color:var(--text2);margin-bottom:8px">共筛选 ${data.total} 只基金，显示 TOP ${funds.length}</div>
 ${funds.map((f,i)=>{
