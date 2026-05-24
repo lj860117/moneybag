@@ -67,7 +67,48 @@ def add_transaction(req: TransactionRequest):
         "amount": tx.get("amount", 0),
     })
     save_user(user)
+
+    # 同步持仓到 fund_holdings 文件（供 cron 盯盘/晨报使用）
+    try:
+        _sync_fund_holdings_file(user)
+    except Exception as e:
+        print(f"[PORTFOLIO] fund_holdings 同步失败（不影响交易）: {e}")
+
     return {"status": "ok", "transaction": tx}
+
+
+def _sync_fund_holdings_file(user: dict):
+    """将 portfolio.transactions 聚合后写入 fund_holdings_{userId}.json
+
+    凌晨 cron（night_worker/stock_monitor）读此文件做持仓诊断和盯盘。
+    每次交易操作后自动同步，保证 cron 数据不滞后。
+    """
+    from services.fund_monitor import save_fund_holdings
+
+    user_id = user.get("userId", "")
+    if not user_id:
+        return
+
+    txs = user.get("portfolio", {}).get("transactions", [])
+    if not txs:
+        save_fund_holdings([], user_id)
+        return
+
+    result = calc_holdings_from_transactions(txs)
+    current = result.get("current_holdings", [])
+
+    # 转换为 fund_monitor 格式：code, name, shares, cost
+    holdings_for_cron = []
+    for h in current:
+        if h.get("shares", 0) > 0:
+            holdings_for_cron.append({
+                "code": h["code"],
+                "name": h.get("name", ""),
+                "shares": round(h["shares"], 2),
+                "cost": round(h.get("avgNav", 0), 4),
+            })
+
+    save_fund_holdings(holdings_for_cron, user_id)
 
 
 @router.put("/api/portfolio/transaction/{tx_id}")
@@ -83,6 +124,10 @@ def update_transaction(tx_id: str, req: TransactionRequest):
             updated["id"] = tx_id
             p["transactions"][i] = updated
             save_user(user)
+            try:
+                _sync_fund_holdings_file(user)
+            except Exception:
+                pass
             return {"status": "ok", "transaction": updated}
 
     raise HTTPException(404, f"Transaction {tx_id} not found")
@@ -103,9 +148,11 @@ def delete_transaction(tx_id: str, userId: str = ""):
         raise HTTPException(404, f"Transaction {tx_id} not found")
 
     save_user(user)
+    try:
+        _sync_fund_holdings_file(user)
+    except Exception:
+        pass
     return {"status": "ok"}
-
-
 @router.get("/api/portfolio/history")
 def get_transaction_history(userId: str = ""):
     """获取交易流水历史"""

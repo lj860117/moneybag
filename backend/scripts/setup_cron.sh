@@ -24,7 +24,7 @@ declare -a CRON_JOBS=(
     "10 8 * * * cd $BACKEND_DIR && python scripts/daily_reflection_cron.py >> logs/daily_reflection.log 2>&1"
     "30 8 * * 1-5 cd $BACKEND_DIR && python scripts/night_worker.py --push-only >> logs/night.log 2>&1"
     "*/10 9,10,11,13,14 * * 1-5 cd $BACKEND_DIR && python scripts/stock_monitor_cron.py >> logs/stock_monitor.log 2>&1"
-    "30 15 * * * cd $BACKEND_DIR && python scripts/stock_monitor_cron.py --close >> logs/stock_monitor.log 2>&1"
+    "30 15 * * 1-5 cd $BACKEND_DIR && python scripts/stock_monitor_cron.py --close >> logs/stock_monitor.log 2>&1"
     "30 15 * * 5 cd $BACKEND_DIR && python scripts/weekly_review_cron.py >> logs/weekly_review.log 2>&1"
     "0 21 * * 0 cd $BACKEND_DIR && python scripts/weekly_plan_cron.py >> logs/weekly_plan.log 2>&1"
     "0 4 1 * * cd $BACKEND_DIR && python scripts/memory_archive_cron.py >> logs/memory_archive.log 2>&1"

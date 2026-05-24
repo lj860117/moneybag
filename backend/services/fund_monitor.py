@@ -268,7 +268,8 @@ def get_fund_nav_history(code: str, days: int = 60) -> list:
                     return result
         except Exception as te:
             print(f"[FUND_MONITOR] {code} Tushare 也失败: {te}")
-        return _nav_cache.get(cache_key, {}).get("data", [])
+        cached_fallback = _nav_cache.get(cache_key)
+        return cached_fallback.get("data", []) if isinstance(cached_fallback, dict) else []
 
 
 def calc_risk_metrics(nav_list: list) -> dict:

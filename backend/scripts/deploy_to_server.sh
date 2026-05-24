@@ -178,32 +178,57 @@ else
     echo "  ✅ 服务已重启"
 fi
 
-# ---- 6. 检查 night_worker cron（MB-004）----
-echo "[6/7] 检查 night_worker cron 配置（MB-004）..."
+# ---- 6. 检查定时任务 cron ----
+echo "[6/7] 检查 cron 配置..."
 if [ "$USE_PASSWORD_LOGIN" = true ]; then
     echo "  ⚠️  密码登录跳过 cron 自动检查"
-    echo "  👉 请手动检查：ssh $REMOTE_USER@$SERVER 'crontab -l | grep night_worker'"
+    echo "  👉 请手动检查：ssh $REMOTE_USER@$SERVER 'crontab -l'"
+    echo "  👉 确认包含：night_worker / stock_monitor --close / weekly_review_cron"
 else
     $SSH "
 CRON_LINE='0 1 * * * cd $REMOTE_PATH/backend && /opt/moneybag/venv/bin/python scripts/night_worker.py >> /opt/moneybag/logs/night.log 2>&1'
 PUSH_CRON_LINE='30 8 * * 1-5 cd $REMOTE_PATH/backend && /opt/moneybag/venv/bin/python scripts/night_worker.py --push-only >> /opt/moneybag/logs/night.log 2>&1'
+WEEKLY_CRON_LINE='30 15 * * 5 cd $REMOTE_PATH/backend && /opt/moneybag/venv/bin/python scripts/weekly_review_cron.py >> /opt/moneybag/logs/weekly_review.log 2>&1'
+CLOSE_CRON_LINE='30 15 * * 1-5 cd $REMOTE_PATH/backend && /opt/moneybag/venv/bin/python scripts/stock_monitor_cron.py --close >> /opt/moneybag/logs/stock_monitor.log 2>&1'
+
+# night_worker
 EXISTING=\$(crontab -l 2>/dev/null | grep -c 'night_worker' || echo 0)
 if [ \"\$EXISTING\" -eq 0 ]; then
-    echo '  [MB-004] 添加 night_worker cron...'
+    echo '  添加 night_worker cron...'
     (crontab -l 2>/dev/null; echo \"\$CRON_LINE\"; echo \"\$PUSH_CRON_LINE\") | crontab -
-    echo '  ✅ cron 已添加（含 08:30 兜底推送）'
+    echo '  ✅ night_worker cron 已添加'
 else
-    # 检查是否有 --push-only 兜底 cron
     PUSH_EXISTING=\$(crontab -l 2>/dev/null | grep -c 'push-only' || echo 0)
     if [ \"\$PUSH_EXISTING\" -eq 0 ]; then
-        echo '  [MB-004] 补充 08:30 兜底推送 cron...'
         (crontab -l 2>/dev/null; echo \"\$PUSH_CRON_LINE\") | crontab -
-        echo '  ✅ 兜底推送 cron 已添加'
+        echo '  ✅ 兜底推送 cron 已补充'
     else
-        echo '  ✅ night_worker cron 已存在（含兜底推送）'
+        echo '  ✅ night_worker cron 已存在'
     fi
 fi
-crontab -l | grep -E 'night_worker|stock_monitor|cache_warmer' || echo '  (无相关 cron 条目)'
+
+# weekly_review_cron（周五15:30推送周报）
+WEEKLY_EXISTING=\$(crontab -l 2>/dev/null | grep -c 'weekly_review_cron' || echo 0)
+if [ \"\$WEEKLY_EXISTING\" -eq 0 ]; then
+    echo '  添加 weekly_review_cron...'
+    (crontab -l 2>/dev/null; echo \"\$WEEKLY_CRON_LINE\") | crontab -
+    echo '  ✅ 周报 cron 已添加（周五 15:30）'
+else
+    echo '  ✅ weekly_review_cron 已存在'
+fi
+
+# stock_monitor --close（工作日15:30收盘复盘）
+CLOSE_EXISTING=\$(crontab -l 2>/dev/null | grep -c 'stock_monitor.*close' || echo 0)
+if [ \"\$CLOSE_EXISTING\" -eq 0 ]; then
+    echo '  添加 stock_monitor --close cron...'
+    (crontab -l 2>/dev/null; echo \"\$CLOSE_CRON_LINE\") | crontab -
+    echo '  ✅ 收盘复盘 cron 已添加（工作日 15:30）'
+else
+    echo '  ✅ stock_monitor --close 已存在'
+fi
+
+echo '  --- 当前 cron 任务 ---'
+crontab -l | grep -E 'night_worker|stock_monitor|weekly_review|cache_warmer' || echo '  (无相关 cron 条目)'
 "
 fi
 

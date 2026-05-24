@@ -194,8 +194,8 @@ class Steward:
         # 清理调试信息防止泄露（与 review() 一致）
         if ctx.final_reasoning:
             ctx.final_reasoning = _sanitize_reasoning_for_user(ctx.final_reasoning)
-        if ctx.reasoning:
-            ctx.reasoning = _sanitize_reasoning_for_user(ctx.reasoning)
+        if ctx.llm_reasoning:
+            ctx.llm_reasoning = _sanitize_reasoning_for_user(ctx.llm_reasoning)
         return ctx.to_user_response()
 
     def briefing(self, user_id: str) -> dict:
@@ -358,8 +358,8 @@ class Steward:
         # 【FIX #2】清理调试信息防止泄露
         if ctx.final_reasoning:
             ctx.final_reasoning = _sanitize_reasoning_for_user(ctx.final_reasoning)
-        if ctx.reasoning:
-            ctx.reasoning = _sanitize_reasoning_for_user(ctx.reasoning)
+        if ctx.llm_reasoning:
+            ctx.llm_reasoning = _sanitize_reasoning_for_user(ctx.llm_reasoning)
         return ctx.to_user_response()
 
     def briefing_history(self, user_id: str, days: int = 7) -> list:
