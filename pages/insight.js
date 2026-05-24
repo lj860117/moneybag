@@ -521,7 +521,29 @@ const regimeZh=_regimeMap[regime]||regime;
 const weights=data.weights||{};
 const _wMap={'value':'价值','growth':'成长','quality':'质量','momentum':'动量','risk':'风险','liquidity':'流动性','sentiment':'舆情'};
 const wText=Object.entries(weights).map(([k,v])=>`${_wMap[k]||k}:${v}%`).join(' · ');
-metaEl.innerHTML=`🧠 市场判断: <b>${regimeZh}</b> | 动态权重: ${wText}`;
+
+// ★ 行业流动提示：来自 market_timing.regime_hint 或 style_timing
+const regimeHint = mt.regime_hint || '';
+// style_timing：高位/低位行业
+const st = data.style_timing || {};
+const styles = st.styles || [];
+const highStyles = styles.filter(s=>(s.avg_3m||0) > 12).map(s=>s.style).slice(0,3);
+const lowStyles  = styles.filter(s=>(s.avg_3m||0) < -2).map(s=>s.style).slice(0,3);
+let styleHint = '';
+if(highStyles.length || lowStyles.length){
+  const parts=[];
+  if(highStyles.length) parts.push(`高位: ${highStyles.join('/')}（涨多）`);
+  if(lowStyles.length)  parts.push(`低估: ${lowStyles.join('/')}（潜力）`);
+  styleHint = parts.join('　');
+}
+
+metaEl.innerHTML=`<div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap">
+  <span>🧠 市场判断: <b>${regimeZh}</b></span>
+  <span style="opacity:0.4">|</span>
+  <span style="font-size:10px;color:var(--text2)">动态权重: ${wText}</span>
+</div>
+${regimeHint?`<div style="font-size:11px;color:var(--color-brand-400,#FFB755);margin-top:3px;line-height:1.6">${regimeHint}</div>`:''}
+${styleHint?`<div style="font-size:10px;color:var(--text2);margin-top:2px;opacity:0.85">${styleHint}</div>`:''}`;
 metaEl.style.display='block';
 }
 if(!stocks.length){listEl.innerHTML='<div style="text-align:center;padding:20px;color:var(--text2)">'+(data.error||'暂无数据')+'</div>';return}

@@ -411,6 +411,7 @@ def get_stock_screen(top_n: int = 50, userId: str = ""):
         _enrich_stock_labels(result["stocks"])
         _enrich_stock_holding_relation(result["stocks"], userId)
     result["market_timing"] = _get_market_timing_summary()
+    result["style_timing"] = _get_style_timing_summary()  # 行业/风格流动情况
     result["my_stock_summary"] = _get_my_stock_summary(userId)
     return result
 
@@ -448,10 +449,31 @@ def _get_market_timing_summary() -> dict:
             verdict = "积极买入"
             detail = f"估值{pct:.0f}%分位极低，难得的布局机会"
 
+        # ★ regime 对应的行业流动提示（让用户明白"轮动/牛市"意味着什么）
+        regime_hints = {
+            "牛市":   "全面上涨行情，科技、消费、金融普涨，追随龙头即可",
+            "熊市":   "系统性下跌，防守为主，关注高股息、现金流优质股",
+            "震荡":   "指数区间震荡，精选个股，低吸高抛，短线为主",
+            "轮动":   "资金在行业间流动，AI/科技已高位，医药/消费/金融红利估值偏低，关注补涨方向",
+            "rotation": "资金在行业间流动，关注尚未启动的低估板块",
+        }
+        # 从接口的 regime 字段读（需要传入）—— 这里先用估值+恐贪推断 regime 描述
+        if pct >= 80 and fgi_score >= 60:
+            regime_key = "牛市"
+        elif pct <= 30 and fgi_score <= 30:
+            regime_key = "熊市"
+        elif 40 <= pct <= 70:
+            regime_key = "震荡"
+        else:
+            regime_key = "轮动"
+        regime_hint = regime_hints.get(regime_key, "")
+
         return {
             "signal": signal,
             "verdict": verdict,
             "detail": detail,
+            "regime": regime_key,
+            "regime_hint": regime_hint,
             "valuation_pct": pct,
             "fgi": fgi_score,
             "fgi_level": fgi.get("level", ""),
