@@ -330,16 +330,59 @@ def api_backtest_portfolio(req: dict):
 
 @router.get("/api/fund-screen")
 def get_fund_screen(fund_type: str = "all", sort_by: str = "score", top_n: int = 20, userId: str = ""):
-    """基金智能筛选：多维打分排序 + 质量过滤 + 用户持仓去重 + 时机粗评 + 行业解读"""
+    """基金智能筛选：多维打分排序 + 质量过滤 + 用户持仓去重 + 时机粗评 + 行业解读 + 持仓关联分析"""
     result = screen_funds(fund_type, sort_by, top_n, user_id=userId)
     if result.get("funds"):
         result["funds"] = comment_fund_picks(result["funds"])
-        from services.industry_templates import enrich_fund_with_industry
+        from services.industry_templates import enrich_fund_with_industry, get_fund_industry
         for f in result["funds"]:
             f["timing_label"] = _fund_timing_label(f)
             enrich_fund_with_industry(f)
+
+        # ★ 持仓关联分析：标注推荐基金与用户现有持仓的重合/互补程度
+        if userId:
+            try:
+                from services.fund_monitor import load_fund_holdings
+                my_funds = load_fund_holdings(userId) or []
+                if my_funds:
+                    # 提取已持仓的行业标签
+                    my_tags = set()
+                    my_codes = {f.get("code", "") for f in my_funds}
+                    for mf in my_funds:
+                        match = get_fund_industry(mf.get("name", ""))
+                        if match.get("tag"):
+                            my_tags.add(match["tag"])
+
+                    for f in result["funds"]:
+                        code = f.get("code", "")
+                        f_tag = f.get("industry_tag", "")
+
+                        if code in my_codes:
+                            f["holding_relation"] = "🔵 已持仓"
+                            f["holding_hint"] = "你已经持有这只基金"
+                        elif f_tag and f_tag in my_tags:
+                            f["holding_relation"] = "🟡 风格重叠"
+                            f["holding_hint"] = f"你已有{f_tag}方向的基金，买入会加重该方向集中度"
+                        elif f_tag:
+                            f["holding_relation"] = "🟢 新敞口"
+                            f["holding_hint"] = f"你目前没有{f_tag}方向，可作为分散配置考虑"
+                        else:
+                            f["holding_relation"] = "⚪ 未分类"
+                            f["holding_hint"] = "无法判断与持仓关系，请自行评估"
+
+                    # 在结果摘要里加持仓概览
+                    result["my_holdings_summary"] = {
+                        "count": len(my_funds),
+                        "tags": sorted(my_tags),
+                        "hint": f"你已持有 {len(my_funds)} 只基金，覆盖方向：{', '.join(sorted(my_tags)) or '未分类'}",
+                    }
+            except Exception as e:
+                print(f"[FUND_SCREEN] holding_relation failed: {e}")
+
     # 大盘时机
     result["market_timing"] = _get_market_timing_summary()
+    # ★ 行业/风格估值分位（改动A）
+    result["style_timing"] = _get_style_timing_summary()
     return result
 
 
@@ -413,6 +456,98 @@ def _get_market_timing_summary() -> dict:
     except Exception as e:
         print(f"[TIMING] market timing failed: {e}")
         return {"signal": "⚪", "verdict": "数据加载中", "detail": "", "valuation_pct": 0, "fgi": 0}
+
+
+def _get_style_timing_summary() -> dict:
+    """获取各类基金风格/行业的时机摘要。
+
+    用基金近期平均收益率 + 大盘估值 + AKShare行业指数估值（如可用），
+    给出各风格的"高位/低位/适中"判断，辅助投资者判断哪类方向更有性价比。
+    """
+    try:
+        from services.market_data import get_valuation_percentile
+        from services.fund_rank import _load_fund_rank_data
+        from services.utils import safe_float as _sf, find_col as _fc
+        import re as _re
+
+        val = get_valuation_percentile() or {}
+        market_pct = val.get("percentile", 50)
+
+        # 加载基金排行数据，按行业聚合计算近期均值
+        rank_data = _load_fund_rank_data()
+        # 行业关键词 → 标签 映射
+        STYLE_KW = {
+            "科技/AI":    ["科技", "科创", "创新", "AI", "信息", "TMT", "产业"],
+            "半导体":     ["半导体", "芯片", "集成电路"],
+            "新能源":     ["新能源", "碳中和", "光伏", "风电", "储能"],
+            "医药":       ["医药", "医疗", "健康", "生物", "创新药"],
+            "消费":       ["消费", "食品", "饮料", "白酒", "家电"],
+            "军工":       ["军工", "国防", "装备", "航天"],
+            "金融/红利":  ["金融", "银行", "券商", "红利", "价值"],
+            "海外/QDII":  ["QDII", "纳斯达克", "标普", "海外", "美国", "全球"],
+            "港股":       ["港股", "恒生", "H股"],
+            "指数/宽基":  ["300", "500", "1000", "ETF联接", "沪深"],
+        }
+
+        style_returns = {k: [] for k in STYLE_KW}
+
+        if rank_data:
+            for code, row in rank_data.items():
+                try:
+                    cols = list(row.index) if hasattr(row, "index") else list(row.keys())
+                    name = str(row.get(_fc(cols, ["基金名称", "简称"]) or cols[1] if len(cols) > 1 else "", ""))
+                    r1y = _sf(row.get(_fc(cols, ["近1年"]), None))
+                    r3m = _sf(row.get(_fc(cols, ["近3月"]), None))
+                    if r1y is None and r3m is None:
+                        continue
+                    for style, kws in STYLE_KW.items():
+                        if any(kw in name for kw in kws):
+                            if r3m is not None:
+                                style_returns[style].append(r3m)
+                            break
+                except Exception:
+                    continue
+
+        styles = []
+        for style, returns in style_returns.items():
+            if len(returns) < 3:
+                continue
+            avg_3m = sum(returns) / len(returns)
+            # 近3月均涨幅判断时机：>15% 偏高位，<-5% 偏低位
+            if avg_3m > 20:
+                timing = "🔴 高位"
+                hint = f"近3月均涨{avg_3m:.0f}%，性价比偏低"
+            elif avg_3m > 10:
+                timing = "🟡 偏高"
+                hint = f"近3月均涨{avg_3m:.0f}%，适合小仓观望"
+            elif avg_3m > 0:
+                timing = "🟢 适中"
+                hint = f"近3月均涨{avg_3m:.0f}%，可适量配置"
+            elif avg_3m > -10:
+                timing = "🟢 偏低"
+                hint = f"近3月均跌{abs(avg_3m):.0f}%，关注反弹机会"
+            else:
+                timing = "🟢🟢 低位"
+                hint = f"近3月均跌{abs(avg_3m):.0f}%，逢低布局机会"
+
+            styles.append({
+                "style": style,
+                "avg_3m": round(avg_3m, 1),
+                "fund_count": len(returns),
+                "timing": timing,
+                "hint": hint,
+            })
+
+        # 按近3月收益排序（低→高，低位靠前）
+        styles.sort(key=lambda x: x["avg_3m"])
+
+        return {
+            "styles": styles,
+            "note": f"基于{sum(len(v) for v in style_returns.values())}只基金近3月收益聚合，大盘估值分位{market_pct:.0f}%",
+        }
+    except Exception as e:
+        print(f"[STYLE_TIMING] failed: {e}")
+        return {"styles": [], "note": "风格估值数据加载失败"}
 
 
 def _stock_timing_label(stock: dict) -> str:
