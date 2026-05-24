@@ -315,6 +315,8 @@ async def chat_analysis_stream(req: ChatRequest):
             print(f"[CHAT-STREAM] panel generation failed, falling through to normal: {e}")
             # 面板生成失败，降级到普通 LLM 回答
 
+    _search_banner = ""  # 搜索来源横幅（有搜索时先于 LLM 推送给前端）
+
     if is_finance:
         # ---- 理财模式：完整分析 ----
 
@@ -398,17 +400,23 @@ async def chat_analysis_stream(req: ChatRequest):
                 from services.web_search import search_web, format_search_for_prompt
                 import re as _re
                 # 搜索 query 构建：提取事件核心词，去掉提问句式
-                # 步骤1：去掉尾部疑问语气词
                 _search_query = _re.sub(r'[？?呢吗吧啊哦嘛]$', '', user_msg.strip())
-                # 步骤2：去掉"对X有什么影响/有什么新闻"等提问尾巴，保留事件主体
                 _q_trimmed = _re.sub(r'(有什么|怎么样|如何|是否|能不能|对[^对]{0,10}影响|对[^对]{0,10}有什么).*$', '', _search_query)
-                # 步骤3：如果截后太短（<4字）或截没了，回退用原句
                 if len(_q_trimmed.strip()) >= 4:
                     _search_query = _q_trimmed.strip()
                 _search_query = _search_query[:30] if len(_search_query) > 30 else _search_query
-                results = search_web(_search_query, limit=3)
+                # 影响分析类多搜几条，普通新闻类搜3条
+                _search_limit = 6 if any(kw in user_msg for kw in ["影响", "分析", "进展"]) else 3
+                results = search_web(_search_query, limit=_search_limit)
                 if results:
                     market_ctx += "\n\n## 联网搜索结果（实时）\n" + format_search_for_prompt(results)
+                    # 构建前端可见的搜索来源横幅
+                    sources = list(dict.fromkeys([r.get("source","") for r in results if r.get("source")]))[:3]
+                    dates = [r.get("date","") for r in results if r.get("date")]
+                    latest_date = max(dates) if dates else ""
+                    src_txt = "、".join(sources) if sources else "东方财富"
+                    date_txt = f"，最新 {latest_date}" if latest_date else ""
+                    _search_banner = f"📡 已搜索 {len(results)} 条相关资讯（{src_txt}{date_txt}），基于以下内容分析：\n\n"
                     print(f"[CHAT-STREAM] 理财+联网搜索: q='{_search_query}', {len(results)} 条结果")
             except Exception as e:
                 print(f"[CHAT-STREAM] finance search failed: {e}")
@@ -482,6 +490,9 @@ async def chat_analysis_stream(req: ChatRequest):
 
     async def stream_gen():
         try:
+            # 如果有搜索来源，先推一条 banner 让用户知道搜到了什么
+            if _search_banner:
+                yield f"data: {json.dumps({'delta': _search_banner, 'source': 'search_banner', 'done': False, 'phase': 'answering'}, ensure_ascii=False)}\n\n"
             for chunk in gw.stream_sync(
                 user_msg,
                 system=system_prompt,
