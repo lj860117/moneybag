@@ -429,7 +429,8 @@ def warm_weekend():
     print("  📊 precomputed 数据（恐贪/估值/北向/技术指标）...")
     try:
         from services.precomputed_cache import save_precomputed
-        from services.market_data import get_valuation_percentile, get_fear_greed_index, get_technical_indicators
+        from services.market_data import get_valuation_percentile, get_fear_greed_index
+        from services.technical import get_technical_indicators
         from services.factor_data import get_northbound_flow, get_margin_trading
         fgi = get_fear_greed_index()
         if fgi:
