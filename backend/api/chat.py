@@ -443,6 +443,14 @@ async def chat_analysis_stream(req: ChatRequest):
         ]
         _need_search = any(kw in user_msg for kw in _NEED_SEARCH_KW)
 
+        # 知识查询兜底：「X是什么/介绍X/解释X」+ 问题超过4字且不是纯常识
+        # 用搜索给 LLM 补充背景，避免用过期训练数据答（如"武汉六小龙是什么"）
+        _KNOWLEDGE_QUERY_KW = ["是什么", "是谁", "什么是", "介绍一下", "了解一下",
+                                "解释一下", "什么意思", "怎么理解", "有哪些", "是哪些",
+                                "是指什么", "指的是什么"]
+        if not _need_search and len(user_msg) > 4 and any(kw in user_msg for kw in _KNOWLEDGE_QUERY_KW):
+            _need_search = True
+
         search_ctx = ""
         if _need_search:
             try:

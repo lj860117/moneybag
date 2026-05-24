@@ -444,6 +444,14 @@ def _rule_based_reply_structured(msg: str, market_ctx: str, portfolio_ctx: str) 
                           "我现在有", "净资产", "我有多少", "持有什么", "有什么基金",
                           "有什么股票", "我的基金", "我的股票", "有哪些持仓",
                           "我买了什么", "我买了哪些"]
+    # 含有决策意图的持仓问题 → 必须交给 LLM 做分析（规则引擎只能列持仓，不能给建议）
+    _DECISION_KW = ["定投", "卖出", "卖掉", "减仓", "加仓", "止盈", "止损",
+                    "继续", "要不要", "该不该", "值得", "怎么办", "如何操作",
+                    "换仓", "调仓", "赎回", "申购", "对不对", "合不合适"]
+    _has_decision_intent = any(k in msg_lower for k in _DECISION_KW)
+    if _has_decision_intent:
+        return None  # 含决策意图，必须走 LLM 做个性化分析
+
     # "我持有X吗/我有没有X/是不是持有X" + 具体标的名 → 交给LLM精准回答
     _SPECIFIC_QUERY_KW = ["我有没有", "是不是持有"]
     _is_specific_query = any(k in msg_lower for k in _SPECIFIC_QUERY_KW)
