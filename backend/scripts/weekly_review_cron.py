@@ -31,57 +31,46 @@ if env.exists():
 
 def main():
     try:
-        from services.wxwork_push import is_configured, send_text
-        from services.market_data import get_fear_greed_index, get_valuation_percentile
-        from services.macro_extended import get_merrill_lynch_clock
+        from services.wxwork_push import is_configured, send_markdown
+        from services.weekly_report import generate
 
         if not is_configured():
             print("[WEEKLY] 企微未配置，跳过推送")
             return 0
 
-        today = datetime.now().strftime("%Y-%m-%d")
-        week_end = datetime.now()
-        week_start = week_end - timedelta(days=4)
-
-        # 取核心指标
-        fg = get_fear_greed_index()
-        val = get_valuation_percentile()
-        clock = get_merrill_lynch_clock()
-
-        fg_score = fg.get("score", 50) if isinstance(fg, dict) else 50
-        pe_pct = val.get("percentile", "N/A") if isinstance(val, dict) else "N/A"
-        phase = clock.get("label", "未知") if isinstance(clock, dict) else "未知"
-
-        # 组装文本（纯文本，企微微信端不支持 markdown）
-        lines = [
-            f"📅 钱袋子·本周复盘（{week_start.strftime('%m-%d')} ~ {week_end.strftime('%m-%d')}）",
-            "",
-            "━━━━━━━━━━━━━━━",
-            "📊 关键指标",
-            f"  • 美林时钟：{phase}",
-            f"  • 沪深300 PE 分位：{pe_pct}%",
-            f"  • 恐贪指数：{fg_score}（{'贪婪' if fg_score > 65 else '恐惧' if fg_score < 35 else '中性'}）",
-            "",
-            "━━━━━━━━━━━━━━━",
-            "💡 下周建议",
-            "  • 周一盘前检查持仓止损位",
-            "  • 关注本周企微里的量化信号",
-            f"  • 如 PE 分位 < 30% 可考虑加仓定投",
-            "",
-            f"⏰ 生成时间：{datetime.now().strftime('%H:%M')}",
-            "💬 仅供参考，不构成投资建议",
-        ]
-        text = "\n".join(lines)
-
-        # 推送给白名单用户（--dry-run 只打印不推送）
-        dry_run = "--dry-run" in sys.argv
         whitelist = ["LeiJiang", "BuLuoGeLi"]
+        dry_run = "--dry-run" in sys.argv
+
         for user in whitelist:
-            if dry_run:
-                print(f"\n[WEEKLY dry-run] 将推送给 {user}:\n{text}\n")
-                continue
-            ok = send_text(text, to_user=user)
-            print(f"[WEEKLY] 推送 {user}: {'✅' if ok else '❌'}")
+            try:
+                print(f"[WEEKLY] 生成用户 {user} 的周报...")
+                
+                # 调用完整周报生成
+                report = generate(user)
+                
+                # 取人话版本
+                narrative = report.get("narrative", "")
+                if not narrative:
+                    # 降级方案
+                    narrative = f"周报汇总\n{report.get('summary', '暂无数据')}"
+                
+                if dry_run:
+                    print(f"\n[WEEKLY dry-run] 将推送给 {user}:")
+                    print(f"  内容长度: {len(narrative)} 字")
+                    print(f"  内容预览:")
+                    print(f"  {narrative[:200]}...\n")
+                    continue
+                
+                # 发送
+                result = send_markdown(narrative, user_id=user)
+                if result.get("ok"):
+                    print(f"[WEEKLY] 推送 {user}: OK ({len(narrative)} 字)")
+                else:
+                    print(f"[WEEKLY] 推送 {user}: FAIL - {result}")
+            except Exception as e:
+                print(f"[WEEKLY] 用户 {user} 的周报生成失败: {e}")
+                traceback.print_exc()
+        
         return 0
     except Exception as e:
         traceback.print_exc()
