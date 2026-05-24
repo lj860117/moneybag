@@ -71,7 +71,7 @@ def main():
             if dry_run:
                 print(f"\n[WEEK_PLAN dry-run] 将推送给 {user}:\n{text}\n")
                 continue
-            ok = send_text(text, to_user=user)
+            ok = send_text(text, user_id=user)  # 修复: send_text 用 user_id 不是 to_user
             print(f"[WEEK_PLAN] 推送 {user}: {'✅' if ok else '❌'}")
         return 0
     except Exception as e:

@@ -211,12 +211,14 @@ def _get_actual_return(user_id: str, record: dict) -> Optional[float]:
     TODO: 如果有具体持仓，用持仓加权收益
     """
     try:
-        from services.stock_data_provider import get_stock_data
-        # 取沪深300（sh000300）的最近数据
-        data = get_stock_data("sh000300", days=VERIFY_DAYS + 5)
+        # 用 tushare_data.get_index_daily 获取沪深300历史（支持 days 参数）
+        from services.tushare_data import get_index_daily
+        data = get_index_daily("000300.SH", days=VERIFY_DAYS + 10)
+        # data 是按日期降序排列，[-1] 是最早，[0] 是最新
         if data and len(data) >= 2:
-            recent = float(data[-1].get("close", 0))
-            older = float(data[-VERIFY_DAYS - 1].get("close", 0)) if len(data) > VERIFY_DAYS else float(data[0].get("close", 0))
+            recent = float(data[0].get("close", 0))    # 最新
+            older_idx = min(VERIFY_DAYS, len(data) - 1)
+            older = float(data[older_idx].get("close", 0))  # N天前
             if older > 0:
                 return round((recent - older) / older * 100, 2)
     except Exception as e:
