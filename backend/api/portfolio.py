@@ -97,7 +97,7 @@ def _sync_fund_holdings_file(user: dict):
     result = calc_holdings_from_transactions(txs)
     current = result.get("current_holdings", [])
 
-    # 转换为 fund_monitor 格式：code, name, shares, cost
+    # 转换为 fund_monitor 格式：code, name, shares, cost/costNav
     holdings_for_cron = []
     for h in current:
         if h.get("shares", 0) > 0:
@@ -106,6 +106,7 @@ def _sync_fund_holdings_file(user: dict):
                 "name": h.get("name", ""),
                 "shares": round(h["shares"], 2),
                 "cost": round(h.get("avgNav", 0), 4),
+                "costNav": round(h.get("avgNav", 0), 4),
             })
 
     save_fund_holdings(holdings_for_cron, user_id)

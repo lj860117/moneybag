@@ -251,7 +251,9 @@ async def chat_analysis_stream(req: ChatRequest):
     _PANEL_KEYWORDS = ["入场", "进场", "能买", "该买", "适合买", "抄底",
                        "该卖", "减仓", "止盈", "止损", "加仓", "能入",
                        "怎么配置", "资产配置", "现在适合", "要不要买",
-                       "能不能买", "值得买", "适合入", "能抄底"]
+                       "能不能买", "值得买", "适合入", "能抄底",
+                       "持仓风险", "分析持仓", "持仓调整", "怎么调整",
+                       "要不要卖", "该怎么办", "仓位"]
     is_panel = (intent["intent"] in _PANEL_INTENTS or
                 any(kw in user_msg for kw in _PANEL_KEYWORDS))
 
