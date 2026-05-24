@@ -2,7 +2,10 @@
 // 轻量 Markdown → HTML 转换（标题/粗体/列表/换行）
 function _md(text){
   if(!text)return'';
-  return text
+  // 先提取 markdown 链接，保护 URL 不被 HTML 转义
+  const links=[];
+  text=text.replace(/\[([^\]]+)\]\((https?:\/\/[^)]+)\)/g,(_,t,u)=>{links.push({t,u});return`\x00LINK${links.length-1}\x00`});
+  text=text
     .replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')
     .replace(/^### (.+)$/gm,'<div style="font-size:14px;font-weight:700;margin:8px 0 4px">$1</div>')
     .replace(/^## (.+)$/gm,'<div style="font-size:15px;font-weight:700;margin:10px 0 4px">$1</div>')
@@ -11,6 +14,9 @@ function _md(text){
     .replace(/^\s*[-•]\s+(.+)$/gm,'<div style="padding-left:12px;text-indent:-8px">• $1</div>')
     .replace(/^\s*(\d+)\.\s+(.+)$/gm,'<div style="padding-left:12px">$1. $2</div>')
     .replace(/\n/g,'<br>');
+  // 还原链接为可点击的 <a> 标签
+  text=text.replace(/\x00LINK(\d+)\x00/g,(_,i)=>{const l=links[+i];return`<a href="${l.u}" target="_blank" style="color:#F59E0B;text-decoration:underline">${l.t}</a>`});
+  return text;
 }
 let chatModel='deepseek-v4-flash';
 let chatModelList=[];

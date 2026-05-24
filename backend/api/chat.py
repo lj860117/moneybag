@@ -58,7 +58,14 @@ async def chat_analysis(req: ChatRequest):
     portfolio_ctx = _build_portfolio_context(req.portfolio, user_id=uid) if req.portfolio else _build_portfolio_context(user_id=uid)
 
     # ★ 规则优先：快速路径（<1s，用真实数据计算，比 LLM 编造更可靠）
-    if intent["intent"] in FAST_PATH_INTENTS:
+    # 涉及时事/新闻事件的问题跳过规则引擎（规则引擎没有实时搜索能力）
+    _EVENT_KW_NONSTREAM = [
+        "最近", "最新", "刚刚", "了吗", "了没", "了么", "是真的吗", "怎么回事",
+        "访华", "峰会", "制裁", "开战", "停火", "选举", "当选",
+        "降息", "加息", "降准", "暴跌", "暴涨", "崩盘", "退市",
+    ]
+    _need_event_search = any(kw in user_msg for kw in _EVENT_KW_NONSTREAM)
+    if intent["intent"] in FAST_PATH_INTENTS and not _need_event_search:
         rule_result = _rule_based_reply_structured(user_msg, market_ctx, portfolio_ctx)
         if rule_result and rule_result["confidence"] >= 0.7:
             print(f"[CHAT] ★ 规则优先命中: intent={rule_result['intent']}, confidence={rule_result['confidence']}")
