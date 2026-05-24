@@ -562,7 +562,7 @@ function navigateTo(p){
   if(p==='landing')renderLanding();
   else if(p==='portfolio')renderPortfolio();
   else if(p==='stocks')renderStocks();
-  else if(p==='insight')renderInsight();
+  else if(p==='insight'){insightTab='overview';renderInsight();}  // 外部导航进来重置到首页tab
   else if(p==='chat')renderChat();
   else if(p==='history')renderHistory();
   else if(p==='ledger')renderLedger();
