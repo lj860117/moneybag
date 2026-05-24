@@ -106,6 +106,8 @@ class AkshareProvider:
                 result = self._fetch_fund_name(**params)
             elif metric == "fund_rank":
                 result = self._fetch_fund_rank(**params)
+            elif metric == "fund_nav":
+                result = self._fetch_fund_nav(**params)
             return result
         except Exception as e:
             logger.debug(f"AkshareProvider.fetch({metric}) failed: {e}")
@@ -359,6 +361,30 @@ class AkshareProvider:
                 return df
         except Exception as e:
             logger.debug(f"AKShare fund_rank_ts failed: {e}")
+
+        return None
+
+    def _fetch_fund_nav(self, symbol: str, indicator: str = "单位净值走势", **kwargs: Any) -> Any:
+        """获取基金历史净值（AKShare 1.18.x 用 symbol 参数）。
+
+        AKShare v1.18+ API: fund_open_fund_info_em(symbol=code, indicator='单位净值走势')
+        返回 DataFrame: [净值日期, 单位净值, 累计净值] 或 [净值日期, 单位净值, 日增长率]
+        """
+        cache_key = f"ak_fund_nav_{symbol}"
+        cached = _macro_cache.get(cache_key)
+        if cached is not None:
+            return cached
+
+        ak = self._get_ak()
+        try:
+            # AKShare 1.18.x 参数名是 symbol（旧版是 fund）
+            df = ak.fund_open_fund_info_em(symbol=symbol, indicator=indicator)
+            if df is not None and len(df) > 0:
+                _macro_cache.set(cache_key, df, ttl=3600)
+                logger.debug(f"AkshareProvider fund_nav({symbol}): {len(df)} rows")
+                return df
+        except Exception as e:
+            logger.debug(f"AKShare fund_nav({symbol}) failed: {e}")
 
         return None
 
