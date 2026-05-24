@@ -40,8 +40,8 @@ $('#app').innerHTML=`<div class="portfolio-page fade-up" style="padding-bottom:c
     <span>💼 基金 ¥${fmtMoney(Math.round(fundTotal))}${fundHoldings.length?' ('+fundHoldings.length+'只)':''}</span>
   </div>`:''}
   <div style="margin-top:12px;background:rgba(255,255,255,.04);border-radius:var(--radius-sm,8px);padding:8px 12px;display:flex;align-items:center;gap:10px;font-size:11px">
-    <span style="color:var(--color-brand-500,#FFB755);font-weight:700" id="portfolioHealthScore">75/100</span>
-    <div style="flex:1;height:4px;background:rgba(255,255,255,.06);border-radius:2px;overflow:hidden"><div id="portfolioHealthBar" style="height:100%;width:75%;background:linear-gradient(90deg,var(--color-brand-500,#FFB755),var(--color-bull,#00E5A0));border-radius:2px;transition:width .5s"></div></div>
+    <span style="color:var(--color-brand-500,#FFB755);font-weight:700" id="portfolioHealthScore">--/100</span>
+    <div style="flex:1;height:4px;background:rgba(255,255,255,.06);border-radius:2px;overflow:hidden"><div id="portfolioHealthBar" style="height:100%;width:0%;background:linear-gradient(90deg,var(--color-brand-500,#FFB755),var(--color-bull,#00E5A0));border-radius:2px;transition:width .5s"></div></div>
     <span class="mb-caption">健康分</span>
   </div>
 </section>
@@ -50,28 +50,24 @@ $('#app').innerHTML=`<div class="portfolio-page fade-up" style="padding-bottom:c
 <section class="mb-card--ghost" style="margin-bottom:14px" id="familyHoldingsCard">
   <div class="mb-flex mb-flex--between mb-mb-3">
     <b style="font-size:12px">👨‍👩 家庭持仓</b>
-    <span class="mb-text-tertiary" style="font-size:10px">加载中...</span>
+    <span class="mb-text-tertiary" style="font-size:10px" id="familyStatus"></span>
   </div>
-  <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px" id="familyMembersGrid">
+  <div style="display:grid;grid-template-columns:1fr;gap:8px" id="familyMembersGrid">
     <div class="mb-card--ghost" style="padding:10px">
       <div class="mb-flex mb-gap-2 mb-mb-1">
         <div class="mb-avatar mb-avatar--xs mb-avatar--leijiang">L</div>
         <b style="font-size:11px">${getProfileId()||'我'}</b>
       </div>
       <div class="mb-money mb-money--sm">¥${fmtMoney(Math.round(tc))}</div>
-      <div class="mb-caption">本机数据</div>
-    </div>
-    <div class="mb-card--ghost" style="padding:10px;opacity:.5">
-      <div style="font-size:11px;color:var(--text-tertiary);text-align:center;padding:8px">加载家庭成员...</div>
+      <div class="mb-caption">📊 ${stockHoldings.length} 只股票 · 💼 ${fundHoldings.length} 只基金</div>
     </div>
   </div>
 </section>
 
-<!-- 行为风控提示（永远渲染） -->
-<div style="background:linear-gradient(90deg,rgba(0,229,160,.06),rgba(0,229,160,.02));border:1px solid rgba(0,229,160,.15);border-radius:var(--radius-md,10px);padding:10px 12px;margin-bottom:14px;display:flex;align-items:center;gap:8px;font-size:11px;color:var(--text-secondary,#9aa1ac)">
+<!-- 行为风控摘要（动态更新） -->
+<div style="background:linear-gradient(90deg,rgba(0,229,160,.06),rgba(0,229,160,.02));border:1px solid rgba(0,229,160,.15);border-radius:var(--radius-md,10px);padding:10px 12px;margin-bottom:14px;display:flex;align-items:center;gap:8px;font-size:11px;color:var(--text-secondary,#9aa1ac)" id="behaviorTip">
   <span class="mb-live-dot"></span>
-  <span>行为风控：${hasHoldings?'正常运行中':'等待首笔交易'}</span>
-  <span style="margin-left:auto;color:var(--color-bull,#00E5A0);font-weight:600">→</span>
+  <span>${hasHoldings?'持仓 '+(stockHoldings.length+fundHoldings.length)+' 只，正在监控涨跌/止盈/止损...':'录入首笔交易即开启智能监控'}</span>
 </div>
 
 <!-- 股票⇄基金 pill 切换 -->
@@ -81,10 +77,10 @@ $('#app').innerHTML=`<div class="portfolio-page fade-up" style="padding-bottom:c
   <a class="mb-pill" id="tabTxnBtn" onclick="showTxnHistory()" style="cursor:pointer;margin-left:auto">📋 记录</a>
 </div>
 
-<!-- 风险纪律提醒（永远渲染） -->
+<!-- 风险纪律提醒（动态生成） -->
 <div class="mb-card--warn" style="margin-bottom:14px">
-  <b style="display:block;color:var(--color-bear,#FF6B6B);font-size:12px;margin-bottom:3px">⚠️ 投资纪律提醒</b>
-  <span style="font-size:11px;color:var(--text-secondary,#9AA1AC)">单只持仓不超过总资产 30%，止损线 -15%，止盈线 +50%</span>
+  <b style="display:block;color:var(--color-bear,#FF6B6B);font-size:12px;margin-bottom:3px">⚠️ 投资纪律</b>
+  <span style="font-size:11px;color:var(--text-secondary,#9AA1AC)">${hasHoldings?(displayHoldings.length===1?'⚠️ 仅 1 只持仓，集中度 100%，建议分散到 3-5 只':'单只不超过 30% · 止损 -15% · 止盈 +50% · 已持 '+displayHoldings.length+' 只'):'录入持仓后自动开启纪律监控'}</span>
 </div>
 
 <!-- 持仓列表 -->
@@ -111,19 +107,38 @@ return`<div class="mb-card" style="margin-bottom:6px;padding:10px;display:flex;a
 <button class="mb-btn mb-btn--secondary mb-btn--block" style="color:var(--color-bear,#FF6B6B)" onclick="if(confirm('清除所有持仓和交易记录？')){localStorage.removeItem(TXN_KEY);localStorage.removeItem(STORAGE_KEY);renderPortfolio()}">🗑️ 清除</button>
 </div></div>`;
 
-// 初始渲染时立即按当前Tab过滤持仓列表
-if(!window._portfolioTab)window._portfolioTab='stock';
+// 初始渲染时立即按当前Tab过滤持仓列表（默认选有持仓的tab）
+if(!window._portfolioTab){
+  window._portfolioTab = stockHoldings.length > 0 ? 'stock' : fundHoldings.length > 0 ? 'fund' : 'stock';
+}
 _renderFilteredHoldings();
+// 同步 tab 按钮高亮
+if(window._portfolioTab==='fund'){
+  const sb=document.getElementById('tabStockBtn');const fb=document.getElementById('tabFundBtn');
+  if(sb)sb.className='mb-pill';if(fb)fb.className='mb-pill mb-pill--on';
+}
 
 // 异步更新实时盈亏
 if(API_AVAILABLE&&useV4){
 try{
 const body={holdings:displayHoldings.map(h=>({code:h.code,name:h.name,category:h.category,amount:Math.round(h.totalCost),targetPct:0,buyDate:new Date().toISOString()}))};
-const r=await fetch(API_BASE+'/portfolio/pnl',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
+const r=await fetch(API_BASE+'/portfolio/pnl',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body),signal:AbortSignal.timeout(15000)});
 if(r.ok){const pnl=await r.json();
+// 存储单只盈亏数据供列表渲染
+window._holdingsPnl={};
+if(pnl.details){pnl.details.forEach(d=>{window._holdingsPnl[d.code]={marketValue:d.marketValue||d.market_value||0,pnlPct:d.pnlPct||d.pnl_pct||0}})}
+// 刷新持仓列表（带盈亏）
+_renderFilteredHoldings();
 const pe=document.getElementById('pnlSum');
 if(pe){const sg=pnl.totalPnl>=0?'+':'';const cls=pnl.totalPnl>=0?'mb-pill--bull':'mb-pill--bear';
-pe.innerHTML=`<span class="mb-pill ${cls}">${sg}${fmtFull(Math.round(pnl.totalPnl))}(${sg}${pnl.totalPnlPct.toFixed(2)}%)</span><span class="mb-text-tertiary" style="font-size:var(--fs-sm,11px)">当前市值${fmtFull(Math.round(pnl.totalMarket))}</span>`}}}catch{}}
+pe.innerHTML=`<span class="mb-pill ${cls}">${sg}${fmtFull(Math.round(pnl.totalPnl))}(${sg}${pnl.totalPnlPct.toFixed(2)}%)</span><span class="mb-text-tertiary" style="font-size:var(--fs-sm,11px)">当前市值 ¥${fmtMoney(Math.round(pnl.totalMarket))}</span>`}
+// 更新 Hero 金额为市值
+const heroVal=document.querySelector('.mb-hero__num');
+if(heroVal&&pnl.totalMarket)heroVal.innerHTML=`<span class="mb-money__symbol">¥</span><span class="mb-money__num">${Math.round(pnl.totalMarket).toLocaleString('zh-CN')}</span>`;
+}}catch(e){
+  const pe=document.getElementById('pnlSum');
+  if(pe)pe.innerHTML='<span class="mb-text-tertiary" style="font-size:11px">💤 非交易时段，盈亏将在下个交易日更新</span>';
+}}
 // 异步加载家庭持仓数据
 if(API_AVAILABLE){_loadFamilyPortfolio()}
 // 异步加载风控指标
@@ -188,11 +203,15 @@ function _renderFilteredHoldings(){
   if(!contentEl)return;
   const assetLabel=isStock?'股票':'基金';
   if(filtered.length){
-    const html=filtered.map(h=>`<div class="mb-card" style="margin-bottom:8px;padding:12px;cursor:pointer" onclick="showHoldingActions('${h.code}')">
+    const html=filtered.map(h=>{
+      const pnlData=window._holdingsPnl?.[h.code];
+      const mvStr=pnlData?`¥${fmtMoney(Math.round(pnlData.marketValue))}`:`¥${fmtMoney(Math.round(h.totalCost))}`;
+      const pnlStr=pnlData?`<span style="color:${pnlData.pnlPct>=0?'var(--color-bull,#00E5A0)':'var(--color-bear,#FF6B6B)'};font-size:12px;font-weight:700">${pnlData.pnlPct>=0?'+':''}${pnlData.pnlPct.toFixed(2)}%</span>`:'';
+      return`<div class="mb-card" style="margin-bottom:8px;padding:12px;cursor:pointer" onclick="showHoldingActions('${h.code}')">
 <div class="mb-flex mb-flex--between">
 <div><div style="font-size:var(--fs-md,14px);font-weight:var(--fw-semibold,600)">${h.name}</div>
-<div class="mb-caption">${h.category||assetLabel}${h.shares?' · '+h.shares.toFixed(2)+'份':''}${h.avgPrice?' · 均价¥'+h.avgPrice.toFixed(4):''}</div></div>
-<div style="text-align:right"><div class="mb-money mb-money--sm">${fmtFull(Math.round(h.totalCost))}</div></div></div></div>`).join('');
+<div class="mb-caption">${h.category||assetLabel}${h.shares?' · '+h.shares.toFixed(2)+'份':''}${h.avgPrice?' · 成本¥'+h.avgPrice.toFixed(4):''}</div></div>
+<div style="text-align:right"><div class="mb-money mb-money--sm">${mvStr}</div>${pnlStr}</div></div></div>`}).join('');
     contentEl.innerHTML=`<div id="holdList">${html}</div>
 <div class="mb-flex mb-gap-3" style="margin-top:14px">
 <button class="mb-btn mb-btn--primary mb-btn--block" onclick="showAddTxn()">➕ 新交易</button>
@@ -221,6 +240,12 @@ async function loadRiskMetrics(){
 try{const r=await fetch(API_BASE+'/risk-metrics',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({userId:getUserId()}),signal:AbortSignal.timeout(15000)});
 if(!r.ok)return;const rm=await r.json();
 const el=document.getElementById('riskMetricsSection');if(!el)return;
+// 动态更新健康分
+const healthScore = rm.health_score || Math.max(10, 100 - (rm.alerts||[]).length * 15 - (rm.concentration?.hhi > 5000 ? 20 : rm.concentration?.hhi > 3000 ? 10 : 0));
+const hsEl=document.getElementById('portfolioHealthScore');
+const hbEl=document.getElementById('portfolioHealthBar');
+if(hsEl)hsEl.textContent=healthScore+'/100';
+if(hbEl)hbEl.style.width=healthScore+'%';
 const conc=rm.concentration||{};const dd=rm.drawdown||{};const corr=rm.correlation||{};const alerts=rm.alerts||[];
 const concColor=conc.level==='高度集中'?'var(--red)':conc.level==='适度集中'?'var(--accent)':'var(--green)';
 const ddColor=dd.level==='严重回撤'?'var(--red)':dd.level==='中度回撤'?'var(--accent)':'var(--green)';
