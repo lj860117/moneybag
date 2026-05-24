@@ -59,7 +59,8 @@ def get_fund_dynamic_info(code: str) -> dict:
     rank_data = _load_fund_rank_data()
     row = rank_data.get(code)
     if row is None:
-        return {"code": code, "error": "未找到该基金"}
+        # AKShare 排行数据没有该基金（常见于QDII/新基金），尝试 Tushare 直查
+        return _fallback_fund_info(code)
 
     def _safe_float(val):
         try:
@@ -100,6 +101,40 @@ def get_fund_dynamic_info(code: str) -> dict:
         "source": "东方财富天天基金",
     }
     _fund_rank_cache.set(cache_key, result)
+    return result
+
+
+def _fallback_fund_info(code: str) -> dict:
+    """AKShare 排行没有该基金时，用 Tushare fund_nav 直查基本信息"""
+    result = {"code": code, "name": code, "nav": None, "returns": {}, "fee": ""}
+    try:
+        from services.tushare_data import _call_tushare, is_configured
+        if not is_configured():
+            return result
+
+        # 尝试多种 ts_code 格式
+        for suffix in [".OF", ".SZ", ".SH"]:
+            ts_code = code + suffix
+            # 获取基金名称
+            basic = _call_tushare("fund_basic", {"ts_code": ts_code}, "ts_code,name,fund_type")
+            if basic:
+                result["name"] = basic[0].get("name", code)
+                result["fund_type"] = basic[0].get("fund_type", "")
+                break
+
+        # 获取最新净值
+        for suffix in [".OF", ".SZ", ".SH"]:
+            ts_code = code + suffix
+            navs = _call_tushare("fund_nav", {"ts_code": ts_code, "limit": "5"},
+                                 "ts_code,nav_date,unit_nav,accum_nav")
+            if navs and len(navs) > 0:
+                latest = navs[0]
+                result["nav"] = float(latest.get("unit_nav") or latest.get("accum_nav") or 0)
+                break
+
+        result["source"] = "tushare_fallback"
+    except Exception as e:
+        print(f"[FUND_RANK] fallback for {code} failed: {e}")
     return result
 
 

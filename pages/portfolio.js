@@ -326,7 +326,7 @@ ${h?`<div class="modal-stat-grid" style="margin-bottom:16px">
 <div style="display:flex;flex-direction:column;gap:10px">
 <button class="action-btn green" onclick="document.querySelector('.modal-overlay')?.remove();showAddTxnFor('${code}','BUY')">🟢 加仓买入</button>
 ${h?`<button class="action-btn primary" style="background:linear-gradient(135deg,var(--red),#DC2626);color:#fff" onclick="document.querySelector('.modal-overlay')?.remove();showAddTxnFor('${code}','SELL')">🔴 卖出</button>`:''}
-<button class="action-btn secondary" onclick="document.querySelector('.modal-overlay')?.remove();showFundDetail('${code}')">📋 基金详情</button>
+<button class="action-btn secondary" onclick="document.querySelector('.modal-overlay')?.remove();showFundDetailModal('${code}','${(h?h.name:detail?.fullName||code).replace(/'/g,"")}')">📋 基金详情</button>
 ${h?`<button class="action-btn secondary" style="color:var(--red)" onclick="if(confirm('删除所有交易记录？')){document.querySelector('.modal-overlay')?.remove();deleteFundTxns('${code}')}">🗑️ 删除持仓</button>`:''}
 </div></div>`;
 document.body.appendChild(o)}
