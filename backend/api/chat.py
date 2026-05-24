@@ -280,6 +280,30 @@ async def chat_analysis_stream(req: ChatRequest):
     intent = classify_chat_intent(user_msg)
     is_finance = intent["intent"] != "general"
 
+    # ★ Function Calling 路径：LLM 主动调工具查数据（Agent 模式）
+    # 触发条件：比较/查具体品种/推荐选择等"后端没有预先准备好数据"的问题
+    try:
+        from api.chat_fc import should_use_fc, run_fc_agent_stream
+        if should_use_fc(user_msg, intent["intent"]):
+            system_prompt = _build_system_prompt(market_ctx, portfolio_ctx)
+            print(f"[FC_AGENT] 触发 Function Calling: {user_msg[:40]}")
+            history_dicts = [h.dict() for h in req.history] if req.history else None
+
+            async def fc_stream_gen():
+                for chunk in run_fc_agent_stream(
+                    user_msg,
+                    system_prompt=system_prompt,
+                    user_id=uid,
+                    model=req.model or "deepseek-v4-flash",
+                    history=history_dicts,
+                ):
+                    yield f"data: {json.dumps(chunk, ensure_ascii=False)}\n\n"
+
+            return StreamingResponse(fc_stream_gen(), media_type="text/event-stream",
+                                     headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
+    except Exception as e:
+        print(f"[FC_AGENT] 初始化失败，回退到普通模式: {e}")
+
     # 补充判断：包含股票/基金/市场关键词也算理财
     _FINANCE_KEYWORDS = ["股", "基金", "A股", "大盘", "牛市", "熊市", "涨", "跌",
                          "买入", "卖出", "持仓", "仓位", "定投", "理财", "投资",

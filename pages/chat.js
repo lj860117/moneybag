@@ -109,6 +109,13 @@ buf+=dec.decode(value,{stream:true});
 const lines=buf.split('\n');buf=lines.pop()||'';
 for(const line of lines){if(!line.startsWith('data: '))continue;
 try{const d=JSON.parse(line.slice(6));if(d.source)source=d.source;
+// ★ Function Calling 工具调用事件
+if(d.type==='tool_call'&&d.label){
+  const tcDiv=document.createElement('div');
+  tcDiv.style.cssText='font-size:11px;color:var(--text2,#7A8499);padding:4px 0;opacity:0.8;display:flex;align-items:center;gap:4px';
+  tcDiv.innerHTML=`<span style="display:inline-block;width:8px;height:8px;border-radius:50%;background:#F59E0B;animation:pulse 1s infinite"></span>${d.label}`;
+  botDiv.appendChild(tcDiv);scrollChat();continue;
+}
 // ★ 投资会诊面板事件
 if(d.type==='panel'&&d.perspectives){
   panelHtml=_renderPanelCards(d.perspectives);
@@ -131,7 +138,7 @@ if(d.done){
     botDiv.innerHTML=panelHtml+'<div class="panel-synthesis" style="margin-top:12px;padding:12px;background:rgba(255,183,85,.06);border:1px solid rgba(255,183,85,.15);border-radius:12px"><div style="font-size:11px;font-weight:700;color:var(--color-brand-500,#FFB755);margin-bottom:6px">🤖 综合判断</div><div style="font-size:13px;line-height:1.8;color:var(--text-primary,#F0F2F7)">'+_md(fullText)+'</div></div><div class="src-tag">🎯 投资会诊 · 多视角分析</div>';
   }else{
     const thinkBlock=thinkText?`<details style="font-size:11px;color:var(--text2);margin-bottom:8px;border:1px solid var(--bg3);border-radius:8px;padding:6px 8px"><summary style="cursor:pointer;opacity:0.7">🧠 查看思考过程</summary><div style="margin-top:4px;white-space:pre-wrap;opacity:0.6">${thinkText}</div></details>`:'';
-    botDiv.innerHTML=thinkBlock+_md(fullText)+`<div class="src-tag">${source==='ai'?'🤖 AI · DeepSeek':source==='panel'?'🎯 投资会诊':'📐 规则引擎 · 实时数据'}</div>`;
+    botDiv.innerHTML=thinkBlock+_md(fullText)+`<div class="src-tag">${source==='ai'&&d.served_by==='fc_agent'?'🔧 AI Agent · 工具调用':source==='ai'?'🤖 AI · DeepSeek':source==='panel'?'🎯 投资会诊':'📐 规则引擎 · 实时数据'}</div>`;
   }
   scrollChat();
 }
