@@ -620,7 +620,7 @@ def _rule_based_reply_structured(msg: str, market_ctx: str, portfolio_ctx: str) 
         news_lines = []
         for n in news[:5]:
             if n.get("url"):
-                news_lines.append(f'📰 <a href="{n["url"]}" target="_blank" style="color:#F59E0B;text-decoration:underline">{n["title"]}</a>（{n["source"]}）')
+                news_lines.append(f'📰 [{n["title"]}]({n["url"]}) （{n["source"]}）')
             else:
                 news_lines.append(f"📰 {n['title']}（{n['source']}）")
         news_text = "\n".join(news_lines)
