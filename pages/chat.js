@@ -1,11 +1,11 @@
 // ---- AI聊天页 ----
 let chatModel='deepseek-v4-flash';
 let chatModelList=[];
-let chatMaster='buffett'; // 当前选中大师
+let chatMaster='plain'; // 当前选中大师
 async function loadModelList(){try{const r=await fetch(API_BASE+'/models',{signal:AbortSignal.timeout(5000)});if(r.ok){const d=await r.json();chatModelList=d.models||[];if(d.default)chatModel=localStorage.getItem('chatModel')||d.default}}catch{chatModelList=[{id:'deepseek-v4-flash',name:'DeepSeek V4',provider:'deepseek'}]}}
 function renderChat(){currentPage='chat';renderNav();
 // 恢复上次选中的大师
-chatMaster=localStorage.getItem('mb-chat-master')||'buffett';
+chatMaster=localStorage.getItem('mb-chat-master')||'plain';
 const sugs=[
   {emoji:'📈',text:'现在适合入场吗？'},
   {emoji:'🛡️',text:'我的持仓风险大吗？'},
@@ -14,6 +14,7 @@ const sugs=[
   {emoji:'🏛️',text:'政策对我有啥影响？'}
 ];
 const masters=[
+  {id:'plain',emoji:'🤖',name:'DeepSeek',desc:'纯AI',bg:'linear-gradient(135deg,#4FC3F7,#0277BD)'},
   {id:'buffett',emoji:'🎩',name:'巴菲特',desc:'价值',bg:'linear-gradient(135deg,#FF8A65,#E64A19)'},
   {id:'graham',emoji:'📚',name:'格雷厄姆',desc:'安全边际',bg:'linear-gradient(135deg,#5C6BC0,#283593)'},
   {id:'lynch',emoji:'🔍',name:'林奇',desc:'实地研究',bg:'linear-gradient(135deg,#26A69A,#00695C)'},
@@ -37,7 +38,7 @@ $('#app').innerHTML=`<div class="chat-page" style="display:flex;flex-direction:c
   </div>
 
   <!-- 4 大师切换 -->
-  <div class="mb-master-grid" style="display:grid;grid-template-columns:repeat(4,1fr);gap:6px;margin-bottom:10px">
+  <div class="mb-master-grid" style="display:grid;grid-template-columns:repeat(5,1fr);gap:6px;margin-bottom:10px">
     ${masters.map(m=>`<button class="mb-master${m.id===chatMaster?' mb-master--active':''}" data-master="${m.id}" onclick="switchMaster('${m.id}')" style="display:flex;flex-direction:column;align-items:center;gap:3px;padding:8px 4px;border:1px solid ${m.id===chatMaster?'var(--color-brand-500,#FFB755)':'var(--border-subtle,rgba(255,255,255,.05))'};border-radius:var(--radius-lg,14px);background:var(--bg-elevated,#10131C);cursor:pointer;transition:border-color var(--duration-fast,.12s)">
       <div class="mb-avatar mb-avatar--md" style="background:${m.bg}">${m.emoji}</div>
       <b style="font-size:10px;color:var(--text-primary,#F0F2F7)">${m.name}</b>
@@ -77,7 +78,7 @@ function switchMaster(id){
     el.style.borderColor=isActive?'var(--color-brand-500,#FFB755)':'var(--border-subtle,rgba(255,255,255,.05))';
   });
   // 更新欢迎语中的视角文字
-  const masterNameMap={buffett:'巴菲特',graham:'格雷厄姆',lynch:'林奇',taleb:'塔勒布'};
+  const masterNameMap={plain:'DeepSeek',buffett:'巴菲特',graham:'格雷厄姆',lynch:'林奇',taleb:'塔勒布'};
   const viewLabel=document.querySelector('[data-current-master]');
   if(viewLabel) viewLabel.textContent=masterNameMap[id]||id;
 }
@@ -103,10 +104,9 @@ sugs.forEach(s=>{s.disabled=locked;s.style.opacity=locked?'0.4':'1';s.style.poin
 async function sendChat(text){if(_chatSending)return;const inp=document.getElementById('chatIn');const msg=text||(inp?inp.value.trim():'');if(!msg)return;_setChatLock(true);if(inp)inp.value='';
 const sg=document.getElementById('chatSugs');if(sg)sg.style.display='none';
 chatMessages.push({role:'user',text:msg});appendMsg('user',msg);appendTyping();
-// 大师视角前缀（如果后端不支持 master 参数，拼到消息开头）
+// 大师视角前缀（纯AI模式不加前缀）
 const masterNames={buffett:'巴菲特（价值投资）',graham:'格雷厄姆（安全边际）',lynch:'彼得·林奇（实地研究）',taleb:'塔勒布（反脆弱）'};
-const masterPrefix=chatMaster&&chatMaster!=='buffett'?`（请用${masterNames[chatMaster]||chatMaster}视角回答）`:`（请用${masterNames.buffett}视角回答）`;
-const msgWithMaster=masterPrefix+msg;
+const msgWithMaster=chatMaster==='plain'?msg:`（请用${masterNames[chatMaster]||chatMaster}视角回答）`+msg;
 // 思考进度计时
 const isR1=chatModel.includes('reasoner');
 let _thinkSec=0;_thinkTimer=setInterval(()=>{_thinkSec++;const el=document.getElementById('chatTyp');if(!el)return;const tips=isR1?['🧠 深度推理模型思考中...','💭 正在多角度分析...','📊 综合大师观点中...','⏳ R1 深度思考需要 15-30 秒，请耐心等待']:['🤖 AI 分析中...','📊 查询实时数据...','💭 综合分析中...'];const tip=tips[Math.min(Math.floor(_thinkSec/5),tips.length-1)];el.innerHTML=`<span></span><span></span><span></span><div style="font-size:11px;color:var(--text2);margin-top:4px">${tip}（${_thinkSec}s）</div>`},1000);
