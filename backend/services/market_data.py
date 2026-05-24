@@ -24,22 +24,22 @@ from infra.cache import MemoryCache
 _nav_cache = MemoryCache(default_ttl=NAV_CACHE_TTL)
 
 def _looks_like_stock_code(code: str) -> bool:
-    """简易判断：A股股票代码（6位数字，首位 6/0/3），基金通常 0/1/5 开头但长度不同"""
+    """简易判断：A股股票代码（6位数字），避免对基金代码做净值查询。
+
+    注意：002xxx 既有深市股票也有基金（如 002163 广发纳斯达克100C），
+    不能单靠前缀排除，因此 002xxx 不做跳过，让接口尝试后自然失败。
+    """
     if not code or not code.isdigit() or len(code) != 6:
         return False
-    # 基金白名单（这些000开头的是基金不是股票）
+    # 基金白名单（000 开头 6 位可能是基金，明确豁免）
     _FUND_WHITELIST = {
-        "000216",  # 华安黄金易ETF联接A
-        "000217",  # 华安黄金易ETF联接C
-        "000311",  # 景顺长城沪深300增强
-        "000478",  # 建信中证500增强
-        "000961",  # 天弘沪深300ETF联接A
-        "000968",  # 广发养老指数
+        "000216", "000217", "000311", "000478", "000961", "000968",
     }
     if code in _FUND_WHITELIST:
         return False
-    # A 股：60xxxx/00xxxx/30xxxx/688xxx/8xxxxx
-    return code[0] in ("6", "3") or code.startswith("000") or code.startswith("002") or code.startswith("688") or code.startswith("8")
+    # 明显是 A 股的前缀：60xxxx（沪市）、30xxxx（创业板）、688xxx（科创板）、8xxxxx（北交所）
+    # 注意：00xxxx 和 002xxx 同时存在深市股票和基金，不能排除
+    return code[0] in ("6", "3") or code.startswith("688") or code.startswith("8")
 
 
 def get_fund_nav(code: str) -> dict:
