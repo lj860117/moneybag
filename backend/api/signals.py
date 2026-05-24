@@ -329,9 +329,9 @@ def api_backtest_portfolio(req: dict):
 # ---- 筛选 ----
 
 @router.get("/api/fund-screen")
-def get_fund_screen(fund_type: str = "all", sort_by: str = "score", top_n: int = 20):
-    """基金智能筛选：多维打分排序 + DeepSeek 点评 TOP5 + 时机粗评"""
-    result = screen_funds(fund_type, sort_by, top_n)
+def get_fund_screen(fund_type: str = "all", sort_by: str = "score", top_n: int = 20, userId: str = ""):
+    """基金智能筛选：多维打分排序 + 质量过滤 + 用户持仓去重 + 时机粗评"""
+    result = screen_funds(fund_type, sort_by, top_n, user_id=userId)
     if result.get("funds"):
         result["funds"] = comment_fund_picks(result["funds"])
         # 给每只基金加时机粗评

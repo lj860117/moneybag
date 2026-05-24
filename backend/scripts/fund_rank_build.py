@@ -161,6 +161,8 @@ def build_rank():
             "return_3y": r3y,
             "score": score,
             "status": basic.get("status", ""),
+            "list_date": basic.get("list_date", ""),
+            "issue_amount": basic.get("issue_amount"),
         })
 
     # 按 score 降序

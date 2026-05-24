@@ -427,7 +427,7 @@ const cached=getCached(cacheKey);
 if(cached){_showFundData(listEl,cached);return}
 listEl.innerHTML='<div style="text-align:center;padding:20px;color:var(--text2)"><div class="loading-spinner" style="width:24px;height:24px;margin:0 auto 8px;border-width:2px"></div>正在筛选基金...</div>';
 try{
-const r=await fetch(API_BASE+'/fund-screen?fund_type='+fundPickType+'&sort_by='+fundPickSort+'&top_n=20',{signal:AbortSignal.timeout(30000)});
+const r=await fetch(API_BASE+'/fund-screen?fund_type='+fundPickType+'&sort_by='+fundPickSort+'&top_n=20&userId='+getProfileId(),{signal:AbortSignal.timeout(30000)});
 if(!r.ok)throw new Error('fetch failed');
 const data=await r.json();
 setCached(cacheKey,data);
@@ -439,7 +439,8 @@ if(!funds.length){listEl.innerHTML='<div style="text-align:center;padding:20px;c
 // 大盘时机横幅
 const mt=data.market_timing||{};
 const timingBanner=mt.signal?`<div style="display:flex;align-items:center;gap:8px;padding:10px 12px;margin-bottom:12px;background:rgba(245,158,11,.06);border:1px solid rgba(245,158,11,.12);border-radius:10px"><span style="font-size:18px">${mt.signal}</span><div><div style="font-size:12px;font-weight:700;color:var(--text1)">大盘时机: ${mt.verdict}</div><div style="font-size:11px;color:var(--text2)">${mt.detail}</div></div></div>`:'';
-listEl.innerHTML=`${timingBanner}<div style="font-size:11px;color:var(--text2);margin-bottom:8px">共筛选 ${data.total} 只基金，显示 TOP ${funds.length}</div>
+const qualityNote=data.quality_note?`<div style="font-size:11px;color:var(--green);margin-bottom:6px;padding:4px 8px;background:rgba(16,185,129,.06);border-radius:6px">🛡️ ${data.quality_note}</div>`:'';
+listEl.innerHTML=`${timingBanner}${qualityNote}<div style="font-size:11px;color:var(--text2);margin-bottom:8px">共筛选 ${data.total} 只基金，显示 TOP ${funds.length}</div>
 ${funds.map((f,i)=>{
 const scoreColor=f.score>15?'var(--green)':f.score>5?'var(--accent)':'var(--red)';
 const r1y=f.returns['1y'];const r3y=f.returns['3y'];const rytd=f.returns.ytd;
@@ -448,7 +449,7 @@ return`<div style="display:flex;align-items:center;gap:10px;padding:10px 0;borde
 <div style="font-size:12px;color:var(--text2);min-width:20px;text-align:center;font-weight:700">${i+1}</div>
 <div style="flex:1;min-width:0">
 <div style="font-size:13px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${f.name}</div>
-<div style="font-size:11px;color:var(--text2);margin-top:2px">${f.code} · 费率${f.fee||'-'}${f.timing_label?' · <b>'+f.timing_label+'</b>':''}</div></div>
+<div style="font-size:11px;color:var(--text2);margin-top:2px">${f.code} · 费率${f.fee||'-'}${f.timing_label?' · <b>'+f.timing_label+'</b>':''}${f.quality_tags&&f.quality_tags.length?' · '+f.quality_tags.join(' '):''}</div></div>
 <div style="text-align:right;min-width:70px">
 <div style="font-size:14px;font-weight:800;color:${r1yColor}">${r1y!=null?(r1y>0?'+':'')+r1y+'%':'—'}</div>
 <div style="font-size:10px;color:var(--text2)">近1年</div></div>
