@@ -482,9 +482,11 @@ el.innerHTML=`<div class="dashboard-card" style="overflow:hidden">
 <div id="stockPickList"><div style="text-align:center;padding:20px;color:var(--text2)"><div class="loading-spinner" style="width:24px;height:24px;margin:0 auto 8px;border-width:2px"></div>正在从 5000+ A股中筛选（AI 动态调权中）...</div></div>
 </div>`;
 const _stockCache=getCached('stock_screen');
-if(_stockCache){_fillStockList(_stockCache);return}
+// 旧缓存如果没有 regime 字段，强制刷新（兼容旧版本缓存）
+if(_stockCache&&_stockCache.regime!==undefined){_fillStockList(_stockCache);return}
 try{
-const r=await fetch(API_BASE+'/stock-screen?top_n=50',{signal:AbortSignal.timeout(60000)});
+const _uid=getProfileId()||'';
+const r=await fetch(API_BASE+'/stock-screen?top_n=50'+(_uid?'&userId='+_uid:''),{signal:AbortSignal.timeout(60000)});
 if(!r.ok)throw new Error('fetch failed');
 const data=await r.json();
 setCached('stock_screen',data);
@@ -502,7 +504,15 @@ const timingBanner=mt.signal?`<div style="display:flex;align-items:center;gap:8p
 const metaEl=document.getElementById('stockScreenMeta');
 if(metaEl&&(data.regime||data.weights)){
 const regime=data.regime||'未知';
-const _regimeMap={'trending_bull':'趋势牛市','trending_bear':'趋势熊市','volatile':'震荡市','neutral':'中性','recovery':'修复期','overheated':'过热','panic':'恐慌'};
+const _regimeMap={
+  'trending_bull':'趋势牛市','trending_bear':'趋势熊市',
+  'volatile':'震荡市','neutral':'中性','recovery':'修复期',
+  'overheated':'过热','panic':'恐慌',
+  // 后端中文 regime 直接映射（DeepSeek 有时输出中文）
+  '牛市':'牛市','熊市':'熊市','震荡':'震荡市','中性':'中性',
+  '轮动':'行业轮动','过热':'过热','恐慌':'恐慌底部',
+  'rotation':'行业轮动','bull':'牛市','bear':'熊市',
+};
 const regimeZh=_regimeMap[regime]||regime;
 const weights=data.weights||{};
 const _wMap={'value':'价值','growth':'成长','quality':'质量','momentum':'动量','risk':'风险','liquidity':'流动性','sentiment':'舆情'};
@@ -521,7 +531,7 @@ const scoreColor=s.score>65?'var(--green)':s.score>50?'var(--accent)':'var(--red
 return`<div style="display:grid;grid-template-columns:30px 1fr 70px 50px 32px;gap:4px;padding:8px 0;border-bottom:1px solid rgba(148,163,184,.04);align-items:center;cursor:pointer" onclick="showStockDetailModal(window._stockScreenData[${i}])">
 <div style="font-size:11px;color:var(--text2);font-weight:700">${i+1}</div>
 <div><div style="font-size:13px;font-weight:600">${s.name}</div>
-<div style="font-size:10px;color:var(--text2)">${s.code.replace(/^(sh|sz)/i,'')}${s.industry?' · '+s.industry:''} · PE ${s.pe!=null?s.pe:'暂无'}${s.timing_label?' · <b>'+s.timing_label+'</b>':''}</div></div>
+<div style="font-size:10px;color:var(--text2)">${s.code.replace(/^(sh|sz)/i,'')}${s.industry?' · '+s.industry:''} · PE ${s.pe!=null?s.pe:'暂无'}${s.timing_label?' · <b>'+s.timing_label+'</b>':''}${s.stock_relation&&s.stock_relation!=='🟢 新方向'?' · <span style="font-size:9px;opacity:0.8">'+s.stock_relation+'</span>':''}</div></div>
 <div style="text-align:right;font-size:13px;font-weight:700;color:${chgColor}">${s.change_pct!=null?(s.change_pct>0?'+':'')+s.change_pct+'%':'—'}</div>
 <div style="text-align:right;font-size:13px;font-weight:800;color:${scoreColor}">${s.score}</div>
 <button onclick="event.stopPropagation();showFundChart('${s.code.replace(/^(sh|sz)/i,'')}')" style="padding:2px 4px;font-size:9px;border:1px solid var(--accent);border-radius:3px;background:transparent;color:var(--accent);cursor:pointer">K线</button></div>${_stockTagsHTML(s)}`}).join('')}
