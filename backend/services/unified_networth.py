@@ -103,14 +103,25 @@ def calc_unified_networth(user_id: str, force: bool = False) -> dict:
     for h in fund_holdings:
         cost_nav = h.get("costNav", 0) or 0
         shares = h.get("shares", 0) or 0
-        # 用成本估算（实时净值需要 scan 才有）
-        mv = cost_nav * shares
+        code = h.get("code", "")
+        # 优先用实时净值计算市值；获取失败则 fallback 到成本净值
+        current_nav = cost_nav  # 默认用成本净值
+        if code:
+            try:
+                from services.market_data import get_fund_nav
+                nav_info = get_fund_nav(code)
+                if nav_info and nav_info.get("nav") not in ("N/A", None, ""):
+                    current_nav = float(nav_info["nav"])
+            except Exception:
+                pass
+        mv = current_nav * shares
         fund_total += mv
         fund_items.append({
-            "code": h.get("code", ""),
+            "code": code,
             "name": h.get("name", ""),
             "shares": shares,
             "costNav": cost_nav,
+            "currentNav": round(current_nav, 4),
             "marketValue": round(mv, 2),
         })
 

@@ -57,9 +57,22 @@ def get_portfolio_overview(user_id: str = "default") -> dict:
     fund_gold = 0        # 基金中的黄金占比
 
     for h in fund_holdings:
-        cost = h.get("costNav", 0) * h.get("shares", 0)
+        cost_nav = h.get("costNav", 0) or 0
+        shares = h.get("shares", 0) or 0
+        cost = cost_nav * shares
         fund_total_cost += cost
-        fund_total_mv += cost  # 先用成本估算，scan 会更新
+        # 优先用实时净值计算市值，fallback 到成本净值
+        current_nav = cost_nav
+        code = h.get("code", "")
+        if code:
+            try:
+                from services.market_data import get_fund_nav as _get_nav
+                nav_info = _get_nav(code)
+                if nav_info and nav_info.get("nav") not in ("N/A", None, ""):
+                    current_nav = float(nav_info["nav"])
+            except Exception:
+                pass
+        fund_total_mv += current_nav * shares
         fund_count += 1
 
         # 使用新分类器，支持混合/QDII 基金的比例分配
