@@ -112,7 +112,7 @@ LLM_API_KEY = os.environ.get("LLM_API_KEY", "")
 LLM_MODEL = os.environ.get("LLM_MODEL", "deepseek-v4-flash")
 
 # ---- 版本号（Phase 1 更新）----
-APP_VERSION = "9.3.35"  # 同步前端版本号（前端已到 9.3.31）
+APP_VERSION = "9.3.36"  # 同步前端版本号（前端已到 9.3.31）
 
 # ---- V6 Phase 1: 油价阈值（布伦特，美元/桶）----
 OIL_BRENT_NORMAL = 80      # 正常区间上限

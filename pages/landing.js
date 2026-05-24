@@ -143,7 +143,22 @@ ${!isTradeDay?`<div style="background:linear-gradient(90deg,rgba(255,183,85,.08)
 <div id="cfoTodos" class="mb-card" style="margin-bottom:14px;display:none"></div>
 <div id="cfoAllocation" class="mb-card" style="margin-bottom:14px;display:none"></div>
 
-</div>`;renderNav();_initMoneyMask();loadUnifiedHero();_loadCfoSummary();_loadLandingFamilyData()}
+<!-- 今日晨报卡片（loadStewardBriefing 写入内容） -->
+<div id="stewardBriefingCard" class="mb-card--ai" style="padding:14px;margin-bottom:14px;display:none;border-radius:var(--radius-xl,18px)">
+  <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px">
+    <span style="font-size:16px">📋</span>
+    <b style="font-size:12px;color:var(--color-ai-300,#B89DFF)">今日晨报</b>
+    <span style="margin-left:auto;font-size:9px;color:var(--text-tertiary,#7A8499)">每日 08:30 更新</span>
+  </div>
+  <div id="stewardBriefingText" style="font-size:12px;line-height:1.7;color:var(--text-default,#D8DCE5)">加载中...</div>
+</div>
+
+<!-- 每日要点（loadDailyFocus 写入内容） -->
+<div id="dailyFocusSection" style="margin-bottom:14px;display:none"></div>
+
+</div>`;renderNav();_initMoneyMask();loadUnifiedHero();_loadCfoSummary();_loadLandingFamilyData();
+// 异步加载晨报卡片 + 每日要点 + 风险提示 + 配置建议（延迟100ms确保DOM就绪）
+setTimeout(()=>{loadStewardBriefing();loadDailyFocus();loadHomeRiskAlert();loadHomeAllocationAdvice();},100);}
 
 // ---- 首页：金额隐藏/显示 toggle ----
 function _initMoneyMask(){
@@ -350,7 +365,7 @@ async function loadDailyFocus(){
 const el=document.getElementById('dailyFocusSection');if(!el||!API_AVAILABLE)return;
 try{const r=await fetch(`${API_BASE}/daily-focus`,{signal:AbortSignal.timeout(15000)});
 if(!r.ok)return;const d=await r.json();const tips=d.tips||[];
-if(tips.length)el.innerHTML=`<div style="background:rgba(99,102,241,.06);border:1px solid rgba(99,102,241,.15);border-radius:12px;padding:12px 14px;margin-bottom:12px"><div style="font-size:13px;font-weight:700;margin-bottom:8px">🎯 今日关注 <span style="font-size:10px;color:var(--text2);font-weight:400">${d.source==='ai'?'AI':'默认'}</span></div>${tips.map(t=>`<div style="font-size:12px;line-height:1.8">${t}</div>`).join('')}</div>`
+if(tips.length){el.style.display='';el.innerHTML=`<div style="background:rgba(99,102,241,.06);border:1px solid rgba(99,102,241,.15);border-radius:12px;padding:12px 14px;margin-bottom:12px"><div style="font-size:13px;font-weight:700;margin-bottom:8px">🎯 今日关注 <span style="font-size:10px;color:var(--text2);font-weight:400">${d.source==='ai'?'AI':'默认'}</span></div>${tips.map(t=>`<div style="font-size:12px;line-height:1.8">${t}</div>`).join('')}</div>`}
 }catch(e){console.warn('dailyFocus:',e)}}
 
 // ---- 首页：风控预警摘要 ----

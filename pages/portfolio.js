@@ -126,7 +126,9 @@ const r=await fetch(API_BASE+'/portfolio/pnl',{method:'POST',headers:{'Content-T
 if(r.ok){const pnl=await r.json();
 // 存储单只盈亏数据供列表渲染
 window._holdingsPnl={};
-if(pnl.details){pnl.details.forEach(d=>{window._holdingsPnl[d.code]={marketValue:d.marketValue||d.market_value||0,pnlPct:d.pnlPct||d.pnl_pct||0}})}
+// 接口返回 pnl.holdings（不是 pnl.details）
+const _pnlList = pnl.holdings||pnl.details||[];
+_pnlList.forEach(d=>{window._holdingsPnl[d.code]={marketValue:d.marketValue||d.market_value||0,pnlPct:d.pnlPct||d.pnl_pct||0,pnl:d.pnl||0,nav:d.nav||0,dayChange:d.dayChange||0}})
 // 刷新持仓列表（带盈亏）
 _renderFilteredHoldings();
 const pe=document.getElementById('pnlSum');
@@ -207,10 +209,12 @@ function _renderFilteredHoldings(){
       const pnlData=window._holdingsPnl?.[h.code];
       const mvStr=pnlData?`¥${fmtMoney(Math.round(pnlData.marketValue))}`:`¥${fmtMoney(Math.round(h.totalCost))}`;
       const pnlStr=pnlData?`<span style="color:${pnlData.pnlPct>=0?'var(--color-bull,#00E5A0)':'var(--color-bear,#FF6B6B)'};font-size:12px;font-weight:700">${pnlData.pnlPct>=0?'+':''}${pnlData.pnlPct.toFixed(2)}%</span>`:'';
+      const dayStr=pnlData&&pnlData.dayChange!=null&&pnlData.dayChange!==0?` <span style="font-size:10px;color:${pnlData.dayChange>=0?'var(--color-bull,#00E5A0)':'var(--color-bear,#FF6B6B)'}">今日${pnlData.dayChange>=0?'+':''}${pnlData.dayChange.toFixed(2)}%</span>`:'';
+      const navStr=pnlData&&pnlData.nav?`净值 ${pnlData.nav} · `:'';
       return`<div class="mb-card" style="margin-bottom:8px;padding:12px;cursor:pointer" onclick="showHoldingActions('${h.code}')">
 <div class="mb-flex mb-flex--between">
 <div><div style="font-size:var(--fs-md,14px);font-weight:var(--fw-semibold,600)">${h.name}</div>
-<div class="mb-caption">${h.category||assetLabel}${h.shares?' · '+h.shares.toFixed(2)+'份':''}${h.avgPrice?' · 成本¥'+h.avgPrice.toFixed(4):''}</div></div>
+<div class="mb-caption">${navStr}${h.category||assetLabel}${h.shares?' · '+h.shares.toFixed(2)+'份':''}${h.avgPrice?' · 成本¥'+h.avgPrice.toFixed(4):''}${dayStr}</div></div>
 <div style="text-align:right"><div class="mb-money mb-money--sm">${mvStr}</div>${pnlStr}</div></div></div>`}).join('');
     contentEl.innerHTML=`<div id="holdList">${html}</div>
 <div class="mb-flex mb-gap-3" style="margin-top:14px">
