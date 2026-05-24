@@ -94,16 +94,36 @@ def get_news_impact_api():
 
 
 @router.get("/api/news/deep-impact")
-def get_deep_news_impact():
-    """新闻深度影响分析 — DeepSeek 分析事件→行业→持仓（30分钟缓存）"""
-    cached = macro_cache.get("deep_impact")
+def get_deep_news_impact(userId: str = ""):
+    """新闻深度影响分析 — 规则引擎优先，无命中则 DeepSeek 深度分析（30分钟缓存）"""
+    cache_key = f"deep_impact_{userId}" if userId else "deep_impact"
+    cached = macro_cache.get(cache_key)
     if cached is not None:
         return cached
     try:
         policy = get_policy_news(8)
         market = get_market_news(5)
-        result = {"impacts": deep_analyze_news_impact(policy + market)}
-        macro_cache.set("deep_impact", result, ttl=1800)
+        all_news = policy + market
+
+        # 先用规则引擎（快速，无 LLM）
+        from services.news_data import analyze_news_impact
+        rule_impacts = analyze_news_impact(all_news)
+
+        if rule_impacts:
+            result = {"impacts": rule_impacts, "source": "rules"}
+        else:
+            # 规则未命中 → 调 LLM 深度分析，传入持仓做个性化
+            holdings = []
+            if userId:
+                try:
+                    from services.fund_monitor import load_fund_holdings
+                    holdings = load_fund_holdings(userId) or []
+                except Exception:
+                    pass
+            llm_impacts = deep_analyze_news_impact(all_news, holdings=holdings)
+            result = {"impacts": llm_impacts, "source": "llm", "news_count": len(all_news)}
+
+        macro_cache.set(cache_key, result, ttl=1800)
         return result
     except Exception as e:
         return {"impacts": [], "error": str(e)}

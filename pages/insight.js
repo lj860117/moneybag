@@ -631,21 +631,37 @@ setExplain('stock_'+s.code,s.name+' ('+s.code+')',
 
   // --- deep-impact 渲染 ---
   async function renderDeepImpact(el){
-    el.innerHTML = _v6Skeleton('正在分析新闻深度影响...');
-    // 优先用 deep-impact（AI 深度分析），fallback 到 news/impact（规则分析）
-    let d = await _v6Fetch('/news/deep-impact');
-    // API 返回字段：impacts (数组), 每项: {title, sectors, direction, magnitude, impact}
+    el.innerHTML = _v6Skeleton('正在分析新闻深度影响...<br><span style="font-size:11px;opacity:0.6">规则引擎扫描 + AI 深度解读，约5-10秒</span>');
+    // 传入 userId 让后端做个性化持仓关联分析
+    const uid = getProfileId ? getProfileId() : '';
+    let d = await _v6Fetch('/news/deep-impact' + (uid ? '?userId=' + uid : ''));
     let items = (d && d.impacts) ? d.impacts : null;
+    const source = d ? d.source : '';
+
     if (!items || !items.length) {
-      // fallback：news/impact 端点，字段: impacts[{title, fund_code, impact_level, analysis}]
-      const d2 = await _v6Fetch('/news/impact');
-      items = (d2 && d2.impacts) ? d2.impacts : null;
-    }
-    if (!items || !items.length) {
-      el.innerHTML = '<div style="text-align:center;padding:40px;color:var(--text2)"><div style="font-size:24px;margin-bottom:12px">💥</div><div style="font-size:14px;font-weight:600;margin-bottom:8px">新闻深度影响分析</div><div style="font-size:13px;line-height:1.6">当前没有检测到对持仓有显著影响的新闻事件。<br><br>录入持仓后，系统会自动分析新闻对你的资产的影响。</div></div>';
+      // 双路都无结果时，显示当前新闻列表 + 说明，而不是空屏
+      const newsD = await _v6Fetch('/news');
+      const newsList = (newsD && newsD.news) ? newsD.news.slice(0, 8) : [];
+      el.innerHTML = `<div style="padding:16px">
+        <div style="text-align:center;padding:20px 0 16px">
+          <div style="font-size:32px;margin-bottom:8px">📰</div>
+          <div style="font-size:14px;font-weight:600;color:var(--text1)">今日暂无重大影响事件</div>
+          <div style="font-size:12px;color:var(--text2);margin-top:6px;line-height:1.6">
+            当前新闻未检测到对 A 股有显著影响的重大事件<br>
+            ${uid ? '持仓已录入，系统持续监控中' : '录入持仓后，系统会分析新闻与你资产的关联'}
+          </div>
+        </div>
+        ${newsList.length ? `<div style="font-size:11px;color:var(--text3);margin-bottom:8px;font-weight:600">今日市场动态</div>
+        ${newsList.map(n=>`<div style="padding:8px 0;border-bottom:0.5px solid rgba(255,255,255,.05);font-size:12px;line-height:1.5">
+          <span style="color:var(--text1)">${n.title||''}</span>
+          <span style="font-size:10px;color:var(--text3);margin-left:6px">${(n.source||'').slice(0,8)}</span>
+        </div>`).join('')}` : ''}
+      </div>`;
       return;
     }
-    let html = `<div class="section-title">💥 新闻深度影响分析 <span style="font-size:11px;color:var(--accent);font-weight:400">Phase 5 · AI 驱动</span></div>`;
+    let sourceLabel = source === 'rules' ? '规则引擎' : 'AI DeepSeek';
+    let html = `<div class="section-title">💥 新闻深度影响分析 <span style="font-size:11px;color:var(--accent);font-weight:400">· ${sourceLabel}</span></div>
+    <div style="font-size:11px;color:var(--text3);margin-bottom:10px">基于今日重要新闻，分析对 A 股行业和你的持仓的潜在影响</div>`;
     items.forEach(item => {
       // deep-impact 端点用 direction 字段；news/impact 端点用 impact_level
       const lvl = item.direction || item.impact_level || item.level || 'neutral';
