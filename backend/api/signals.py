@@ -330,13 +330,14 @@ def api_backtest_portfolio(req: dict):
 
 @router.get("/api/fund-screen")
 def get_fund_screen(fund_type: str = "all", sort_by: str = "score", top_n: int = 20, userId: str = ""):
-    """基金智能筛选：多维打分排序 + 质量过滤 + 用户持仓去重 + 时机粗评"""
+    """基金智能筛选：多维打分排序 + 质量过滤 + 用户持仓去重 + 时机粗评 + 行业解读"""
     result = screen_funds(fund_type, sort_by, top_n, user_id=userId)
     if result.get("funds"):
         result["funds"] = comment_fund_picks(result["funds"])
-        # 给每只基金加时机粗评
+        from services.industry_templates import enrich_fund_with_industry
         for f in result["funds"]:
             f["timing_label"] = _fund_timing_label(f)
+            enrich_fund_with_industry(f)
     # 大盘时机
     result["market_timing"] = _get_market_timing_summary()
     return result
@@ -486,9 +487,11 @@ def _load_industry_map() -> dict:
 
 
 def _enrich_stock_labels(stocks: list):
-    """给每只股票补充时机标签 + 行业标签"""
+    """给每只股票补充时机标签 + 行业标签 + 行业解读"""
+    from services.industry_templates import enrich_stock_with_industry
     industry_map = _load_industry_map()
     for s in stocks:
         s["timing_label"] = _stock_timing_label(s)
         code = s.get("code", "").replace("sh", "").replace("sz", "")
         s["industry"] = industry_map.get(code, "")
+        enrich_stock_with_industry(s)

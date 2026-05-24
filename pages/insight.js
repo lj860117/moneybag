@@ -449,7 +449,7 @@ return`<div style="display:flex;align-items:center;gap:10px;padding:10px 0;borde
 <div style="font-size:12px;color:var(--text2);min-width:20px;text-align:center;font-weight:700">${i+1}</div>
 <div style="flex:1;min-width:0">
 <div style="font-size:13px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${f.name}</div>
-<div style="font-size:11px;color:var(--text2);margin-top:2px">${f.code} · 费率${f.fee||'-'}${f.timing_label?' · <b>'+f.timing_label+'</b>':''}${f.quality_tags&&f.quality_tags.length?' · '+f.quality_tags.join(' '):''}</div></div>
+<div style="font-size:11px;color:var(--text2);margin-top:2px">${f.code}${f.industry_tag?' · <b style="color:#10B981">'+f.industry_tag+'</b>':''} · 费率${f.fee||'-'}${f.timing_label?' · <b>'+f.timing_label+'</b>':''}${f.quality_tags&&f.quality_tags.length?' · '+f.quality_tags.join(' '):''}</div></div>
 <div style="text-align:right;min-width:70px">
 <div style="font-size:14px;font-weight:800;color:${r1yColor}">${r1y!=null?(r1y>0?'+':'')+r1y+'%':'—'}</div>
 <div style="font-size:10px;color:var(--text2)">近1年</div></div>
@@ -467,7 +467,13 @@ setExplain('fund_'+f.code,f.name+' ('+f.code+')',
 })}
 
 // AI 多因子选股页
-function _stockTagsHTML(s){const sc=s.scores||{};const tags=[];if(sc.value>=70)tags.push('💰低估值');if(sc.momentum>=70)tags.push('📈强动量');if(sc.liquidity>=70)tags.push('🏦高流动');if(sc.risk>=80)tags.push('🛡️低风险');if(sc.quality>=75)tags.push('⭐高质量');if(sc.growth>=70)tags.push('🚀高成长');if(s.roe&&s.roe>20)tags.push('💎ROE>20%');if(s.gross_margin&&s.gross_margin>50)tags.push('🏆高毛利');const policyBadges=_policyBadgesHTML(s.code?s.code.replace(/^(sh|sz)/i,''):'',s.name||'');let h='';if(tags.length||policyBadges)h+='<div style="display:flex;gap:4px;flex-wrap:wrap;margin-bottom:4px">'+tags.map(t=>'<span style="font-size:10px;padding:2px 6px;border-radius:4px;background:rgba(99,102,241,.1);color:#818CF8">'+t+'</span>').join('')+policyBadges+'</div>';if(s.aiComment)h+='<div style="font-size:12px;color:#E0E7FF;padding:6px 10px;background:rgba(99,102,241,.08);border-radius:8px;line-height:1.5">\u{1F916} '+s.aiComment+'</div>';return h?'<div style="padding:4px 0 8px 34px;border-bottom:1px solid rgba(148,163,184,.04)">'+h+'</div>':''}
+function _stockTagsHTML(s){const sc=s.scores||{};const tags=[];if(sc.value>=70)tags.push('💰低估值');if(sc.momentum>=70)tags.push('📈强动量');if(sc.liquidity>=70)tags.push('🏦高流动');if(sc.risk>=80)tags.push('🛡️低风险');if(sc.quality>=75)tags.push('⭐高质量');if(sc.growth>=70)tags.push('🚀高成长');if(s.roe&&s.roe>20)tags.push('💎ROE>20%');if(s.gross_margin&&s.gross_margin>50)tags.push('🏆高毛利');
+// 行业标签（从模板库获取）
+const indTags=s.industry_tags||[];
+const policyBadges=_policyBadgesHTML(s.code?s.code.replace(/^(sh|sz)/i,''):'',s.name||'');let h='';if(tags.length||indTags.length||policyBadges)h+='<div style="display:flex;gap:4px;flex-wrap:wrap;margin-bottom:4px">'+indTags.map(t=>'<span style="font-size:10px;padding:2px 6px;border-radius:4px;background:rgba(16,185,129,.1);color:#10B981">'+t+'</span>').join('')+tags.map(t=>'<span style="font-size:10px;padding:2px 6px;border-radius:4px;background:rgba(99,102,241,.1);color:#818CF8">'+t+'</span>').join('')+policyBadges+'</div>';
+// 行业解读（一句话）
+if(s.industry_insight)h+='<div style="font-size:11px;color:var(--text2);padding:2px 0;margin-bottom:2px">'+s.industry_insight+'</div>';
+if(s.aiComment)h+='<div style="font-size:12px;color:#E0E7FF;padding:6px 10px;background:rgba(99,102,241,.08);border-radius:8px;line-height:1.5">\u{1F916} '+s.aiComment+'</div>';return h?'<div style="padding:4px 0 8px 34px;border-bottom:1px solid rgba(148,163,184,.04)">'+h+'</div>':''}
 async function renderStockPick(el){
 el.innerHTML=`<div class="dashboard-card" style="overflow:hidden">
 <div class="dashboard-card-title">🧠 AI 多因子选股</div>
