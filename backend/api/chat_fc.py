@@ -185,6 +185,35 @@ TOOLS = [
             },
         },
     },
+    {
+        "type": "function",
+        "function": {
+            "name": "get_briefing_history",
+            "description": "查询历史晨报记录。当用户问'昨天晨报'、'上次晨报'、'最近几天的晨报/复盘/收盘报告'时调用。",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "days": {"type": "integer", "description": "查最近几天，默认3", "default": 3},
+                    "date": {"type": "string", "description": "指定日期 YYYYMMDD，如'20260523'，为空则取最近N天"},
+                },
+                "required": [],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "get_weekly_report",
+            "description": "查询历史周报/周复盘。当用户问'上周复盘'、'上周报告'、'最近周报'时调用。",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "weeks_ago": {"type": "integer", "description": "几周前，0=本周,1=上周，默认1", "default": 1},
+                },
+                "required": [],
+            },
+        },
+    },
 ]
 
 
@@ -227,6 +256,12 @@ def execute_tool(tool_name: str, tool_args: dict, user_id: str) -> str:
 
         elif tool_name == "compare_funds":
             return _tool_compare_funds(tool_args.get("fund_codes", []))
+
+        elif tool_name == "get_briefing_history":
+            return _tool_get_briefing_history(user_id, tool_args.get("days", 3), tool_args.get("date", ""))
+
+        elif tool_name == "get_weekly_report":
+            return _tool_get_weekly_report(user_id, tool_args.get("weeks_ago", 1))
 
         else:
             return f"未知工具: {tool_name}"
@@ -408,6 +443,105 @@ def _tool_compare_funds(fund_codes: list) -> str:
         return f"对比失败: {e}"
 
 
+def _tool_get_briefing_history(user_id: str, days: int = 3, date: str = "") -> str:
+    """查询历史晨报，支持指定日期或最近N天。"""
+    try:
+        import json as _json
+        from pathlib import Path as _Path
+        from datetime import datetime as _dt, timedelta as _td
+
+        data_dir = _Path(os.environ.get("DATA_DIR", "data"))
+        brief_dir = data_dir / "briefings"
+        if not brief_dir.exists():
+            return "晨报目录不存在。"
+
+        results = []
+        if date:
+            # 查指定日期
+            for uid in [user_id, "default"]:
+                fp = brief_dir / f"{uid}_{date}.json"
+                if fp.exists():
+                    d = _json.loads(fp.read_text(encoding="utf-8"))
+                    d["date"] = date
+                    results.append(d)
+                    break
+        else:
+            # 查最近 N 天
+            today = _dt.now().date()
+            for i in range(days):
+                target = (today - _td(days=i)).strftime("%Y%m%d")
+                for uid in [user_id, "default"]:
+                    fp = brief_dir / f"{uid}_{target}.json"
+                    if fp.exists():
+                        d = _json.loads(fp.read_text(encoding="utf-8"))
+                        d["date"] = target
+                        results.append(d)
+                        break
+
+        if not results:
+            return f"最近{days}天没有晨报记录。"
+
+        lines = [f"最近{len(results)}天晨报记录："]
+        for r in results:
+            date_str = r.get("date", "")
+            one_line = r.get("one_line", "")
+            regime = r.get("regime_description", "")
+            risk = r.get("risk_level", "normal")
+            lines.append(f"\n  [{date_str}]")
+            if one_line:
+                lines.append(f"    总结：{one_line}")
+            if regime:
+                lines.append(f"    市场：{regime}")
+            if risk != "normal":
+                lines.append(f"    风险：{risk}")
+        return "\n".join(lines)
+    except Exception as e:
+        return f"查询晨报历史失败: {e}"
+
+
+def _tool_get_weekly_report(user_id: str, weeks_ago: int = 1) -> str:
+    """查询历史周报。"""
+    try:
+        import json as _json
+        from pathlib import Path as _Path
+        from datetime import datetime as _dt, timedelta as _td
+
+        data_dir = _Path(os.environ.get("DATA_DIR", "data"))
+        rpt_dir = data_dir / user_id / "reports"
+        if not rpt_dir.exists():
+            return "周报目录不存在。"
+
+        weekly_files = sorted(rpt_dir.glob("week_*.json"), reverse=True)
+        if not weekly_files:
+            return "暂无周报记录。"
+
+        # weeks_ago=0 本周，1=上周
+        idx = min(weeks_ago, len(weekly_files) - 1)
+        fp = weekly_files[idx]
+        wr = _json.loads(fp.read_text(encoding="utf-8"))
+
+        period = wr.get("period", "") or wr.get("week_start", "")
+        summary = wr.get("summary", "") or wr.get("one_line", "")
+        narrative = wr.get("narrative", "")
+        judgments = wr.get("judgments", [])
+
+        lines = [f"周报（{period}）："]
+        if summary:
+            lines.append(f"  摘要：{str(summary)[:300]}")
+        if narrative:
+            lines.append(f"  叙述：{str(narrative)[:300]}")
+        if judgments and isinstance(judgments, list):
+            lines.append("  关键判断：")
+            for j in judgments[:3]:
+                if isinstance(j, dict):
+                    lines.append(f"    · {j.get('content', j)}")
+                else:
+                    lines.append(f"    · {j}")
+        return "\n".join(lines)
+    except Exception as e:
+        return f"查询周报失败: {e}"
+
+
 # ========================================================
 # FC Agent 循环（流式）
 # ========================================================
@@ -495,6 +629,8 @@ def run_fc_agent_stream(
                         "get_fund_history_nav": "查询历史净值",
                         "get_my_networth": "查询净资产",
                         "compare_funds": "对比基金",
+                        "get_briefing_history": "调取历史晨报",
+                        "get_weekly_report": "调取周复盘报告",
                     }.get(fn_name, fn_name)
                     yield {
                         "type": "tool_call",
@@ -601,6 +737,10 @@ _FC_TRIGGER_KW = [
     "推荐", "帮我选", "找一只", "有没有", "值不值得买",
     # 具体分析
     "回撤多少", "历史表现", "最近趋势",
+    # 历史晨报/复盘（新增）
+    "昨天晨报", "前天晨报", "昨天报告", "历史晨报", "晨报历史",
+    "上周复盘", "上周报告", "周复盘", "上次复盘",
+    "收盘复盘", "收盘报告", "昨天收盘", "上周收盘",
 ]
 
 
