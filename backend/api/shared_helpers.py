@@ -258,6 +258,23 @@ def _build_portfolio_context(p=None, user_id: str = "default") -> str:
         if not _has_data:
             lines.append("【重要】当前用户在钱袋子中没有任何持仓/资产记录。如果用户问'我持有什么'，必须回答'当前记录中没有持仓数据'。不要用市场新闻或泛数据来替代回答。")
 
+    # 1.5 家庭画像（风险偏好/投资目标/约束）
+    if user_id and user_id != "default":
+        try:
+            from domain.services.user_preference_service import get_profile
+            profile = get_profile(user_id)
+            if profile and isinstance(profile, dict):
+                risk = profile.get("risk_level") or profile.get("riskLevel") or profile.get("risk_tolerance")
+                goal = profile.get("investment_goal") or profile.get("goal")
+                horizon = profile.get("horizon") or profile.get("investment_horizon")
+                if any([risk, goal, horizon]):
+                    lines.append(f"\n【家庭画像】")
+                    if risk: lines.append(f"  风险偏好：{risk}")
+                    if goal: lines.append(f"  投资目标：{goal}")
+                    if horizon: lines.append(f"  投资期限：{horizon}")
+        except Exception:
+            pass
+
     # 2. 风控状态
     vp_val = 50
     try:
@@ -321,6 +338,29 @@ def _build_portfolio_context(p=None, user_id: str = "default") -> str:
                     lines.append(f"  {a['msg']}")
     except Exception:
         pass
+
+    # 6. 历史决策记忆（pending_insights + ironies）— 让 AI 知道你说过什么
+    if user_id and user_id != "default":
+        try:
+            from domain.services.user_preference_service import get_pending_insights, get_ironies
+            insights = get_pending_insights(user_id)
+            # 只取最近3条 chat_extract 类型的记忆
+            chat_memories = [i for i in insights if i.get("type") == "chat_extract"][-3:]
+            if chat_memories:
+                lines.append("\n【你的历史偏好/决策（AI 记忆）】")
+                for m in chat_memories:
+                    lines.append(f"  · {m.get('text', '')}")
+        except Exception:
+            pass
+        try:
+            from domain.services.user_preference_service import get_ironies
+            ironies = get_ironies(user_id)
+            if ironies:
+                lines.append("\n【你的自定义投资铁律】")
+                for rule in ironies[:5]:
+                    lines.append(f"  · {rule.get('content', rule) if isinstance(rule, dict) else rule}")
+        except Exception:
+            pass
 
     return "\n".join(lines) if lines else "用户尚未建仓。"
 
