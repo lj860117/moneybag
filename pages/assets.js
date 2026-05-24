@@ -95,11 +95,9 @@ loadAssetPageFull();
 loadAssetPageHistory();
 }
 
-// 快捷添加指定类型资产
+// 快捷添加指定类型资产 — 传入 type 后通过 URL 参数打开，避免 setTimeout 时机问题
 function showAddAssetOfType(type){
-  showAddAsset();
-  // 延迟设置 select 值（等 DOM 渲染完）
-  setTimeout(()=>{const sel=document.getElementById('assetType');if(sel)sel.value=type},100);
+  showAddAsset(type);
 }
 // 资产页：异步加载全部数据（服务端资产列表 + 统一净资产 + AI 建议）
 async function loadAssetPageFull(){
@@ -127,20 +125,32 @@ if(listEl){
     listEl.innerHTML = assets.map(a=>{
       const t=ASSET_TYPES.find(x=>x.id===a.type)||ASSET_TYPES[4];
       const isLiab=a.type==='liability';
+      // 上次更新时间（显示几天前）
+      let ageStr='';
+      if(a.updatedAt||a.createdAt){
+        const dt=new Date(a.updatedAt||a.createdAt);const now=new Date();
+        const days=Math.floor((now-dt)/86400000);
+        ageStr=days===0?' · 今天更新':days===1?' · 昨天更新':days<=30?' · '+days+'天前更新':' · '+Math.floor(days/30)+'个月前更新';
+      }
       return`<div class="holding-card" style="border-left:3px solid ${t.color}">
 <div class="holding-top"><div class="holding-info">
 <div class="holding-name">${t.icon} ${a.name}</div>
-<div class="holding-meta">${t.label}${a.note?' · '+a.note:''}</div></div>
+<div class="holding-meta">${t.label}${a.note?' · '+a.note:''}${ageStr}</div></div>
 <div class="holding-amount" style="display:flex;align-items:center;gap:8px">
 <div class="holding-money" style="color:${isLiab?'var(--red)':'var(--accent)'}">${isLiab?'-':''}¥${fmtMoney(Math.round(a.value||0))}</div>
 <button style="background:none;border:none;color:var(--text2);font-size:14px;cursor:pointer;padding:4px" onclick="event.stopPropagation();showEditAsset('${a.id}')">✏️</button>
 <button style="background:none;border:none;color:var(--text2);font-size:14px;cursor:pointer;padding:4px" onclick="event.stopPropagation();if(confirm('删除「${a.name}」？')){deleteAsset('${a.id}')}">🗑️</button>
 </div></div></div>`}).join('');
   } else {
-    listEl.innerHTML=`<div style="text-align:center;padding:32px;color:var(--text2)">
-<div style="font-size:48px;margin-bottom:12px">🏦</div>
-<div>还没有资产记录</div>
-<div style="font-size:12px;margin-top:8px">添加现金、房产、车辆、保险等</div></div>`;
+    // 空资产时加引导卡（新用户引导）
+    listEl.innerHTML=`<div style="text-align:center;padding:24px;color:var(--text2)">
+<div style="font-size:40px;margin-bottom:12px">🏦</div>
+<div style="font-size:13px;font-weight:600;color:var(--text-primary,#F0F2F7)">还没有资产记录</div>
+<div style="font-size:12px;margin-top:8px;line-height:1.6">添加现金、房产、车辆、保险等<br><span style="color:var(--color-brand-500,#FFB755)">录入 2 条以上后 AI 给你做健康诊断 ↓</span></div>
+<div style="margin-top:12px;display:flex;gap:8px;justify-content:center">
+<button class="mb-btn mb-btn--primary mb-btn--sm" onclick="showAddAssetOfType('cash')">💰 存款/现金</button>
+<button class="mb-btn mb-btn--secondary mb-btn--sm" onclick="showAddAssetOfType('property')">🏠 房产</button>
+</div></div>`;
   }
 }
 
@@ -148,7 +158,10 @@ if(listEl){
 if(nwData){
   const el=document.getElementById('assetPageNW');if(el)el.textContent=`¥${fmtMoney(Math.round(nwData.netWorth))}`;
   const hel=document.getElementById('assetPageHealth');
-  if(hel)hel.innerHTML=`${nwData.healthGrade||''} · ${nwData.healthScore||0}分${(nwData.healthIssues||[]).length?` · <span style="color:var(--color-bear,#FF6B6B);font-size:11px">${nwData.healthIssues[0]}</span>`:''}`;
+  // 如果没有手动资产，加提示
+  const hasManualAssets=assets.length>0;
+  const noManualHint=!hasManualAssets?` · <span style="color:var(--color-brand-500,#FFB755);cursor:pointer" onclick="document.getElementById('assetListContainer').scrollIntoView({behavior:'smooth'})">⚠️ 未含手动资产，点此补录</span>`:'';
+  if(hel)hel.innerHTML=`${nwData.healthGrade||''} · ${nwData.healthScore||0}分${(nwData.healthIssues||[]).length?` · <span style="color:var(--color-bear,#FF6B6B);font-size:11px">${nwData.healthIssues[0]}</span>`:''}${noManualHint}`;
   const pill=document.getElementById('assetHealthPill');
   if(pill)pill.textContent=`${nwData.healthScore||0}分`;
   // 更新三栏 splits
@@ -203,13 +216,13 @@ if(API_AVAILABLE && assets.length>=2){
   }).catch(()=>{aiEl.style.display='none'})}}
 }
 
-function showAddAsset(){
+function showAddAsset(preType){
 const o=document.createElement('div');o.className='modal-overlay';o.onclick=e=>{if(e.target===o)o.remove()};
 o.innerHTML=`<div class="modal-sheet" onclick="event.stopPropagation()"><div class="modal-handle"></div>
 <div class="modal-title">➕ 添加资产</div>
 <div class="manual-form" style="background:transparent;padding:0;margin-top:16px">
 <div class="form-row"><div class="form-label">类型</div>
-<select class="form-select" id="assetType">${ASSET_TYPES.map(t=>`<option value="${t.id}">${t.icon} ${t.label}</option>`).join('')}</select></div>
+<select class="form-select" id="assetType">${ASSET_TYPES.map(t=>`<option value="${t.id}"${preType&&t.id===preType?' selected':''}>${t.icon} ${t.label}</option>`).join('')}</select></div>
 <div class="form-row"><div class="form-label">名称</div>
 <input class="form-input" type="text" id="assetName" placeholder="如：建行存款、朝阳区房产、花呗"></div>
 <div class="form-row"><div class="form-label">金额(¥)</div>
@@ -243,6 +256,8 @@ const o=document.createElement('div');o.className='modal-overlay';o.onclick=e=>{
 o.innerHTML=`<div class="modal-sheet" onclick="event.stopPropagation()"><div class="modal-handle"></div>
 <div class="modal-title">✏️ 编辑资产</div>
 <div class="manual-form" style="background:transparent;padding:0;margin-top:16px">
+<div class="form-row"><div class="form-label">类型</div>
+<select class="form-select" id="editAssetType">${ASSET_TYPES.map(t=>`<option value="${t.id}"${t.id===a.type?' selected':''}>${t.icon} ${t.label}</option>`).join('')}</select></div>
 <div class="form-row"><div class="form-label">名称</div>
 <input class="form-input" type="text" id="editAssetName" value="${a.name}"></div>
 <div class="form-row"><div class="form-label">金额(¥)</div>
@@ -255,6 +270,7 @@ document.body.appendChild(o)}
 
 function confirmEditAsset(id){
 const assets=loadAssets();const a=assets.find(x=>x.id===id);if(!a)return;
+a.type=document.getElementById('editAssetType')?.value||a.type;
 a.name=document.getElementById('editAssetName')?.value?.trim()||a.name;
 a.value=parseFloat(document.getElementById('editAssetValue')?.value)||a.value;
 a.note=document.getElementById('editAssetNote')?.value?.trim()||'';
@@ -282,14 +298,20 @@ async function loadAssetPageHistory(){
     }
     const recent=d.records.slice(0,3);
     el.innerHTML=recent.map(rec=>{
-      const srcIcon=rec.source==='deepseek'?'🤖':rec.source==='claude'?'🧠':'📝';
+      const srcIcon=rec.source==='deepseek'?'🤖':rec.source==='night_worker'?'🌙':'📝';
       const time=rec.created_at?.slice(0,16).replace('T',' ')||'';
+      // 清理 preview：取第一行非空且有意义的文字，去掉 Markdown/emoji/括号
+      const rawPreview=rec.preview||'';
+      const cleanPreview=rawPreview
+        .split('\n').map(l=>l.trim()).filter(l=>l&&l.length>2)
+        .map(l=>l.replace(/^[#*\->\s【】\[\]「」]+/,'').replace(/[📊📈📉💡⚠️🔔🎯]+/g,'').trim())
+        .filter(l=>l.length>5)[0]||rawPreview.slice(0,50);
       return `<div style="padding:8px 0;border-bottom:1px solid var(--bg3,rgba(255,255,255,.06));cursor:pointer" onclick="navigateTo('history')">
         <div style="display:flex;justify-content:space-between;align-items:center">
-          <span>${srcIcon} ${rec.source_label||rec.source}</span>
+          <span style="font-size:12px">${srcIcon} ${rec.source_label||rec.source}</span>
           <span style="font-size:10px;color:var(--text2)">${time}</span>
         </div>
-        <div style="font-size:11px;color:var(--text2);margin-top:2px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${rec.preview||''}</div>
+        <div style="font-size:11px;color:var(--text2);margin-top:2px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${cleanPreview}</div>
       </div>`;
     }).join('');
   }catch(e){
