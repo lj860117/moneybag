@@ -62,13 +62,23 @@ def get_fund_nav(code: str) -> dict:
         if df is not None and len(df) > 0:
             latest = df.iloc[-1]
             prev = df.iloc[-2] if len(df) > 1 else df.iloc[-1]
-            nav_val = float(latest["单位净值"])
-            prev_val = float(prev["单位净值"])
-            change = round((nav_val - prev_val) / prev_val * 100, 2)
+            # 列名在不同环境下可能乱码，用列位置兜底：
+            # 标准列结构：[净值日期(0), 单位净值(1), 日增长率(2)]
+            import pandas as _pd
+            num_cols = df.select_dtypes(include="number").columns.tolist()
+            if len(num_cols) >= 1:
+                nav_col = num_cols[0]  # 单位净值（第一个数值列）
+            else:
+                raise ValueError(f"fund {code}: no numeric column in nav df")
+            nav_val = float(latest[nav_col])
+            prev_val = float(prev[nav_col])
+            change = round((nav_val - prev_val) / prev_val * 100, 2) if prev_val else 0
+            # 日期：第0列（非数值），用列位置取
+            date_col = df.columns[0]
             result = {
                 "code": code,
                 "nav": str(nav_val),
-                "date": str(latest["净值日期"]),
+                "date": str(latest[date_col]),
                 "change": str(change),
                 "source": "akshare",
             }

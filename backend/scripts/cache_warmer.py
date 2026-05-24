@@ -415,6 +415,16 @@ def warm_weekend():
     
     ttl = 72  # 周六 → 周一 = ~48h，留余量72h
     
+    # 0. 股票筛选（最慢 30-40 秒，周六上午 10:00 跑，不影响用户）
+    print("  🔍 选股（stock_screen，需要 30-40s）...")
+    try:
+        from services.stock_screen import screen_stocks
+        result = screen_stocks(50)
+        _save_cache("stock_screen_50", result, ttl)
+        print(f"  ✅ stock_screen 完成，{len(result.get('stocks', []))} 只")
+    except Exception as e:
+        print(f"  ❌ stock_screen: {e}")
+
     # 1. 宏观数据（月更，但每周检查一次）
     print("  🏛️ 宏观...")
     try:
