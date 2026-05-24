@@ -397,7 +397,10 @@ return topics.map(t=>'<span style="font-size:10px;padding:2px 6px;border-radius:
 
 // 基金智能筛选页
 let fundPickType='all';let fundPickSort='score';
-function _fundTagsHTML(f){const r=f.returns;const tags=[];if(r['1y']!=null&&r['3m']!=null&&r['6m']!=null&&r['1y']>0&&r['3m']>0&&r['6m']>0)tags.push('📈稳定上涨');if(r['1y']!=null&&r['1y']>15)tags.push('\u{1F525}高收益');if(f.fee&&parseFloat(f.fee)<0.5)tags.push('💰低费率');if(r['3y']!=null&&r['3y']>30)tags.push('⭐长期优秀');const policyBadges=_policyBadgesHTML(f.code,f.name||'');let h='';if(tags.length||policyBadges)h+='<div style="display:flex;gap:4px;flex-wrap:wrap;margin-bottom:4px">'+tags.map(t=>'<span style="font-size:10px;padding:2px 6px;border-radius:4px;background:rgba(16,185,129,.1);color:#6EE7B7">'+t+'</span>').join('')+policyBadges+'</div>';if(f.aiComment){let cmt=f.aiComment.replace(/^[\s\S]*?(?:逐只思考[：:]?\s*|思考[：:]?\s*|分析[：:]?\s*)/,'').trim();if(cmt&&cmt.length>2)h+='<div style="font-size:12px;color:#E0E7FF;padding:6px 10px;background:rgba(99,102,241,.08);border-radius:8px;line-height:1.5">\u{1F916} '+cmt+'</div>';}return h?'<div style="padding:4px 12px 8px 32px">'+h+'</div>':''}
+function _fundTagsHTML(f){const r=f.returns;const tags=[];if(r['1y']!=null&&r['3m']!=null&&r['6m']!=null&&r['1y']>0&&r['3m']>0&&r['6m']>0)tags.push('📈稳定上涨');if(r['1y']!=null&&r['1y']>15)tags.push('\u{1F525}高收益');if(f.fee&&parseFloat(f.fee)<0.5)tags.push('💰低费率');if(r['3y']!=null&&r['3y']>30)tags.push('⭐长期优秀');const policyBadges=_policyBadgesHTML(f.code,f.name||'');let h='';if(tags.length||policyBadges)h+='<div style="display:flex;gap:4px;flex-wrap:wrap;margin-bottom:4px">'+tags.map(t=>'<span style="font-size:10px;padding:2px 6px;border-radius:4px;background:rgba(16,185,129,.1);color:#6EE7B7">'+t+'</span>').join('')+policyBadges+'</div>';
+// 持仓关联提示（只显示已持仓和风格重叠，新敞口太多不显示）
+if(f.holding_relation&&f.holding_relation!=='🟢 新敞口'&&f.holding_hint){const hintColor=f.holding_relation==='🔵 已持仓'?'rgba(59,130,246,.15)':'rgba(234,179,8,.1)';const hintText=f.holding_relation==='🔵 已持仓'?'#93C5FD':'#FDE68A';h+='<div style="font-size:11px;padding:4px 8px;background:'+hintColor+';border-radius:6px;margin-bottom:4px;color:'+hintText+'">'+f.holding_relation+' '+f.holding_hint+'</div>';}
+if(f.aiComment){let cmt=f.aiComment.replace(/^[\s\S]*?(?:逐只思考[：:]?\s*|思考[：:]?\s*|分析[：:]?\s*)/,'').trim();if(cmt&&cmt.length>2)h+='<div style="font-size:12px;color:#E0E7FF;padding:6px 10px;background:rgba(99,102,241,.08);border-radius:8px;line-height:1.5">\u{1F916} '+cmt+'</div>';}return h?'<div style="padding:4px 12px 8px 32px">'+h+'</div>':''}
 function _fundPickBtnsHTML(){
 return `<div id="fundPickTypeBar" style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:10px">
 ${[['all','全部'],['stock','股票型'],['bond','债券型'],['index','指数型'],['qdii','QDII']].map(([k,l])=>`<button class="section-tab ${fundPickType===k?'active':''}" onclick="fundPickType='${k}';_updateFundPickBtns();renderFundPickResult()" style="font-size:12px;padding:5px 10px">${l}</button>`).join('')}
@@ -423,7 +426,8 @@ const listEl=document.getElementById('fundPickList');
 if(!listEl)return;
 const cacheKey='fund_screen_'+fundPickType+'_'+fundPickSort;
 const cached=getCached(cacheKey);
-if(cached){_showFundData(listEl,cached);return}
+// 旧缓存没有 holding_relation 时强制刷新
+if(cached&&cached.funds&&cached.funds[0]&&cached.funds[0].holding_relation!==undefined){_showFundData(listEl,cached);return}
 listEl.innerHTML='<div style="text-align:center;padding:20px;color:var(--text2)"><div class="loading-spinner" style="width:24px;height:24px;margin:0 auto 8px;border-width:2px"></div>正在筛选基金...</div>';
 try{
 const r=await fetch(API_BASE+'/fund-screen?fund_type='+fundPickType+'&sort_by='+fundPickSort+'&top_n=20&userId='+getProfileId(),{signal:AbortSignal.timeout(30000)});
@@ -448,7 +452,7 @@ return`<div style="display:flex;align-items:center;gap:10px;padding:10px 0;borde
 <div style="font-size:12px;color:var(--text2);min-width:20px;text-align:center;font-weight:700">${i+1}</div>
 <div style="flex:1;min-width:0">
 <div style="font-size:13px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${f.name}</div>
-<div style="font-size:11px;color:var(--text2);margin-top:2px">${f.code}${f.industry_tag?' · <b style="color:#10B981">'+f.industry_tag+'</b>':''} · 费率${f.fee||'-'}${f.timing_label?' · <b>'+f.timing_label+'</b>':''}${f.quality_tags&&f.quality_tags.length?' · '+f.quality_tags.join(' '):''}</div></div>
+<div style="font-size:11px;color:var(--text2);margin-top:2px">${f.code}${f.industry_tag?' · <b style="color:#10B981">'+f.industry_tag+'</b>':''} · 费率${f.fee||'-'}${f.timing_label?' · <b>'+f.timing_label+'</b>':''}${f.holding_relation&&f.holding_relation!=='🟢 新敞口'?' · <span style="font-size:10px;opacity:0.9">'+f.holding_relation+'</span>':''}${f.quality_tags&&f.quality_tags.length?' · '+f.quality_tags.join(' '):''}</div></div>
 <div style="text-align:right;min-width:70px">
 <div style="font-size:14px;font-weight:800;color:${r1yColor}">${r1y!=null?(r1y>0?'+':'')+r1y+'%':'—'}</div>
 <div style="font-size:10px;color:var(--text2)">近1年</div></div>
