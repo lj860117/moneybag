@@ -225,9 +225,16 @@ async def callback_receive(
             try:
                 send_markdown(f"⚠️ 分析出错: {str(e)[:100]}", user_id=from_user)
             except Exception:
-                pass
+                # 最后兜底：至少发一条纯文本
+                try:
+                    from services.wxwork_push import send_text as _st
+                    _st("⚠️ AI 回复失败，请稍后重试", user_id=from_user)
+                except Exception:
+                    pass
 
-    threading.Thread(target=async_reply, daemon=True).start()
+    t = threading.Thread(target=async_reply, daemon=True)
+    t.start()
+    # 不 join，允许后台执行；企微要求 5s 内返回 success
     return PlainTextResponse("success")
 
 
@@ -240,7 +247,7 @@ def _handle_holdings(wxwork_uid: str, user_id: str, user_name: str):
     stocks = load_stock_holdings(user_id) if user_id else []
     funds = load_fund_holdings(user_id) if user_id else []
     if not stocks and not funds:
-        send_markdown(f"📭 {user_name}，你还没有添加持仓。\n\n打开 App 添加：http://150.158.47.189:8000", user_id=wxwork_uid)
+        send_markdown(f"📭 {user_name}，你还没有添加持仓。\n\n打开 App 添加：{os.getenv('APP_URL','http://150.158.47.189:8000')}", user_id=wxwork_uid)
         return
     lines = [f"**📈 {user_name} 的持仓**\n"]
     if stocks:
@@ -328,21 +335,22 @@ def _handle_morning_briefing(wxwork_uid: str, user_id: str, user_name: str):
 
 def _handle_help(wxwork_uid: str):
     """快捷指令：帮助"""
-    help_text = """**🤖 钱袋子 AI 助手**
+    _app_url = os.getenv("APP_URL", "http://150.158.47.189:8000")  # 从环境变量读，避免硬编码
+    help_text = f"""钱袋子 AI 助手
 
-**快捷指令：**
-- 发 **持仓** → 查看你的持仓列表
-- 发 **扫描** → 立即扫描持仓异动
-- 发 **晨报** → 查看今日晨报
-- 发 **帮助** → 显示本帮助
+快捷指令：
+- 发「持仓」查看你的持仓列表
+- 发「扫描」立即扫描持仓异动
+- 发「晨报」查看今日晨报
+- 发「帮助」显示本帮助
 
-**问问题：**
+问问题：
 - 直接发任何理财问题，AI 帮你分析
-- 例：`茅台还能买吗？`
-- 例：`现在适合入场吗？`
-- 例：`帮我做一次全面市场分析`
+- 例：茅台还能买吗？
+- 例：现在适合入场吗？
+- 例：帮我做一次全面市场分析
 
-📱 完整功能：http://150.158.47.189:8000"""
+完整功能：{_app_url}"""
     send_markdown(help_text, user_id=wxwork_uid)
 
 

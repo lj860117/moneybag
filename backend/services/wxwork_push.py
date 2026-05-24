@@ -103,12 +103,27 @@ def send_text(content: str, user_id: str = "") -> dict:
 
 
 def send_markdown(content: str, user_id: str = "") -> dict:
-    """发送消息（统一用纯文本，微信不支持 Markdown）"""
-    # 去掉 Markdown 格式符号，变成纯文本
+    """发送消息（统一用纯文本，微信不支持 Markdown，完整清理格式符号）"""
     import re
-    plain = content.replace("**", "").replace("`", "")
-    plain = re.sub(r"^>\s*", "  ", plain, flags=re.MULTILINE)  # 引用变缩进
-    return send_text(plain, user_id=user_id)
+    plain = content
+    # 去粗体/代码/斜体/转义
+    plain = re.sub(r'\*\*(.+?)\*\*', r'\1', plain)   # **粗体** → 粗体
+    plain = re.sub(r'\*(.+?)\*', r'\1', plain)         # *斜体* → 斜体
+    plain = re.sub(r'`{1,3}[^`]*`{1,3}', '', plain)   # `code` / ```block``` → 删除
+    # 标题行（## 标题 → 标题 加换行）
+    plain = re.sub(r'^#{1,6}\s+', '', plain, flags=re.MULTILINE)
+    # 引用块 > 内容 → 换成缩进两格
+    plain = re.sub(r'^>\s*', '  ', plain, flags=re.MULTILINE)
+    # 链接 [文字](url) → 文字
+    plain = re.sub(r'\[([^\]]+)\]\([^\)]+\)', r'\1', plain)
+    # 分割线 --- 或 *** → 删除
+    plain = re.sub(r'^[-*]{3,}\s*$', '', plain, flags=re.MULTILINE)
+    # 多余空行压缩
+    plain = re.sub(r'\n{3,}', '\n\n', plain)
+    # 企业微信文本消息最大约 2048 字符，超出截断
+    if len(plain) > 2000:
+        plain = plain[:1950] + "\n...(内容过长已截断)"
+    return send_text(plain.strip(), user_id=user_id)
 
 
 def send_stock_alert(signals: list) -> dict:
@@ -206,7 +221,7 @@ def verify_callback(msg_signature: str, timestamp: str, nonce: str, echostr: str
 
     if not _verify_signature(_CALLBACK_TOKEN, timestamp, nonce, echostr, msg_signature):
         print(f"[WXWORK] Signature verification failed")
-        pass
+        return ""  # 修复：签名验证失败必须 return，不能继续执行
 
     aes_key = _decode_aes_key(_CALLBACK_AES_KEY)
     result = _decrypt_echostr(aes_key, echostr)
@@ -227,8 +242,10 @@ def decrypt_message(msg_signature: str, timestamp: str, nonce: str, xml_body: st
             return {}
         encrypted = encrypt_node.text
 
-        # 验签
-        _verify_signature(_CALLBACK_TOKEN, timestamp, nonce, encrypted, msg_signature)
+        # 验签（修复：验证失败则拒绝解密，防止伪造消息触发 LLM）
+        if not _verify_signature(_CALLBACK_TOKEN, timestamp, nonce, encrypted, msg_signature):
+            print(f"[WXWORK] Message signature verification failed — dropping")
+            return {}
 
         # AES 解密
         aes_key = _decode_aes_key(_CALLBACK_AES_KEY)
