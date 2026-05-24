@@ -516,7 +516,7 @@ const scoreColor=s.score>65?'var(--green)':s.score>50?'var(--accent)':'var(--red
 return`<div style="display:grid;grid-template-columns:30px 1fr 70px 50px 32px;gap:4px;padding:8px 0;border-bottom:1px solid rgba(148,163,184,.04);align-items:center;cursor:pointer" onclick="showStockDetailModal(window._stockScreenData[${i}])">
 <div style="font-size:11px;color:var(--text2);font-weight:700">${i+1}</div>
 <div><div style="font-size:13px;font-weight:600">${s.name}</div>
-<div style="font-size:10px;color:var(--text2)">${s.code.replace(/^(sh|sz)/i,'')} · PE ${s.pe!=null?s.pe:'暂无'} · ${s.market_cap?s.market_cap+'亿':'-'}${s.roe?' · ROE'+s.roe+'%':''}${s.timing_label?' · <b>'+s.timing_label+'</b>':''}</div></div>
+<div style="font-size:10px;color:var(--text2)">${s.code.replace(/^(sh|sz)/i,'')}${s.industry?' · '+s.industry:''} · PE ${s.pe!=null?s.pe:'暂无'}${s.timing_label?' · <b>'+s.timing_label+'</b>':''}</div></div>
 <div style="text-align:right;font-size:13px;font-weight:700;color:${chgColor}">${s.change_pct!=null?(s.change_pct>0?'+':'')+s.change_pct+'%':'—'}</div>
 <div style="text-align:right;font-size:13px;font-weight:800;color:${scoreColor}">${s.score}</div>
 <button onclick="event.stopPropagation();showFundChart('${s.code.replace(/^(sh|sz)/i,'')}')" style="padding:2px 4px;font-size:9px;border:1px solid var(--accent);border-radius:3px;background:transparent;color:var(--accent);cursor:pointer">K线</button></div>${_stockTagsHTML(s)}`}).join('')}

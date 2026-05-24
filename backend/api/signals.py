@@ -344,7 +344,7 @@ def get_fund_screen(fund_type: str = "all", sort_by: str = "score", top_n: int =
 
 @router.get("/api/stock-screen")
 def get_stock_screen(top_n: int = 50):
-    """AI多因子选股：30因子7维打分 V2 + DeepSeek 点评 TOP5 + 时机粗评"""
+    """AI多因子选股：30因子7维打分 V2 + DeepSeek 点评 TOP5 + 时机粗评 + 行业标签"""
     # 优先读 cache_warmer 写入的文件缓存，避免每次实时计算（30-40秒）
     try:
         cache_fp = Path(os.environ.get("DATA_DIR", "data")) / "_cache" / "stock_screen_50.json"
@@ -353,9 +353,8 @@ def get_stock_screen(top_n: int = 50):
             if time.time() < payload.get("expires_at", 0):
                 data = payload.get("data", {})
                 data["from_cache"] = True
-                # 补充时机标签
-                for s in data.get("stocks", []):
-                    s["timing_label"] = _stock_timing_label(s)
+                # 补充时机标签 + 行业
+                _enrich_stock_labels(data.get("stocks", []))
                 data["market_timing"] = _get_market_timing_summary()
                 return data
     except Exception as e:
@@ -364,8 +363,7 @@ def get_stock_screen(top_n: int = 50):
     result = screen_stocks(top_n)
     if result.get("stocks"):
         result["stocks"] = comment_stock_picks(result["stocks"])
-        for s in result["stocks"]:
-            s["timing_label"] = _stock_timing_label(s)
+        _enrich_stock_labels(result["stocks"])
     result["market_timing"] = _get_market_timing_summary()
     return result
 
@@ -459,3 +457,38 @@ def _fund_timing_label(fund: dict) -> str:
             return "🟡 注意止盈"
 
     return "⚪ 正常"
+
+
+# ---- 行业信息补充（Tushare stock_basic 缓存） ----
+
+_industry_cache = {}  # code → industry（进程内缓存，重启清空）
+
+
+def _load_industry_map() -> dict:
+    """从 Tushare stock_basic 批量获取行业映射（全市场一次性拉取，缓存1天）"""
+    global _industry_cache
+    if _industry_cache:
+        return _industry_cache
+    try:
+        from services.tushare_data import _call_tushare, is_configured
+        if not is_configured():
+            return {}
+        rows = _call_tushare("stock_basic", {"list_status": "L"}, "ts_code,industry")
+        if rows:
+            for r in rows:
+                code = r.get("ts_code", "").split(".")[0]
+                if code and r.get("industry"):
+                    _industry_cache[code] = r["industry"]
+            print(f"[STOCK_SCREEN] 行业映射: {len(_industry_cache)} 只")
+    except Exception as e:
+        print(f"[STOCK_SCREEN] 行业映射加载失败: {e}")
+    return _industry_cache
+
+
+def _enrich_stock_labels(stocks: list):
+    """给每只股票补充时机标签 + 行业标签"""
+    industry_map = _load_industry_map()
+    for s in stocks:
+        s["timing_label"] = _stock_timing_label(s)
+        code = s.get("code", "").replace("sh", "").replace("sz", "")
+        s["industry"] = industry_map.get(code, "")
