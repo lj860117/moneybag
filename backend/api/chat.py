@@ -311,8 +311,19 @@ async def chat_analysis_stream(req: ChatRequest):
     if is_finance:
         # ---- 理财模式：完整分析 ----
 
+        # 检测是否涉及时事/新闻（需要联网搜索的问题不走规则引擎快速路径）
+        _EVENT_SEARCH_KW = [
+            "最近", "最新", "刚刚", "要上市", "上市了", "了吗", "了没", "了么",
+            "是真的吗", "怎么回事", "什么时候", "新闻", "消息", "发生",
+            "访华", "峰会", "制裁", "开战", "停火", "选举", "当选",
+            "发布", "声明", "降息", "加息", "降准", "暴跌", "暴涨",
+            "崩盘", "跳水", "熔断", "退市", "IPO", "收购", "合并",
+        ]
+        _need_finance_search = any(kw in user_msg for kw in _EVENT_SEARCH_KW)
+
         # ★ 规则优先：明确意图且规则引擎能精准回答的，直接用规则（快+准+用真实数据）
-        if intent["intent"] in FAST_PATH_INTENTS:
+        # 但涉及时事的问题跳过规则引擎（规则引擎没有实时信息）
+        if intent["intent"] in FAST_PATH_INTENTS and not _need_finance_search:
             rule_result = _rule_based_reply_structured(user_msg, market_ctx, portfolio_ctx)
             if rule_result and rule_result["confidence"] >= 0.7:
                 # 规则引擎给出了有效回答，模拟打字逐段流式返回
@@ -371,15 +382,7 @@ async def chat_analysis_stream(req: ChatRequest):
         except Exception:
             pass
 
-        # ★ 理财问题也需要联网搜索：当涉及时事/新闻/最新事件时
-        _EVENT_SEARCH_KW = [
-            "最近", "最新", "刚刚", "要上市", "上市了", "了吗", "了没", "了么",
-            "是真的吗", "怎么回事", "什么时候", "新闻", "消息", "发生",
-            "访华", "峰会", "制裁", "开战", "停火", "选举", "当选",
-            "发布", "声明", "降息", "加息", "降准", "暴跌", "暴涨",
-            "崩盘", "跳水", "熔断", "退市", "IPO", "收购", "合并",
-        ]
-        _need_finance_search = any(kw in user_msg for kw in _EVENT_SEARCH_KW)
+        # ★ 理财问题联网搜索：涉及时事/新闻/最新事件时注入搜索结果
         if _need_finance_search:
             try:
                 from services.web_search import search_web, format_search_for_prompt
