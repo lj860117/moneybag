@@ -112,7 +112,13 @@ LLM_API_KEY = os.environ.get("LLM_API_KEY", "")
 LLM_MODEL = os.environ.get("LLM_MODEL", "deepseek-v4-flash")
 
 # ---- 版本号（Phase 1 更新）----
-APP_VERSION = "9.3.53"
+APP_VERSION = "9.7.0"
+
+# ---- v9.5.123: API 鉴权 ----
+# 每个用户一个token，格式: userId:token（环境变量或data/auth_tokens.json）
+# 简单HMAC方案：token = HMAC-SHA256(AUTH_SECRET, userId)
+AUTH_SECRET = os.environ.get("AUTH_SECRET", "moneybag_family_cfo_2026")
+AUTH_ENABLED = os.environ.get("AUTH_ENABLED", "true").lower() == "true"
 
 # ---- V6 Phase 1: 油价阈值（布伦特，美元/桶）----
 OIL_BRENT_NORMAL = 80      # 正常区间上限
