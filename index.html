@@ -16,41 +16,84 @@
 <!-- 国内加载失败时自动 fallback 到 Noto Sans SC / Noto Serif SC（design-tokens 已配系统字体兜底） -->
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=DM+Serif+Display&display=swap" rel="stylesheet">
 <!-- v9.3.0 Design System：tokens 在前，components 在后，现有 styles.css 最后（可覆盖） -->
-<link rel="stylesheet" href="styles/design-tokens.css?v=9.3.53">
-<link rel="stylesheet" href="styles/components.css?v=9.3.53">
-<link rel="stylesheet" href="styles.css?v=9.3.53">
+<link rel="stylesheet" href="styles/design-tokens.css?v=9.7.0">
+<link rel="stylesheet" href="styles/components.css?v=9.7.0">
+<link rel="stylesheet" href="styles.css?v=9.7.0">
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.4/dist/chart.umd.min.js"></script>
 <script src="https://unpkg.com/lightweight-charts@4.1.1/dist/lightweight-charts.standalone.production.js"></script>
 </head>
 <body>
 <div id="app"></div>
 <!-- 核心层（必须先加载） -->
-<script src="app.js?v=9.3.53"></script>
+<script src="app.js?v=9.7.0"></script>
 <!-- v9.3.0 共享组件库（依赖 app.js 的全局函数，页面模块调用） -->
-<script src="pages/_components.js?v=9.3.53"></script>
+<script src="pages/_components.js?v=9.7.0"></script>
 <!-- 页面模块（顺序无关，都依赖 app.js 的全局变量） -->
-<script src="pages/landing.js?v=9.3.53"></script>
-<script src="pages/alloc.js?v=9.3.53"></script>
-<script src="pages/quiz.js?v=9.3.53"></script>
-<script src="pages/portfolio.js?v=9.3.53"></script>
-<script src="pages/chat.js?v=9.3.53"></script>
-<script src="pages/insight.js?v=9.3.53"></script>
-<script src="pages/ledger.js?v=9.3.53"></script>
-<script src="pages/assets.js?v=9.3.53"></script>
-<script src="pages/stocks.js?v=9.3.53"></script>
-<script src="pages/analysis.js?v=9.3.53"></script>
-<script src="pages/history.js?v=9.3.53"></script>
-<script src="pages/chart.js?v=9.3.53"></script>
-<script src="pages/market-panorama.js?v=9.3.53"></script>
-  <script src="pages/todos.js?v=9.3.53"></script>
-  <script src="pages/behavior-history.js?v=9.3.53"></script>
-  <script src="pages/monthly-rebalance.js?v=9.3.53"></script>
-  <script src="pages/settings.js?v=9.3.53"></script>
+<script src="pages/landing.js?v=9.7.0"></script>
+<script src="pages/alloc.js?v=9.7.0"></script>
+<script src="pages/rebalance.js?v=9.7.0"></script>
+<script src="pages/weekly.js?v=9.7.0"></script>
+<script src="pages/quiz.js?v=9.7.0"></script>
+<script src="pages/portfolio.js?v=9.7.0"></script>
+<script src="pages/chat.js?v=9.7.0"></script>
+<script src="pages/insight-fund.js?v=9.7.0"></script>
+<script src="pages/insight-stock.js?v=9.7.0"></script>
+<script src="pages/insight.js?v=9.7.0"></script>
+<script src="pages/ledger.js?v=9.7.0"></script>
+<script src="pages/assets.js?v=9.7.0"></script>
+<script src="pages/stocks.js?v=9.7.0"></script>
+<script src="pages/analysis.js?v=9.7.0"></script>
+<script src="pages/history.js?v=9.7.0"></script>
+<script src="pages/chart.js?v=9.7.0"></script>
+<script src="pages/market-panorama.js?v=9.7.0"></script>
+  <script src="pages/todos.js?v=9.7.0"></script>
+  <script src="pages/behavior-history.js?v=9.7.0"></script>
+  <script src="pages/monthly-rebalance.js?v=9.7.0"></script>
+  <script src="pages/sprint-cards.js?v=9.7.0"></script>
+  <script src="pages/settings.js?v=9.7.0"></script>
 <script>
 // 注册 Service Worker（PWA 离线缓存 + 添加到桌面）
 if ('serviceWorker' in navigator) {
   navigator.serviceWorker.register('/sw.js').catch(() => {});
+  // v9.5.32: sw 激活新版本时自动刷新页面，避免 PWA 缓存导致用户看不到新功能
+  let _swReloaded = false;
+  navigator.serviceWorker.addEventListener('message', (e) => {
+    if (e.data && e.data.type === 'SW_UPDATED' && !_swReloaded) {
+      _swReloaded = true;
+      console.log('[SW] new version activated:', e.data.version, '→ reload in 800ms');
+      setTimeout(() => location.reload(), 800);
+    }
+  });
 }
+
+// v9.5.89: 版本号心跳 — 每5分钟检测后端版本，发现新版自动提示刷新
+(function(){
+  const LOCAL_VER = '9.6.1';
+  let _notified = false;
+  async function checkVersion() {
+    try {
+      const r = await fetch('/api/health?_t=' + Date.now(), { cache: 'no-store' });
+      if (!r.ok) return;
+      const d = await r.json();
+      const remoteVer = d.version || '';
+      if (remoteVer && remoteVer !== LOCAL_VER && !_notified) {
+        _notified = true;
+        const banner = document.createElement('div');
+        banner.id = '_versionUpdateBanner';
+        banner.style.cssText = 'position:fixed;top:0;left:0;right:0;z-index:99999;background:linear-gradient(90deg,#5C6BC0,#3F51B5);color:#fff;padding:12px 16px;text-align:center;font-size:13px;box-shadow:0 2px 8px rgba(0,0,0,.2)';
+        banner.innerHTML = '✨ 钱袋子有新版本 v' + remoteVer + '（当前 v' + LOCAL_VER + '），点击立即更新 <button onclick="(async()=>{if(navigator.serviceWorker){const rs=await navigator.serviceWorker.getRegistrations();for(const r of rs){await r.unregister()}}if(window.caches){const ks=await caches.keys();for(const k of ks)await caches.delete(k)}location.reload(true)})()" style="margin-left:12px;padding:5px 14px;background:#fff;color:#3F51B5;border:none;border-radius:4px;font-weight:600;cursor:pointer">立即刷新 ↻</button> <span onclick="document.getElementById(\'_versionUpdateBanner\').remove()" style="margin-left:10px;cursor:pointer;opacity:0.7">✕</span>';
+        document.body.appendChild(banner);
+      }
+    } catch(e) { /* 网络错误忽略 */ }
+  }
+  // 启动后 30s 首检 + 每 5 分钟轮询
+  setTimeout(checkVersion, 30000);
+  setInterval(checkVersion, 5 * 60 * 1000);
+  // 标签页重新可见时也检测一次
+  document.addEventListener('visibilitychange', () => {
+    if (!document.hidden) checkVersion();
+  });
+})();
 </script>
 </body>
 </html>

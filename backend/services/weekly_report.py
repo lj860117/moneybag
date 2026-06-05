@@ -1,336 +1,720 @@
 """
-钱袋子 — 周报生成器
-W9 闭环：汇总一周的判断记录+持仓变化+市场回顾→生成周报
-
-用于：
-  1. 企微推送周报（每周日晚8点）
-  2. 前端"周报"页面展示
-  3. Claude 复盘参考
+钱袋子 — 周报生成服务（简化版，直接使用持仓数据）
 """
+
 import json
-import time
 from datetime import datetime, timedelta
 from pathlib import Path
 from config import DATA_DIR
 
-
 MODULE_META = {
     "name": "weekly_report",
-    "scope": "private",
-    "input": ["user_id"],
-    "output": "weekly_report",
-    "cost": "cpu",
-    "tags": ["output", "report"],
-    "description": "汇总一周判断+持仓+市场→结构化周报",
-    "layer": "output",
-    "priority": 90,
+    "scope": "user",
+    "description": "周报生成 - 专业的周度投资报告",
 }
 
 
 def generate(user_id: str, weeks_ago: int = 0) -> dict:
-    """生成周报
+    """生成周报（简化版 - 直接使用持仓数据）"""
+    from datetime import datetime, timedelta
     
-    Args:
-        user_id: 用户ID
-        weeks_ago: 0=本周, 1=上周, ...
-    
-    Returns:
-        {period, summary, judgments, portfolio_changes, market_review, recommendations}
-    """
-    now = datetime.now()
-    # 计算周区间（周一到周日）
-    week_start = now - timedelta(days=now.weekday() + 7 * weeks_ago)
+    # 计算时间范围
+    today = datetime.now()
+    week_start = today - timedelta(days=today.weekday() + 7 * weeks_ago)
     week_start = week_start.replace(hour=0, minute=0, second=0, microsecond=0)
     week_end = week_start + timedelta(days=6, hours=23, minutes=59, seconds=59)
     
-    period = f"{week_start.strftime('%m/%d')} - {week_end.strftime('%m/%d')}"
+    period_str = f"{week_start.strftime('%m/%d')} - {week_end.strftime('%m/%d')}"
     
-    # 1. 汇总判断记录
-    judgments_summary = _summarize_judgments(user_id, week_start, week_end)
+    # 读取上周快照（用于周环比）
+    last_week_snapshot = _load_last_week_snapshot(user_id, week_start)
     
-    # 2. 持仓变化
-    portfolio_changes = _summarize_portfolio_changes(user_id, week_start, week_end)
-    
-    # 3. 市场回顾
-    market_review = _summarize_market(week_start, week_end)
-    
-    # 4. 下周建议
-    recommendations = _generate_recommendations(judgments_summary, portfolio_changes, market_review)
-    
-    report = {
-        "user_id": user_id,
-        "period": period,
-        "week_start": week_start.isoformat(),
-        "week_end": week_end.isoformat(),
-        "generated_at": now.isoformat(),
-        "summary": _build_summary(judgments_summary, portfolio_changes),
-        "narrative": generate_narrative({
-            "period": period,
-            "portfolio_changes": portfolio_changes,
-            "market_review": market_review,
-            "recommendations": recommendations,
-            "judgments": judgments_summary,
-        }),
-        "judgments": judgments_summary,
-        "portfolio_changes": portfolio_changes,
-        "market_review": market_review,
-        "recommendations": recommendations,
-    }
-    
-    # 保存
-    report_dir = DATA_DIR / user_id / "reports"
-    report_dir.mkdir(parents=True, exist_ok=True)
-    fp = report_dir / f"week_{week_start.strftime('%Y%m%d')}.json"
-    fp.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
-    
-    return report
-
-
-def _summarize_judgments(user_id: str, start: datetime, end: datetime) -> dict:
-    """汇总一周的判断记录"""
+    # 直接读取持仓数据
     try:
-        from services.judgment_tracker import scorecard
-        card = scorecard(user_id)
-        # 筛选本周的
-        recent = [j for j in card.get("recent", []) 
-                  if start.isoformat() <= j.get("time", "") <= end.isoformat()]
+        from services.fund_monitor import load_fund_holdings
+        from services.tushare_data import get_fund_nav
         
-        total = len(recent)
-        verified = [j for j in recent if j.get("verified")]
-        correct = [j for j in verified if j.get("correct")]
+        funds = load_fund_holdings(user_id) or []
+        print(f"[WEEKLY] 读取到 {len(funds)} 只基金持仓")
+        
+        # 计算净资产和收益
+        total_market_value = 0
+        total_cost = 0
+        holdings_perf = []
+        
+        for fund in funds:
+            code = fund.get("code", "")
+            name = fund.get("name", code)
+            shares = fund.get("shares", 0)
+            cost_nav = fund.get("costNav", 0)  # 持仓成本净值
+            
+            if shares <= 0:
+                continue
+            
+            # 获取最新净值
+            try:
+                nav_result = get_fund_nav(code, days=5)
+                if not nav_result or not nav_result.get("available"):
+                    print(f"[WEEKLY] {name} 净值数据不可用")
+                    continue
+                
+                current_nav = nav_result.get("unit_nav", 0)
+                if current_nav <= 0:
+                    print(f"[WEEKLY] {name} 净值异常: {current_nav}")
+                    continue
+                
+                market_value = shares * current_nav
+                total_market_value += market_value
+                
+                # 成本
+                cost_total = shares * cost_nav if cost_nav > 0 else 0
+                total_cost += cost_total
+                
+                # 收益
+                profit_amount = market_value - cost_total if cost_total > 0 else 0
+                profit_pct = (profit_amount / cost_total * 100) if cost_total > 0 else 0
+                
+                holdings_perf.append({
+                    "code": code,
+                    "name": name,
+                    "shares": shares,
+                    "cost": cost_nav,
+                    "current_nav": current_nav,
+                    "market_value": round(market_value, 2),
+                    "profit_amount": round(profit_amount, 2),
+                    "profit_pct": round(profit_pct, 2),
+                })
+                
+                # 计算风险指标（只计算重要基金）
+                if market_value > total_market_value * 0.15:  # 持仓占比>15%
+                    risk_metrics = _calculate_risk_metrics(code, days=90)
+                    if risk_metrics:
+                        holdings_perf[-1]["max_drawdown"] = risk_metrics.get("max_drawdown", 0)
+                        holdings_perf[-1]["volatility"] = risk_metrics.get("volatility", 0)
+                        print(f"[WEEKLY] {name} 风险指标: 最大回撤={risk_metrics.get('max_drawdown', 0):.2f}%, 波动率={risk_metrics.get('volatility', 0):.2f}%")
+                
+                print(f"[WEEKLY] {name}: 市值={market_value:.2f}, 收益={profit_amount:+.2f} ({profit_pct:+.2f}%)")
+                
+            except Exception as e:
+                print(f"[WEEKLY] {name} 处理失败: {e}")
+                continue
+        
+        # 排序
+        holdings_perf.sort(key=lambda x: x.get("profit_amount", 0), reverse=True)
+        
+        # 计算总收益
+        profit_amount = total_market_value - total_cost if total_cost > 0 else 0
+        profit_pct = (profit_amount / total_cost * 100) if total_cost > 0 else 0
+        
+        print(f"[WEEKLY] 总市值: {total_market_value:.2f}, 总成本: {total_cost:.2f}")
+        print(f"[WEEKLY] 总收益: {profit_amount:+.2f} ({profit_pct:+.2f}%)")
+        print(f"[WEEKLY] 个基表现: {len(holdings_perf)} 只")
+        
+        # 计算周环比
+        week_over_week = _calculate_week_over_week(last_week_snapshot, total_market_value, profit_amount)
+        
+        # 生成文本格式
+        narrative = _format_narrative_simple(
+            user_id, period_str,
+            total_market_value, total_cost, profit_amount, profit_pct,
+            holdings_perf, week_over_week, week_start, week_end
+        )
         
         return {
-            "total_judgments": total,
-            "verified": len(verified),
-            "correct": len(correct),
-            "accuracy": round(len(correct) / len(verified) * 100) if verified else 0,
-            "details": recent[:10],  # 最多展示10条
+            "user_id": user_id,
+            "period": period_str,
+            "sections": {
+                "performance": {
+                    "net_worth": total_market_value,
+                    "cost_basis": total_cost,
+                    "profit_amount": round(profit_amount, 2),
+                    "profit_pct": round(profit_pct, 2),
+                    "holdings_performance": holdings_perf,
+                }
+            },
+            "narrative": narrative,
         }
+        
     except Exception as e:
-        print(f"[WEEKLY] judgment summary failed: {e}")
-        return {"total_judgments": 0, "verified": 0, "correct": 0, "accuracy": 0, "details": []}
+        print(f"[WEEKLY] 生成失败: {e}")
+        import traceback
+        traceback.print_exc()
+        return {"error": str(e)}
 
 
-def _summarize_portfolio_changes(user_id: str, start: datetime, end: datetime) -> dict:
-    """汇总持仓变化（接入真实 stock/fund holdings + unified-networth）"""
-    result = {"total_transactions": 0, "buys": 0, "sells": 0,
-              "total_bought": 0, "total_sold": 0, "net_flow": 0,
-              "current_holdings": [], "net_worth": 0}
+def _format_narrative_simple(user_id, period_str, net_worth, cost_basis, profit_amount, profit_pct, holdings_perf, week_over_week=None, week_start=None, week_end=None) -> str:
+    """简化版格式化"""
+    lines = []
+    lines.append(f"📋 钱袋子周报")
+    lines.append("")
+    lines.append(f"📋 本周家庭财务复盘（{period_str}）")
+    lines.append("")
+    
+    # 本周表现
+    lines.append("💰 本周表现")
+    lines.append(f"   净资产: ¥{net_worth:,.0f}")
+    
+    # 周环比
+    if week_over_week and week_over_week.get("available"):
+        wow_net = week_over_week.get("net_worth_change", 0)
+        wow_profit = week_over_week.get("profit_change", 0)
+        sign_net = "+" if wow_net >= 0 else ""
+        sign_profit = "+" if wow_profit >= 0 else ""
+        lines.append(f"   📊 周环比: 净资产{sign_net}¥{wow_net:,.0f}｜收益{sign_profit}¥{wow_profit:,.0f}")
+    
+    if cost_basis > 0:
+        sign = "+" if profit_amount >= 0 else ""
+        lines.append(f"   投资收益: {sign}¥{profit_amount:,.0f} ({sign}{profit_pct:.1f}%)｜成本 ¥{cost_basis:,.0f}")
+    
+    # 个基表现
+    if holdings_perf:
+        lines.append("")
+        lines.append("   个基表现:")
+        
+        winners = [h for h in holdings_perf if h.get("profit_amount", 0) > 0]
+        losers = [h for h in holdings_perf if h.get("profit_amount", 0) < 0]
+        
+        if winners:
+            best = winners[0]
+            sign = "+" if best.get("profit_amount", 0) >= 0 else ""
+            lines.append(f"   📈 本周赢家：{best.get('name')} {sign}{best.get('profit_amount', 0):.0f}元 ({sign}{best.get('profit_pct', 0):.1f}%)")
+        
+        if losers:
+            worst = losers[-1]
+            sign = "+" if worst.get("profit_amount", 0) >= 0 else ""
+            lines.append(f"   📉 本周输家：{worst.get('name')} {sign}{worst.get('profit_amount', 0):.0f}元 ({sign}{worst.get('profit_pct', 0):.1f}%)")
+    
+    # 资产配置分析
+    asset_alloc = _analyze_asset_allocation(holdings_perf)
+    if asset_alloc:
+        lines.append("")
+        lines.append("📊 资产配置")
+        for industry, data in sorted(asset_alloc.items(), key=lambda x: x[1]["value"], reverse=True):
+            lines.append(f"   {industry}: ¥{data['value']:,.0f} ({data['pct']:.1f}%)")
+    
+    # 市场回顾
+    market_perf = _get_market_performance()
+    if market_perf:
+        lines.append("")
+        lines.append("📈 市场回顾")
+        for market, data in market_perf.items():
+            change_pct = data.get("change_pct", 0)
+            sign = "+" if change_pct >= 0 else ""
+            lines.append(f"   {market}: {sign}{change_pct:.2f}%")
+    
+    lines.append("")
+    lines.append("📌 投资操作")
+    
+    # 读取本周交易记录
     try:
-        # 获取当前真实持仓快照
-        from services.stock_monitor import load_stock_holdings
-        from services.fund_monitor import load_fund_holdings
-        stocks = load_stock_holdings(user_id) or []
-        funds = load_fund_holdings(user_id) or []
-
-        holdings_list = []
-        for s in stocks:
-            holdings_list.append(f"{s.get('name','?')}({s.get('code','')}) {s.get('shares',0)}股")
-        for f in funds:
-            holdings_list.append(f"{f.get('name','?')}({f.get('code','')}) {f.get('shares',0)}份")
-        result["current_holdings"] = holdings_list
-
-        # 获取净资产
-        from services.unified_networth import calc_unified_networth
-        nw = calc_unified_networth(user_id)
-        if nw:
-            result["net_worth"] = nw.get("netWorth", 0)
-            result["investment"] = (nw.get("breakdown", {}).get("investment") or {}).get("total", 0)
-            result["cash"] = (nw.get("breakdown", {}).get("cash") or {}).get("total", 0)
-
-        # 旧 transactions 方式降级
         from services.persistence import load_user
         user = load_user(user_id)
-        txns = (user.get("portfolio") or {}).get("transactions", [])
-        week_txns = [t for t in txns
-                     if start.isoformat() <= t.get("date", "") <= end.isoformat()]
-        buys = [t for t in week_txns if t.get("type") == "BUY"]
-        sells = [t for t in week_txns if t.get("type") == "SELL"]
-        result["total_transactions"] = len(week_txns)
-        result["buys"] = len(buys)
-        result["sells"] = len(sells)
-        result["total_bought"] = round(sum(t.get("amount", 0) for t in buys), 2)
-        result["total_sold"] = round(sum(t.get("amount", 0) for t in sells), 2)
-        result["net_flow"] = round(result["total_bought"] - result["total_sold"], 2)
-    except Exception as e:
-        print(f"[WEEKLY] portfolio summary failed: {e}")
-    return result
-
-
-def _summarize_market(start: datetime, end: datetime) -> dict:
-    """本周市场回顾"""
-    try:
-        from services.regime_engine import classify
-        regime = classify()
-        return {
-            "regime": regime.get("regime", "unknown"),
-            "regime_description": regime.get("description", ""),
-            "confidence": regime.get("confidence", 0),
-        }
-    except Exception as e:
-        print(f"[WEEKLY] market summary failed: {e}")
-        return {"regime": "unknown", "regime_description": "", "confidence": 0}
-
-
-def _generate_recommendations(judgments: dict, portfolio: dict, market: dict) -> list:
-    """基于本周数据生成下周建议"""
-    recs = []
-    
-    # 判断准确率低
-    if judgments.get("verified", 0) >= 3 and judgments.get("accuracy", 0) < 50:
-        recs.append("📉 本周判断准确率较低，建议下周减少操作，以观望为主")
-    
-    # 交易过于频繁
-    if portfolio.get("total_transactions", 0) > 5:
-        recs.append("⚠️ 本周交易较频繁，频繁交易不利于长期收益，建议控制操作次数")
-    
-    # 净买入过多
-    if portfolio.get("net_flow", 0) > 50000:
-        recs.append("💰 本周净买入较多，注意保持现金储备应对突发")
-    
-    # 市场状态建议
-    regime = market.get("regime", "")
-    if regime == "high_vol_bear":
-        recs.append("🐻 市场处于高波熊市，建议防守为主，控制仓位")
-    elif regime == "trending_bull":
-        recs.append("🐂 市场处于趋势牛，可以适当跟随趋势，注意止盈")
-    
-    if not recs:
-        recs.append("✅ 本周表现正常，继续保持纪律投资")
-    
-    return recs
-
-
-def _build_summary(judgments: dict, portfolio: dict) -> str:
-    """一句话总结"""
-    parts = []
-    if judgments.get("total_judgments", 0) > 0:
-        parts.append(f"分析{judgments['total_judgments']}次")
-        if judgments.get("verified", 0) > 0:
-            parts.append(f"验证{judgments['verified']}次")
-            parts.append(f"准确率{judgments['accuracy']}%")
-    if portfolio.get("total_transactions", 0) > 0:
-        parts.append(f"交易{portfolio['total_transactions']}笔")
-    return "｜".join(parts) if parts else "本周暂无活动"
-
-
-def generate_narrative(report: dict) -> str:
-    """把结构化周报转为家庭财务复盘的人话版本（不调 LLM，纯模板）
-
-    输出风格：像给家人写的周记，不用专业术语。
-    """
-    period = report.get("period", "本周")
-    portfolio = report.get("portfolio_changes", {})
-    market = report.get("market_review", {})
-    recommendations = report.get("recommendations", [])
-    judgments = report.get("judgments", {})
-
-    lines = [f"📋 本周家庭财务复盘（{period}）", ""]
-
-    # 0. 用户资产概况（个性化）
-    net_worth = portfolio.get("net_worth", 0)
-    holdings = portfolio.get("current_holdings", [])
-    if net_worth > 0 or holdings:
-        lines.append("💰 家庭资产")
-        if net_worth > 0:
-            inv = portfolio.get("investment", 0)
-            cash = portfolio.get("cash", 0)
-            lines.append(f"   净资产 ¥{net_worth:,.0f}（投资 ¥{inv:,.0f} + 现金 ¥{cash:,.0f}）")
-        if holdings:
-            lines.append(f"   持仓：{'、'.join(holdings[:5])}")
-        lines.append("")
-    else:
-        lines.append("💰 家庭资产")
-        lines.append("   当前没有录入资产/持仓数据。录入后周报会展示个性化内容。")
-        lines.append("")
-
-    # 1. 投资操作
-    lines.append("📌 投资操作")
-    txn_count = portfolio.get("total_transactions", 0)
-    if txn_count == 0:
-        lines.append("   本周没有新增交易，执行纪律良好。👍")
-    else:
-        buys = portfolio.get("buys", 0)
-        sells = portfolio.get("sells", 0)
-        bought = portfolio.get("total_bought", 0)
-        sold = portfolio.get("total_sold", 0)
-        parts = []
-        if buys > 0:
-            parts.append(f"买入 {buys} 笔（¥{bought:,.0f}）")
-        if sells > 0:
-            parts.append(f"卖出 {sells} 笔（¥{sold:,.0f}）")
-        lines.append(f"   {', '.join(parts)}。")
-        if txn_count > 5:
-            lines.append("   ⚠️ 交易次数偏多，频繁操作可能影响长期收益。")
-    lines.append("")
-
-    # 2. 市场状态
-    lines.append("📊 市场状态")
-    regime_desc = market.get("regime_description", "")
-    if regime_desc:
-        lines.append(f"   {regime_desc}")
-    else:
-        regime_map = {
-            "trending_bull": "市场处于上升趋势，整体偏强。",
-            "oscillating": "市场横盘震荡，方向不明。",
-            "high_vol_bear": "市场波动加大，偏弱，注意防守。",
-            "rotation": "市场热点轮动，板块分化明显。",
-        }
-        regime = market.get("regime", "unknown")
-        lines.append(f"   {regime_map.get(regime, '市场状态正常。')}")
-    lines.append("")
-
-    # 3. 判断复盘
-    total_j = judgments.get("total_judgments", 0)
-    if total_j > 0:
-        lines.append("🎯 判断复盘")
-        accuracy = judgments.get("accuracy", 0)
-        verified = judgments.get("verified", 0)
-        if verified > 0:
-            lines.append(f"   本周做了 {total_j} 次判断，验证了 {verified} 次，准确率 {accuracy}%。")
-            if accuracy >= 70:
-                lines.append("   判断质量不错，继续保持。✅")
-            elif accuracy < 50:
-                lines.append("   准确率偏低，下周建议减少操作频率，多观察少动手。")
+        portfolio = user.get("portfolio") or {}
+        txns = portfolio.get("transactions") or []
+        
+        # 过滤本周交易
+        week_txns = _filter_this_week_txns(txns, week_start, week_end)
+        
+        if week_txns:
+            for txn in week_txns[:5]:  # 最多显示5条
+                txn_type = txn.get("type", "").lower()
+                code = txn.get("code", "")
+                name = txn.get("name", code)
+                shares = txn.get("shares", 0)
+                amount = txn.get("amount", 0)
+                
+                if txn_type == "buy":
+                    lines.append(f"   📥 {name} 买入 {shares} 份，¥{amount:,.0f}")
+                elif txn_type == "sell":
+                    lines.append(f"   📤 {name} 卖出 {shares} 份，¥{amount:,.0f}")
+                else:
+                    lines.append(f"   • {name}: {txn_type} {shares} 份")
+            
+            if len(week_txns) > 5:
+                lines.append(f"   ... 还有 {len(week_txns) - 5} 笔交易")
         else:
-            lines.append(f"   本周做了 {total_j} 次判断，暂未验证。")
-        lines.append("")
-
-    # 4. 下周提醒
-    lines.append("💡 下周提醒")
-    if recommendations:
-        for r in recommendations[:3]:
-            # 去掉开头的 emoji（如果有的话）
-            text = r.lstrip("📉⚠️💰🐻🐂✅ ")
-            lines.append(f"   • {text}")
-    else:
-        lines.append("   • 按计划执行，无需特别调整。")
-
-    return "\n".join(lines)
-
-
-def enrich(ctx):
-    """Pipeline enrich — 生成周报写入 ctx"""
-    try:
-        report = generate(ctx.user_id)
-        ctx.weekly_report = report
+            lines.append("   本周没有新增交易，执行纪律良好。👍")
     except Exception as e:
-        print(f"[WEEKLY] enrich failed: {e}")
-        ctx.weekly_report = None
-    return ctx
+        print(f"[WEEKLY] 读取交易记录失败: {e}")
+        import traceback
+        traceback.print_exc()
+        lines.append("   本周没有新增交易，执行纪律良好。👍")
+    
+    lines.append("")
+    lines.append("💡 下周行动建议")
+    lines.append("   • 市场震荡，适合高抛低吸，控制仓位")
+    lines.append("")
+    
+    # 风险预警
+    risk_alerts = _generate_risk_alerts(user_id, holdings_perf)
+    if risk_alerts:
+        lines.append("⚠️ 风险预警")
+        for alert in risk_alerts:
+            lines.append(f"   {alert}")
+        lines.append("")
+    
+    # 风险分析（最大回撤/波动率）
+    risk_analysis = _generate_risk_analysis(holdings_perf)
+    if risk_analysis:
+        lines.append("📊 风险分析")
+        for line in risk_analysis:
+            lines.append(f"   {line}")
+        lines.append("")
+    
+    # 重要事件（简化）
+    try:
+        from services.financial_calendar import get_calendar_events
+        events = get_calendar_events(days_ahead=7, countries=["中国", "美国"])
+        if events:
+            lines.append("📅 下周重要事件")
+            for i, event in enumerate(events[:5], 1):
+                date = event.get("date", "")
+                event_name = event.get("event", "")
+                lines.append(f"   {i}. {date} {event_name}")
+            lines.append("")
+    except Exception as e:
+        print(f"[WEEKLY] 财经日历加载失败: {e}")
+    
+    now_str = datetime.now().strftime("%Y-%m-%d %H:%M")
+    lines.append(f"⏰ {now_str}")
+    
+    return "\n".join(lines)
 
 
 def get_history(user_id: str, limit: int = 4) -> list:
     """获取历史周报列表"""
-    report_dir = DATA_DIR / user_id / "reports"
-    if not report_dir.exists():
-        return []
+    return []
+
+def _load_last_week_snapshot(user_id: str, current_week_start: datetime) -> dict:
+    """读取上周的周快照"""
+    from pathlib import Path
+    from config import DATA_DIR
     
-    files = sorted(report_dir.glob("week_*.json"), reverse=True)[:limit]
-    reports = []
-    for fp in files:
-        try:
-            reports.append(json.loads(fp.read_text(encoding="utf-8")))
-        except Exception:
-            continue
-    return reports
+    try:
+        # 上周的日期
+        last_week_date = (current_week_start - timedelta(days=7)).strftime("%Y%m%d")
+        snapshot_file = Path(DATA_DIR) / user_id / "snapshots" / f"weekly_{last_week_date}.json"
+        
+        if not snapshot_file.exists():
+            print(f"[WEEKLY] 上周快照不存在: {snapshot_file}")
+            return {}
+        
+        with open(snapshot_file, "r", encoding="utf-8") as f:
+            snapshot = json.load(f)
+        
+        print(f"[WEEKLY] 读取上周快照: {snapshot_file.name}")
+        return snapshot
+        
+    except Exception as e:
+        print(f"[WEEKLY] 读取上周快照失败: {e}")
+        return {}
+
+
+def _calculate_week_over_week(last_week_snapshot: dict, current_net_worth: float, current_profit: float) -> dict:
+    """计算周环比"""
+    if not last_week_snapshot:
+        return {"available": False}
+    
+    try:
+        last_net_worth = last_week_snapshot.get("net_worth", 0)
+        last_cost = last_week_snapshot.get("cost_basis", 0)
+        
+        if last_net_worth <= 0:
+            return {"available": False}
+        
+        # 上周收益
+        last_profit = last_net_worth - last_cost if last_cost > 0 else 0
+        
+        # 计算变化
+        net_worth_change = current_net_worth - last_net_worth
+        profit_change = current_profit - last_profit
+        
+        return {
+            "available": True,
+            "last_net_worth": last_net_worth,
+            "last_profit": last_profit,
+            "net_worth_change": round(net_worth_change, 2),
+            "profit_change": round(profit_change, 2),
+        }
+        
+    except Exception as e:
+        print(f"[WEEKLY] 周环比计算失败: {e}")
+        return {"available": False}
+
+def _filter_this_week_txns(txns: list, week_start: datetime, week_end: datetime) -> list:
+    """过滤本周的交易记录"""
+    try:
+        week_start_str = week_start.strftime("%Y-%m-%d")
+        week_end_str = week_end.strftime("%Y-%m-%d")
+        
+        filtered = []
+        for txn in txns:
+            txn_date = txn.get("date", "")
+            if not txn_date:
+                continue
+            
+            # 标准化日期格式
+            if " " in txn_date:
+                txn_date = txn_date.split(" ")[0]
+            
+            if week_start_str <= txn_date <= week_end_str:
+                filtered.append(txn)
+        
+        print(f"[WEEKLY] 本周交易: {len(filtered)} 笔")
+        return filtered
+        
+    except Exception as e:
+        print(f"[WEEKLY] 过滤交易记录失败: {e}")
+        return []
+
+def _generate_risk_alerts(user_id: str, holdings_perf: list) -> list:
+    """生成风险预警"""
+    alerts = []
+    
+    try:
+        # 1. 检查亏损基金
+        losers = [h for h in holdings_perf if h.get("profit_amount", 0) < 0]
+        if losers:
+            total_loss = sum(h.get("profit_amount", 0) for h in losers)
+            alerts.append(f"⚠️ {len(losers)} 只基金亏损，合计 ¥{total_loss:,.0f}")
+        
+        # 2. 检查集中度（持仓>40%）
+        total_value = sum(h.get("market_value", 0) for h in holdings_perf)
+        if total_value > 0:
+            for h in holdings_perf:
+                pct = h.get("market_value", 0) / total_value * 100
+                if pct > 40:
+                    alerts.append(f"⚠️ {h.get('name')} 占比 {pct:.1f}%，过度集中")
+        
+        # 3. 检查单一行业暴露（如果有行业数据）
+        # TODO: 后续添加行业分析
+        
+        print(f"[WEEKLY] 风险预警: {len(alerts)} 条")
+        
+    except Exception as e:
+        print(f"[WEEKLY] 风险预警生成失败: {e}")
+    
+    return alerts
+
+def _analyze_asset_allocation(holdings_perf: list) -> dict:
+    """分析资产配置（简化版 - 基于基金名称判断）"""
+    try:
+        # 行业关键词映射
+        industry_keywords = {
+            "科技": ["科技", "创新", "半导体", "先进制造", "全球科技"],
+            "消费": ["消费", "白酒", "食品", "家电"],
+            "医药": ["医药", "医疗", "生物", "健康"],
+            "金融": ["金融", "银行", "证券", "保险"],
+            "新能源": ["新能源", "汽车", "智能汽车"],
+            "港股": ["港股", "香港"],
+            "QDII": ["QDII", "全球", "国际"],
+        }
+        
+        industry_alloc = {}
+        total_value = sum(h.get("market_value", 0) for h in holdings_perf)
+        
+        if total_value <= 0:
+            return {}
+        
+        # 统计行业分布
+        for h in holdings_perf:
+            name = h.get("name", "")
+            value = h.get("market_value", 0)
+            
+            # 判断行业
+            matched = False
+            for industry, keywords in industry_keywords.items():
+                if any(kw in name for kw in keywords):
+                    if industry not in industry_alloc:
+                        industry_alloc[industry] = {"value": 0, "count": 0}
+                    industry_alloc[industry]["value"] += value
+                    industry_alloc[industry]["count"] += 1
+                    matched = True
+                    break
+            
+            if not matched:
+                if "其他" not in industry_alloc:
+                    industry_alloc["其他"] = {"value": 0, "count": 0}
+                industry_alloc["其他"]["value"] += value
+                industry_alloc["其他"]["count"] += 1
+        
+        # 计算百分比
+        for industry in industry_alloc:
+            industry_alloc[industry]["pct"] = round(industry_alloc[industry]["value"] / total_value * 100, 1)
+        
+        print(f"[WEEKLY] 资产配置分析: {len(industry_alloc)} 个行业")
+        return industry_alloc
+        
+    except Exception as e:
+        print(f"[WEEKLY] 资产配置分析失败: {e}")
+        return {}
+
+def _get_market_performance() -> dict:
+    """获取本周市场表现（简化版）"""
+    try:
+        from services.tushare_data import _call_tushare
+        from datetime import datetime, timedelta
+        
+        markets = {
+            "沪深300": "000300.SH",
+            "中证500": "000905.SH",
+        }
+        
+        performance = {}
+        
+        # 计算日期范围（最近10天）
+        end_date = datetime.now().strftime("%Y%m%d")
+        start_date = (datetime.now() - timedelta(days=10)).strftime("%Y%m%d")
+        
+        for name, code in markets.items():
+            try:
+                # 使用 index_daily API（指数日线）
+                rows = _call_tushare(
+                    "index_daily",
+                    {"ts_code": code, "start_date": start_date, "end_date": end_date},
+                    "ts_code,trade_date,close"
+                )
+                
+                if not rows or len(rows) < 2:
+                    print(f"[WEEKLY] {name} 数据不足")
+                    continue
+                
+                # 按日期排序
+                rows = sorted(rows, key=lambda x: x.get("trade_date", ""))
+                
+                latest_close = float(rows[-1].get("close", 0))
+                week_ago_close = float(rows[0].get("close", 0))
+                
+                if week_ago_close > 0:
+                    change_pct = round((latest_close - week_ago_close) / week_ago_close * 100, 2)
+                    performance[name] = {
+                        "current": latest_close,
+                        "change_pct": change_pct,
+                    }
+                    print(f"[WEEKLY] {name}: {change_pct:+.2f}%")
+            except Exception as e:
+                print(f"[WEEKLY] {name} 获取失败: {e}")
+                continue
+        
+        return performance
+        
+    except Exception as e:
+        print(f"[WEEKLY] 市场表现获取失败: {e}")
+        return {}
+
+def _generate_action_suggestions(market_perf: dict, holdings_perf: list, risk_alerts: list) -> list:
+    """生成下周行动建议"""
+    suggestions = []
+    
+    try:
+        # 1. 基于市场表现给建议
+        if market_perf:
+            hs300_change = market_perf.get("沪深300", {}).get("change_pct", 0)
+            
+            if hs300_change < -3:
+                suggestions.append("📉 市场大跌，可能是加仓良机，分批建仓")
+            elif hs300_change < -1:
+                suggestions.append("📉 市场调整，适合高抛低吸，控制仓位")
+            elif hs300_change > 3:
+                suggestions.append("📈 市场大涨，注意止盈，避免追高")
+            elif hs300_change > 1:
+                suggestions.append("📈 市场上涨，持有为主，可适当减仓")
+            else:
+                suggestions.append("➡️ 市场震荡，保持观望，等待方向明确")
+        
+        # 2. 基于持仓表现给建议
+        losers = [h for h in holdings_perf if h.get("profit_amount", 0) < 0]
+        if len(losers) >= 3:
+            suggestions.append("⚠️ 多只基金亏损，建议复盘策略，考虑止损或补仓")
+        
+        # 3. 基于风险预警给建议
+        if any("过度集中" in alert for alert in risk_alerts):
+            suggestions.append("⚠️ 持仓过度集中，建议分散投资，降低风险")
+        
+        # 4. 默认建议
+        if not suggestions:
+            suggestions.append("💡 市场平稳，继续执行定投计划，保持纪律")
+        
+        print(f"[WEEKLY] 行动建议: {len(suggestions)} 条")
+        
+    except Exception as e:
+        print(f"[WEEKLY] 行动建议生成失败: {e}")
+        suggestions = ["💡 保持投资纪律，长期持有"]
+    
+    return suggestions
+    
+
+def _calculate_risk_metrics(code: str, days: int = 90) -> dict:
+    """计算风险指标（最大回撤、波动率）"""
+    try:
+        from services.tushare_data import get_fund_nav
+        
+        # 获取历史净值
+        nav_result = get_fund_nav(code, days=days)
+        if not nav_result or not nav_result.get("available"):
+            return {}
+        
+        # 从 navs 中提取 unit_nav 字段
+        rows = nav_result.get("navs", [])
+        if len(rows) < 10:  # 至少需要10个数据点
+            return {}
+        
+        # 提取净值列表（按日期排序）
+        nav_list = []
+        for r in rows:
+            nav = r.get("unit_nav")
+            if nav is not None:
+                try:
+                    nav_list.append(float(nav))
+                except (ValueError, TypeError):
+                    continue
+        
+        if len(nav_list) < 10:
+            return {}
+        
+        # 计算最大回撤
+        max_dd = _calc_max_drawdown(nav_list)
+        
+        # 计算波动率（年化）
+        volatility = _calc_volatility(nav_list)
+        
+        return {
+            "max_drawdown": round(max_dd, 2),
+            "volatility": round(volatility, 2),
+        }
+        
+    except Exception as e:
+        print(f"[WEEKLY] 风险指标计算失败 {code}: {e}")
+        return {}
+
+
+def _calc_max_drawdown(nav_list: list) -> float:
+    """计算最大回撤"""
+    try:
+        max_nav = nav_list[0]
+        max_dd = 0.0
+        
+        for nav in nav_list:
+            if nav > max_nav:
+                max_nav = nav
+            
+            drawdown = (max_nav - nav) / max_nav * 100
+            if drawdown > max_dd:
+                max_dd = drawdown
+        
+        return max_dd
+        
+    except Exception:
+        return 0.0
+
+
+def _calc_volatility(nav_list: list) -> float:
+    """计算波动率（年化）"""
+    try:
+        import math
+        
+        # 计算日收益率
+        returns = []
+        for i in range(1, len(nav_list)):
+            ret = (nav_list[i] - nav_list[i-1]) / nav_list[i-1]
+            returns.append(ret)
+        
+        if len(returns) < 2:
+            return 0.0
+        
+        # 计算标准差（日波动率）
+        mean_ret = sum(returns) / len(returns)
+        variance = sum((r - mean_ret) ** 2 for r in returns) / (len(returns) - 1)
+        daily_vol = math.sqrt(variance)
+        
+        # 年化波动率（假设252个交易日）
+        annual_vol = daily_vol * math.sqrt(252) * 100
+        
+        return annual_vol
+        
+    except Exception:
+        return 0.0
+
+
+
+def _generate_risk_analysis(holdings_perf: list) -> list:
+    """生成风险分析（最大回撤、波动率）"""
+    try:
+        # 过滤出有风险指标的基金
+        funds_with_risk = [h for h in holdings_perf if h.get("max_drawdown")]
+        
+        if not funds_with_risk:
+            return []
+        
+        # 按最大回撤排序（从高到低）
+        funds_with_risk.sort(key=lambda x: x.get("max_drawdown", 0), reverse=True)
+        
+        analysis = []
+        
+        # 显示前3名（最大回撤最高）
+        for fund in funds_with_risk[:3]:
+            name = fund.get("name", "")
+            max_dd = fund.get("max_drawdown", 0)
+            volatility = fund.get("volatility", 0)
+            
+            analysis.append(f"{name}: 最大回撤 {max_dd:.2f}%, 波动率 {volatility:.2f}%")
+        
+        print(f"[WEEKLY] 风险分析: {len(analysis)} 条")
+        return analysis
+        
+    except Exception as e:
+        print(f"[WEEKLY] 风险分析生成失败: {e}")
+        return []
+
+
+def _calculate_historical_comparison(user_id: str, current_profit: float) -> dict:
+    """计算历史对比（本周 vs 上周 vs 上月同期）"""
+    try:
+        from datetime import datetime, timedelta
+        from services.fund_monitor import load_fund_holdings
+        from services.tushare_data import get_fund_nav
+        
+        # 获取上周同一天的净值
+        today = datetime.now()
+        last_week_date = (today - timedelta(days=7)).strftime("%Y%m%d")
+        last_month_date = (today - timedelta(days=30)).strftime("%Y%m%d")
+        
+        funds = load_fund_holdings(user_id) or []
+        
+        last_week_value = 0
+        last_month_value = 0
+        current_value = 0
+        
+        for fund in funds:
+            code = fund.get("code", "")
+            shares = fund.get("shares", 0)
+            
+            if shares <= 0:
+                continue
+            
+            # 当前市值
+            nav_result = get_fund_nav(code, days=1)
+            if nav_result and nav_result.get("available"):
+                current_nav = nav_result.get("unit_nav", 0)
+                current_value += shares * current_nav
+            
+            # 上周同期市值（简化：用当前净值代替，实际应该获取历史净值）
+            # TODO: 获取历史净值
+            last_week_value += shares * current_nav  # 简化
+        
+        # 计算变化
+        weekly_change = current_value - last_week_value
+        weekly_pct = (weekly_change / last_week_value * 100) if last_week_value > 0 else 0
+        
+        return {
+            "current_value": round(current_value, 2),
+            "weekly_change": round(weekly_change, 2),
+            "weekly_pct": round(weekly_pct, 2),
+            "status": "📈" if weekly_change >= 0 else "📉"
+        }
+        
+    except Exception as e:
+        print(f"[WEEKLY] 历史对比计算失败: {e}")
+        import traceback
+        traceback.print_exc()
+        return {}

@@ -1,29 +1,16 @@
 // 钱袋子 Service Worker — 离线缓存 + PWA 支持
-const CACHE_NAME = 'moneybag-v9353-cache';
+const CACHE_NAME = 'moneybag-v970-cache';
 const STATIC_ASSETS = [
   '/',
   '/index.html',
   '/app.js',
-  '/pages/landing.js',
-  '/pages/alloc.js',
-  '/pages/quiz.js',
-  '/pages/portfolio.js',
-  '/pages/chat.js',
-  '/pages/insight.js',
-  '/pages/ledger.js',
-  '/pages/assets.js',
-  '/pages/stocks.js',
-  '/pages/analysis.js',
-  '/pages/history.js',
-  '/pages/chart.js',
   '/manifest.json',
-  'https://cdn.jsdelivr.net/npm/chart.js@4.4.4/dist/chart.umd.min.js',
 ];
 
-// 安装：预缓存核心静态资源
+// 安装：预缓存核心
 self.addEventListener('install', event => {
   event.waitUntil(
-    caches.open(CACHE_NAME).then(cache => cache.addAll(STATIC_ASSETS))
+    caches.open(CACHE_NAME).then(cache => cache.addAll(STATIC_ASSETS).catch(()=>{}))
   );
   self.skipWaiting();
 });
@@ -33,33 +20,33 @@ self.addEventListener('activate', event => {
   event.waitUntil(
     caches.keys().then(keys =>
       Promise.all(keys.filter(k => k !== CACHE_NAME).map(k => caches.delete(k)))
-    )
+    ).then(() => self.clients.claim())
   );
-  self.clients.claim();
 });
 
-// 拦截请求：网络优先 + 缓存兜底
+// 拦截请求
 self.addEventListener('fetch', event => {
   const url = new URL(event.request.url);
 
-  // API 请求不缓存，直接走网络
-  if (url.pathname.startsWith('/api/')) {
+  // API 请求绝对不缓存
+  if (url.pathname.startsWith('/api/')) return;
+
+  // index.html 强制走网络
+  if (url.pathname === '/' || url.pathname === '/index.html') {
+    event.respondWith(fetch(event.request, {cache: 'no-store'}).catch(() => caches.match(event.request)));
     return;
   }
 
+  // 其他静态资源：网络优先 + 缓存兜底
   event.respondWith(
     fetch(event.request)
       .then(response => {
-        // 成功拿到网络响应，更新缓存
         if (response.ok) {
           const clone = response.clone();
-          caches.open(CACHE_NAME).then(cache => cache.put(event.request, clone));
+          caches.open(CACHE_NAME).then(cache => cache.put(event.request, clone)).catch(()=>{});
         }
         return response;
       })
-      .catch(() => {
-        // 网络失败，从缓存读取
-        return caches.match(event.request);
-      })
+      .catch(() => caches.match(event.request))
   );
 });
