@@ -1,0 +1,1310 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>钱袋子 · 移动端真实重设计</title>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=Noto+Sans+SC:wght@400;500;600;700;800;900&family=DM+Serif+Display&display=swap" rel="stylesheet">
+<style>
+*{box-sizing:border-box;margin:0;padding:0;-webkit-font-smoothing:antialiased}
+html,body{font-family:'Inter','Noto Sans SC',-apple-system,system-ui,sans-serif;background:#0a0d14;color:#e6e8ec;min-height:100vh}
+.page{max-width:1480px;margin:0 auto;padding:32px 20px 80px}
+
+/* 顶部 */
+.head{padding:8px 0 36px;text-align:center;border-bottom:1px solid rgba(255,255,255,.06);margin-bottom:48px}
+.head .badge{display:inline-flex;align-items:center;gap:8px;padding:5px 14px;border-radius:999px;background:rgba(255,184,0,.1);border:1px solid rgba(255,184,0,.2);color:#FFB800;font-size:11px;letter-spacing:1px;margin-bottom:14px}
+.head .badge .dot{width:6px;height:6px;border-radius:50%;background:#FFB800;box-shadow:0 0 8px #FFB800}
+.head h1{font-family:'DM Serif Display','Noto Sans SC',serif;font-size:46px;font-weight:400;letter-spacing:-.02em;line-height:1.1}
+.head h1 em{font-style:italic;background:linear-gradient(90deg,#FFB347 20%,#FF6B6B 80%);-webkit-background-clip:text;background-clip:text;color:transparent}
+.head p{color:#8a93a3;font-size:14px;max-width:680px;margin:14px auto 0;line-height:1.7}
+.head p strong{color:#e6e8ec}
+
+/* 章节 */
+.section{margin-top:64px}
+.sec-head{display:flex;align-items:flex-end;justify-content:space-between;padding-bottom:14px;border-bottom:1px solid rgba(255,255,255,.06);margin-bottom:24px}
+.sec-head h2{font-size:20px;font-weight:700;display:flex;align-items:center;gap:12px}
+.sec-head h2 .num{display:inline-grid;place-items:center;width:26px;height:26px;border-radius:7px;font-size:12px;font-weight:800;font-family:'DM Serif Display',serif}
+.sec-head .meta{color:#5a6275;font-size:12px;letter-spacing:.5px}
+
+/* 对比布局 */
+.compare{display:grid;grid-template-columns:1fr 1fr;gap:28px;align-items:start}
+.compare .col{display:flex;flex-direction:column}
+.compare .col-label{font-size:11px;letter-spacing:2px;color:#5a6275;text-transform:uppercase;margin-bottom:14px;display:flex;align-items:center;gap:8px}
+.compare .col-label .pill{padding:2px 8px;border-radius:4px;font-size:10px;letter-spacing:.5px;text-transform:none}
+.compare .now .pill{background:rgba(255,109,109,.12);color:#ff8a8a;border:1px solid rgba(255,109,109,.2)}
+.compare .new .pill{background:rgba(0,229,160,.12);color:#00E5A0;border:1px solid rgba(0,229,160,.2)}
+
+/* 手机外壳 */
+.phone{width:100%;max-width:392px;margin:0 auto;background:#1a1d24;border-radius:42px;padding:10px;border:1px solid #2a2e38;box-shadow:0 20px 60px rgba(0,0,0,.4),0 0 0 1px rgba(255,255,255,.04) inset}
+.phone-screen{background:var(--bg);border-radius:32px;overflow:hidden;position:relative;height:780px;display:flex;flex-direction:column}
+.notch{position:absolute;top:8px;left:50%;transform:translateX(-50%);width:110px;height:24px;background:#000;border-radius:14px;z-index:50}
+.statusbar{padding:14px 24px 8px;display:flex;justify-content:space-between;align-items:center;font-size:13px;font-weight:600;color:var(--text);position:relative;z-index:1}
+.statusbar .icons{display:flex;gap:5px;font-size:11px;color:var(--text)}
+.scroll{flex:1;overflow:hidden;position:relative}
+.scroll-inner{padding:0 16px 100px;overflow-y:auto;height:100%;scrollbar-width:none}
+.scroll-inner::-webkit-scrollbar{display:none}
+
+/* 底部 Tab Bar */
+.tabbar{position:absolute;bottom:0;left:0;right:0;background:var(--tab-bg);backdrop-filter:blur(20px);border-top:1px solid var(--border);padding:10px 8px 22px;display:flex;justify-content:space-around;z-index:10}
+.tabbar .ti{display:flex;flex-direction:column;align-items:center;gap:2px;font-size:10px;color:var(--text-dim);flex:1}
+.tabbar .ti .ic{width:22px;height:22px;display:grid;place-items:center;font-size:18px}
+.tabbar .ti.on{color:var(--accent)}
+.tabbar .ti.on .ic{filter:drop-shadow(0 0 6px var(--accent))}
+
+/* ==================== 当前现状 (NOW) ==================== */
+.now-bg{
+  --bg:#0F1118;--card:#1A1D26;--card2:#0F1118;--text:#e6e8ec;--text-dim:#8a93a3;
+  --border:rgba(255,255,255,.06);--accent:#FFB347;--tab-bg:#0F1118
+}
+.now-statusbar{background:#0F1118}
+.now-top{display:flex;align-items:center;justify-content:space-between;padding:10px 8px;font-size:13px}
+.now-top .l{color:#bbb}
+.now-top .r{display:flex;gap:8px;align-items:center}
+.now-top .icon-btn{width:28px;height:28px;border-radius:6px;background:#1A1D26;display:grid;place-items:center;font-size:14px}
+.now-banner{background:#2A1F0F;border:1px solid rgba(255,179,71,.15);color:#FFB347;font-size:11px;padding:6px 12px;border-radius:6px;margin:6px 0 12px;text-align:center}
+
+.now-card{background:#1A1D26;border-radius:14px;padding:18px;margin-bottom:12px;border:1px solid rgba(255,255,255,.04)}
+.now-net{text-align:center}
+.now-net .lbl{font-size:13px;color:#bbb;margin-bottom:4px}
+.now-net .v{font-size:42px;color:#FFB347;font-weight:700;line-height:1}
+.now-net .splits{display:flex;justify-content:space-around;margin-top:14px}
+.now-net .splits div{font-size:11px;color:#8a93a3;text-align:center}
+.now-net .splits div b{display:block;color:#FFB347;font-size:14px;margin-top:2px;font-weight:600}
+
+.now-tip{border-left:3px solid #8B6FE6;padding-left:12px}
+.now-tip .h{font-size:13px;font-weight:700;margin-bottom:8px}
+.now-tip .b{font-size:12px;color:#aab;line-height:1.6}
+.now-tip .b::before{content:"🔴 "}
+.now-tip .link{display:inline-block;margin-top:8px;font-size:11px;color:#8B6FE6;background:rgba(139,111,230,.1);padding:4px 8px;border-radius:6px}
+
+.now-block .h{font-size:13px;font-weight:700;margin-bottom:6px}
+.now-block .b{font-size:12px;color:#aab}
+.now-block .b a{color:#FFB347;text-decoration:underline}
+
+/* ==================== 重设计 (NEW) ==================== */
+.new-bg{
+  --bg:#06080F;--card:#10131C;--card2:#161A26;--text:#F0F2F7;--text-dim:#7A8499;
+  --border:rgba(255,255,255,.05);--accent:#FFB755;--tab-bg:rgba(10,12,18,.85)
+}
+.new-bg .scroll-inner{background:radial-gradient(circle at 50% -10%,rgba(255,183,85,.06) 0%,transparent 50%),#06080F}
+
+.new-top{display:flex;align-items:center;justify-content:space-between;padding:6px 4px 14px}
+.new-greet{display:flex;align-items:center;gap:10px}
+.new-greet .av{width:34px;height:34px;border-radius:11px;background:linear-gradient(135deg,#FFB755,#FF7A4D);display:grid;place-items:center;color:#0a0a0a;font-weight:800;font-size:14px}
+.new-greet .info b{display:block;font-size:13px;font-weight:700}
+.new-greet .info small{display:block;font-size:10px;color:#7A8499;margin-top:1px;letter-spacing:.5px}
+.new-actions{display:flex;gap:6px}
+.new-actions .ib{width:32px;height:32px;border-radius:10px;background:rgba(255,255,255,.04);border:1px solid rgba(255,255,255,.06);display:grid;place-items:center;font-size:13px;color:#7A8499}
+.new-actions .ib.pro{background:linear-gradient(135deg,rgba(255,183,85,.15),rgba(255,122,77,.1));border-color:rgba(255,183,85,.25);color:#FFB755;width:auto;padding:0 10px;font-size:10px;font-weight:700;letter-spacing:1px}
+
+.new-banner{background:linear-gradient(90deg,rgba(255,183,85,.08),rgba(255,183,85,.02));border:1px solid rgba(255,183,85,.12);border-radius:10px;padding:7px 12px;font-size:11px;color:#FFB755;margin-bottom:14px;display:flex;align-items:center;gap:8px}
+.new-banner .dot{width:5px;height:5px;border-radius:50%;background:#FFB755;animation:p 2s infinite}
+@keyframes p{50%{opacity:.4}}
+
+/* 净资产 hero 卡 */
+.hero-card{background:linear-gradient(140deg,#1B1408 0%,#0E1019 60%,#0A0C14 100%);border:1px solid rgba(255,183,85,.18);border-radius:22px;padding:22px 20px;margin-bottom:14px;position:relative;overflow:hidden}
+.hero-card::before{content:"";position:absolute;top:-50px;right:-50px;width:160px;height:160px;background:radial-gradient(circle,rgba(255,183,85,.25),transparent 70%);filter:blur(20px)}
+.hero-card .head-row{display:flex;align-items:center;justify-content:space-between;position:relative;z-index:1}
+.hero-card .lbl{font-size:11px;letter-spacing:2px;color:#9aa1ac;text-transform:uppercase;display:flex;align-items:center;gap:6px}
+.hero-card .lbl .ico{font-size:14px}
+.hero-card .toggle{font-size:10px;color:#7A8499;background:rgba(255,255,255,.04);padding:3px 8px;border-radius:6px;display:flex;align-items:center;gap:4px}
+.hero-card .num{font-family:'DM Serif Display',serif;font-size:48px;font-weight:400;color:#fff;line-height:1.1;margin:14px 0 4px;position:relative;z-index:1;letter-spacing:-.02em}
+.hero-card .num small{font-size:18px;color:#7A8499;font-family:'Inter',sans-serif;font-weight:500}
+.hero-card .delta{display:flex;align-items:center;gap:8px;position:relative;z-index:1}
+.hero-card .delta .pill{padding:2px 8px;border-radius:6px;font-size:11px;font-weight:600;background:rgba(0,229,160,.12);color:#00E5A0;border:1px solid rgba(0,229,160,.2)}
+.hero-card .delta span{font-size:11px;color:#7A8499}
+.hero-card .splits{display:grid;grid-template-columns:repeat(3,1fr);gap:1px;margin-top:18px;background:rgba(255,255,255,.05);border-radius:12px;overflow:hidden;position:relative;z-index:1}
+.hero-card .splits div{background:rgba(15,17,24,.6);padding:10px;text-align:center}
+.hero-card .splits .l{font-size:10px;color:#7A8499;letter-spacing:.5px;display:flex;justify-content:center;align-items:center;gap:4px;margin-bottom:3px}
+.hero-card .splits .v{font-size:14px;font-weight:600;color:#F0F2F7;font-family:'Inter',sans-serif}
+.hero-card .splits .v.up{color:#00E5A0}
+.hero-card .splits .v.dn{color:#FF6B6B}
+
+/* 双账户卡 */
+.dual-card{background:rgba(255,255,255,.02);border:1px solid rgba(255,255,255,.05);border-radius:18px;padding:14px;margin-bottom:14px}
+.dual-card .h{display:flex;align-items:center;justify-content:space-between;margin-bottom:10px}
+.dual-card .h b{font-size:12px;font-weight:700;display:flex;align-items:center;gap:6px}
+.dual-card .h .badge{font-size:9px;padding:2px 6px;background:rgba(0,229,160,.12);color:#00E5A0;border-radius:4px;letter-spacing:.5px}
+.dual-card .h .more{font-size:10px;color:#7A8499}
+.dual-card .members{display:grid;grid-template-columns:1fr 1fr;gap:8px}
+.dual-card .m{background:rgba(255,255,255,.03);border:1px solid rgba(255,255,255,.04);border-radius:12px;padding:10px}
+.dual-card .m .top{display:flex;align-items:center;gap:6px;margin-bottom:6px}
+.dual-card .m .top .av{width:22px;height:22px;border-radius:7px;display:grid;place-items:center;font-size:11px;font-weight:700;color:#fff}
+.dual-card .m.you .top .av{background:linear-gradient(135deg,#FFB755,#FF7A4D)}
+.dual-card .m.her .top .av{background:linear-gradient(135deg,#FF8AB1,#C770EB)}
+.dual-card .m .top b{font-size:11px;font-weight:600}
+.dual-card .m .v{font-size:18px;font-weight:700;font-family:'DM Serif Display',serif}
+.dual-card .m .pct{font-size:10px;color:#7A8499}
+
+/* 提醒卡（重设计） */
+.tip-card{background:linear-gradient(135deg,rgba(139,111,230,.12),rgba(139,111,230,.04));border:1px solid rgba(139,111,230,.2);border-radius:18px;padding:16px;margin-bottom:14px}
+.tip-card .h{display:flex;align-items:center;justify-content:space-between;margin-bottom:10px}
+.tip-card .h b{display:flex;align-items:center;gap:6px;font-size:12px;font-weight:700;color:#B89DFF}
+.tip-card .h .time{font-size:10px;color:#7A8499}
+.tip-card .b{font-size:13px;line-height:1.6;color:#D8DCE5}
+.tip-card .b strong{color:#fff}
+.tip-card .actions{display:flex;gap:8px;margin-top:12px}
+.tip-card .actions a{flex:1;padding:7px 10px;background:rgba(139,111,230,.15);border:1px solid rgba(139,111,230,.25);border-radius:9px;font-size:11px;color:#B89DFF;text-align:center;text-decoration:none;font-weight:600}
+.tip-card .actions a.primary{background:linear-gradient(135deg,#8B6FE6,#6B4FD9);border-color:transparent;color:#fff}
+
+/* 快捷网格 */
+.quick-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:8px;margin-bottom:14px}
+.quick{background:rgba(255,255,255,.03);border:1px solid rgba(255,255,255,.04);border-radius:14px;padding:12px 6px;text-align:center}
+.quick .ic{width:36px;height:36px;border-radius:10px;margin:0 auto 6px;display:grid;place-items:center;font-size:16px}
+.quick.c1 .ic{background:rgba(255,183,85,.12)}
+.quick.c2 .ic{background:rgba(0,229,160,.12)}
+.quick.c3 .ic{background:rgba(139,111,230,.12)}
+.quick.c4 .ic{background:rgba(255,138,177,.12)}
+.quick .t{font-size:11px;font-weight:600;line-height:1.3}
+.quick .d{font-size:9px;color:#7A8499;margin-top:1px}
+
+/* 心情卡 */
+.mood-card{background:linear-gradient(135deg,rgba(255,183,85,.08),rgba(255,138,177,.05));border:1px solid rgba(255,255,255,.04);border-radius:18px;padding:16px;margin-bottom:14px;display:flex;gap:12px;align-items:center}
+.mood-card .em{font-size:32px}
+.mood-card .info b{font-size:13px;display:block;margin-bottom:3px}
+.mood-card .info p{font-size:11px;color:#7A8499;line-height:1.5}
+
+/* AI 对话气泡 */
+.ai-card{background:linear-gradient(135deg,#0F1219,#15192a);border:1px solid rgba(0,229,160,.12);border-radius:18px;padding:16px;margin-bottom:14px;position:relative;overflow:hidden}
+.ai-card::before{content:"";position:absolute;left:-30px;top:-30px;width:100px;height:100px;background:radial-gradient(circle,rgba(0,229,160,.25),transparent 70%);filter:blur(15px)}
+.ai-card .h{display:flex;align-items:center;gap:8px;margin-bottom:10px;position:relative;z-index:1}
+.ai-card .h .av{width:26px;height:26px;border-radius:8px;background:linear-gradient(135deg,#00E5A0,#00B8D9);display:grid;place-items:center;font-size:14px}
+.ai-card .h b{font-size:12px;font-weight:700}
+.ai-card .h .live{margin-left:auto;font-size:9px;color:#00E5A0;display:flex;align-items:center;gap:4px}
+.ai-card .h .live .d{width:5px;height:5px;border-radius:50%;background:#00E5A0;box-shadow:0 0 6px #00E5A0;animation:p 1.5s infinite}
+.ai-card .body{font-size:12px;line-height:1.7;color:#D8DCE5;position:relative;z-index:1}
+.ai-card .body strong{color:#fff;background:rgba(0,229,160,.12);padding:1px 4px;border-radius:3px}
+.ai-card .ask{margin-top:12px;background:rgba(255,255,255,.04);border:1px solid rgba(255,255,255,.06);border-radius:999px;padding:8px 14px;font-size:11px;color:#7A8499;display:flex;align-items:center;gap:6px;position:relative;z-index:1}
+.ai-card .ask .send{margin-left:auto;width:24px;height:24px;border-radius:50%;background:linear-gradient(135deg,#00E5A0,#00B8D9);display:grid;place-items:center;font-size:11px;color:#0a0a0a}
+
+/* 持仓页（NEW） */
+.port-hero{background:linear-gradient(140deg,#181408 0%,#0E1019 60%);border:1px solid rgba(255,183,85,.18);border-radius:20px;padding:20px;margin-bottom:12px}
+.port-hero .l{font-size:10px;letter-spacing:2px;color:#9aa1ac;text-align:center;margin-bottom:6px}
+.port-hero .v{font-family:'DM Serif Display',serif;font-size:38px;color:#FFB755;text-align:center;line-height:1}
+.port-hero .meta{display:flex;justify-content:center;gap:14px;font-size:11px;margin-top:10px;color:#9aa1ac}
+.port-hero .meta b{color:#fff;margin-right:4px}
+.port-hero .health-bar{margin-top:14px;background:rgba(255,255,255,.04);border-radius:8px;padding:8px 12px;display:flex;align-items:center;gap:10px;font-size:11px}
+.port-hero .health-bar .stat{color:#FFB755;font-weight:700}
+.port-hero .health-bar .bar{flex:1;height:4px;background:rgba(255,255,255,.06);border-radius:2px;overflow:hidden}
+.port-hero .health-bar .bar i{display:block;height:100%;width:75%;background:linear-gradient(90deg,#FFB755,#00E5A0);border-radius:2px}
+
+.family-card{background:rgba(255,255,255,.02);border:1px solid rgba(255,255,255,.05);border-radius:18px;padding:14px;margin-bottom:12px}
+.family-card .h{display:flex;align-items:center;justify-content:space-between;margin-bottom:10px;font-size:12px}
+.family-card .h b{display:flex;align-items:center;gap:6px;font-weight:700}
+.family-card .total{text-align:center;font-family:'DM Serif Display',serif;font-size:30px;color:#fff;margin-bottom:10px}
+.family-card .row{display:grid;grid-template-columns:1fr 1fr;gap:8px}
+.family-card .row .m{background:rgba(255,255,255,.03);border-radius:12px;padding:10px;display:flex;align-items:center;gap:8px}
+.family-card .row .m .av{width:28px;height:28px;border-radius:8px;display:grid;place-items:center;font-weight:700;color:#fff;flex-shrink:0}
+.family-card .row .m.a .av{background:linear-gradient(135deg,#FFB755,#FF7A4D)}
+.family-card .row .m.b .av{background:linear-gradient(135deg,#FF8AB1,#C770EB)}
+.family-card .row .m .info b{font-size:12px;display:block}
+.family-card .row .m .info small{font-size:10px;color:#7A8499}
+
+.risk-row{background:linear-gradient(90deg,rgba(0,229,160,.06),rgba(0,229,160,.02));border:1px solid rgba(0,229,160,.15);border-radius:12px;padding:10px 12px;margin-bottom:12px;display:flex;align-items:center;gap:8px;font-size:11px;color:#9aa1ac}
+.risk-row .dot{width:6px;height:6px;border-radius:50%;background:#00E5A0;box-shadow:0 0 5px #00E5A0}
+.risk-row .arrow{margin-left:auto;color:#00E5A0;font-weight:600}
+
+.tab-switch{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:12px}
+.tab-switch a{padding:11px 0;border-radius:12px;text-align:center;font-size:13px;font-weight:600;text-decoration:none}
+.tab-switch a.on{background:linear-gradient(135deg,#FFB755,#FF7A4D);color:#0a0a0a}
+.tab-switch a.off{background:rgba(255,255,255,.04);color:#9aa1ac;border:1px solid rgba(255,255,255,.06)}
+
+.warn-card{background:rgba(255,107,107,.04);border:1px solid rgba(255,107,107,.15);border-left:3px solid #FF6B6B;border-radius:10px;padding:10px 12px;margin-bottom:12px;font-size:11px}
+.warn-card b{display:block;color:#FF8A8A;margin-bottom:3px;font-size:12px}
+.warn-card span{color:#9aa1ac}
+
+/* 资讯页 NEW */
+.info-tabs{display:flex;gap:6px;overflow-x:auto;padding-bottom:6px;margin-bottom:12px;scrollbar-width:none}
+.info-tabs::-webkit-scrollbar{display:none}
+.info-tabs a{padding:7px 14px;border-radius:999px;font-size:12px;white-space:nowrap;text-decoration:none;flex-shrink:0}
+.info-tabs a.on{background:linear-gradient(135deg,#FFB755,#FF7A4D);color:#0a0a0a;font-weight:700}
+.info-tabs a.off{background:rgba(255,255,255,.04);color:#9aa1ac;border:1px solid rgba(255,255,255,.06)}
+
+.fear-card{background:linear-gradient(140deg,#1c1408 0%,#0c0e16 100%);border:1px solid rgba(255,183,85,.15);border-radius:18px;padding:18px;margin-bottom:12px;position:relative;overflow:hidden}
+.fear-card .h{display:flex;align-items:center;gap:6px;font-size:11px;color:#9aa1ac;margin-bottom:14px}
+.fear-card .h b{color:#fff}
+.fear-card .gauge{height:80px;display:flex;align-items:center;justify-content:center;position:relative;margin-bottom:8px}
+.fear-card .gauge svg{width:200px;height:100px}
+.fear-card .gauge .label{position:absolute;text-align:center;top:36px;left:50%;transform:translateX(-50%)}
+.fear-card .gauge .label .v{font-family:'DM Serif Display',serif;font-size:36px;color:#FFB755;line-height:1}
+.fear-card .gauge .label .t{font-size:10px;color:#9aa1ac;letter-spacing:2px;margin-top:2px}
+.fear-card .ranges{display:flex;justify-content:space-between;font-size:9px;color:#7A8499;padding:0 10px}
+.fear-card .stats{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin-top:14px;background:rgba(0,0,0,.3);border-radius:10px;padding:10px}
+.fear-card .stats .s{text-align:center}
+.fear-card .stats .s .l{font-size:9px;color:#7A8499;letter-spacing:.5px;margin-bottom:3px}
+.fear-card .stats .s .v{font-size:16px;font-weight:700;color:#fff}
+
+.val-card{background:rgba(255,255,255,.02);border:1px solid rgba(255,255,255,.05);border-radius:14px;padding:14px;margin-bottom:12px}
+.val-card .h{display:flex;align-items:center;justify-content:space-between;margin-bottom:10px}
+.val-card .h b{font-size:12px;font-weight:700}
+.val-card .v-big{font-size:28px;font-family:'DM Serif Display',serif;color:#00E5A0;margin-bottom:6px;line-height:1}
+.val-card .v-meta{font-size:10px;color:#7A8499;margin-bottom:10px}
+.val-card .v-bar{height:6px;background:linear-gradient(90deg,#00E5A0 0%,#00E5A0 30%,#FFB755 50%,#FF6B6B 100%);border-radius:3px;position:relative;margin-bottom:6px}
+.val-card .v-bar .marker{position:absolute;top:-3px;width:2px;height:12px;background:#fff;left:91.5%}
+.val-card .v-labels{display:flex;justify-content:space-between;font-size:9px;color:#7A8499}
+
+.macro-grid{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:12px}
+.macro-grid .m{background:rgba(255,255,255,.02);border:1px solid rgba(255,255,255,.04);border-radius:12px;padding:11px}
+.macro-grid .m .l{display:flex;align-items:center;gap:5px;font-size:10px;color:#9aa1ac;margin-bottom:5px}
+.macro-grid .m .v{font-family:'DM Serif Display',serif;font-size:20px;color:#fff;line-height:1;margin-bottom:3px}
+.macro-grid .m .v.up{color:#00E5A0}
+.macro-grid .m .v.dn{color:#FF6B6B}
+.macro-grid .m .d{font-size:9px;color:#7A8499}
+
+.news-list .ni{display:flex;align-items:flex-start;gap:10px;padding:12px 0;border-bottom:1px solid rgba(255,255,255,.04)}
+.news-list .ni:last-child{border-bottom:none}
+.news-list .ni .tag{font-size:9px;padding:2px 6px;border-radius:4px;flex-shrink:0;font-weight:600;letter-spacing:.5px;margin-top:2px}
+.news-list .ni .tag.bull{background:rgba(0,229,160,.12);color:#00E5A0}
+.news-list .ni .tag.bear{background:rgba(255,107,107,.12);color:#FF6B6B}
+.news-list .ni .tag.neutral{background:rgba(255,183,85,.12);color:#FFB755}
+.news-list .ni .info{flex:1}
+.news-list .ni .info b{font-size:12px;font-weight:600;line-height:1.4;display:block;margin-bottom:3px}
+.news-list .ni .info small{font-size:10px;color:#7A8499}
+
+/* 底注 */
+.note-row{display:grid;grid-template-columns:1fr 1fr;gap:28px;margin-top:20px;padding:0 8px}
+.note-row .nt{font-size:11px;color:#7A8499;line-height:1.6;text-align:center}
+.note-row .nt b{display:block;color:#e6e8ec;margin-bottom:4px;font-size:12px}
+.note-row .nt.now b{color:#FF8A8A}
+.note-row .nt.new b{color:#00E5A0}
+
+/* 总结表 */
+.summary{background:#10131C;border:1px solid rgba(255,255,255,.05);border-radius:18px;padding:24px;margin-top:48px}
+.summary h3{font-size:18px;margin-bottom:18px}
+.diff-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(260px,1fr));gap:14px}
+.diff{background:rgba(255,255,255,.02);border:1px solid rgba(255,255,255,.04);border-radius:12px;padding:14px}
+.diff h4{font-size:13px;margin-bottom:8px;display:flex;align-items:center;gap:8px}
+.diff h4 .dot{width:8px;height:8px;border-radius:2px;background:#00E5A0}
+.diff p{font-size:12px;color:#9aa1ac;line-height:1.7}
+.diff p strong{color:#e6e8ec}
+
+@media(max-width:920px){.compare{grid-template-columns:1fr;gap:36px}.head h1{font-size:32px}}
+</style>
+</head>
+<body>
+<div class="page">
+
+<div class="head">
+  <span class="badge"><span class="dot"></span>BASED ON REAL SCREENSHOTS · 2026-05-17</span>
+  <h1>钱袋子 · <em>真实重设计</em></h1>
+  <p>用 <strong>Guest 账号实地登录</strong> 抓了 7 个 Tab 真实截图后的<strong>完整对比稿</strong>。<br>下面 7 个章节，逐页给出「现状 vs 重设计」并排对比，方向已确认（金橙主色 + Tab 砍到 5 个）。</p>
+</div>
+
+<!-- ============================================================ -->
+<!-- 首页 -->
+<!-- ============================================================ -->
+<div class="section">
+  <div class="sec-head">
+    <h2><span class="num" style="background:rgba(255,183,85,.18);color:#FFB755">01</span>首页 · Landing</h2>
+    <span class="meta">家庭净资产 / 今日提醒 / 资产配置 / 情绪 / 待办 / 快捷</span>
+  </div>
+
+  <div class="compare">
+    <!-- ===== 现状 ===== -->
+    <div class="col now">
+      <div class="col-label">现状<span class="pill">NOW</span><span style="color:#5a6275;font-weight:400">— 你今天看到的</span></div>
+      <div class="phone">
+        <div class="phone-screen now-bg">
+          <div class="notch"></div>
+          <div class="statusbar"><span>00:29</span><span class="icons">📶 5G 87%</span></div>
+          <div class="scroll"><div class="scroll-inner">
+            <div class="now-top">
+              <div class="l">👋 Guest ⚙️</div>
+              <div class="r"><div class="icon-btn">🖥</div><div class="icon-btn" style="background:#3a2c54;color:#B89DFF">🎓 专业</div></div>
+            </div>
+            <div class="now-banner">📅 非交易日，数据为最近一次收盘快照 · Sunday</div>
+
+            <div class="now-card now-net">
+              <div class="lbl">💰 家庭净资产</div>
+              <div class="v">¥0</div>
+              <div class="splits">
+                <div>📈 投资<b>¥0</b></div>
+                <div>💵 现金<b>¥0</b></div>
+                <div>📋 负债<b style="color:#FF8A8A">-¥0</b></div>
+              </div>
+            </div>
+
+            <div class="now-card now-tip">
+              <div class="h">📋 今日提醒</div>
+              <div class="b">现金储备约 0 个月生活费，低于 6 个月安全线，暂停新增高风险资产。</div>
+              <span class="link">🌐 看市场全景 →</span>
+            </div>
+
+            <div class="now-card now-block">
+              <div class="h">🥨 资产配置</div>
+              <div class="b">暂无配置数据，<a>做个风险测评</a> 开始吧</div>
+            </div>
+
+            <div class="now-card now-block">
+              <div class="h">🧠 情绪提醒</div>
+              <div class="b">☀️ 市场正常波动，按计划执行。今天没有需要特别关注的情绪信号。</div>
+            </div>
+
+            <div class="now-card now-block">
+              <div class="h">✅ 本周待办</div>
+              <div class="b" style="color:#7A8499">暂无待办</div>
+            </div>
+          </div></div>
+          <div class="tabbar">
+            <div class="ti on"><div class="ic">🏠</div>首页</div>
+            <div class="ti"><div class="ic">📈</div>持仓</div>
+            <div class="ti"><div class="ic">📰</div>资讯</div>
+            <div class="ti"><div class="ic">🤖</div>AI分析</div>
+            <div class="ti"><div class="ic">📋</div>历史</div>
+            <div class="ti"><div class="ic">🏦</div>资产</div>
+            <div class="ti"><div class="ic">📚</div>小课</div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ===== 重设计 ===== -->
+    <div class="col new">
+      <div class="col-label">重设计<span class="pill">NEW</span><span style="color:#5a6275;font-weight:400">— 沉稳家庭金融</span></div>
+      <div class="phone">
+        <div class="phone-screen new-bg">
+          <div class="notch"></div>
+          <div class="statusbar" style="color:#F0F2F7"><span>13:30</span><span class="icons">📶 5G ⚡</span></div>
+          <div class="scroll"><div class="scroll-inner">
+            <div class="new-top">
+              <div class="new-greet">
+                <div class="av">L</div>
+                <div class="info"><b>下午好，LeiJiang</b><small>SUNDAY · MAY 17 · 非交易日</small></div>
+              </div>
+              <div class="new-actions">
+                <div class="ib">🌙</div>
+                <div class="ib pro">专业</div>
+              </div>
+            </div>
+            <div class="new-banner"><span class="dot"></span>非交易日 · 数据为最近一次收盘快照</div>
+
+            <div class="hero-card">
+              <div class="head-row">
+                <div class="lbl"><span class="ico">💰</span>家庭净资产</div>
+                <div class="toggle">👁 隐藏</div>
+              </div>
+              <div class="num">¥0<small>.00</small></div>
+              <div class="delta">
+                <span class="pill">▲ +¥0</span>
+                <span>今日 · 较昨日收盘</span>
+              </div>
+              <div class="splits">
+                <div><div class="l">📈 投资</div><div class="v">¥0</div></div>
+                <div><div class="l">💵 现金</div><div class="v">¥0</div></div>
+                <div><div class="l">📋 负债</div><div class="v dn">-¥0</div></div>
+              </div>
+            </div>
+
+            <div class="dual-card">
+              <div class="h">
+                <b>👨‍👩 家庭账户<span class="badge">2 人</span></b>
+                <span class="more">管理 →</span>
+              </div>
+              <div class="members">
+                <div class="m you"><div class="top"><div class="av">L</div><b>LeiJiang</b></div><div class="v">¥0</div><div class="pct">占比 0%</div></div>
+                <div class="m her"><div class="top"><div class="av">B</div><b>BuLuoGeLi</b></div><div class="v">¥0</div><div class="pct">占比 0%</div></div>
+              </div>
+            </div>
+
+            <div class="tip-card">
+              <div class="h">
+                <b>💡 今日提醒</b>
+                <span class="time">10:30 · DeepSeek</span>
+              </div>
+              <div class="b">现金储备约 <strong>0 个月</strong>生活费，低于 6 个月安全线 — <strong>暂停新增高风险资产</strong>。建议先补足生活备用金，再考虑权益类配置。</div>
+              <div class="actions">
+                <a>稍后处理</a>
+                <a class="primary">🌐 看市场全景</a>
+              </div>
+            </div>
+
+            <div class="quick-grid">
+              <div class="quick c1"><div class="ic">🥨</div><div class="t">资产配置</div><div class="d">未测评</div></div>
+              <div class="quick c2"><div class="ic">📊</div><div class="t">查看持仓</div><div class="d">0 只</div></div>
+              <div class="quick c3"><div class="ic">🌐</div><div class="t">市场全景</div><div class="d">已更新</div></div>
+              <div class="quick c4"><div class="ic">🏛</div><div class="t">管理资产</div><div class="d">添加</div></div>
+            </div>
+
+            <div class="mood-card">
+              <div class="em">🌤</div>
+              <div class="info"><b>情绪温度计 · 平稳</b><p>市场正常波动，按计划执行。今天没有需要特别关注的信号。</p></div>
+            </div>
+
+            <div class="ai-card">
+              <div class="h">
+                <div class="av">🤖</div>
+                <b>AI 管家 · 想问什么？</b>
+                <span class="live"><span class="d"></span>在线</span>
+              </div>
+              <div class="body">嗨，我是钱袋子 AI 管家，内置 <strong>巴菲特 · 格雷厄姆 · 林奇 · 塔勒布</strong> 四位大师的投资框架。问我关于 <strong>市场行情 / 持仓 / 买卖建议</strong> 的任何事吧。</div>
+              <div class="ask">问点什么…<span class="send">→</span></div>
+            </div>
+          </div></div>
+          <div class="tabbar">
+            <div class="ti on"><div class="ic">●</div>首页</div>
+            <div class="ti"><div class="ic">📈</div>持仓</div>
+            <div class="ti"><div class="ic">📰</div>资讯</div>
+            <div class="ti"><div class="ic">🤖</div>AI</div>
+            <div class="ti"><div class="ic">🏛</div>资产</div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="note-row">
+    <div class="nt now">
+      <b>· 现状的问题 ·</b>
+      色彩太多（橙/紫/红/绿/蓝），缺乏视觉锚点；卡片分割线弱；底 Tab 7 个挤；最重要的「家庭净资产」缺呼吸感；双账户（你+配偶）这个核心定位被埋在持仓页里。
+    </div>
+    <div class="nt new">
+      <b>· 重设计的思路 ·</b>
+      <strong>主色锁定金橙 + 数据绿</strong>，紫色仅留给 AI；<strong>家庭账户</strong>提到首页第二屏（核心定位）；底 Tab 收 5 个；净资产用衬线大字 + 暖光晕；提醒卡分主次行动；快捷胶囊让"暂无数据"也可点击。
+    </div>
+  </div>
+</div>
+
+<!-- ============================================================ -->
+<!-- 持仓 -->
+<!-- ============================================================ -->
+<div class="section">
+  <div class="sec-head">
+    <h2><span class="num" style="background:rgba(0,229,160,.18);color:#00E5A0">02</span>持仓 · Portfolio</h2>
+    <span class="meta">总持仓 / 双账户占比 / 行为风控 / 股票⇄基金</span>
+  </div>
+
+  <div class="compare">
+    <div class="col now">
+      <div class="col-label">现状<span class="pill">NOW</span></div>
+      <div class="phone"><div class="phone-screen now-bg">
+        <div class="notch"></div><div class="statusbar"><span>13:32</span><span class="icons">📶 5G</span></div>
+        <div class="scroll"><div class="scroll-inner">
+          <div class="now-card" style="text-align:center">
+            <div style="font-size:13px;color:#bbb">总持仓资产 <span style="color:#7A8499;font-size:11px">仅股票+基金</span></div>
+            <div style="font-size:38px;color:#FFB755;font-weight:700;margin-top:6px">¥0</div>
+            <div style="display:flex;justify-content:space-around;margin-top:14px;font-size:11px;color:#9aa1ac">
+              <span>📊 股票 0 只</span><span>💼 基金 0 只</span><span style="color:#FFB755">🟡 一般 75 分</span>
+            </div>
+            <div style="margin-top:10px;font-size:10px;color:#FFB755;background:rgba(255,183,85,.08);padding:5px 8px;border-radius:6px">资产配置严重偏离目标（最大偏离 50%）</div>
+          </div>
+          <div class="now-card" style="background:#1B2030">
+            <div style="text-align:center">
+              <div style="font-size:13px;color:#bbb">🏠 家庭总资产</div>
+              <div style="font-size:30px;color:#FFB755;font-weight:700;margin-top:6px">¥0</div>
+            </div>
+          </div>
+          <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:12px">
+            <div class="now-card" style="text-align:center;padding:14px"><div style="font-size:11px;color:#9aa1ac">? <b style="color:#fff">LeiJiang</b></div><div style="font-size:10px;color:#7A8499">占比 0%</div><div style="font-size:18px;color:#FFB755;font-weight:700;margin-top:4px">¥0</div></div>
+            <div class="now-card" style="text-align:center;padding:14px"><div style="font-size:11px;color:#9aa1ac">? <b style="color:#fff">BuLuoGeLi</b></div><div style="font-size:10px;color:#7A8499">占比 0%</div><div style="font-size:18px;color:#FFB755;font-weight:700;margin-top:4px">¥0</div></div>
+          </div>
+          <div class="now-card" style="font-size:11px;display:flex;align-items:center;gap:8px;color:#aab"><span style="color:#00E5A0">●</span>行为风控已启用，交易前自动检测偏差<span style="margin-left:auto;color:#7A8499">设置 ›</span></div>
+          <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:12px">
+            <div style="background:#FFB755;color:#0a0a0a;padding:11px;border-radius:10px;font-weight:700;font-size:13px;text-align:center">📊 股票</div>
+            <div class="now-card" style="text-align:center;padding:11px;font-weight:600;font-size:13px">💼 基金</div>
+          </div>
+          <div class="now-card" style="border-left:3px solid #FF6B6B"><div style="font-size:12px;font-weight:700">🛡 风险纪律</div><div style="font-size:11px;color:#aab;margin-top:5px">· 资产配置严重偏离目标（最大偏离 50%）</div></div>
+          <div style="text-align:center;padding:30px 0"><div style="font-size:32px">📈</div></div>
+        </div></div>
+        <div class="tabbar">
+          <div class="ti"><div class="ic">🏠</div>首页</div>
+          <div class="ti on"><div class="ic">📈</div>持仓</div>
+          <div class="ti"><div class="ic">📰</div>资讯</div>
+          <div class="ti"><div class="ic">🤖</div>AI分析</div>
+          <div class="ti"><div class="ic">📋</div>历史</div>
+          <div class="ti"><div class="ic">🏦</div>资产</div>
+          <div class="ti"><div class="ic">📚</div>小课</div>
+        </div>
+      </div></div>
+    </div>
+
+    <div class="col new">
+      <div class="col-label">重设计<span class="pill">NEW</span></div>
+      <div class="phone"><div class="phone-screen new-bg">
+        <div class="notch"></div><div class="statusbar" style="color:#F0F2F7"><span>13:32</span><span class="icons">📶 5G ⚡</span></div>
+        <div class="scroll"><div class="scroll-inner">
+          <div class="port-hero">
+            <div class="l">📊 总持仓资产 · 仅股票+基金</div>
+            <div class="v">¥0<small style="font-size:14px;color:#7A8499">.00</small></div>
+            <div class="meta">
+              <span><b>0</b>股票</span>
+              <span><b>0</b>基金</span>
+              <span style="color:#FFB755"><b>75</b>健康分</span>
+            </div>
+            <div class="health-bar">
+              <span>持仓健康度</span>
+              <div class="bar"><i></i></div>
+              <span class="stat">一般</span>
+            </div>
+          </div>
+
+          <div class="family-card">
+            <div class="h"><b>👨‍👩 家庭总资产</b><span style="color:#7A8499">2 人共管</span></div>
+            <div class="total">¥0</div>
+            <div class="row">
+              <div class="m a"><div class="av">L</div><div class="info"><b>LeiJiang</b><small>占比 0% · ¥0</small></div></div>
+              <div class="m b"><div class="av">B</div><div class="info"><b>BuLuoGeLi</b><small>占比 0% · ¥0</small></div></div>
+            </div>
+          </div>
+
+          <div class="risk-row">
+            <span class="dot"></span>行为风控已启用 · 交易前自动检测偏差<span class="arrow">设置 →</span>
+          </div>
+
+          <div class="tab-switch">
+            <a class="on">📊 股票</a>
+            <a class="off">💼 基金</a>
+          </div>
+
+          <div class="warn-card">
+            <b>🛡 风险纪律提醒</b>
+            <span>资产配置严重偏离目标（最大偏离 50%）— 建议优先做风险测评，再调整持仓结构。</span>
+          </div>
+
+          <div class="dual-card" style="text-align:center;padding:24px">
+            <div style="font-size:36px;margin-bottom:10px;opacity:.5">📈</div>
+            <div style="font-size:13px;font-weight:600;margin-bottom:4px">还没有股票持仓</div>
+            <div style="font-size:11px;color:#7A8499;margin-bottom:14px">添加你的第一只股票开始监控</div>
+            <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px">
+              <a style="background:linear-gradient(135deg,#FFB755,#FF7A4D);color:#0a0a0a;padding:10px;border-radius:10px;font-size:12px;font-weight:700;text-decoration:none">+ 添加股票</a>
+              <a style="background:rgba(255,255,255,.04);border:1px solid rgba(255,255,255,.06);padding:10px;border-radius:10px;font-size:12px;text-decoration:none;color:#9aa1ac">🔄 刷新行情</a>
+            </div>
+            <a style="display:block;margin-top:10px;background:rgba(139,111,230,.1);border:1px solid rgba(139,111,230,.2);color:#B89DFF;padding:9px;border-radius:10px;font-size:11px;text-decoration:none;font-weight:600">🧠 AI 深度分析（Pro）</a>
+          </div>
+        </div></div>
+        <div class="tabbar">
+          <div class="ti"><div class="ic">🏠</div>首页</div>
+          <div class="ti on" style="color:#FFB755"><div class="ic">●</div>持仓</div>
+          <div class="ti"><div class="ic">📰</div>资讯</div>
+          <div class="ti"><div class="ic">🤖</div>AI</div>
+          <div class="ti"><div class="ic">🏛</div>资产</div>
+        </div>
+      </div></div>
+    </div>
+  </div>
+  <div class="note-row">
+    <div class="nt now"><b>· 现状的问题 ·</b>双账户卡用 "?" 占位，缺人格化；股票/基金切换是大色块按钮，色彩压迫；3 张大卡（总持仓、家庭总资产、双账户）信息重复。</div>
+    <div class="nt new"><b>· 重设计的思路 ·</b>顶部融合"持仓 + 健康分 + 进度条"为一个 Hero；双账户用首字母彩色 avatar（你橙·她粉）有人格感；"暂无持仓"空状态改成可执行的 3 个 CTA。</div>
+  </div>
+</div>
+
+<!-- ============================================================ -->
+<!-- 资讯 -->
+<!-- ============================================================ -->
+<div class="section">
+  <div class="sec-head">
+    <h2><span class="num" style="background:rgba(139,111,230,.18);color:#B89DFF">03</span>资讯 · Market Insight</h2>
+    <span class="meta">恐慌贪婪 / 估值水平 / 技术指标 / 宏观 / 资讯流</span>
+  </div>
+
+  <div class="compare">
+    <div class="col now">
+      <div class="col-label">现状<span class="pill">NOW</span></div>
+      <div class="phone"><div class="phone-screen now-bg">
+        <div class="notch"></div><div class="statusbar"><span>13:33</span><span class="icons">📶</span></div>
+        <div class="scroll"><div class="scroll-inner">
+          <div style="text-align:center;padding:8px 0;font-size:14px;font-weight:700">📰 市场资讯</div>
+          <div style="display:flex;gap:6px;font-size:10px;margin-bottom:10px;overflow-x:auto"><span style="background:#FFB755;color:#000;padding:4px 10px;border-radius:8px;font-weight:700">📊 恐慌</span><span style="padding:4px 10px;color:#9aa1ac">推荐</span><span style="padding:4px 10px;color:#9aa1ac">决策</span><span style="padding:4px 10px;color:#9aa1ac">行业</span><span style="background:rgba(0,229,160,.15);color:#00E5A0;padding:4px 10px;border-radius:8px">数据</span></div>
+          <div class="now-card">
+            <div style="font-size:11px;font-weight:700;margin-bottom:6px">🌡 恐慌贪婪指数</div>
+            <div style="text-align:center;padding:8px 0">
+              <div style="font-size:38px;color:#FFB755;font-weight:700">56</div>
+              <div style="font-size:11px;color:#9aa1ac">中性</div>
+            </div>
+            <div style="display:flex;justify-content:space-around;font-size:10px;margin-top:6px"><div><div style="color:#7A8499">20日均值</div><div style="color:#fff;font-weight:600">2.92</div></div><div><div style="color:#7A8499">波动率</div><div style="color:#fff;font-weight:600">1.162</div></div><div><div style="color:#7A8499">情绪偏离</div><div style="color:#fff;font-weight:600">0.66</div></div></div>
+          </div>
+          <div class="now-card">
+            <div style="font-size:11px;font-weight:700;margin-bottom:8px">💎 估值水平</div>
+            <div style="font-size:32px;color:#00E5A0;font-weight:700">91.5%</div>
+            <div style="font-size:10px;color:#7A8499;margin-bottom:8px">沪深300高估</div>
+            <div style="height:5px;background:linear-gradient(90deg,#00E5A0,#FFB755,#FF6B6B);border-radius:3px;position:relative"><div style="position:absolute;left:91%;top:-3px;width:2px;height:11px;background:#fff"></div></div>
+            <div style="display:flex;justify-content:space-between;font-size:9px;color:#7A8499;margin-top:3px"><span>低估</span><span>合理</span><span>高估</span></div>
+          </div>
+          <div class="now-card" style="background:#FF1F1F;color:#fff;text-align:center;font-size:11px;font-weight:700;padding:8px">🚨 技术指标 · 多头排列</div>
+          <div class="now-card" style="display:grid;grid-template-columns:repeat(3,1fr);gap:6px;text-align:center;padding:10px"><div><div style="font-size:9px;color:#7A8499">RSI(14)</div><div style="font-size:14px;font-weight:700">56.1</div></div><div><div style="font-size:9px;color:#7A8499">MACD</div><div style="font-size:14px;font-weight:700;color:#00E5A0">多头</div></div><div><div style="font-size:9px;color:#7A8499">布林带</div><div style="font-size:14px;font-weight:700">在线</div></div></div>
+          <div style="font-size:11px;font-weight:700;margin:14px 4px 8px">📰 最新资讯</div>
+          <div class="now-card" style="padding:10px;font-size:11px;line-height:1.5"><b style="font-size:12px">AI 服装露露：低位成长资源股韧性</b><br><span style="color:#7A8499;font-size:10px">上海证券 · 2026-05-16 02:53:49</span></div>
+          <div class="now-card" style="padding:10px;font-size:11px;line-height:1.5"><b style="font-size:12px">AI 机构入炸坑五大强</b><br><span style="color:#7A8499;font-size:10px">中国国债网 · 2026-05-16 12:53:24</span></div>
+        </div></div>
+        <div class="tabbar">
+          <div class="ti"><div class="ic">🏠</div>首页</div>
+          <div class="ti"><div class="ic">📈</div>持仓</div>
+          <div class="ti on"><div class="ic">📰</div>资讯</div>
+          <div class="ti"><div class="ic">🤖</div>AI分析</div>
+          <div class="ti"><div class="ic">📋</div>历史</div>
+          <div class="ti"><div class="ic">🏦</div>资产</div>
+          <div class="ti"><div class="ic">📚</div>小课</div>
+        </div>
+      </div></div>
+    </div>
+
+    <div class="col new">
+      <div class="col-label">重设计<span class="pill">NEW</span></div>
+      <div class="phone"><div class="phone-screen new-bg">
+        <div class="notch"></div><div class="statusbar" style="color:#F0F2F7"><span>13:33</span><span class="icons">📶 5G ⚡</span></div>
+        <div class="scroll"><div class="scroll-inner">
+          <div style="padding:10px 0 14px;display:flex;align-items:center;justify-content:space-between">
+            <div><b style="font-size:18px">市场资讯</b><div style="font-size:10px;color:#7A8499;margin-top:2px">实时数据更新中 · 17:21</div></div>
+            <div style="font-size:10px;background:rgba(0,229,160,.1);color:#00E5A0;padding:4px 8px;border-radius:6px;border:1px solid rgba(0,229,160,.2)">● LIVE</div>
+          </div>
+
+          <div class="info-tabs">
+            <a class="on">情绪</a><a class="off">推荐</a><a class="off">决策</a><a class="off">行业</a><a class="off">数据</a>
+          </div>
+
+          <div class="fear-card">
+            <div class="h">🌡 <b>恐慌贪婪指数</b><span style="margin-left:auto;color:#7A8499">点击了解 →</span></div>
+            <div class="gauge">
+              <svg viewBox="0 0 200 100">
+                <defs><linearGradient id="g1" x1="0" y1="0" x2="1" y2="0">
+                  <stop offset="0%" stop-color="#FF6B6B"/><stop offset="50%" stop-color="#FFB755"/><stop offset="100%" stop-color="#00E5A0"/>
+                </linearGradient></defs>
+                <path d="M20,90 A80,80 0 0,1 180,90" fill="none" stroke="rgba(255,255,255,.06)" stroke-width="10"/>
+                <path d="M20,90 A80,80 0 0,1 180,90" fill="none" stroke="url(#g1)" stroke-width="10" stroke-dasharray="251" stroke-dashoffset="120"/>
+                <circle cx="142" cy="40" r="5" fill="#FFB755" stroke="#fff" stroke-width="2"/>
+              </svg>
+              <div class="label"><div class="v">56</div><div class="t">中性</div></div>
+            </div>
+            <div class="ranges"><span>极度恐慌</span><span>恐慌</span><span>中性</span><span>贪婪</span><span>极度贪婪</span></div>
+            <div class="stats">
+              <div class="s"><div class="l">20日均值</div><div class="v">52.9</div></div>
+              <div class="s"><div class="l">波动率</div><div class="v">1.16</div></div>
+              <div class="s"><div class="l">情绪偏离</div><div class="v">+0.66</div></div>
+            </div>
+          </div>
+
+          <div class="val-card">
+            <div class="h"><b>💎 估值水平 · 沪深300</b><span style="font-size:10px;color:#7A8499">PE 14.81</span></div>
+            <div class="v-big">91.5<small style="font-size:14px;color:#7A8499">% 分位</small></div>
+            <div class="v-meta">高估区间 · 历史 92% 时间低于此估值</div>
+            <div class="v-bar"><div class="marker"></div></div>
+            <div class="v-labels"><span>低估</span><span>合理</span><span>高估</span></div>
+          </div>
+
+          <div class="macro-grid">
+            <div class="m"><div class="l">🌡 RSI(14)</div><div class="v">56.1</div><div class="d">中性偏多</div></div>
+            <div class="m"><div class="l">📈 MACD</div><div class="v up">多头</div><div class="d">DIF/DEA 在线之上</div></div>
+            <div class="m"><div class="l">📊 CPI 居民消费</div><div class="v up">+1.2%</div><div class="d">通胀温和</div></div>
+            <div class="m"><div class="l">🏭 PMI 采购经理</div><div class="v">50.3</div><div class="d">略高于荣枯线</div></div>
+          </div>
+
+          <div style="margin-top:14px;font-size:13px;font-weight:700;display:flex;justify-content:space-between;align-items:center;margin-bottom:8px"><span>📰 最新资讯</span><span style="font-size:10px;color:#FFB755;font-weight:500">查看全部 →</span></div>
+          <div class="news-list">
+            <div class="ni"><span class="tag bull">利好</span><div class="info"><b>AI 板块震荡，低位成长资源股韧性</b><small>上海证券 · 2 小时前</small></div></div>
+            <div class="ni"><span class="tag neutral">中性</span><div class="info"><b>AI 机构入坑五大强</b><small>中国国债网 · 4 小时前</small></div></div>
+            <div class="ni"><span class="tag bull">利好</span><div class="info"><b>AI 一季度盈利大幅增长</b><small>财联社 · 6 小时前</small></div></div>
+          </div>
+        </div></div>
+        <div class="tabbar">
+          <div class="ti"><div class="ic">🏠</div>首页</div>
+          <div class="ti"><div class="ic">📈</div>持仓</div>
+          <div class="ti on" style="color:#B89DFF"><div class="ic">●</div>资讯</div>
+          <div class="ti"><div class="ic">🤖</div>AI</div>
+          <div class="ti"><div class="ic">🏛</div>资产</div>
+        </div>
+      </div></div>
+    </div>
+  </div>
+  <div class="note-row">
+    <div class="nt now"><b>· 现状的问题 ·</b>红色「技术指标多头排列」横幅不必要地刺眼；恐慌贪婪指数只有数字没有视觉化；估值水平的"91.5%"很关键但被埋；信息密度高但层级扁平。</div>
+    <div class="nt new"><b>· 重设计的思路 ·</b>恐慌贪婪指数做成 <strong>仪表盘半圆图</strong>（小红书理财App 都这么做）；估值水平用<strong>渐变色条</strong>展示分位；技术 + 宏观合并为 2x2 网格；资讯流用 利好/利空 tag 一眼分类。</div>
+  </div>
+</div>
+
+<!-- ============================================================ -->
+<!-- AI 分析 -->
+<!-- ============================================================ -->
+<style>
+/* AI 分析页 NEW */
+.ai-header{display:flex;align-items:center;justify-content:space-between;padding:8px 0 12px}
+.ai-header .l b{font-size:18px}
+.ai-header .l small{display:block;font-size:10px;color:#7A8499;margin-top:2px}
+.ai-header .model-pick{background:linear-gradient(135deg,rgba(0,229,160,.12),rgba(0,184,217,.08));border:1px solid rgba(0,229,160,.25);border-radius:10px;padding:6px 12px;font-size:11px;color:#00E5A0;display:flex;align-items:center;gap:6px;font-weight:600}
+.ai-header .model-pick::after{content:"▾";opacity:.6;margin-left:4px}
+
+.master-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:6px;margin-bottom:14px}
+.master{background:rgba(255,255,255,.03);border:1px solid rgba(255,255,255,.05);border-radius:12px;padding:10px 6px;text-align:center}
+.master.on{background:linear-gradient(135deg,rgba(255,183,85,.15),rgba(255,122,77,.05));border-color:rgba(255,183,85,.3)}
+.master .av{width:36px;height:36px;border-radius:50%;margin:0 auto 5px;display:grid;place-items:center;font-size:16px;color:#fff}
+.master.m1 .av{background:linear-gradient(135deg,#FF8A65,#E64A19)}
+.master.m2 .av{background:linear-gradient(135deg,#5C6BC0,#283593)}
+.master.m3 .av{background:linear-gradient(135deg,#26A69A,#00695C)}
+.master.m4 .av{background:linear-gradient(135deg,#7E57C2,#4527A0)}
+.master b{font-size:10px;display:block;font-weight:600;line-height:1.2}
+.master small{font-size:8px;color:#7A8499;margin-top:1px;display:block}
+
+.ai-bubble{background:linear-gradient(135deg,rgba(0,229,160,.08),rgba(0,184,217,.04));border:1px solid rgba(0,229,160,.15);border-radius:18px 18px 18px 4px;padding:14px;margin-bottom:10px;position:relative;max-width:88%}
+.ai-bubble .src{display:flex;align-items:center;gap:6px;font-size:10px;color:#00E5A0;margin-bottom:6px;font-weight:600}
+.ai-bubble .src .live{width:5px;height:5px;border-radius:50%;background:#00E5A0;box-shadow:0 0 5px #00E5A0;animation:p 1.5s infinite}
+.ai-bubble p{font-size:13px;line-height:1.7;color:#E0E5EC}
+.ai-bubble p strong{color:#fff}
+.ai-bubble .meta{margin-top:8px;font-size:9px;color:#7A8499;display:flex;gap:10px}
+
+.you-bubble{background:linear-gradient(135deg,#FFB755,#FF7A4D);color:#0a0a0a;border-radius:18px 18px 4px 18px;padding:10px 14px;margin-bottom:10px;margin-left:auto;max-width:80%;font-size:13px;font-weight:500}
+
+.q-grid{display:grid;grid-template-columns:1fr 1fr;gap:7px;margin-top:14px;margin-bottom:10px}
+.q-pill{background:rgba(255,255,255,.04);border:1px solid rgba(255,255,255,.06);border-radius:12px;padding:9px 10px;font-size:11px;color:#D8DCE5;display:flex;align-items:center;gap:6px;cursor:pointer}
+.q-pill:hover{border-color:rgba(255,183,85,.3)}
+.q-pill .ic{font-size:13px}
+.q-pill.full{grid-column:1/-1}
+
+.ai-input-bar{position:absolute;bottom:80px;left:16px;right:16px;background:rgba(15,18,25,.95);backdrop-filter:blur(20px);border:1px solid rgba(255,255,255,.08);border-radius:24px;padding:8px 8px 8px 16px;display:flex;align-items:center;gap:8px;z-index:5;box-shadow:0 8px 24px rgba(0,0,0,.3)}
+.ai-input-bar .input{flex:1;font-size:13px;color:#7A8499}
+.ai-input-bar .send-b{width:36px;height:36px;border-radius:50%;background:linear-gradient(135deg,#FFB755,#FF7A4D);display:grid;place-items:center;color:#0a0a0a;font-weight:700}
+
+/* 历史页 */
+.hist-tabs{display:flex;gap:6px;padding:4px 0 12px;overflow-x:auto;scrollbar-width:none}
+.hist-tabs::-webkit-scrollbar{display:none}
+.hist-tabs a{padding:7px 14px;border-radius:999px;font-size:12px;white-space:nowrap;text-decoration:none;flex-shrink:0}
+.hist-tabs a.on{background:linear-gradient(135deg,#FFB755,#FF7A4D);color:#0a0a0a;font-weight:700}
+.hist-tabs a.off{background:rgba(255,255,255,.04);color:#9aa1ac;border:1px solid rgba(255,255,255,.06)}
+
+.timeline{position:relative;padding-left:24px;margin-top:10px}
+.timeline::before{content:"";position:absolute;left:9px;top:6px;bottom:6px;width:1px;background:linear-gradient(180deg,rgba(255,183,85,.4),rgba(255,255,255,.04))}
+.t-item{position:relative;margin-bottom:14px}
+.t-item::before{content:"";position:absolute;left:-19px;top:16px;width:10px;height:10px;border-radius:50%;border:2px solid #06080F}
+.t-item.deepseek::before{background:#00E5A0;box-shadow:0 0 6px #00E5A0}
+.t-item.claude::before{background:#FFB755}
+.t-item.org::before{background:#B89DFF}
+.t-day{font-size:10px;color:#7A8499;letter-spacing:1px;margin-bottom:8px;font-weight:600;text-transform:uppercase}
+.t-card{background:rgba(255,255,255,.03);border:1px solid rgba(255,255,255,.05);border-radius:14px;padding:12px}
+.t-card .top{display:flex;align-items:center;justify-content:space-between;margin-bottom:6px}
+.t-card .top .src{display:flex;align-items:center;gap:5px;font-size:10px;font-weight:700;letter-spacing:.5px}
+.t-card .top .src.deepseek{color:#00E5A0}
+.t-card .top .src.claude{color:#FFB755}
+.t-card .top .src.org{color:#B89DFF}
+.t-card .top .time{font-size:10px;color:#7A8499}
+.t-card .title{font-size:13px;font-weight:600;margin-bottom:6px;line-height:1.4}
+.t-card .summary{font-size:11px;color:#9aa1ac;line-height:1.6}
+.t-card .summary strong{color:#E0E5EC}
+.t-card .tags{display:flex;gap:5px;margin-top:8px;flex-wrap:wrap}
+.t-card .tags span{font-size:9px;padding:2px 7px;border-radius:4px;background:rgba(255,255,255,.04);color:#9aa1ac}
+.t-card .tags .bull{background:rgba(0,229,160,.1);color:#00E5A0}
+.t-card .tags .bear{background:rgba(255,107,107,.1);color:#FF8A8A}
+
+/* 资产页 */
+.asset-hero{background:linear-gradient(140deg,#10131C 0%,#0E1019 100%);border:1px solid rgba(255,183,85,.18);border-radius:22px;padding:22px 20px;margin-bottom:14px;position:relative;overflow:hidden}
+.asset-hero::before{content:"";position:absolute;top:-30px;left:-30px;width:120px;height:120px;background:radial-gradient(circle,rgba(0,229,160,.15),transparent 70%);filter:blur(20px)}
+.asset-hero .l{font-size:11px;letter-spacing:2px;color:#9aa1ac;text-transform:uppercase;text-align:center;margin-bottom:6px;display:flex;justify-content:center;align-items:center;gap:6px}
+.asset-hero .v{font-family:'DM Serif Display',serif;font-size:42px;color:#FFB755;text-align:center;line-height:1;letter-spacing:-.01em}
+.asset-hero .v small{font-size:14px;color:#7A8499;font-family:'Inter',sans-serif}
+.asset-hero .health{display:flex;justify-content:center;align-items:center;gap:6px;margin-top:10px;font-size:11px}
+.asset-hero .health .stat-pill{padding:3px 10px;border-radius:999px;background:rgba(0,229,160,.12);color:#00E5A0;font-weight:600;display:flex;align-items:center;gap:5px}
+.asset-hero .health .stat-pill .dot{width:5px;height:5px;border-radius:50%;background:#00E5A0;box-shadow:0 0 5px #00E5A0}
+.asset-hero .health span{color:#7A8499}
+.asset-hero .breakdown{display:grid;grid-template-columns:repeat(3,1fr);gap:1px;margin-top:18px;background:rgba(255,255,255,.05);border-radius:12px;overflow:hidden}
+.asset-hero .breakdown div{background:rgba(15,17,24,.6);padding:11px;text-align:center}
+.asset-hero .breakdown .l{font-size:10px;color:#7A8499;letter-spacing:.5px;margin-bottom:3px;text-transform:none}
+.asset-hero .breakdown .v{font-size:14px;font-weight:600;color:#F0F2F7;font-family:'Inter',sans-serif}
+
+.cat-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin-bottom:14px}
+.cat-card{background:rgba(255,255,255,.03);border:1px solid rgba(255,255,255,.05);border-radius:14px;padding:14px 10px;text-align:center;cursor:pointer}
+.cat-card:hover{border-color:rgba(255,183,85,.3)}
+.cat-card .ic{width:42px;height:42px;border-radius:12px;margin:0 auto 8px;display:grid;place-items:center;font-size:18px}
+.cat-card.c1 .ic{background:rgba(255,183,85,.12)}
+.cat-card.c2 .ic{background:rgba(0,229,160,.12)}
+.cat-card.c3 .ic{background:rgba(139,111,230,.12)}
+.cat-card.c4 .ic{background:rgba(255,138,177,.12)}
+.cat-card.c5 .ic{background:rgba(0,184,217,.12)}
+.cat-card.c6 .ic{background:rgba(255,183,85,.12)}
+.cat-card .t{font-size:11px;font-weight:600;margin-bottom:2px}
+.cat-card .v{font-size:13px;color:#FFB755;font-weight:700;font-family:'DM Serif Display',serif}
+.cat-card .v.empty{color:#7A8499;font-family:'Inter',sans-serif;font-weight:500;font-size:11px}
+
+.asset-actions{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:12px}
+.asset-actions a{padding:13px;border-radius:14px;text-align:center;font-size:13px;font-weight:700;text-decoration:none;display:flex;align-items:center;justify-content:center;gap:6px}
+.asset-actions a.primary{background:linear-gradient(135deg,#FFB755,#FF7A4D);color:#0a0a0a}
+.asset-actions a.secondary{background:rgba(255,255,255,.04);border:1px solid rgba(255,255,255,.06);color:#E0E5EC}
+
+.tip-light{background:rgba(255,183,85,.04);border:1px solid rgba(255,183,85,.1);border-radius:10px;padding:9px 12px;font-size:10px;color:#9aa1ac;text-align:center;margin-bottom:12px}
+.tip-light strong{color:#FFB755}
+
+/* 小课页 */
+.lesson-hero{background:linear-gradient(140deg,#1B1408 0%,#1a0e1f 100%);border:1px solid rgba(255,183,85,.2);border-radius:22px;padding:22px;margin-bottom:14px;position:relative;overflow:hidden}
+.lesson-hero::before{content:"";position:absolute;top:-40px;right:-40px;width:160px;height:160px;background:radial-gradient(circle,rgba(255,183,85,.2),transparent 70%);filter:blur(25px)}
+.lesson-hero .week{display:inline-flex;align-items:center;gap:6px;background:rgba(255,255,255,.06);padding:4px 10px;border-radius:999px;font-size:10px;color:#FFB755;letter-spacing:.5px;margin-bottom:14px;font-weight:600;position:relative;z-index:1}
+.lesson-hero .greet{font-size:14px;color:#E0E5EC;margin-bottom:18px;position:relative;z-index:1}
+.lesson-hero .greet b{color:#fff}
+.lesson-hero .cat{font-size:9px;color:#B89DFF;background:rgba(139,111,230,.15);padding:3px 8px;border-radius:5px;letter-spacing:.5px;font-weight:600;display:inline-block;margin-bottom:10px;position:relative;z-index:1}
+.lesson-hero .lesson-title{font-family:'DM Serif Display',serif;font-size:26px;color:#fff;line-height:1.2;margin-bottom:8px;position:relative;z-index:1}
+.lesson-hero .desc{font-size:12px;color:#9aa1ac;line-height:1.6;margin-bottom:18px;position:relative;z-index:1}
+.lesson-hero .row{display:flex;align-items:center;gap:10px;position:relative;z-index:1}
+.lesson-hero .row .pill{font-size:10px;background:rgba(255,255,255,.06);padding:4px 10px;border-radius:6px;color:#9aa1ac;display:flex;align-items:center;gap:5px}
+.lesson-hero .row .read{margin-left:auto;background:linear-gradient(135deg,#FFB755,#FF7A4D);color:#0a0a0a;font-weight:700;padding:9px 16px;border-radius:10px;font-size:12px;text-decoration:none;display:flex;align-items:center;gap:5px}
+
+.progress-card{background:rgba(255,255,255,.03);border:1px solid rgba(255,255,255,.05);border-radius:14px;padding:14px;margin-bottom:14px}
+.progress-card .top{display:flex;align-items:center;justify-content:space-between;margin-bottom:10px}
+.progress-card .top b{font-size:12px;font-weight:700;display:flex;align-items:center;gap:6px}
+.progress-card .top .pct{font-family:'DM Serif Display',serif;font-size:18px;color:#FFB755}
+.progress-card .bar{height:6px;background:rgba(255,255,255,.06);border-radius:3px;overflow:hidden;margin-bottom:8px}
+.progress-card .bar i{display:block;height:100%;background:linear-gradient(90deg,#FFB755,#FF7A4D);width:25%;border-radius:3px}
+.progress-card .stats{display:flex;justify-content:space-between;font-size:10px;color:#7A8499}
+
+.archive-list{display:flex;flex-direction:column;gap:6px}
+.arc-item{background:rgba(255,255,255,.03);border:1px solid rgba(255,255,255,.04);border-radius:12px;padding:11px 14px;display:flex;align-items:center;gap:10px}
+.arc-item .num{width:24px;height:24px;border-radius:7px;background:rgba(255,255,255,.06);display:grid;place-items:center;font-size:10px;color:#9aa1ac;flex-shrink:0;font-weight:700;font-family:'DM Serif Display',serif}
+.arc-item.done .num{background:rgba(0,229,160,.15);color:#00E5A0}
+.arc-item.cur .num{background:linear-gradient(135deg,#FFB755,#FF7A4D);color:#0a0a0a}
+.arc-item .info{flex:1}
+.arc-item .info b{font-size:12px;font-weight:600;display:block}
+.arc-item .info small{font-size:10px;color:#7A8499}
+.arc-item .badge{font-size:9px;padding:2px 7px;border-radius:5px;font-weight:600}
+.arc-item.done .badge{background:rgba(0,229,160,.1);color:#00E5A0}
+.arc-item.cur .badge{background:rgba(255,183,85,.15);color:#FFB755}
+.arc-item.lock .badge{background:rgba(255,255,255,.04);color:#7A8499}
+.arc-item.lock{opacity:.6}
+</style>
+
+<div class="section">
+  <div class="sec-head">
+    <h2><span class="num" style="background:rgba(0,229,160,.18);color:#00E5A0">04</span>AI 分析 · AI Chat</h2>
+    <span class="meta">DeepSeek V4 · 四大师框架 · 快捷问题</span>
+  </div>
+
+  <div class="compare">
+    <div class="col now">
+      <div class="col-label">现状<span class="pill">NOW</span></div>
+      <div class="phone"><div class="phone-screen now-bg">
+        <div class="notch"></div><div class="statusbar"><span>13:33</span><span class="icons">📶</span></div>
+        <div class="scroll"><div class="scroll-inner">
+          <div style="text-align:center;padding:8px 0">
+            <div style="font-size:16px;font-weight:700">🤖 AI 理财分析师</div>
+            <div style="font-size:10px;color:#7A8499;margin-top:2px">连接实时数据分析</div>
+            <select style="margin-top:8px;background:#1A1D26;border:1px solid #2a2e38;color:#fff;padding:4px 12px;border-radius:6px;font-size:11px">DeepSeek V4 ▾</select>
+          </div>
+          <div class="now-card" style="font-size:13px;line-height:1.7">你好！我是钱袋子 AI 分析师，内置巴菲特、格雷厄姆、林奇、塔勒布四位大师的投资框架 🧠<br><br>问我关于市场行情、持仓、买卖建议等问题。<br><br>所有建议仅供参考 🙂 <span style="font-size:9px;background:#1B2030;padding:2px 6px;border-radius:4px;margin-left:4px">系统</span></div>
+          <div style="margin-top:30px;display:flex;flex-wrap:wrap;gap:6px">
+            <span style="background:#1A1D26;padding:7px 12px;border-radius:999px;font-size:11px">现在适合入场吗？</span>
+            <span style="background:#1A1D26;padding:7px 12px;border-radius:999px;font-size:11px">什么时候该卖出？</span>
+            <span style="background:#1A1D26;padding:7px 12px;border-radius:999px;font-size:11px">智能定投怎么投？</span>
+            <span style="background:#1A1D26;padding:7px 12px;border-radius:999px;font-size:11px">最近有什么新闻？</span>
+            <span style="background:#1A1D26;padding:7px 12px;border-radius:999px;font-size:11px">政策对我持仓有啥影响？</span>
+            <span style="background:#1A1D26;padding:7px 12px;border-radius:999px;font-size:11px">关税贸易战利好利空吗？</span>
+            <span style="background:#1A1D26;padding:7px 12px;border-radius:999px;font-size:11px">技术指标怎么样？</span>
+            <span style="background:#1A1D26;padding:7px 12px;border-radius:999px;font-size:11px">宏观经济怎么样？</span>
+            <span style="background:#1A1D26;padding:7px 12px;border-radius:999px;font-size:11px">今天市场怎么样？</span>
+            <span style="background:#1A1D26;padding:7px 12px;border-radius:999px;font-size:11px">黄金还能买吗？</span>
+          </div>
+          <div style="position:absolute;bottom:80px;left:16px;right:16px;background:#1A1D26;border:1px solid #2a2e38;border-radius:30px;padding:8px 8px 8px 16px;display:flex;align-items:center;gap:8px"><span style="flex:1;font-size:12px;color:#7A8499">问点什么...</span><div style="width:32px;height:32px;border-radius:50%;background:#FFB755;display:grid;place-items:center;color:#0a0a0a;font-weight:700">→</div></div>
+        </div></div>
+        <div class="tabbar">
+          <div class="ti"><div class="ic">🏠</div>首页</div><div class="ti"><div class="ic">📈</div>持仓</div><div class="ti"><div class="ic">📰</div>资讯</div>
+          <div class="ti on"><div class="ic">🤖</div>AI分析</div>
+          <div class="ti"><div class="ic">📋</div>历史</div><div class="ti"><div class="ic">🏦</div>资产</div><div class="ti"><div class="ic">📚</div>小课</div>
+        </div>
+      </div></div>
+    </div>
+
+    <div class="col new">
+      <div class="col-label">重设计<span class="pill">NEW</span></div>
+      <div class="phone"><div class="phone-screen new-bg">
+        <div class="notch"></div><div class="statusbar" style="color:#F0F2F7"><span>13:33</span><span class="icons">📶 5G ⚡</span></div>
+        <div class="scroll"><div class="scroll-inner">
+          <div class="ai-header">
+            <div class="l"><b>AI 管家</b><small>已连接实时数据 · 内置 4 大师框架</small></div>
+            <div class="model-pick"><span style="width:5px;height:5px;border-radius:50%;background:#00E5A0;box-shadow:0 0 5px #00E5A0"></span>DeepSeek V4-Pro</div>
+          </div>
+
+          <div class="master-grid">
+            <div class="master m1 on"><div class="av">🎩</div><b>巴菲特</b><small>价值</small></div>
+            <div class="master m2"><div class="av">📚</div><b>格雷厄姆</b><small>安全边际</small></div>
+            <div class="master m3"><div class="av">🔍</div><b>林奇</b><small>实地研究</small></div>
+            <div class="master m4"><div class="av">🌪</div><b>塔勒布</b><small>反脆弱</small></div>
+          </div>
+
+          <div class="ai-bubble">
+            <div class="src"><span class="live"></span>🤖 AI 管家 · 巴菲特视角</div>
+            <p>嗨 LeiJiang，今天 5/17 周日，<strong>非交易日</strong>。从巴菲特"以合理价买入伟大公司"的视角看，本周 <strong>红利低波</strong>（PE 8.4 / 历史 12% 分位）已经进入"<strong>合理偏低</strong>"区间，配偶持有的<strong>沪深300增强</strong>建议保持，无需调仓。</p>
+            <div class="meta"><span>🕐 刚刚</span><span>📊 基于实时数据</span><span>⚠️ 仅供参考</span></div>
+          </div>
+
+          <div class="you-bubble">那现在适合加仓吗？</div>
+
+          <div class="ai-bubble">
+            <div class="src"><span class="live"></span>🤖 AI 管家 · 思考中...</div>
+            <p>从你定投方案看，<strong>红利低波 15%</strong> 是计划仓位，目前已配置 11%，距离目标还差 4%。建议<strong>分 3 笔</strong>在未来 6 周内补足，每笔约 ¥6,000，避免一次性买入造成择时风险。</p>
+            <div class="meta"><span>🕐 现在</span><span>🎯 信心度 78%</span></div>
+          </div>
+
+          <div style="font-size:10px;color:#7A8499;text-align:center;margin:10px 0;letter-spacing:1px">— 你也可以问 —</div>
+
+          <div class="q-grid">
+            <div class="q-pill"><span class="ic">📈</span>现在适合入场吗？</div>
+            <div class="q-pill"><span class="ic">💸</span>什么时候该卖出？</div>
+            <div class="q-pill"><span class="ic">🎯</span>智能定投怎么投？</div>
+            <div class="q-pill"><span class="ic">📰</span>最近有什么新闻？</div>
+            <div class="q-pill full"><span class="ic">🌐</span>关税贸易战利好利空吗？</div>
+          </div>
+        </div></div>
+
+        <div class="ai-input-bar">
+          <span style="font-size:14px">📎</span>
+          <span class="input">问点什么...</span>
+          <span style="font-size:14px;color:#7A8499">🎙</span>
+          <div class="send-b">→</div>
+        </div>
+
+        <div class="tabbar">
+          <div class="ti"><div class="ic">🏠</div>首页</div><div class="ti"><div class="ic">📈</div>持仓</div><div class="ti"><div class="ic">📰</div>资讯</div>
+          <div class="ti on" style="color:#00E5A0"><div class="ic">●</div>AI</div>
+          <div class="ti"><div class="ic">🏛</div>资产</div>
+        </div>
+      </div></div>
+    </div>
+  </div>
+  <div class="note-row">
+    <div class="nt now"><b>· 现状的问题 ·</b>10 个常见问题胶囊一字排开像标签云，缺重点；4 大师框架只在系统提示文字里提到了一句，没有视觉表达；空对话状态略显冷清。</div>
+    <div class="nt new"><b>· 重设计的思路 ·</b>4 大师做成可<strong>切换的视角卡</strong>（每位大师不同色调头像），用户可以选"我想听巴菲特怎么说"；预填一段示例对话让冷启动有温度；常见问题精选 5 个 + emoji，重点突出最高频。</div>
+  </div>
+</div>
+
+<!-- ============================================================ -->
+<!-- 历史 -->
+<!-- ============================================================ -->
+<div class="section">
+  <div class="sec-head">
+    <h2><span class="num" style="background:rgba(184,157,255,.18);color:#B89DFF">05</span>历史 · Analysis Log</h2>
+    <span class="meta">AI / Claude / 机构 分析记录</span>
+  </div>
+
+  <div class="compare">
+    <div class="col now">
+      <div class="col-label">现状<span class="pill">NOW</span></div>
+      <div class="phone"><div class="phone-screen now-bg">
+        <div class="notch"></div><div class="statusbar"><span>13:33</span><span class="icons">📶</span></div>
+        <div class="scroll"><div class="scroll-inner">
+          <div style="text-align:center;padding:14px 0">
+            <div style="font-size:18px;font-weight:700">📋 分析历史</div>
+            <div style="font-size:10px;color:#7A8499;margin-top:3px">AI/Claude/机构 分析记录</div>
+          </div>
+          <div style="display:flex;gap:6px;padding:6px 0 12px">
+            <span style="background:#FFB755;color:#0a0a0a;padding:6px 14px;border-radius:999px;font-size:11px;font-weight:700">全部</span>
+            <span style="background:#1A1D26;padding:6px 14px;border-radius:999px;font-size:11px">DeepSeek</span>
+            <span style="background:#1A1D26;padding:6px 14px;border-radius:999px;font-size:11px">Claude</span>
+            <span style="background:#1A1D26;padding:6px 14px;border-radius:999px;font-size:11px">机构</span>
+          </div>
+          <div style="text-align:center;padding:80px 20px;color:#7A8499">
+            <div style="font-size:13px;font-weight:600;margin-bottom:6px">暂无分析记录</div>
+            <div style="font-size:11px">AI 分析后会自动存档</div>
+          </div>
+        </div></div>
+        <div class="tabbar">
+          <div class="ti"><div class="ic">🏠</div>首页</div><div class="ti"><div class="ic">📈</div>持仓</div><div class="ti"><div class="ic">📰</div>资讯</div>
+          <div class="ti"><div class="ic">🤖</div>AI分析</div>
+          <div class="ti on"><div class="ic">📋</div>历史</div>
+          <div class="ti"><div class="ic">🏦</div>资产</div><div class="ti"><div class="ic">📚</div>小课</div>
+        </div>
+      </div></div>
+    </div>
+
+    <div class="col new">
+      <div class="col-label">重设计<span class="pill">NEW</span><span style="color:#5a6275;font-weight:400">— 时间轴 + 真实数据演示</span></div>
+      <div class="phone"><div class="phone-screen new-bg">
+        <div class="notch"></div><div class="statusbar" style="color:#F0F2F7"><span>13:33</span><span class="icons">📶 5G ⚡</span></div>
+        <div class="scroll"><div class="scroll-inner">
+          <div style="padding:10px 0 4px;display:flex;align-items:center;justify-content:space-between">
+            <div><b style="font-size:18px">分析历史</b><div style="font-size:10px;color:#7A8499;margin-top:2px">AI / Claude / 机构 决策回放</div></div>
+            <div style="font-size:10px;color:#9aa1ac;background:rgba(255,255,255,.04);padding:4px 8px;border-radius:6px;border:1px solid rgba(255,255,255,.06)">🔍 搜索</div>
+          </div>
+
+          <div class="hist-tabs">
+            <a class="on">全部 <span style="opacity:.6">· 12</span></a>
+            <a class="off">DeepSeek</a>
+            <a class="off">Claude</a>
+            <a class="off">机构</a>
+            <a class="off">收藏</a>
+          </div>
+
+          <div class="timeline">
+            <div class="t-item deepseek">
+              <div class="t-day">今天 · 5月17日</div>
+              <div class="t-card">
+                <div class="top"><div class="src deepseek">● DEEPSEEK V4-PRO</div><div class="time">10:42</div></div>
+                <div class="title">A 股结构化分析 · 拥挤度 vs 估值</div>
+                <div class="summary">本周 AI 算力拥挤度从 <strong>88% 回落至 71%</strong>，<strong>红利低波</strong> 估值分位 12% · 拥挤度 28%，加仓优先级 P1。</div>
+                <div class="tags"><span class="bull">利好</span><span>红利低波</span><span>纳指100</span></div>
+              </div>
+            </div>
+
+            <div class="t-item claude">
+              <div class="t-card">
+                <div class="top"><div class="src claude">● CLAUDE 3.7</div><div class="time">08:15</div></div>
+                <div class="title">配偶持仓基金健康度评估</div>
+                <div class="summary"><strong>富国沪深300 / 兴全合润</strong> 维持持有；工银物流产业建议在 2026Q3 止盈，置换为红利低波。</div>
+                <div class="tags"><span>持仓评估</span><span>调仓建议</span></div>
+              </div>
+            </div>
+
+            <div class="t-item org">
+              <div class="t-day">昨天 · 5月16日</div>
+              <div class="t-card">
+                <div class="top"><div class="src org">● 中信证券研报</div><div class="time">22:01</div></div>
+                <div class="title">5 月策略：聚焦低位补涨方向</div>
+                <div class="summary">下半月关注 <strong>半导体设备</strong>、<strong>军工央企</strong>，回避融资余额拥挤的算力链条。</div>
+                <div class="tags"><span class="bear">谨慎</span><span>半导体</span></div>
+              </div>
+            </div>
+
+            <div class="t-item deepseek">
+              <div class="t-card">
+                <div class="top"><div class="src deepseek">● DEEPSEEK V4-FLASH</div><div class="time">14:28</div></div>
+                <div class="title">本周市场体温 · 中性偏冷</div>
+                <div class="summary">恐慌贪婪指数 56，沪深300 估值分位 91.5%（高估区间），建议<strong>降低权益新增</strong>，保持定投节奏。</div>
+                <div class="tags"><span class="bear">高估警示</span></div>
+              </div>
+            </div>
+          </div>
+        </div></div>
+        <div class="tabbar">
+          <div class="ti"><div class="ic">🏠</div>首页</div><div class="ti"><div class="ic">📈</div>持仓</div><div class="ti"><div class="ic">📰</div>资讯</div>
+          <div class="ti"><div class="ic">🤖</div>AI</div>
+          <div class="ti on" style="color:#FFB755"><div class="ic">●</div>资产</div>
+        </div>
+      </div></div>
+    </div>
+  </div>
+  <div class="note-row">
+    <div class="nt now"><b>· 现状的问题 ·</b>大段空状态没有引导价值；3 个 tab 切换一切都是空；用户看完没有任何"我能用这个干啥"的感知。</div>
+    <div class="nt new"><b>· 重设计的思路 ·</b>用<strong>时间轴</strong>呈现，每条记录带 AI 来源色（DeepSeek 绿 / Claude 橙 / 机构紫）；卡片含标题+摘要+tag，可点开看完整推理；说服用户"哦原来这里这么有价值"。空状态时给一个"开始第一次分析"的引导（不是冷冰冰的"暂无"）。<br><em style="color:#FF8A65">注：历史 Tab 在新版 5 Tab 方案下被合并到「资产」页内的"我的记录"模块。</em></div>
+  </div>
+</div>
+
+<!-- ============================================================ -->
+<!-- 资产 -->
+<!-- ============================================================ -->
+<div class="section">
+  <div class="sec-head">
+    <h2><span class="num" style="background:rgba(255,138,177,.18);color:#FF8AB1">06</span>资产 · My Assets</h2>
+    <span class="meta">统一净资产 / 房产 / 车辆 / 保险 / 现金 / 记账 / 历史归档</span>
+  </div>
+
+  <div class="compare">
+    <div class="col now">
+      <div class="col-label">现状<span class="pill">NOW</span></div>
+      <div class="phone"><div class="phone-screen now-bg">
+        <div class="notch"></div><div class="statusbar"><span>13:34</span><span class="icons">📶</span></div>
+        <div class="scroll"><div class="scroll-inner">
+          <div class="now-card" style="background:#1B2030;text-align:center">
+            <div style="font-size:12px;color:#bbb">🏠 统一净资产 (投资+资产-负债)</div>
+            <div style="font-size:36px;color:#FFB755;font-weight:700;margin-top:6px">¥0</div>
+            <div style="font-size:10px;color:#00E5A0;margin-top:4px">🟢 健康 · 100 分</div>
+            <div style="margin-top:16px;font-size:11px;color:#7A8499">¥0 净资产</div>
+          </div>
+          <div style="display:flex;justify-content:space-between;align-items:center;margin:14px 4px 8px"><b style="font-size:14px">📋 我的资产</b><span style="color:#FFB755;font-size:11px">+ 添加</span></div>
+          <div style="text-align:center;padding:50px 20px"><div style="font-size:36px;margin-bottom:12px">🏛</div><div style="font-size:13px;font-weight:600;margin-bottom:5px">还没有资产记录</div><div style="font-size:11px;color:#7A8499">添加现金、房产、车辆、保险等</div></div>
+          <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px"><div style="background:#FFB755;color:#0a0a0a;padding:11px;border-radius:10px;font-size:13px;font-weight:700;text-align:center">📝 记账</div><div class="now-card" style="text-align:center;padding:11px;font-weight:600;font-size:13px">+ 添加资产</div></div>
+          <div style="font-size:10px;color:#7A8499;text-align:center;margin-top:14px;line-height:1.6">💡 投资持仓在「持仓」页管理<br>所有数据自动汇总到统一净资产</div>
+        </div></div>
+        <div class="tabbar">
+          <div class="ti"><div class="ic">🏠</div>首页</div><div class="ti"><div class="ic">📈</div>持仓</div><div class="ti"><div class="ic">📰</div>资讯</div>
+          <div class="ti"><div class="ic">🤖</div>AI分析</div><div class="ti"><div class="ic">📋</div>历史</div>
+          <div class="ti on"><div class="ic">🏦</div>资产</div>
+          <div class="ti"><div class="ic">📚</div>小课</div>
+        </div>
+      </div></div>
+    </div>
+
+    <div class="col new">
+      <div class="col-label">重设计<span class="pill">NEW</span></div>
+      <div class="phone"><div class="phone-screen new-bg">
+        <div class="notch"></div><div class="statusbar" style="color:#F0F2F7"><span>13:34</span><span class="icons">📶 5G ⚡</span></div>
+        <div class="scroll"><div class="scroll-inner">
+          <div style="padding:10px 0 6px;display:flex;align-items:center;justify-content:space-between">
+            <div><b style="font-size:18px">家庭资产</b><div style="font-size:10px;color:#7A8499;margin-top:2px">投资 + 实物 - 负债 = 净资产</div></div>
+            <div style="font-size:10px;color:#FFB755;background:rgba(255,183,85,.1);padding:5px 10px;border-radius:6px;border:1px solid rgba(255,183,85,.2);font-weight:600">+ 添加</div>
+          </div>
+
+          <div class="asset-hero">
+            <div class="l">🏛 统一净资产</div>
+            <div class="v">¥0<small>.00</small></div>
+            <div class="health">
+              <div class="stat-pill"><span class="dot"></span>健康</div>
+              <span>100 分 · 资产结构良好</span>
+            </div>
+            <div class="breakdown">
+              <div><div class="l">📈 投资</div><div class="v">¥0</div></div>
+              <div><div class="l">🏛 实物</div><div class="v">¥0</div></div>
+              <div><div class="l">📋 负债</div><div class="v" style="color:#FF8A8A">-¥0</div></div>
+            </div>
+          </div>
+
+          <div style="font-size:13px;font-weight:700;margin:6px 4px 10px;display:flex;justify-content:space-between;align-items:center"><span>🗂 资产分类</span><span style="font-size:10px;color:#7A8499;font-weight:500">全部 6 类</span></div>
+
+          <div class="cat-grid">
+            <div class="cat-card c1"><div class="ic">🏠</div><div class="t">房产</div><div class="v empty">未添加</div></div>
+            <div class="cat-card c2"><div class="ic">💵</div><div class="t">现金</div><div class="v empty">未添加</div></div>
+            <div class="cat-card c3"><div class="ic">🛡</div><div class="t">保险</div><div class="v empty">未添加</div></div>
+            <div class="cat-card c4"><div class="ic">🚗</div><div class="t">车辆</div><div class="v empty">未添加</div></div>
+            <div class="cat-card c5"><div class="ic">⌚</div><div class="t">收藏品</div><div class="v empty">未添加</div></div>
+            <div class="cat-card c6"><div class="ic">📋</div><div class="t">负债</div><div class="v empty">未添加</div></div>
+          </div>
+
+          <div class="asset-actions">
+            <a class="primary"><span>📝</span>记账</a>
+            <a class="secondary"><span>+</span>添加资产</a>
+          </div>
+
+          <div class="tip-light">💡 投资持仓在「<strong>持仓</strong>」页管理，所有数据自动汇总到此</div>
+
+          <div style="font-size:13px;font-weight:700;margin:14px 4px 10px;display:flex;justify-content:space-between;align-items:center"><span>📋 我的记录</span><span style="font-size:10px;color:#FFB755;font-weight:500">12 条 · 全部 →</span></div>
+
+          <div class="archive-list">
+            <div class="arc-item done"><div class="num">●</div><div class="info"><b>5/17 AI 结构化分析</b><small>DeepSeek · 10:42</small></div><div class="badge">已读</div></div>
+            <div class="arc-item done"><div class="num">●</div><div class="info"><b>5/16 配偶持仓评估</b><small>Claude · 22:01</small></div><div class="badge">已读</div></div>
+            <div class="arc-item cur"><div class="num">3</div><div class="info"><b>本周风险测评</b><small>到期 · 5/19</small></div><div class="badge">待办</div></div>
+          </div>
+        </div></div>
+        <div class="tabbar">
+          <div class="ti"><div class="ic">🏠</div>首页</div><div class="ti"><div class="ic">📈</div>持仓</div><div class="ti"><div class="ic">📰</div>资讯</div>
+          <div class="ti"><div class="ic">🤖</div>AI</div>
+          <div class="ti on" style="color:#FF8AB1"><div class="ic">●</div>资产</div>
+        </div>
+      </div></div>
+    </div>
+  </div>
+  <div class="note-row">
+    <div class="nt now"><b>· 现状的问题 ·</b>"我的资产"分类不可见，用户得点"+ 添加"才知道有哪些类型可加；空状态下大段留白；记账和添加资产并列，但记账的范畴并不清晰。</div>
+    <div class="nt new"><b>· 重设计的思路 ·</b>把 6 类资产做成可见的<strong>分类卡片网格</strong>（房产/现金/保险/车辆/收藏品/负债），即使为空也能让用户一眼看到产品能力；底部加入"我的记录" — 这就是把砍掉的「历史」Tab 整合进来的方式。</div>
+  </div>
+</div>
+
+<!-- ============================================================ -->
+<!-- 小课 -->
+<!-- ============================================================ -->
+<div class="section">
+  <div class="sec-head">
+    <h2><span class="num" style="background:rgba(255,183,85,.18);color:#FFB755">07</span>小课 · Weekly Lesson</h2>
+    <span class="meta">本周金融小课 / 往期回顾 / 进度</span>
+  </div>
+
+  <div class="compare">
+    <div class="col now">
+      <div class="col-label">现状<span class="pill">NOW</span></div>
+      <div class="phone"><div class="phone-screen now-bg">
+        <div class="notch"></div><div class="statusbar"><span>13:34</span><span class="icons">📶</span></div>
+        <div class="scroll"><div class="scroll-inner">
+          <div style="background:#1A1D26;padding:5px 10px;border-radius:6px;display:inline-block;font-size:11px;color:#FFB755;margin:8px 0">📅 5月11日 — 5月17日</div>
+          <div style="font-size:18px;font-weight:700;margin-bottom:14px">嗨 Guest，本周的金融小课来了 👇</div>
+          <div class="now-card">
+            <div style="font-size:9px;background:rgba(139,111,230,.15);color:#B89DFF;padding:3px 8px;border-radius:4px;display:inline-block;margin-bottom:8px">数学常识</div>
+            <div style="font-size:18px;font-weight:700;margin-bottom:6px">复利的力量与 72 法则 →</div>
+            <div style="font-size:12px;color:#9aa1ac;line-height:1.6">投资第一课：复利是时间送给耐心人的礼物。</div>
+            <div style="font-size:10px;color:#7A8499;margin-top:10px">📅 本周推送</div>
+            <div style="background:#FFB755;color:#0a0a0a;text-align:center;padding:11px;border-radius:8px;font-size:13px;font-weight:700;margin-top:12px">阅读全文 →</div>
+          </div>
+          <div style="margin-top:14px;font-size:13px;font-weight:700">📚 往期回顾</div>
+          <div class="now-card" style="margin-top:8px;padding:14px"><div style="font-size:13px;font-weight:600">复利的力量与 72 法则</div><div style="font-size:10px;color:#7A8499;margin-top:3px">2026-W20</div></div>
+        </div></div>
+        <div class="tabbar">
+          <div class="ti"><div class="ic">🏠</div>首页</div><div class="ti"><div class="ic">📈</div>持仓</div><div class="ti"><div class="ic">📰</div>资讯</div>
+          <div class="ti"><div class="ic">🤖</div>AI分析</div><div class="ti"><div class="ic">📋</div>历史</div><div class="ti"><div class="ic">🏦</div>资产</div>
+          <div class="ti on"><div class="ic">📚</div>小课</div>
+        </div>
+      </div></div>
+    </div>
+
+    <div class="col new">
+      <div class="col-label">重设计<span class="pill">NEW</span><span style="color:#5a6275;font-weight:400">— 进入个人页 / 设置内</span></div>
+      <div class="phone"><div class="phone-screen new-bg">
+        <div class="notch"></div><div class="statusbar" style="color:#F0F2F7"><span>13:34</span><span class="icons">📶 5G ⚡</span></div>
+        <div class="scroll"><div class="scroll-inner">
+          <div style="padding:10px 0 8px;display:flex;align-items:center;gap:8px">
+            <span style="font-size:12px;color:#7A8499">←</span>
+            <div><b style="font-size:18px">财商小课</b><div style="font-size:10px;color:#7A8499;margin-top:2px">每周一节 · 提升家庭财商</div></div>
+          </div>
+
+          <div class="lesson-hero">
+            <div class="week">📅 5月11日 — 5月17日 · WEEK 20</div>
+            <div class="greet">嗨 <b>LeiJiang</b>，本周的金融小课来啦 👇</div>
+            <div class="cat">数学常识 · 入门必读</div>
+            <div class="lesson-title">复利的力量与 72 法则</div>
+            <div class="desc">投资第一课：复利是时间送给耐心人的礼物。一笔钱 多久能翻倍？用 72 除以年化收益率即可估算。</div>
+            <div class="row">
+              <div class="pill">📖 5 分钟</div>
+              <div class="pill">⭐ 入门</div>
+              <a class="read">开始阅读 →</a>
+            </div>
+          </div>
+
+          <div class="progress-card">
+            <div class="top">
+              <b>📈 学习进度</b>
+              <div class="pct">25<span style="font-size:11px;color:#7A8499">%</span></div>
+            </div>
+            <div class="bar"><i></i></div>
+            <div class="stats">
+              <span>已完成 <strong style="color:#fff">5</strong> 课</span>
+              <span>剩余 <strong style="color:#fff">15</strong> 课 · 共 20 课</span>
+            </div>
+          </div>
+
+          <div style="font-size:13px;font-weight:700;margin:6px 4px 10px;display:flex;justify-content:space-between;align-items:center">
+            <span>📚 课程目录</span>
+            <span style="font-size:10px;color:#7A8499;font-weight:500">最近更新</span>
+          </div>
+
+          <div class="archive-list">
+            <div class="arc-item done"><div class="num">●</div><div class="info"><b>什么是 ETF？</b><small>2026-W19 · 已读 5 分钟</small></div><div class="badge">已完成</div></div>
+            <div class="arc-item done"><div class="num">●</div><div class="info"><b>资产配置入门</b><small>2026-W18 · 已读 8 分钟</small></div><div class="badge">已完成</div></div>
+            <div class="arc-item cur"><div class="num">6</div><div class="info"><b>复利的力量与 72 法则</b><small>2026-W20 · 本周推送</small></div><div class="badge">学习中</div></div>
+            <div class="arc-item lock"><div class="num">7</div><div class="info"><b>风险测评：你是哪种投资人？</b><small>2026-W21 · 5/24 推送</small></div><div class="badge">未解锁</div></div>
+            <div class="arc-item lock"><div class="num">8</div><div class="info"><b>美股、A 股、港股的区别</b><small>2026-W22 · 5/31 推送</small></div><div class="badge">未解锁</div></div>
+          </div>
+        </div></div>
+        <div class="tabbar">
+          <div class="ti"><div class="ic">🏠</div>首页</div><div class="ti"><div class="ic">📈</div>持仓</div><div class="ti"><div class="ic">📰</div>资讯</div>
+          <div class="ti"><div class="ic">🤖</div>AI</div>
+          <div class="ti on" style="color:#FF8AB1"><div class="ic">●</div>资产</div>
+        </div>
+      </div></div>
+    </div>
+  </div>
+  <div class="note-row">
+    <div class="nt now"><b>· 现状的问题 ·</b>"往期回顾"只有 1 条且和本周课重复；缺学习进度；没有"已读/未读"区分；占用一个底 Tab 但内容深度不足。</div>
+    <div class="nt new"><b>· 重设计的思路 ·</b>从底 Tab 移到<strong>设置/个人页</strong>，用一个"二级页面"承载更完整的体验：进度条 + 课程目录（已读/学习中/未解锁三种状态）+ Hero 卡的本周高亮。给小课该有的"沉浸感"，反而比挤在底 Tab 更受重视。<br><em style="color:#FF8A65">注：小课在新版 5 Tab 方案下被移出底 Tab，从首页或设置页进入。</em></div>
+  </div>
+</div>
+
+<!-- ============================================================ -->
+<!-- 总结 -->
+<!-- ============================================================ -->
+<div class="summary">
+  <h3>设计语言总结 · 一句话决策</h3>
+  <div class="diff-grid">
+    <div class="diff">
+      <h4><span class="dot"></span>主色锁定</h4>
+      <p><strong>金橙 #FFB755</strong>（净资产、行动）+ <strong>数据绿 #00E5A0</strong>（积极信号）+ <strong>紫 #B89DFF</strong>（仅给 AI）。砍掉现有红/蓝/多种黄的混乱。</p>
+    </div>
+    <div class="diff">
+      <h4><span class="dot" style="background:#FFB755"></span>家庭账户提到首页</h4>
+      <p>你和 <strong>BuLuoGeLi</strong> 双人占比是 MoneyBag 的核心定位 — 现在被埋在持仓页第三屏。重设计放到首页第二屏，自带"我们家"的归属感。</p>
+    </div>
+    <div class="diff">
+      <h4><span class="dot" style="background:#B89DFF"></span>AI 模块差异化</h4>
+      <p>所有页面只有 AI 用紫色。AI 提醒、AI 对话、AI 深度分析三处都用同一套紫渐变 → 用户一眼能识别"这是 AI 说的"。</p>
+    </div>
+    <div class="diff">
+      <h4><span class="dot" style="background:#00E5A0"></span>底部 Tab 7 → 5</h4>
+      <p>合并：历史 + 小课 → 收进资产或个人；首页 / 持仓 / 资讯 / AI / 资产 五个核心入口。Tab 太多反而模糊重点。</p>
+    </div>
+    <div class="diff">
+      <h4><span class="dot" style="background:#FF8AB1"></span>双人 Avatar 系统</h4>
+      <p>L = 金橙渐变 / B = 粉紫渐变。所有「家庭」语境下都用这两个渐变识别"哪个是你哪个是 BuLuoGeLi"。</p>
+    </div>
+    <div class="diff">
+      <h4><span class="dot" style="background:#FFB755"></span>衬线大字数字</h4>
+      <p>所有「重要金额」用 <strong>DM Serif Display</strong> 衬线字体（净资产、估值分位、健康分）。Inter 留给说明文字。这是私人银行 App 的统一做法。</p>
+    </div>
+  </div>
+  <div style="margin-top:20px;padding-top:18px;border-top:1px solid rgba(255,255,255,.06);font-size:13px;color:#9aa1ac;line-height:1.7">
+    <strong style="color:#fff">完整稿已交付：</strong>7 页全部完成 — 首页 / 持仓 / 资讯 / AI 分析 / 历史 / 资产 / 小课。<br>
+    <strong style="color:#FFB755">下一步选项：</strong><br>
+    ① 落地代码 → 转 React + Tailwind，提 PR 到 <code style="background:rgba(255,255,255,.06);padding:1px 6px;border-radius:4px;font-size:12px;color:#FFB755">moneybag-for-claudecode</code><br>
+    ② 设计微调 → 你看完哪些卡片/颜色/布局想再改的，直接说<br>
+    ③ 输出 Design Token 文件（color.css + typography.css + components.css）给开发参考<br>
+    ④ 给配偶 BuLuoGeLi 看看，听听她的意见再迭代
+  </div>
+</div>
+
+</div>
+</body>
+</html>

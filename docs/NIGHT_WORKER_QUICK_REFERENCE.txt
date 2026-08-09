@@ -1,0 +1,180 @@
+╔════════════════════════════════════════════════════════════════════════════════╗
+║              MONEYBAG NIGHT_WORKER SCHEDULING - QUICK REFERENCE                ║
+╚════════════════════════════════════════════════════════════════════════════════╝
+
+📋 MAIN SCHEDULE
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  Time      Step                              Executed From              Cache
+  ─────────────────────────────────────────────────────────────────────────────
+  01:00 ✓ Health check                   night_worker.py:920       (live)
+  01:15 ✓ Monthly snapshot (1st only)    night_worker.py:923       (live)
+  01:30 ✓ Data warming                   night_worker.py:926       → Disk (2-4h TTL)
+          └─ Factors, FGI, sectors, etc.  
+
+  02:00 ✓ R1 Phase 1 (global analysis)   night_worker.py:957       → Disk (2-4h TTL)
+          
+  02:30 ✓ R1 Phase 2 (holdings diagnosis) night_worker.py:970      
+  03:00 ✓ R1 Phase 3 (recommendations)   night_worker.py:973       → Disk (4-8h TTL)
+  
+  04:00 ✓ Generate products              night_worker.py:1000      → Disk JSON
+  05:00 ✓ Archive reports                night_worker.py:1003      → Disk JSON
+  06:00 ✓ Maintenance (cleanup)          night_worker.py:1006      
+  
+  07:00 ⭐ Overseas check (FUTURES)       night_worker.py:1009      (NO cache!)
+         └─ A50/ES/YM/NQ/Oil/Gold from AKShare
+         
+  07:30 ✓ Morning briefing generation    night_worker.py:1012      → Disk JSON
+  08:00 ✓ Briefing file saved            night_worker.py:1015      
+  
+  08:30 ✓ [OPTIONAL] Push briefing      night_worker.py --push-only (reads JSON)
+         └─ Weekdays only (Mon-Fri)
+
+─────────────────────────────────────────────────────────────────────────────────
+Total Duration: 5-10 minutes
+Type: Sequential (NOT parallelized)
+Cron: 0 1 * * * python scripts/night_worker.py
+
+🔌 FUTURES DATA (step_overnight_check) - Line 726-828
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  Primary Source
+  ├─ AKShare futures_global_spot_em() 
+  │  └─ A50期指 (CN00Y), 标普小型 (ES00Y), 道指小型 (YM00Y),
+  │     纳指小型 (NQ00Y), 原油 (CL00Y), 黄金 (GC00Y)
+  │
+  └─ Return: {a50: {...}, sp500: {...}, dji: {...}, nasdaq: {...}, oil: {...}, 
+              gold: {...}, available: bool}
+
+  Fallback if futures fail
+  ├─ get_us_indices() → Daily closes
+  ├─ get_forex_data() → USD/CNY
+  └─ get_hsi_latest() → Hang Seng Index
+
+  ⚠️ CACHING: NONE at data_source level
+     → Fresh AKShare call every execution
+     → Consider adding 30-min cache to reduce API calls
+
+  ⚠️ TRADING SESSION VALIDATION: NOT IMPLEMENTED
+     → No check if data is from correct market session
+     → Futures may be pre-market/post-market/stale
+
+📊 FUND_RANK_TS.JSON PIPELINE
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  Generator Script
+  ├─ File: backend/scripts/fund_rank_build.py (Line 80-208)
+  │
+  ├─ Output: backend/data/fund_rank_ts.json
+  │
+  ├─ Process:
+  │  1. Fetch all fund basics (E + O types) from Tushare
+  │  2. Fetch latest NAV (lookback 10 days)
+  │  3. Fetch 1-year-ago NAV
+  │  4. Fetch 3-year-ago NAV
+  │  5. Calculate: score = return_1y*0.6 + return_3y*0.4
+  │  6. Output: {all, stock, hybrid, bond, index, qdii, etf}
+  │
+  └─ Manual Trigger:
+     $ python backend/scripts/fund_rank_build.py
+     $ python backend/scripts/fund_rank_build.py --upload  # SCP to production
+
+  ⚠️ SCHEDULING: NOT IN CRONTAB
+     → Currently manual trigger only!
+     → Recommendation: Add daily schedule
+     
+     30 8 * * * cd /opt/moneybag/backend && \
+       python scripts/fund_rank_build.py >> /opt/moneybag/logs/fund_rank.log 2>&1
+
+  Used By
+  └─ night_worker.py: _get_fund_recommendations() (Line 447-477)
+     Reads fund_rank_ts.json, filters by return_1y (5%-100%), returns top_n
+
+🗂️ PRECOMPUTED CACHE SYSTEM (night_worker writes to disk)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  File: backend/services/precomputed_cache.py
+  Location: DATA_DIR/precomputed/{key}_{user_id}_{date}.json
+
+  TTL Breakdown
+  ├─ factors              → 2 hours   (refreshed by cache_warmer every 30min)
+  ├─ fear_greed           → 2 hours
+  ├─ valuation            → 2 hours
+  ├─ sector_rotation      → 2 hours
+  ├─ daily_signal         → 2 hours
+  ├─ recommendations      → 4 hours
+  ├─ decisions            → 4 hours
+  ├─ broker_consensus     → 4 hours
+  ├─ scenarios            → 8 hours
+  └─ macro                → 4 hours
+
+  Weekend Extension: TTL auto-extends to 72 hours (non-trading day logic)
+
+🎯 HOW TO ADJUST FUTURES TIMING
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  Option A: Separate cron for futures-only
+  ─────────────────────────────────────────
+  30 7 * * * cd /opt/moneybag/backend && \
+    python scripts/night_worker.py --step overnight >> /opt/moneybag/logs/futures.log 2>&1
+
+  Option B: Add 30-min cache to futures function
+  ───────────────────────────────────────────────
+  In indicators.py (line 580):
+    _futures_cache = MemoryCache(default_ttl=1800)  # 30 min
+    # Then check cache before calling AKShare
+
+  Option C: Run earlier for Asia pre-market data
+  ───────────────────────────────────────────────
+  0 22 * * * python scripts/night_worker.py --step overnight  # 22:00 UTC = 06:00 Shanghai
+
+  Option D: Run later but separately
+  ────────────────────────────────────
+  0 8 * * * python scripts/night_worker.py --step overnight   # Just before push (08:00 UTC)
+
+🔧 CLI REFERENCE
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  Run full pipeline
+  $ python scripts/night_worker.py
+
+  Run specific step only
+  $ python scripts/night_worker.py --step {health|warm|phase1|phase2|phase3|reports|maintain|overnight}
+
+  Examples:
+  $ python scripts/night_worker.py --step overnight              # Just futures
+  $ python scripts/night_worker.py --step health                 # Health check
+  $ python scripts/night_worker.py --push-only                   # Just push (08:30)
+
+  Fund rank build
+  $ python scripts/fund_rank_build.py                            # Build locally
+  $ python scripts/fund_rank_build.py --upload                   # Build + SCP to prod
+
+⚠️ KEY ISSUES & RECOMMENDATIONS
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  1. ❌ fund_rank_build.py not in crontab
+     → Recommendation: Add daily schedule post-market
+     → Currently manual trigger only!
+
+  2. ❌ Futures data has NO caching
+     → Every call hits AKShare API
+     → Recommendation: Add 30-min TTL in-memory cache
+
+  3. ❌ No trading session validation for futures
+     → No check if data is fresh/correct session
+     → Recommendation: Validate timestamp in AKShare response
+
+  4. ✅ Precomputed cache working correctly
+     → 2-4 hour TTLs per data type
+     → Auto-extends on weekends
+
+  5. ✅ night_worker cron configured correctly
+     → 01:00 UTC daily main run
+     → 08:30 UTC weekdays backup push
+
+📖 FULL DOCUMENTATION
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+See: docs/NIGHT_WORKER_SCHEDULING_GUIDE.md
+
