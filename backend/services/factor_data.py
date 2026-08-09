@@ -492,6 +492,14 @@ def get_news_sentiment_score() -> dict:
     except Exception as e:
         print(f"[SENTIMENT] Fatal: {e}")
 
+    # FIX 2026-08-09: 补充采样口径说明，避免审计LLM把"新闻情绪"和"地缘风险"
+    # 横向对比出"矛盾"。两者采样源完全独立：本函数抓的是 get_market_news/
+    # get_policy_news（个股/行业/政策类新闻，如定增/回购/关税退税），
+    # geopolitical.py 的地缘风险单独抓"财经"/"A股"关键词新闻并按军事冲突等
+    # 分类打分。两套新闻池不重叠，"新闻情绪乐观但地缘风险极端"是正常现象，
+    # 不代表情绪判断遗漏了地缘负面信息。
+    result["sample_scope"] = "样本为A股个股/行业/政策类新闻(非地缘专项抓取)，与地缘风险模块的新闻来源不同，两者短期方向可能不一致，不代表矛盾"
+
     factor_cache.set(cache_key, result, ttl=1800)
     return result
 

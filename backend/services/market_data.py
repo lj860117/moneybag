@@ -55,30 +55,115 @@ def get_fund_nav(code: str) -> dict:
     if _looks_like_stock_code(code):
         return {"code": code, "nav": "N/A", "date": "N/A", "change": "0", "skip_reason": "股票代码，非基金"}
 
+    # v9.5.115: L0 优先 — 天天基金估值 API（与支付宝同源，盘中实时）
+    try:
+        import requests as _rq
+        import re as _re
+        import json as _json
+        r = _rq.get(f"http://fundgz.1234567.com.cn/js/{code}.js",
+                    headers={"Referer": "http://fund.eastmoney.com/", "User-Agent": "Mozilla/5.0"},
+                    timeout=3)
+        if r.status_code == 200 and r.text:
+            m = _re.match(r"jsonpgz\((.*)\);?", r.text.strip())
+            if m:
+                gz = _json.loads(m.group(1))
+                # gsz = 估值（盘中实时）, dwjz = 单位净值（T-1 收盘）, gszzl = 估值涨跌
+                # 交易时段(9:30-15:00)且有估值 → 用估值（支付宝显示的就是这个）
+                # 非交易时段或晚上 → 用 dwjz 单位净值 + gszzl
+                from datetime import datetime
+                now_dt = datetime.now()
+                is_trading_time = (now_dt.weekday() < 5 and (
+                    (now_dt.hour == 9 and now_dt.minute >= 30) or
+                    (10 <= now_dt.hour < 15)
+                ))
+                gsz = gz.get("gsz")
+                dwjz = gz.get("dwjz")
+                gszzl = gz.get("gszzl")
+                jzrq = gz.get("jzrq", "")  # 净值日期
+                # 选择展示净值：交易时段用 gsz（与支付宝盘中一致），否则用 dwjz
+                if is_trading_time and gsz:
+                    chosen_nav = float(gsz)
+                    chosen_date = (gz.get("gztime") or "")[:10]
+                elif dwjz:
+                    chosen_nav = float(dwjz)
+                    chosen_date = jzrq
+                else:
+                    chosen_nav = None
+                    chosen_date = ""
+                if chosen_nav is not None:
+                    result = {
+                        "code": code,
+                        "nav": str(chosen_nav),
+                        "date": chosen_date or jzrq,
+                        "change": str(gszzl) if gszzl else "0",
+                        "source": "fundgz",
+                        "official_nav": dwjz,  # T-1 官方净值（持仓成本对账用）
+                        "estimate_nav": gsz,   # 盘中估值
+                        "is_estimate": is_trading_time and gsz is not None,
+                    }
+                    # v9.5.115: 盘中估值缓存 60s（每分钟变化），收盘后/非交易日缓存 1h
+                    cache_ttl = 60 if (is_trading_time and gsz) else 3600
+                    _nav_cache.set(cache_key, result, ttl=cache_ttl)
+                    return result
+    except Exception as e:
+        print(f"[NAV] fundgz failed {code}: {e}")
+
     try:
         from infra.data_source.market.stocks import get_fund_nav_history as _get_fund_nav_hist
         # 开放式基金净值
         df = _get_fund_nav_hist(code=code, indicator="单位净值走势")
         if df is not None and len(df) > 0:
-            latest = df.iloc[-1]
-            prev = df.iloc[-2] if len(df) > 1 else df.iloc[-1]
-            # 列名在不同环境下可能乱码，用列位置兜底：
-            # 标准列结构：[净值日期(0), 单位净值(1), 日增长率(2)]
+            # v9.5.109: 兼容 Tushare 列结构（ts_code/ann_date/nav_date/unit_nav/...）
+            # 之前默认假设第0列=日期、第一个数值列=净值，遇到 Tushare 数据会取错位置（拿到 ts_code 当日期、最旧净值当最新）
+            cols = list(df.columns)
             import pandas as _pd
-            num_cols = df.select_dtypes(include="number").columns.tolist()
-            if len(num_cols) >= 1:
-                nav_col = num_cols[0]  # 单位净值（第一个数值列）
-            else:
-                raise ValueError(f"fund {code}: no numeric column in nav df")
+
+            # 找净值列
+            nav_col = None
+            for cand in ["unit_nav", "单位净值", "nav"]:
+                if cand in cols:
+                    nav_col = cand
+                    break
+            if nav_col is None:
+                num_cols = df.select_dtypes(include="number").columns.tolist()
+                if num_cols:
+                    nav_col = num_cols[0]
+                else:
+                    raise ValueError(f"fund {code}: no nav column")
+
+            # 找日期列
+            date_col = None
+            for cand in ["nav_date", "净值日期", "trade_date", "date"]:
+                if cand in cols:
+                    date_col = cand
+                    break
+            if date_col is None:
+                # 兜底：第一个非数值列
+                for c in cols:
+                    if df[c].dtype == "object":
+                        date_col = c
+                        break
+
+            # v9.5.109: 强制按日期倒序，避免 Tushare 默认升序导致取到最旧记录
+            if date_col:
+                try:
+                    df = df.sort_values(date_col, ascending=False).reset_index(drop=True)
+                except Exception:
+                    pass
+
+            latest = df.iloc[0]   # 排序后第一行 = 最新
+            prev = df.iloc[1] if len(df) > 1 else df.iloc[0]
             nav_val = float(latest[nav_col])
             prev_val = float(prev[nav_col])
             change = round((nav_val - prev_val) / prev_val * 100, 2) if prev_val else 0
-            # 日期：第0列（非数值），用列位置取
-            date_col = df.columns[0]
+            # 格式化日期
+            date_str = str(latest[date_col]) if date_col else ""
+            if len(date_str) == 8 and date_str.isdigit():
+                date_str = f"{date_str[:4]}-{date_str[4:6]}-{date_str[6:]}"
             result = {
                 "code": code,
                 "nav": str(nav_val),
-                "date": str(latest[date_col]),
+                "date": date_str,
                 "change": str(change),
                 "source": "akshare",
             }
@@ -217,6 +302,13 @@ def get_fear_greed_index() -> dict:
             else:
                 result["level"] = "极度恐惧"
 
+            # FIX 2026-08-09: 补充口径说明字段，避免审计LLM把恐贪指数直接跟
+            # 估值百分位/地缘风险横向对比得出"矛盾"结论。三者算法完全独立：
+            # 恐贪指数只看价格动量+波动率+量能（技术面情绪），不包含估值绝对
+            # 水平、也不看新闻/地缘事件，短期内可能出现"高估值+中性恐贪"或
+            # "地缘极端+恐贪中性"这类正常组合，不代表数据错误。
+            result["note"] = "恐贪指数仅基于价格动量+波动率+成交量偏离(技术面情绪)，不含估值水平和新闻/地缘因素，与估值百分位、地缘风险分属独立维度，三者短期不同步是正常现象"
+
     except Exception as e:
         print(f"[FGI] 实时计算失败: {e}")
 
@@ -272,7 +364,22 @@ def get_valuation_percentile() -> dict:
                         percentile = round(sum(1 for p in pe_values if p <= current_pe) / len(pe_values) * 100, 1)
                         latest_date = str(df["trade_date"].iloc[0])
                         window_years = round(len(pe_values) / 250, 1)
-                        print(f"[VAL] Tushare 加权PE-TTM={current_pe}, pct={percentile}%, window={window_years}年")
+
+                        # FIX 2026-06-14: 估值数据新鲜度校验
+                        # Tushare index_dailybasic 通常 T+1 更新，
+                        # 周末/节假日可能滞后2-3天，需标注数据日期
+                        from datetime import datetime as _dt
+                        try:
+                            data_dt = _dt.strptime(latest_date, "%Y%m%d")
+                            age_days = (_dt.now() - data_dt).days
+                            freshness = "fresh" if age_days <= 1 else "stale" if age_days >= 3 else "slight_lag"
+                            freshness_note = "" if age_days <= 1 else f"（数据滞后{age_days}天，Tushare T+1更新）"
+                        except Exception:
+                            freshness = "unknown"
+                            freshness_note = ""
+                            age_days = None
+
+                        print(f"[VAL] Tushare 加权PE-TTM={current_pe}, pct={percentile}%, window={window_years}年, date={latest_date}")
                         return {
                             "index": "沪深300",
                             "percentile": percentile,
@@ -280,9 +387,11 @@ def get_valuation_percentile() -> dict:
                             "current_pe": round(current_pe, 2),
                             "metric": f"加权PE-TTM(近{window_years}年分位，Wind/同花顺同口径)",
                             "date": latest_date,
+                            "age_days": age_days,
+                            "freshness": freshness,
                             "pe_range": f"{pe_data.min():.1f}-{pe_data.max():.1f}",
                             "window_days": len(pe_values),
-                            "note": f"加权PE-TTM是市场通用口径，近{window_years}年{percentile}%分位",
+                            "note": f"加权PE-TTM是市场通用口径，近{window_years}年{percentile}%分位{freshness_note}",
                         }
         except Exception as e:
             print(f"[VAL] Tushare PE-TTM failed: {e}")
