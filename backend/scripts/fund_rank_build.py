@@ -195,6 +195,26 @@ def build_rank():
     }
     OUTPUT_FILE.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
 
+    # ---- 归档模式：按日期保存一份历史快照（保留最近 12 周）----
+    archive_date = datetime.now().strftime("%Y%m%d")
+    archive_file = OUTPUT_FILE.parent / f"fund_rank_ts_{archive_date}.json"
+    archive_file.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+    print(f"   归档: {archive_file.name}")
+
+    # 清理超过 12 周（84天）的旧归档
+    cutoff = datetime.now() - timedelta(days=84)
+    cleaned = 0
+    for old_f in OUTPUT_FILE.parent.glob("fund_rank_ts_????????.json"):
+        try:
+            file_date = datetime.strptime(old_f.stem.split("_")[-1], "%Y%m%d")
+            if file_date < cutoff:
+                old_f.unlink()
+                cleaned += 1
+        except Exception:
+            pass
+    if cleaned > 0:
+        print(f"   清理旧归档: {cleaned} 个")
+
     print()
     print("="*60)
     print(f"✅ 完成！共 {len(ranks_all)} 只有效基金")

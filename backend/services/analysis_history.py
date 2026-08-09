@@ -16,9 +16,47 @@ from config import DATA_DIR
 
 
 def _get_history_dir(user_id: str) -> Path:
-    """获取用户分析历史目录"""
+    """获取用户分析历史目录
+    
+    支持 userId 别名：当 user_id 对应目录为空时，
+    尝试匹配 profiles.json 中的已知用户（解决企微uid vs 用户名不一致问题）
+    """
     uid_hash = hashlib.sha256(user_id.encode()).hexdigest()[:16]
     d = DATA_DIR / "users" / uid_hash / "analysis_history"
+    
+    # 目录存在且有内容 → 直接返回
+    if d.exists() and any(d.glob("*.json")):
+        d.mkdir(parents=True, exist_ok=True)
+        return d
+    
+    # 尝试从 profiles.json 找到真实用户名 → 再 hash
+    try:
+        profiles_file = DATA_DIR / "profiles.json"
+        if profiles_file.exists():
+            profiles = json.loads(profiles_file.read_text(encoding="utf-8"))
+            for p in profiles:
+                pid = p.get("id", "")
+                pname = p.get("name", "")
+                # 当传入的 user_id 匹配 wxwork_uid、name、id 中任意一个
+                wxwork = p.get("wxworkUserId", "")
+                if user_id in (pid, pname, wxwork) and pid != user_id:
+                    # 找到了对应的规范 userId，用它重新 hash
+                    canonical_hash = hashlib.sha256(pid.encode()).hexdigest()[:16]
+                    canonical_dir = DATA_DIR / "users" / canonical_hash / "analysis_history"
+                    if canonical_dir.exists() and any(canonical_dir.glob("*.json")):
+                        print(f"[HISTORY] userId alias: {user_id} → {pid}")
+                        return canonical_dir
+                # 反向：传入的 user_id 是 name，但数据用 id 存的
+                if user_id == pname and pid != pname:
+                    canonical_hash = hashlib.sha256(pid.encode()).hexdigest()[:16]
+                    canonical_dir = DATA_DIR / "users" / canonical_hash / "analysis_history"
+                    if canonical_dir.exists() and any(canonical_dir.glob("*.json")):
+                        print(f"[HISTORY] userId alias: {user_id} → {pid}")
+                        return canonical_dir
+    except Exception as e:
+        print(f"[HISTORY] 别名查找失败: {e}")
+    
+    # 兜底：创建并返回按 user_id hash 的目录
     d.mkdir(parents=True, exist_ok=True)
     return d
 

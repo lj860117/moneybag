@@ -351,14 +351,26 @@ def _score_quality(s: dict, fin: dict) -> float:
     score = 40  # 略偏正面起步
 
     # F12: ROE（核心质量指标）
+    # 金融行业ROE门槛降低（银行10-12%即为优秀）
     roe = fin.get("roe")
+    industry = s.get("industry", "")
+    is_financial = any(kw in industry for kw in ["银行", "保险", "证券", "信托", "金融"])
+    is_energy = any(kw in industry for kw in ["石油", "煤炭", "采矿", "能源"])
     if roe is not None:
-        if roe > 25: score += 20
-        elif roe > 20: score += 16
-        elif roe > 15: score += 12
-        elif roe > 10: score += 6
-        elif roe > 5: score += 2
-        elif roe < 0: score -= 20
+        if is_financial:
+            # 银行/保险用净息差/综合收益衡量，ROE门槛调低
+            if roe > 12: score += 20
+            elif roe > 10: score += 14
+            elif roe > 8: score += 8
+            elif roe > 5: score += 2
+            elif roe < 0: score -= 20
+        else:
+            if roe > 25: score += 20
+            elif roe > 20: score += 16
+            elif roe > 15: score += 12
+            elif roe > 10: score += 6
+            elif roe > 5: score += 2
+            elif roe < 0: score -= 20
 
     # F13: 毛利率（越高越有定价权）
     gm = fin.get("gross_margin")
@@ -377,8 +389,11 @@ def _score_quality(s: dict, fin: dict) -> float:
         elif nm < 3: score -= 8
 
     # F15: 资产负债率（越低越安全）
+    # 金融/银行/保险行业高负债是行业属性，不适用通用门槛
     dr = fin.get("debt_ratio")
-    if dr is not None:
+    industry = s.get("industry", "")
+    is_financial = any(kw in industry for kw in ["银行", "保险", "证券", "信托", "金融", "基金", "租赁"])
+    if dr is not None and not is_financial:
         if dr < 30: score += 12
         elif dr < 50: score += 6
         elif dr > 70: score -= 10
@@ -451,9 +466,11 @@ def _score_risk(s: dict, fin: dict) -> float:
         elif amp > 8: score -= 20
         elif amp > 6: score -= 10
 
-    # F23: 负债率风险
+    # F23: 负债率风险（金融行业跳过，高负债是行业属性）
     dr = fin.get("debt_ratio")
-    if dr is not None:
+    industry = s.get("industry", "")
+    is_financial = any(kw in industry for kw in ["银行", "保险", "证券", "信托", "金融", "基金", "租赁"])
+    if dr is not None and not is_financial:
         if dr > 80: score -= 25
         elif dr > 70: score -= 12
         elif dr < 40: score += 10
@@ -693,6 +710,8 @@ def screen_stocks(top_n: int = 50) -> dict:
                     "pe": s.get("pe"),
                     "pb": s.get("pb"),
                     "change_pct": s.get("change_pct"),
+                    "change_60d": s.get("change_60d"),   # v9.5.81: 输出60日涨幅，用于潜力评分
+                    "change_20d": s.get("change_20d"),   # v9.5.81: 20日涨幅
                     "turnover": s.get("turnover"),
                     "market_cap": s.get("market_cap"),
                     "score": round(total, 1),
@@ -755,6 +774,98 @@ def screen_stocks(top_n: int = 50) -> dict:
             except Exception as e:
                 print(f"[STOCK_SCREEN_V3] Tushare PE 失败: {e}")
 
+        # v9.5.99: 业绩预告 + 业绩快报 + 回购加分（同进程缓存4h）
+        try:
+            from services.tushare_data import get_earning_forecast, get_express_report, get_share_repurchase, get_top_inst
+            import time as _t
+            global _STOCK_CATALYST_CACHE
+            try:
+                _cat = _STOCK_CATALYST_CACHE
+            except NameError:
+                _cat = {}
+            now_ts = _t.time()
+
+            for s in top:
+                code = s.get("code", "")
+                if not code:
+                    continue
+                cached = _cat.get(code)
+                if cached and (now_ts - cached["ts"]) < 14400:
+                    bonus = cached["bonus"]
+                    flags = cached["flags"]
+                else:
+                    bonus = 0
+                    flags = []
+                    try:
+                        fc = get_earning_forecast(code=code) or []
+                        if fc:
+                            ftype = (fc[0].get("type") or "")
+                            pmin = fc[0].get("p_change_min") or 0
+                            pmax = fc[0].get("p_change_max") or 0
+                            avg = (pmin + pmax) / 2
+                            if "增" in ftype or avg > 30:
+                                bonus += 5
+                                flags.append(f"📈预增{avg:.0f}%")
+                            elif "减" in ftype or "亏" in ftype or avg < -20:
+                                bonus -= 8
+                                flags.append(f"📉{ftype}")
+                    except Exception:
+                        pass
+                    try:
+                        ex = get_express_report(code=code) or []
+                        if ex:
+                            yoy = ex[0].get("yoy_net_profit") or 0
+                            if yoy > 50:
+                                bonus += 4
+                                flags.append(f"📊快报+{yoy:.0f}%")
+                            elif yoy < -20:
+                                bonus -= 4
+                                flags.append(f"📊快报{yoy:.0f}%")
+                    except Exception:
+                        pass
+                    try:
+                        rp = get_share_repurchase(code=code, days=180) or []
+                        if rp:
+                            amt = rp[0].get("amount") or 0
+                            if amt > 1e8:  # 1亿以上
+                                bonus += 3
+                                flags.append("💰大额回购")
+                            elif amt > 1e7:
+                                bonus += 1
+                                flags.append("💰回购")
+                    except Exception:
+                        pass
+                    # v9.5.101: 龙虎榜机构席位（机构净买入是强信号）
+                    try:
+                        insts = get_top_inst(code=code) or []
+                        if insts:
+                            inst_net = sum((i.get("net_buy") or 0) for i in insts if "机构" in (i.get("exalter") or ""))
+                            if inst_net > 5e7:  # 机构净买 5000万+
+                                bonus += 4
+                                flags.append(f"🏛️机构净买¥{inst_net/1e8:.1f}亿")
+                            elif inst_net > 1e7:
+                                bonus += 2
+                                flags.append("🏛️机构买入")
+                            elif inst_net < -5e7:
+                                bonus -= 3
+                                flags.append("🏛️机构净卖")
+                    except Exception:
+                        pass
+                    _cat[code] = {"ts": now_ts, "bonus": bonus, "flags": flags}
+                if bonus:
+                    s["score"] = round(s.get("score", 0) + bonus, 1)
+                    s["catalyst_bonus"] = bonus
+                if flags:
+                    s["catalyst_flags"] = flags
+            try:
+                globals()["_STOCK_CATALYST_CACHE"] = _cat
+            except Exception:
+                pass
+            # 重新排序（加分后）
+            top.sort(key=lambda x: x.get("score", 0), reverse=True)
+        except Exception as e:
+            print(f"[STOCK_SCREEN_V3] catalyst 加分失败: {e}")
+
         # 因子说明（含动态权重）
         w_desc = " / ".join([f"{k}({int(DIM_WEIGHTS[k]*100)}%)" for k in DIM_WEIGHTS])
         factor_desc = (
@@ -766,7 +877,8 @@ def screen_stocks(top_n: int = 50) -> dict:
 
         result = {
             "stocks": top,
-            "total": len(scored),
+            "total": len(filtered),  # 全市场筛选后的候选数（不是TOP数）
+            "total_screened": len(filtered),
             "source": source,
             "version": "V3_dynamic_weights",
             "method": factor_desc,

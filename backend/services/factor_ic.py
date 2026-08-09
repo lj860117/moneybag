@@ -206,12 +206,14 @@ def _get_future_returns(code: str, days: int = 20) -> float | None:
 def compute_factor_ic(
     forward_days: int = 20,
     pool_size: int = 200,
+    force: bool = False,
 ) -> dict:
     """计算所有因子的 IC 值
     
     Args:
         forward_days: 未来收益计算周期（交易日）
         pool_size: 股票池大小
+        force: True 则跳过缓存强制重新计算
     
     Returns:
         {
@@ -224,10 +226,13 @@ def compute_factor_ic(
         }
     """
     cache_key = f"ic_{forward_days}_{pool_size}"
-    now = time.time()
-    cached = _ic_cache.get(cache_key)
-    if cached is not None:
-        return cached
+    if not force:
+        cached = _ic_cache.get(cache_key)
+        if cached is not None:
+            return cached
+    else:
+        _ic_cache.delete(cache_key)
+        print(f"[IC] Force refresh: cache cleared for {cache_key}")
 
     print(f"[IC] Starting IC test: forward={forward_days}d, pool={pool_size}")
     t0 = time.time()
@@ -310,8 +315,10 @@ def compute_factor_ic(
     for fname, pairs in factor_data.items():
         if len(pairs) < 20:
             results[fname] = {
-                "ic": 0, "samples": len(pairs), "level": "样本不足",
-                "effective": False, "reason": f"仅{len(pairs)}个样本（需≥20）",
+                "ic": 0, "abs_ic": 0, "samples": len(pairs), "level": "样本不足",
+                "effective": False,
+                "invalid_reason": "data_insufficient",  # 数据不足，非因子本身无效
+                "reason": f"仅{len(pairs)}个样本（需≥20），可能因非交易日/接口限流导致财务数据缺失",
             }
             continue
 
@@ -325,15 +332,19 @@ def compute_factor_ic(
         if abs_ic >= 0.05:
             level = "优秀"
             effective = True
+            invalid_reason = None
         elif abs_ic >= 0.03:
             level = "有效"
             effective = True
+            invalid_reason = None
         elif abs_ic >= 0.02:
             level = "微弱"
             effective = False
+            invalid_reason = "ic_low"  # IC 值偏低
         else:
             level = "无效"
             effective = False
+            invalid_reason = "ic_low"  # IC 值真正过低
 
         # 因子方向
         direction = "正向" if ic > 0 else "负向"
@@ -345,6 +356,7 @@ def compute_factor_ic(
             "level": level,
             "effective": effective,
             "direction": direction,
+            "invalid_reason": invalid_reason,
         }
 
     # Step 5: 排序 + 汇总
@@ -353,7 +365,12 @@ def compute_factor_ic(
         info["rank"] = rank
 
     effective_count = sum(1 for _, v in results.items() if v.get("effective"))
-    ineffective = [fname for fname, v in results.items() if not v.get("effective") and v.get("samples", 0) >= 20]
+    # 区分两类无效：数据不足 vs IC真低
+    ineffective_data = [fname for fname, v in results.items()
+                        if not v.get("effective") and v.get("invalid_reason") == "data_insufficient"]
+    ineffective_ic = [fname for fname, v in results.items()
+                      if not v.get("effective") and v.get("invalid_reason") == "ic_low"]
+    ineffective = ineffective_ic  # 只把真正IC低的列为"无效因子"
 
     # 因子中文名映射
     FACTOR_NAMES = {
@@ -373,9 +390,13 @@ def compute_factor_ic(
         names = [FACTOR_NAMES.get(f, f) for f, _ in top3]
         recommendations.append(f"最有效的3个因子：{', '.join(names)}，建议在选股中加大权重")
 
-    if ineffective:
-        names = [FACTOR_NAMES.get(f, f) for f in ineffective[:5]]
-        recommendations.append(f"无效因子({len(ineffective)}个)：{', '.join(names)}等，建议降低权重或移除")
+    if ineffective_ic:
+        names = [FACTOR_NAMES.get(f, f) for f in ineffective_ic[:5]]
+        recommendations.append(f"IC偏低因子({len(ineffective_ic)}个)：{', '.join(names)}等，建议降低权重或移除")
+
+    if ineffective_data:
+        names = [FACTOR_NAMES.get(f, f) for f in ineffective_data[:5]]
+        recommendations.append(f"数据缺失因子({len(ineffective_data)}个)：{', '.join(names)}等，非交易日财务接口限流所致，下个交易日会自动恢复")
 
     if effective_count / max(len(results), 1) > 0.6:
         recommendations.append("因子体系整体有效率 > 60%，框架设计合理")
@@ -383,7 +404,8 @@ def compute_factor_ic(
         recommendations.append("⚠️ 有效因子不足 30%，需要重新审视因子设计")
 
     elapsed = time.time() - t0
-    print(f"[IC] Done in {elapsed:.1f}s: {effective_count}/{len(results)} effective factors")
+    print(f"[IC] Done in {elapsed:.1f}s: {effective_count}/{len(results)} effective, "
+          f"ic_low={len(ineffective_ic)}, data_insufficient={len(ineffective_data)}")
 
     result = {
         "factors": {fname: {**info, "name_cn": FACTOR_NAMES.get(fname, fname)} for fname, info in results.items()},
@@ -403,9 +425,12 @@ def compute_factor_ic(
             "samples_with_returns": len(returns_map),
             "forward_days": forward_days,
             "elapsed_seconds": round(elapsed, 1),
+            "ineffective_ic_count": len(ineffective_ic),
+            "ineffective_data_count": len(ineffective_data),
         },
         "recommendations": recommendations,
-        "ineffective_factors": ineffective,
+        "ineffective_factors": ineffective_ic,          # IC真正低的因子
+        "insufficient_data_factors": ineffective_data,  # 数据不足（非交易日/限流）
     }
 
     _ic_cache.set(cache_key, result)

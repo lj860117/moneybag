@@ -34,17 +34,38 @@ from services.fund_classifier import classify_and_allocate
 
 def get_portfolio_overview(user_id: str = "default") -> dict:
     """汇总全资产，返回统一概览数据"""
-    # 1. 股票持仓
+    # 1. 股票持仓 — 用实时价格计算市值
+    # FIX 2026-08-09: 排查代码漂移发现本地版本这里退化成"直接用成本价当市值"
+    # （注释写"需要scan才有"但从未真正调用scan/批量取价），导致资产总览的
+    # 股票市值/配置占比在涨跌幅大时明显失真。合并回服务器版本的实时取价逻辑。
     stock_holdings = unified_load_stock_holdings(user_id)
     stock_total_mv = 0
     stock_total_cost = 0
     stock_count = 0
+
+    # 批量获取实时价格
+    stock_rt_map = {}
+    try:
+        from services.stock_monitor import get_stock_realtime
+        for h in stock_holdings:
+            code = h.get("code", "")
+            if code:
+                rt = get_stock_realtime(code)
+                if rt and rt.get("price"):
+                    stock_rt_map[code] = rt["price"]
+    except Exception:
+        pass
+
     for h in stock_holdings:
-        if h.get("costPrice") and h.get("shares"):
-            stock_total_cost += h["costPrice"] * h["shares"]
+        cost_price = h.get("costPrice", 0) or 0
+        shares = h.get("shares", 0) or 0
+        code = h.get("code", "")
+        if cost_price and shares:
+            stock_total_cost += cost_price * shares
             stock_count += 1
-        # market value 需要 scan 才有，这里先用 cost 估算
-        stock_total_mv += h.get("costPrice", 0) * h.get("shares", 0)
+        # 用实时价格，没有就用成本价
+        current_price = stock_rt_map.get(code) or cost_price
+        stock_total_mv += current_price * shares
 
     # 2. 基金持仓 — FIX 2026-05-20 MB-008: 使用新的分类器，支持混合/QDII 基金
     fund_holdings = unified_load_fund_holdings(user_id)

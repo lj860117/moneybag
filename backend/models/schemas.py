@@ -24,6 +24,8 @@ class Portfolio(BaseModel):
     history: list = []
     profile: Optional[str] = None
     amount: float = 0
+    # v9.5.95: 允许前端传额外字段（如 rebalanceGap）注入 AI 上下文
+    model_config = {"extra": "allow"}
 
 
 # ---- V4 新模型 — 交易流水制 ----

@@ -21,8 +21,9 @@ from config import DATA_DIR
 
 # ---- 常量 ----
 EMA_ALPHA = 0.3          # EMA 平滑系数 (越大越重视近期表现)
-VERIFY_DAYS = 5           # 判断后第5天验证
+VERIFY_DAYS = 15          # 判断后第15天验证（5天太短，市场方向需更长周期）
 MIN_RECORDS_FOR_EMA = 10  # 至少10条记录才开始EMA校准
+RECORD_DEDUP_MINUTES = 30  # 同用户同regime/direction 30分钟内不重复写入
 
 # 默认模块权重 (sum=1.0)
 # M5 W4: ai_predictor 权重重分配到其他模块（旧版已删除）
@@ -97,6 +98,8 @@ def record(user_id: str, judgment_data: dict) -> dict:
     """
     记录一次决策判断的完整快照
     
+    防重复：同用户同regime+direction，30分钟内不重复写入
+    
     judgment_data 来自 ctx.to_judgment_record()，包含：
     - regime, direction, confidence, weighted_score, divergence
     - module_results (各模块的结论+置信度)
@@ -104,6 +107,22 @@ def record(user_id: str, judgment_data: dict) -> dict:
     - llm_arbitration (如有)
     - timestamp
     """
+    # ---- 防重复写入（同 regime+direction 30分钟内去重）----
+    records_now = _load_month(user_id)
+    new_regime = judgment_data.get("regime", "unknown")
+    new_direction = judgment_data.get("direction", "neutral")
+    cutoff = datetime.now() - timedelta(minutes=RECORD_DEDUP_MINUTES)
+    for existing in records_now[-5:]:  # 只检查最近5条，效率优先
+        try:
+            rec_time = datetime.fromisoformat(existing.get("recorded_at", "2000-01-01"))
+        except Exception:
+            continue
+        if (rec_time >= cutoff
+                and existing.get("regime") == new_regime
+                and existing.get("direction") == new_direction):
+            print(f"[JUDGMENT] 防重复：{new_regime}/{new_direction} 在 {RECORD_DEDUP_MINUTES}min 内已有记录，跳过")
+            return existing  # 返回已有记录，不写入新记录
+
     record_entry = {
         "id": f"j_{int(time.time())}_{user_id[:8]}",
         "user_id": user_id,
@@ -113,9 +132,9 @@ def record(user_id: str, judgment_data: dict) -> dict:
         "verdict": None,  # 验证后填: "correct" / "wrong" / "partial"
         "actual_return": None,
         # 决策快照
-        "direction": judgment_data.get("direction", "neutral"),
+        "direction": new_direction,
         "confidence": judgment_data.get("confidence", 0),
-        "regime": judgment_data.get("regime", "unknown"),
+        "regime": new_regime,
         "weighted_score": judgment_data.get("weighted_score", 0),
         "divergence": judgment_data.get("divergence", 0),
         "gate_decision": judgment_data.get("gate_decision", ""),
@@ -135,9 +154,8 @@ def record(user_id: str, judgment_data: dict) -> dict:
             }
     
     # 追加到当月文件
-    records = _load_month(user_id)
-    records.append(record_entry)
-    _save_month(user_id, records)
+    records_now.append(record_entry)
+    _save_month(user_id, records_now)
     
     return record_entry
 
@@ -234,6 +252,8 @@ def scorecard(user_id: str, months: int = 3) -> dict:
     """
     生成判断成绩单
     
+    自动触发 verify_pending：有到期未验证的记录时，先验证再出成绩单
+    
     返回:
     - total: 总判断数
     - verified: 已验证数
@@ -243,6 +263,14 @@ def scorecard(user_id: str, months: int = 3) -> dict:
     - module_accuracy: 各模块准确率
     - recent: 最近10条记录
     """
+    # 先触发 verify，补验到期记录（不依赖 cron）
+    try:
+        newly_verified = verify_pending(user_id)
+        if newly_verified:
+            print(f"[SCORECARD] 自动补验 {len(newly_verified)} 条到期记录")
+    except Exception as e:
+        print(f"[SCORECARD] 自动补验失败: {e}")
+
     all_records = []
     now = datetime.now()
     
@@ -255,6 +283,7 @@ def scorecard(user_id: str, months: int = 3) -> dict:
     correct = [r for r in verified if r.get("verdict") == "correct"]
     wrong = [r for r in verified if r.get("verdict") == "wrong"]
     partial = [r for r in verified if r.get("verdict") == "partial"]
+    pending = [r for r in all_records if not r.get("verified")]
     
     accuracy = round(len(correct) / len(verified) * 100, 1) if verified else 0
     avg_conf = round(sum(r.get("confidence", 0) for r in all_records) / total, 1) if total else 0
@@ -282,18 +311,26 @@ def scorecard(user_id: str, months: int = 3) -> dict:
             "correct": stats["correct"],
             "accuracy": round(stats["correct"] / stats["total"] * 100, 1) if stats["total"] else 0,
         }
+
+    # 统计最近7天内有多少重复记录（用于前端提示）
+    cutoff_7d = (datetime.now() - timedelta(days=7)).isoformat()
+    recent_all = sorted(all_records, key=lambda r: r.get("recorded_at", ""), reverse=True)
+    recent_10 = recent_all[:10]
     
     return {
         "total": total,
         "verified": len(verified),
-        "pending": total - len(verified),
+        "pending": len(pending),
         "correct": len(correct),
         "wrong": len(wrong),
         "partial": len(partial),
         "accuracy": accuracy,
         "avg_confidence": avg_conf,
         "module_accuracy": module_accuracy,
-        "recent": sorted(all_records, key=lambda r: r.get("recorded_at", ""), reverse=True)[:10],
+        "recent": recent_10,
+        "verify_days": VERIFY_DAYS,  # 告诉前端验证周期是几天
+        "can_calibrate": len(verified) >= MIN_RECORDS_FOR_EMA,
+        "calibrate_needed": MIN_RECORDS_FOR_EMA,
         "generated_at": datetime.now().isoformat(),
     }
 

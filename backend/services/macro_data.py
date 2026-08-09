@@ -81,71 +81,141 @@ def get_macro_calendar() -> list:
                 return val_str
 
         # ---- CPI ----
+        # 策略：Tushare 主 + AKShare 降级
+        cpi_data = None
         try:
-            df = get_china_cpi()
-            if df is not None and len(df) > 0:
-                print(f"[MACRO] CPI cols={list(df.columns)}, rows={len(df)}")
-                val_col = _find_col(df.columns, ["全国-同比增长", "全国-同比", "同比增长"]) or (df.columns[2] if len(df.columns) > 2 else None)
-                date_col = _find_col(df.columns, ["月份", "日期"]) or df.columns[0]
-                if val_col:
-                    v, d = _get_first_valid(df, val_col, date_col)
-                    if v:
-                        events.append({"name": "CPI 居民消费价格指数", "date": _clean_date(d), "value": _fmt_pct(v), "impact": "通胀指标，影响央行货币政策", "icon": "📊"})
-                        print(f"[MACRO] CPI={v} date={d}")
+            from services.tushare_fallback import TusharePrimary
+            tp = TusharePrimary.instance()
+            cpi_data = tp.get_macro_cpi()
+            if cpi_data:
+                # Tushare 成功
+                latest = cpi_data[0]
+                events.append({
+                    "name": "CPI 居民消费价格指数",
+                    "date": latest["date"],
+                    "value": _fmt_pct(str(latest["value"])),
+                    "impact": "通胀指标，影响央行货币政策",
+                    "icon": "📊",
+                    "source": "tushare"
+                })
+                print(f"[MACRO] CPI={latest['value']} date={latest['date']} (Tushare)")
         except Exception as e:
-            print(f"[MACRO] CPI failed: {e}")
-            import traceback; traceback.print_exc()
+            print(f"[MACRO] CPI Tushare failed: {e}")
+
+        # 如果 Tushare 失败，降级到 AKShare
+        if not cpi_data:
+            try:
+                df = get_china_cpi()
+                if df is not None and len(df) > 0:
+                    print(f"[MACRO] CPI cols={list(df.columns)}, rows={len(df)}")
+                    val_col = _find_col(df.columns, ["全国-同比增长", "全国-同比", "同比增长"]) or (df.columns[2] if len(df.columns) > 2 else None)
+                    date_col = _find_col(df.columns, ["月份", "日期"]) or df.columns[0]
+                    if val_col:
+                        v, d = _get_first_valid(df, val_col, date_col)
+                        if v:
+                            events.append({"name": "CPI 居民消费价格指数", "date": _clean_date(d), "value": _fmt_pct(v), "impact": "通胀指标，影响央行货币政策", "icon": "📊", "source": "akshare"})
+                            print(f"[MACRO] CPI={v} date={d} (AKShare)")
+            except Exception as e:
+                print(f"[MACRO] CPI AKShare failed: {e}")
+                import traceback; traceback.print_exc()
 
         # ---- PMI ----
+        # 策略：Tushare 主 + AKShare 降级
+        pmi_data = None
         try:
-            df = get_china_pmi()
-            if df is not None and len(df) > 0:
-                print(f"[MACRO] PMI cols={list(df.columns)}, rows={len(df)}")
-                val_col = _find_col(df.columns, ["制造业-指数", "制造业"]) or (df.columns[1] if len(df.columns) > 1 else None)
-                date_col = _find_col(df.columns, ["月份", "日期"]) or df.columns[0]
-                if val_col:
-                    v, d = _get_first_valid(df, val_col, date_col)
-                    if v:
-                        events.append({"name": "PMI 采购经理指数", "date": _clean_date(d), "value": v, "impact": "经济景气度指标，>50扩张、<50收缩", "icon": "🏭"})
-                        print(f"[MACRO] PMI={v} date={d}")
+            from services.tushare_fallback import TusharePrimary
+            tp = TusharePrimary.instance()
+            pmi_data = tp.get_macro_pmi()
+            if pmi_data:
+                latest = pmi_data[0]
+                events.append({
+                    "name": "PMI 采购经理指数",
+                    "date": latest["date"],
+                    "value": str(latest["value"]),
+                    "impact": "经济景气度指标，>50扩张、<50收缩",
+                    "icon": "🏭",
+                    "source": "tushare"
+                })
+                print(f"[MACRO] PMI={latest['value']} date={latest['date']} (Tushare)")
         except Exception as e:
-            print(f"[MACRO] PMI failed: {e}")
+            print(f"[MACRO] PMI Tushare failed: {e}")
+
+        # 如果 Tushare 失败，降级到 AKShare
+        if not pmi_data:
+            try:
+                df = get_china_pmi()
+                if df is not None and len(df) > 0:
+                    print(f"[MACRO] PMI cols={list(df.columns)}, rows={len(df)}")
+                    val_col = _find_col(df.columns, ["制造业-指数", "制造业"]) or (df.columns[1] if len(df.columns) > 1 else None)
+                    date_col = _find_col(df.columns, ["月份", "日期"]) or df.columns[0]
+                    if val_col:
+                        v, d = _get_first_valid(df, val_col, date_col)
+                        if v:
+                            events.append({"name": "PMI 采购经理指数", "date": _clean_date(d), "value": v, "impact": "经济景气度指标，>50扩张、<50收缩", "icon": "🏭", "source": "akshare"})
+                            print(f"[MACRO] PMI={v} date={d} (AKShare)")
+            except Exception as e:
+                print(f"[MACRO] PMI AKShare failed: {e}")
 
         # ---- M2 ----
+        # 策略：Tushare 主 + AKShare 降级
+        # 注意：Tushare 的 M2 数据接口可能是 cn_money_supply
+        m2_data = None
         try:
-            df = get_china_money_supply()
-            if df is not None and len(df) > 0:
-                print(f"[MACRO] M2 cols={list(df.columns)}, rows={len(df)}")
-                val_col = _find_col(df.columns, ["货币和准货币(M2)-同比增长", "M2-同比", "M2同比"]) or (df.columns[2] if len(df.columns) > 2 else None)
-                date_col = _find_col(df.columns, ["月份", "日期"]) or df.columns[0]
-                if val_col:
-                    v, d = _get_first_valid(df, val_col, date_col)
-                    if v:
-                        events.append({"name": "M2 广义货币供应量", "date": _clean_date(d), "value": _fmt_pct(v), "impact": "货币宽松/紧缩信号，影响市场流动性", "icon": "💵"})
-                        print(f"[MACRO] M2={v} date={d}")
+            # Tushare 暂不支持直接获取 M2，先尝试，失败则降级
+            from services.tushare_fallback import TusharePrimary
+            tp = TusharePrimary.instance()
+            # Tushare 可能没有 M2 接口，所以直接跳过到 AKShare
+            m2_data = None  # 暂时设为 None，直接降级
         except Exception as e:
-            print(f"[MACRO] M2 failed: {e}")
+            print(f"[MACRO] M2 Tushare not available: {e}")
+
+        # 降级到 AKShare
+        if not m2_data:
+            try:
+                df = get_china_money_supply()
+                if df is not None and len(df) > 0:
+                    print(f"[MACRO] M2 cols={list(df.columns)}, rows={len(df)}")
+                    val_col = _find_col(df.columns, ["货币和准货币(M2)-同比增长", "M2-同比", "M2同比"]) or (df.columns[2] if len(df.columns) > 2 else None)
+                    date_col = _find_col(df.columns, ["月份", "日期"]) or df.columns[0]
+                    if val_col:
+                        v, d = _get_first_valid(df, val_col, date_col)
+                        if v:
+                            events.append({"name": "M2 广义货币供应量", "date": _clean_date(d), "value": _fmt_pct(v), "impact": "货币宽松/紧缩信号，影响市场流动性", "icon": "💵", "source": "akshare"})
+                            print(f"[MACRO] M2={v} date={d} (AKShare)")
+            except Exception as e:
+                print(f"[MACRO] M2 AKShare failed: {e}")
 
         # ---- PPI ----
+        # 策略：Tushare 主 + AKShare 降级
+        # 注意：Tushare 可能没有 PPI 接口，直接降级到 AKShare
+        ppi_data = None
         try:
-            df = get_china_ppi()
-            if df is not None and len(df) > 0:
-                print(f"[MACRO] PPI cols={list(df.columns)}, rows={len(df)}")
-                # 优先匹配"当月同比增长"，然后按列序号降级
-                val_col = _find_col(df.columns, ["当月同比增长", "当月同比"]) or (df.columns[2] if len(df.columns) > 2 else None)
-                date_col = _find_col(df.columns, ["月份", "日期"]) or df.columns[0]
-                if val_col:
-                    v, d = _get_first_valid(df, val_col, date_col)
-                    if v:
-                        events.append({"name": "PPI 工业生产者出厂价格指数", "date": _clean_date(d), "value": _fmt_pct(v), "impact": "上游价格指标，领先CPI反映通胀趋势", "icon": "🏭"})
-                        print(f"[MACRO] PPI={v} date={d}")
-                    else:
-                        print(f"[MACRO] PPI: no valid value in first 10 rows")
-                else:
-                    print(f"[MACRO] PPI: no matching column in {list(df.columns)}")
+            # Tushare 暂不支持直接获取 PPI，直接降级
+            ppi_data = None
         except Exception as e:
-            print(f"[MACRO] PPI failed: {e}")
-            import traceback; traceback.print_exc()
+            print(f"[MACRO] PPI Tushare not available: {e}")
+
+        # 降级到 AKShare
+        if not ppi_data:
+            try:
+                df = get_china_ppi()
+                if df is not None and len(df) > 0:
+                    print(f"[MACRO] PPI cols={list(df.columns)}, rows={len(df)}")
+                    # 优先匹配"当月同比增长"，然后按列序号降级
+                    val_col = _find_col(df.columns, ["当月同比增长", "当月同比"]) or (df.columns[2] if len(df.columns) > 2 else None)
+                    date_col = _find_col(df.columns, ["月份", "日期"]) or df.columns[0]
+                    if val_col:
+                        v, d = _get_first_valid(df, val_col, date_col)
+                        if v:
+                            events.append({"name": "PPI 工业生产者出厂价格指数", "date": _clean_date(d), "value": _fmt_pct(v), "impact": "上游价格指标，领先CPI反映通胀趋势", "icon": "🏭", "source": "akshare"})
+                            print(f"[MACRO] PPI={v} date={d} (AKShare)")
+                        else:
+                            print(f"[MACRO] PPI: no valid value in first 10 rows")
+                    else:
+                        print(f"[MACRO] PPI: no matching column in {list(df.columns)}")
+            except Exception as e:
+                print(f"[MACRO] PPI AKShare failed: {e}")
+                import traceback; traceback.print_exc()
 
     except Exception as e:
         print(f"[MACRO] Fatal: {e}")

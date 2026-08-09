@@ -135,8 +135,8 @@ def main():
             if dry_run:
                 print(f"\n[REBALANCE dry-run] 将推送给 {user}:\n{text}\n")
             else:
-                ok = send_text(text, to_user=user)
-            print(f"[REBALANCE] {user}: {'✅ dry' if dry_run else ('✅ 推送成功' if ok else '❌ 推送失败')}")
+                ok = send_text(text, user_id=user)  # FIX: 参数名是 user_id 不是 to_user
+            print(f"[REBALANCE] {user}: {'✅ dry' if dry_run else ('✅ 推送成功' if ok.get('ok') else '❌ 推送失败')}")
 
         return 0
     except Exception as e:

@@ -16,23 +16,30 @@ from config import DATA_DIR
 PRECOMPUTED_DIR = DATA_DIR / "precomputed"
 PRECOMPUTED_DIR.mkdir(parents=True, exist_ok=True)
 
-# 缓存有效期（秒）：白天打开 App 时，如果凌晨已预算就直接用
+# v9.5.123: TTL延长 — 凌晨预算的数据白天全天可用(收盘后才更新)
+# 之前2h过短导致AI对话读不到预热数据
 _PRECOMPUTED_TTL = {
-    "recommendations": 14400,   # 4小时（推荐不需要实时）
-    "decisions": 14400,         # 4小时
-    "daily_signal": 7200,       # 2小时（信号需要相对新）
-    "sector_rotation": 7200,    # 2小时
-    "broker_consensus": 14400,  # 4小时
-    "scenarios": 28800,         # 8小时（情景分析变化慢）
-    "factors": 7200,            # 2小时（P0.4a: 从1h→2h，盘中cache_warmer每30分刷新兜底）
-    "macro": 14400,             # 4小时
-    "fear_greed": 7200,         # 2小时（P0.4a: 从1h→2h）
-    "valuation": 7200,          # 2小时
+    "recommendations": 43200,   # 12小时(凌晨算→晚上过期)
+    "decisions": 43200,         # 12小时
+    "daily_signal": 43200,      # 12小时(v9.5.123: 2h→12h,盘中不会变)
+    "sector_rotation": 14400,   # 4小时(盘中midday会刷新)
+    "broker_consensus": 43200,  # 12小时
+    "scenarios": 43200,         # 12小时
+    "factors": 14400,           # 4小时(盘中midday刷新兜底)
+    "macro": 43200,             # 12小时
+    "fear_greed": 14400,        # 4小时(盘中变化大)
+    "valuation": 43200,         # 12小时(盘中不变)
 }
 
 
 def save_precomputed(key: str, data: dict, user_id: str = ""):
-    """保存预计算结果到磁盘"""
+    """保存预计算结果到磁盘（原子写：tmp + rename，防断电损坏）
+
+    FIX 2026-08-09: 排查代码漂移时发现 v9.5.123 调整 TTL 时误删了服务器
+    版本一直保留的原子写保护（fsync+rename），改成了简单 write_text()，
+    有写入过程中断电/进程被杀导致 json 文件半写损坏的风险。合并回来，
+    TTL 调整保留不变。
+    """
     suffix = f"_{user_id}" if user_id else ""
     filename = f"{key}{suffix}_{date.today()}.json"
     filepath = PRECOMPUTED_DIR / filename
@@ -45,7 +52,22 @@ def save_precomputed(key: str, data: dict, user_id: str = ""):
         "ts": time.time(),
     }
 
-    filepath.write_text(json.dumps(record, ensure_ascii=False, indent=2), encoding="utf-8")
+    # 原子写：先写临时文件，再 rename（与 persistence.atomic_write_json 同模式）
+    import os
+    import tempfile
+    tmp_path = None
+    try:
+        fd, tmp_path = tempfile.mkstemp(dir=str(PRECOMPUTED_DIR), suffix=".tmp")
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            json.dump(record, f, ensure_ascii=False, indent=2)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp_path, str(filepath))
+    except Exception:
+        if tmp_path and os.path.exists(tmp_path):
+            os.unlink(tmp_path)
+        raise
+
     print(f"[PRECOMPUTED] 保存: {filename}")
 
 

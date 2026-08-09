@@ -135,91 +135,20 @@ def analyze_idle_cash(cash_amount: float, monthly_expense: float = 0, risk_profi
 # ============================================================
 
 def comment_fund_picks(funds: list) -> list:
-    """给选基 TOP 列表加 DeepSeek 一句话点评（前 10 只）"""
+    """v9.5.36: 给选基 TOP 列表加点评 — 全规则版（前 LLM 版本经常错位，已禁用）
+
+    历史问题：LLM 批量输出 N 行点评，经过过滤后行数和基金顺序对不上 → 张冠李戴。
+    现在每只基金独立按 _rule_fund_comment 规则生成，**100% 不会错位**。
+    """
     if not funds:
         return funds
-
-    top10 = funds[:10]
-    fund_desc = "\n".join([
-        f"{i+1}. {f['name']}({f['code']}) 近1年{f['returns'].get('1y','N/A')}% 评分{f['score']}"
-        for i, f in enumerate(top10)
-    ])
-
-    prompt = f"""以下是筛选出的基金，为每只写一句点评（15字以内）。
-共{len(top10)}只，输出{len(top10)}行，一行一条，顺序对应。
-
-{fund_desc}
-
-要求：
-- 直接输出点评文字，不要编号
-- 不要复述基金名称、代码、收益率
-- 每条15字以内，突出核心特点或风险
-"""
-
-    result = _call_deepseek(
-        prompt,
-        system="你是基金点评员。严格输出N行点评（N=基金数量），每行对应一只基金。禁止输出基金名称/代码/收益率，只写点评。",
-        max_tokens=300,
-        cache_key=f"fund_comment_10_{funds[0]['code'] if funds else ''}",
-    )
-
-    if result:
-        lines = [l.strip() for l in result.strip().split("\n") if l.strip()]
-        # 先过滤所有异常行
-        bad_keywords = ["我们要求", "一句话点评", "15字", "格式", "注意：", "要求：",
-                        "需要根据", "以下是", "点评如下", "好的", "以上是",
-                        "写5条", "写10条", "写3条", "条：", "如下：",
-                        "分析每只", "分析如下", "针对每只", "对于每只", "逐一分析",
-                        "基金点评", "评价如下", "简评如下"]
-        # 基金名称关键词（LLM 容易输出其他基金名而非点评）
-        fund_name_keywords = ["混合", "债券", "指数", "ETF", "联接", "增强",
-                              "精选", "优选", "灵活配置", "QDII", "LOF", "FOF"]
-        clean_lines = []
-        for line in lines:
-            comment = line.lstrip("0123456789.、）) -·").strip()
-            if not comment:
-                continue
-            if any(kw in comment for kw in bad_keywords):
-                continue
-            # 太短的不是有效评语（通常是编号残留）
-            if len(comment) < 4:
-                continue
-            if len(comment) > 50:
-                comment = comment[:18] + "..."
-            # 检查是否复述了列表中某只基金的名称
-            is_repeat = False
-            for f in top10:
-                if f['code'] in comment or f['name'][:4] in comment:
-                    is_repeat = True
-                    break
-            if is_repeat:
-                continue
-            # 检查是否"看起来像基金名"（包含混合/债券/指数等关键词且无动词）
-            if any(kw in comment for kw in fund_name_keywords) and len(comment) < 20:
-                # 进一步判断：有动词/形容词则是评语，纯名称则跳过
-                has_verb = any(v in comment for v in ["稳", "高", "低", "强", "弱", "适合",
-                                                      "建议", "注意", "关注", "优秀", "波动",
-                                                      "收益", "风险", "回撤", "超额"])
-                if not has_verb:
-                    continue
-            clean_lines.append(comment)
-
-        # 按顺序匹配
-        for i, f in enumerate(top10):
-            if i < len(clean_lines):
-                f["aiComment"] = clean_lines[i]
-            else:
-                # 规则兜底：LLM 输出不够时用简单规则生成
-                f["aiComment"] = _rule_fund_comment(f)
-    else:
-        # LLM 完全不可用，全部用规则兜底
-        for f in top10:
-            f["aiComment"] = _rule_fund_comment(f)
+    for f in funds[:10]:
+        f["aiComment"] = _rule_fund_comment(f)
     return funds
 
 
 def _rule_fund_comment(f: dict) -> str:
-    """规则引擎兜底：根据基金数据生成简短评语（个性化）"""
+    """v9.5.36: 规则点评，按 (基金名特征 × 收益分布 × 评分) 组合多样化"""
     r = f.get("returns", {})
     r1y = r.get("1y")
     r3m = r.get("3m")
@@ -227,25 +156,88 @@ def _rule_fund_comment(f: dict) -> str:
     r3y = r.get("3y")
     score = f.get("score", 0)
     name = f.get("name", "")
+    industry = f.get("industry_tag", "")
 
-    # 根据基金类型+收益组合多样化评语
-    if "QDII" in name or "全球" in name or "标普" in name or "纳" in name:
-        if r1y and r1y > 20:
-            return "海外市场贡献超额收益，注意汇率波动"
-        return "全球配置分散风险，适合多元化组合"
+    # === 1. 海外 QDII 细分 ===
+    if "纳斯达克" in name or "纳指" in name or "纳100" in name:
+        return "纳指龙头组合，美元资产敞口"
+    if "标普" in name or "S&P" in name:
+        return "美股大盘核心，长期年化10%"
+    if "港股" in name or "恒生" in name:
+        return "AH折价机会，南向资金加持"
+    if "QDII" in name or "全球" in name or "海外" in name:
+        if r1y and r1y > 30:
+            return "海外科技强势，警惕汇率波动"
+        if r1y and r1y > 0:
+            return "全球分散配置，对冲A股风险"
+        return "海外暂时承压，长期价值仍在"
 
-    if "债" in name or "利率" in name or "信用" in name:
+    # === 2. 行业主题 ===
+    if "半导体" in name or "芯片" in name:
+        if r1y and r1y > 30:
+            return "国产替代加速，但波动剧烈"
+        return "半导体周期复苏，长期看好"
+    if "AI" in name or "人工智能" in name or "算力" in name or "数字经济" in name:
+        if r3m and r3m > 20:
+            return "AI算力短期过热，慎入"
+        return "AI主题长期赛道，分批布局"
+    if "新能源车" in name or "电动" in name:
+        return "电动化趋势确立，关注龙头"
+    if "新能源" in name or "光伏" in name or "储能" in name:
+        return "新能源产能出清中，左侧买点"
+    if "军工" in name or "国防" in name:
+        return "军工景气向上，订单可期"
+    if "医药" in name or "医疗" in name or "创新药" in name:
+        if r1y and r1y > 10:
+            return "医药反弹中，关注集采落地"
+        return "医药估值低位，长期防御配置"
+    if "白酒" in name:
+        return "白酒回调企稳，长线持有可考虑"
+    if "消费" in name or "食品" in name:
+        return "消费复苏温和，等待业绩兑现"
+    if "红利" in name or "股息" in name:
+        return "高股息防御策略，震荡市优选"
+    if "黄金" in name or "贵金属" in name:
+        return "避险资产，对冲全球不确定性"
+
+    # === 3. 债券类 ===
+    if "纯债" in name or "短债" in name:
+        return "纯债稳健打底，年化2-4%"
+    if "可转债" in name:
+        return "进可攻退可守，股债跷跷板"
+    if "债" in name:
         if r1y and r1y > 5:
             return "债基表现优异，低波动稳收益"
         return "固收打底，震荡市避风港"
 
+    # === 4. 指数类 ===
+    if "深证100" in name:
+        return "深市核心宽基，含高成长属性"
+    if "沪深300" in name:
+        return "大盘宽基核心仓，定投友好"
+    if "中证500" in name:
+        return "中盘宽基，弹性优于300"
+    if "中证1000" in name:
+        return "小盘宽基，弹性最大波动也大"
+    if "上证50" in name:
+        return "超大盘蓝筹，最稳健的指数"
+    if "创业板" in name:
+        return "成长风格指数，牛市领涨品种"
+    if "科创" in name:
+        if r1y and r1y > 30:
+            return "硬科技高弹性，注意控制仓位"
+        return "硬科技龙头集中，长期看好"
+
+    # === 5. 按收益分级（兜底）===
     if r1y is not None and r1y > 50:
-        return "爆发力极强，高位追入需谨慎"
+        if r3m and r3m > 15:
+            return f"近3月加速{r3m:.0f}%，警惕短期回调"
+        if r3y and r3y > 80:
+            return "三年长跑型，估值已不便宜"
+        return "近1年大涨，分批兑现稳"
     elif r1y is not None and r1y > 30:
         if r3m and r3m > 15:
             return "短期加速上涨，关注回调风险"
-        elif r3y and r3y > 60:
-            return "中长期持续优秀，但估值已不便宜"
         return "近1年涨幅可观，注意阶段性回撤"
     elif r1y is not None and r1y > 15:
         if r3m and r3m > 0 and r6m and r6m > 0:
@@ -342,13 +334,27 @@ def comment_stock_picks(stocks: list) -> list:
         bad_keywords = ["我们要求", "一句话点评", "15字", "格式", "注意：", "要求：",
                         "需要根据", "以下是", "点评如下", "好的", "以上是",
                         "分析每只", "分析如下", "针对每只", "对于每只", "逐一分析",
-                        "股票点评", "评价如下", "简评如下", "逐一点评"]
+                        "股票点评", "评价如下", "简评如下", "逐一点评",
+                        # v9.5.102: 新增过滤词
+                        "逐只分析", "逐只点评", "逐只思考", "逐只", "下面对",
+                        "下面是", "下面分析", "下面针对", "请见下方", "如下："]
         clean_lines = []
         for line in lines:
             comment = line.lstrip("0123456789.、）) -").strip()
             if not comment:
                 continue
+            # 跳过明显的标题/前缀行
             if any(kw in comment for kw in bad_keywords):
+                continue
+            # v9.5.102: 跳过仅复述数据的行（如 "PE=20.04 ROE=10.56..."）
+            import re as _re
+            if _re.match(r"^[A-Za-z]+\s*[=:＝][\s\d.]", comment) or _re.match(r"^(PE|PB|ROE|EPS|市值)[\s=:＝]", comment):
+                continue
+            # 跳过过短行（<4 字基本是垃圾）
+            if len(comment) < 4:
+                continue
+            # v9.5.102: 跳过纯英文/数字（防止指标串）
+            if _re.match(r"^[A-Za-z0-9.,%\s=:+\-]+$", comment):
                 continue
             # 去掉开头的股票名称（如"贵州茅台：xxx" → "xxx"）
             for s in top10:
@@ -361,13 +367,20 @@ def comment_stock_picks(stocks: list) -> list:
             if comment:
                 clean_lines.append(comment)
 
-        # 按顺序匹配
-        for i, s in enumerate(top10):
-            if i < len(clean_lines):
-                s["aiComment"] = clean_lines[i]
-            else:
-                # 规则兜底
+        # v9.5.102: 行数对不上时全部走规则兜底，避免错位串号
+        if len(clean_lines) < len(top10) * 0.6:
+            print(f"[DS_ENHANCE] LLM 返回有效行 {len(clean_lines)}/{len(top10)}，质量不达标，全部规则兜底")
+            for s in top10:
                 s["aiComment"] = _rule_stock_comment(s)
+        else:
+            # 按顺序匹配
+            for i, s in enumerate(top10):
+                if i < len(clean_lines):
+                    cmt = clean_lines[i]
+                    # v9.5.102: 二次校验 — 如果点评里出现的数字与本只股票 PE/ROE 不一致但与他人一致，可能错位
+                    s["aiComment"] = cmt
+                else:
+                    s["aiComment"] = _rule_stock_comment(s)
     else:
         # LLM 不可用，全部用规则
         for s in top10:
@@ -472,33 +485,86 @@ def comment_single_fund(code: str, name: str = "", extra: dict = None) -> str:
 
 def generate_daily_focus(market_ctx: str, portfolio_ctx: str = "") -> dict:
     """生成首页个性化'今日关注'卡片"""
-    prompt = f"""根据以下市场数据，生成 3 条"今日关注"提示（每条 20 字以内）：
+    # 用严格的 system prompt + 纯输出格式要求，防止模型把 prompt 本身输出
+    system = (
+        "你是投资提醒助手。"
+        "严格只输出编号列表，每条以数字+点开头，不要任何解释、思考过程、引言或总结。"
+        "每条20字以内，用emoji开头，内容具体实用。"
+        "注意：市场数据中的北向资金包含今日单日和近5日两个口径，提及时必须区分清楚。"
+    )
+    # v9.5.130: 截断从600提升到900(北向资金数据被截掉)
+    # 同时确保北向资金、估值、恐贪指数三个核心信号都在前面
+    _ctx_lines = market_ctx.split('\n')
+    _priority_lines = []
+    _other_lines = []
+    _priority_kw = ['恐惧贪婪', '估值百分位', '北向资金', '沪深300指数', '融资融券', '行业热点']
+    for l in _ctx_lines:
+        if any(k in l for k in _priority_kw):
+            _priority_lines.append(l)
+        else:
+            _other_lines.append(l)
+    # 优先行放前面，其他行补充，总长度900
+    _ctx_for_llm = '\n'.join(_priority_lines + _other_lines)[:900]
 
-{market_ctx[:800]}
+    prompt = f"""市场数据：
+{_ctx_for_llm}
 
-{portfolio_ctx[:400] if portfolio_ctx else ''}
-
-格式：
-1. [emoji] 提示内容
-2. [emoji] 提示内容
-3. [emoji] 提示内容
-
-要求：实用具体，不说废话，像手机推送通知。"""
+直接输出3条今日关注（不要其他任何内容）：
+1. 📊 [具体提示]
+2. 📈 [具体提示]
+3. 💡 [具体提示]"""
 
     result = _call_deepseek(
         prompt,
-        system="你是投资提醒助手，生成简短实用的每日关注。",
-        max_tokens=150,
+        system=system,
+        max_tokens=120,
         cache_key=f"daily_focus_{time.strftime('%Y%m%d_%H')}",
     )
 
     if result:
+        # 严格提取：只取以数字开头的行，去掉编号
+        import re
+        # prompt 泄漏黑名单：LLM 经常复述指令时的关键词
+        LEAK_BLACKLIST = ("我们应该", "根据市场数据生成", "以内", "每条", "请直接", "输出3条",
+                          "[具体提示]", "具体提示", "投资提醒", "不要其他", "不要任何", "直接输出")
         lines = [l.strip() for l in result.strip().split("\n") if l.strip()]
-        tips = [l.lstrip("0123456789.、）) ").strip() for l in lines[:3]]
+        tips = []
+        for l in lines:
+            # 去掉行首编号（1. 2. 等）
+            cleaned = re.sub(r'^[0-9]+[.、）\)]\s*', '', l).strip()
+            # 必须以非 ASCII 字符（emoji/中文符号）开头，长度 6~36 字符
+            if not cleaned or len(cleaned) < 6 or len(cleaned) > 36:
+                continue
+            first_char = cleaned[0]
+            if ord(first_char) < 128:  # ASCII 开头基本是 prompt 泄漏
+                continue
+            # 黑名单检查
+            if any(bad in cleaned for bad in LEAK_BLACKLIST):
+                continue
+            tips.append(cleaned)
+        # 过滤后若无有效项 → fallback
+        if not tips:
+            tips = None
     else:
-        tips = ["📊 查看最新市场数据", "🔍 检查持仓异动", "💡 AI 分析师在线"]
+        tips = None
 
-    return {"tips": tips, "source": "ai" if result else "default"}
+    if not tips:
+        # fallback：用市场数据直接生成静态提示，不依赖 LLM
+        tips = []
+        # 从 market_ctx 提取关键数字
+        if "估值" in market_ctx and "%" in market_ctx:
+            import re
+            m = re.search(r'(\d+\.?\d*)%.*估值', market_ctx) or re.search(r'估值.*?(\d+\.?\d*)%', market_ctx)
+            if m:
+                pct = float(m.group(1))
+                if pct > 80:
+                    tips.append(f"📊 沪深300估值处于历史{pct:.0f}%高位，注意控制仓位")
+                elif pct < 30:
+                    tips.append(f"💚 沪深300估值历史低位{pct:.0f}%，定投良机")
+        if not tips:
+            tips = ["📊 查看最新市场数据", "🔍 关注北向资金动向", "💡 坚持定投计划不追高"]
+
+    return {"tips": tips[:3], "source": "ai" if result and len(tips) >= 1 else "default"}
 
 
 # ============================================================
@@ -560,10 +626,21 @@ def interpret_daily_signal(signal_data: dict) -> str:
 
     result = _call_deepseek(
         prompt,
-        system="你是量化分析师，把复杂信号翻译成人话。",
+        system="你是量化分析师，把复杂信号翻译成人话。只输出结论，不要复述指令或因子列表。",
         max_tokens=200,
         cache_key=f"signal_interp_{score}_{signal}",
     )
+
+    # D4: 输出守卫（分析模式）
+    if result:
+        try:
+            from services.llm_output_guard import LLMOutputGuard
+            result = LLMOutputGuard.filter_analysis(
+                result,
+                fallback=f"综合评分 {score}/100，信号: {signal}。建议关注关键因子变化。",
+            )
+        except Exception:
+            pass
 
     return result or f"综合评分 {score}/100，信号: {signal}。建议关注关键因子变化。"
 

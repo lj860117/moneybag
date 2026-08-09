@@ -378,10 +378,11 @@ def deliver(user_id: str, signals: list = None) -> dict:
     text = "\n".join(lines)
 
     try:
-        from services.wxwork_push import send_text_message, is_configured
+        from services.wxwork_push import send_text, is_configured  # FIX: 函数名是 send_text 不是 send_text_message
         if is_configured():
-            send_text_message(text, user_id=user_id)
-            return {"pushed": len(important), "text": text}
+            result = send_text(text, user_id=user_id)  # FIX: 使用正确的参数名 user_id
+            pushed = result.get("ok", False)
+            return {"pushed": len(important) if pushed else 0, "text": text}
     except Exception as e:
         print(f"[SIGNAL_SCOUT] push failed: {e}")
 

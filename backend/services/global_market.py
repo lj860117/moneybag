@@ -54,7 +54,10 @@ def _safe_num(v, default=0):
 # ============================================================
 
 def get_us_indices() -> dict:
-    """获取美股三大指数最新数据（道琼斯/标普500/纳斯达克）"""
+    """获取美股三大指数最新数据（道琼斯/标普500/纳斯达克）
+
+    策略：Tushare 主 + AKShare 降级
+    """
     cache_key = "us_indices"
     now = time.time()
     cached = _global_cache.get(cache_key)
@@ -63,36 +66,61 @@ def get_us_indices() -> dict:
 
     result = {"dji": None, "spx": None, "ixic": None, "available": False}
 
+    # 策略：Tushare 主
     try:
-        from infra.data_source.macro.indicators import get_us_index
-
-        indices = {
-            "dji": ".DJI",   # 道琼斯
-            "spx": ".INX",   # 标普500
-            "ixic": ".IXIC", # 纳斯达克
-        }
-
-        for key, symbol in indices.items():
-            try:
-                df = get_us_index(symbol=symbol)
-                if df is not None and len(df) > 0:
-                    last = df.iloc[-1]
-                    prev = df.iloc[-2] if len(df) > 1 else last
-                    close = _safe_num(last.iloc[1]) if len(last) > 1 else 0
-                    prev_close = _safe_num(prev.iloc[1]) if len(prev) > 1 else close
-                    change_pct = ((close - prev_close) / prev_close * 100) if prev_close > 0 else 0
-                    result[key] = {
-                        "close": round(close, 2),
-                        "change_pct": round(change_pct, 2),
-                        "date": str(last.iloc[0]) if len(last) > 0 else "",
-                        "trend": "up" if change_pct > 0 else "down" if change_pct < 0 else "flat",
-                    }
-            except Exception as e:
-                print(f"[GLOBAL] {key} failed: {e}")
-
-        result["available"] = any(result[k] is not None for k in ["dji", "spx", "ixic"])
+        from services.tushare_fallback import TusharePrimary
+        tp = TusharePrimary.instance()
+        us_indices = tp.get_us_indices()
+        if us_indices:
+            for item in us_indices:
+                key = item["key"]
+                result[key] = {
+                    "close": item["close"],
+                    "change_pct": item["change_pct"],
+                    "date": item["date"],
+                    "trend": item["trend"],
+                    "source": "tushare",
+                }
+            result["available"] = True
+            print(f"[GLOBAL] US indices from Tushare: {len(us_indices)} indices")
     except Exception as e:
-        print(f"[GLOBAL] US indices failed: {e}")
+        print(f"[GLOBAL] US indices Tushare failed: {e}")
+
+    # 降级：AKShare
+    if not result["available"]:
+        try:
+            from infra.data_source.macro.indicators import get_us_index
+
+            indices = {
+                "dji": ".DJI",   # 道琼斯
+                "spx": ".INX",   # 标普500
+                "ixic": ".IXIC", # 纳斯达克
+            }
+
+            for key, symbol in indices.items():
+                try:
+                    df = get_us_index(symbol=symbol)
+                    if df is not None and len(df) > 0:
+                        last = df.iloc[-1]
+                        prev = df.iloc[-2] if len(df) > 1 else last
+                        close = _safe_num(last.iloc[1]) if len(last) > 1 else 0
+                        prev_close = _safe_num(prev.iloc[1]) if len(prev) > 1 else close
+                        change_pct = ((close - prev_close) / prev_close * 100) if prev_close > 0 else 0
+                        result[key] = {
+                            "close": round(close, 2),
+                            "change_pct": round(change_pct, 2),
+                            "date": str(last.iloc[0]) if len(last) > 0 else "",
+                            "trend": "up" if change_pct > 0 else "down" if change_pct < 0 else "flat",
+                            "source": "akshare",
+                        }
+                except Exception as e:
+                    print(f"[GLOBAL] {key} AKShare failed: {e}")
+
+            result["available"] = any(result[k] is not None for k in ["dji", "spx", "ixic"])
+            if result["available"]:
+                print(f"[GLOBAL] US indices from AKShare (Tushare unavailable)")
+        except Exception as e:
+            print(f"[GLOBAL] US indices AKShare failed: {e}")
 
     _global_cache.set(cache_key, result, ttl=_GLOBAL_TTL)
     return result
@@ -103,7 +131,10 @@ def get_us_indices() -> dict:
 # ============================================================
 
 def get_forex_data() -> dict:
-    """获取主要外汇汇率（美元/人民币、欧元等）"""
+    """获取主要外汇汇率（美元/人民币、欧元等）
+
+    策略：Tushare 主 + AKShare 降级
+    """
     cache_key = "forex"
     now = time.time()
     cached = _global_cache.get(cache_key)
@@ -112,34 +143,55 @@ def get_forex_data() -> dict:
 
     result = {"usdcny": None, "dxy_proxy": None, "available": False}
 
+    # 策略：Tushare 主
     try:
-        from infra.data_source.macro.indicators import get_fx_spot_quote
-        df = get_fx_spot_quote()
-        if df is not None and len(df) > 0:
-            # 找美元/人民币
-            for _, row in df.iterrows():
-                name = str(row.iloc[0]) if len(row) > 0 else ""
-                if "美元" in name and "人民币" in name:
-                    result["usdcny"] = {
-                        "rate": _safe_num(row.iloc[1]) if len(row) > 1 else 0,
-                        "name": name,
-                    }
-                    break
-
-            # 用美元对多币种变化推算美元强弱
-            usd_pairs = []
-            for _, row in df.iterrows():
-                name = str(row.iloc[0])
-                if "美元" in name:
-                    try:
-                        rate = _safe_num(row.iloc[1])
-                        usd_pairs.append(rate)
-                    except (ValueError, IndexError):
-                        pass
-
-            result["available"] = result["usdcny"] is not None
+        from services.tushare_fallback import TusharePrimary
+        tp = TusharePrimary.instance()
+        forex = tp.get_forex_data()
+        if forex and forex.get("usdcny"):
+            result["usdcny"] = {
+                "rate": forex["usdcny"],
+                "date": forex.get("date", ""),
+                "source": "tushare",
+            }
+            result["available"] = True
+            print(f"[GLOBAL] Forex from Tushare: USDCNY={forex['usdcny']}")
     except Exception as e:
-        print(f"[GLOBAL] Forex failed: {e}")
+        print(f"[GLOBAL] Forex Tushare failed: {e}")
+
+    # 降级：AKShare
+    if not result["available"]:
+        try:
+            from infra.data_source.macro.indicators import get_fx_spot_quote
+            df = get_fx_spot_quote()
+            if df is not None and len(df) > 0:
+                # 找美元/人民币
+                for _, row in df.iterrows():
+                    name = str(row.iloc[0]) if len(row) > 0 else ""
+                    if "美元" in name and "人民币" in name:
+                        result["usdcny"] = {
+                            "rate": _safe_num(row.iloc[1]) if len(row) > 1 else 0,
+                            "name": name,
+                            "source": "akshare",
+                        }
+                        break
+
+                # 用美元对多币种变化推算美元强弱
+                usd_pairs = []
+                for _, row in df.iterrows():
+                    name = str(row.iloc[0])
+                    if "美元" in name:
+                        try:
+                            rate = _safe_num(row.iloc[1])
+                            usd_pairs.append(rate)
+                        except (ValueError, IndexError):
+                            pass
+
+                result["available"] = result["usdcny"] is not None
+                if result["available"]:
+                    print(f"[GLOBAL] Forex from AKShare (Tushare unavailable)")
+        except Exception as e:
+            print(f"[GLOBAL] Forex AKShare failed: {e}")
 
     _global_cache.set(cache_key, result, ttl=_GLOBAL_TTL)
     return result
