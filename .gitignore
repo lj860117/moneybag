@@ -1,10 +1,38 @@
 __pycache__/
 *.pyc
 .env
+.env.bak*
+*.env.bak*
 .venv/
 .DS_Store
 .cache/
 backend/infra/.cache/
+
+# ---- 调试/分析产物（AI排查笔记、录屏快照、设计截图，本地归档不入库）----
+# 2026-08-09:梳理243个未提交文件时发现这些散落在根目录，属于历史调试
+# 产物，已归档到~/WorkBuddy/moneybag-archive/，此处防止未来再堆积
+# 仅匹配根目录文件（不加/会误伤docs/等子目录下的正式文档），docs/**/*.yaml例外放行
+/*.yaml
+!docs/**/*.yaml
+.playwright-cli/
+/*.png
+/INVESTIGATION_*.md
+/INVESTIGATION_*.txt
+/NIGHT_WORKER_*.md
+/NIGHT_WORKER_*.txt
+/README_WECHAT_*.md
+/WECHAT_*.md
+/*_QUICK_REF*.md
+/*_QUICK_REF*.txt
+/*_ANALYSIS.md
+/*_SUMMARY.md
+/*_SUMMARY.txt
+/TECHNICAL_DEEP_DIVE.md
+/START-HERE.md
+/READY_TO_IMPLEMENT.md
+/IMPLEMENTATION_NEXT_STEPS.md
+/SCREENING_*.md
+/INDEX.md
 
 # ---- QA/Local 开发产物（不入库）----
 backend/data/
@@ -14,7 +42,6 @@ data/
 .codebuddy/
 backend/scripts/seed_qa_*.py
 
-# ---- 测试诊断产物（本地分析，不入库）----
-data/consistency_runs/
-data/ab_test_runs/
-backend/data-backup-pre-m1/
+#---- 运行时日志/本地环境标记（不入库）----
+backend/logs/
+.python-version
