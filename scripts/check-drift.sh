@@ -14,6 +14,17 @@
 # 首次使用/怀疑服务器有新热改时，先跑：
 #   git fetch server
 # 再执行本脚本，才能拿到服务器最新状态。
+#
+# FIX 2026-08-09: 本地"工作区"里包含大量 untracked（??）文件（如
+# backend/api/auth.py、pages/insight-fund.js 等历史上一直没有 git add
+# 过的正常开发文件）。`git diff server/main -- <file>` 对 untracked
+# 文件会把工作区当成"文件不存在"，导致服务器上的内容被错误报告为
+# "整份被删除"（如 +0 -391 这种假阳性）。第一版脚本曾把76个文件全部
+# 标记为漂移，实测发现其中约60+个是这个bug造成的假阳性——文件内容
+# 本地和服务器实际完全一致。
+# 修复：用GIT_INDEX_FILE 构造一个临时 index/tree，把工作区当前状态
+# （含untracked 文件）打包成一个 git tree 对象，再用这个 tree 去跟
+# server/main 比较，就能正确反映"文件真实内容"而不受 git跟踪状态影响。
 
 set -uo pipefail
 
@@ -28,6 +39,21 @@ if ! git remote get-url server >/dev/null 2>&1; then
     exit 1
 fi
 
+SCAN_PATHS="backend/api backend/services backend/use_cases backend/routers backend/scripts backend/models backend/main.py backend/config.py pages app.js index.html styles.css sw.js"
+
+# 构造一个临时 tree，把工作区当前实际内容（含未 git add 过的 untracked
+# 文件）打包成git 对象，避免 untracked 文件被 git diff 误判为"不存在"
+build_worktree_snapshot() {
+    local tmp_index
+    tmp_index=$(mktemp -u)
+    rm -f "$tmp_index"
+    GIT_INDEX_FILE="$tmp_index" git add -- $SCAN_PATHS >/dev/null 2>&1
+    local tree
+    tree=$(GIT_INDEX_FILE="$tmp_index" git write-tree 2>/dev/null)
+    rm -f "$tmp_index"
+    echo "$tree"
+}
+
 # 单文件模式：直接展示 diff，方便判断谁更新
 if [ $# -eq 1 ]; then
     f="$1"
@@ -35,8 +61,9 @@ if [ $# -eq 1 ]; then
     echo "--- 本地工作区 vs git main（是否有未提交改动）---"
     git --no-pager diff --stat main -- "$f" 2>/dev/null
     echo ""
-    echo "--- 本地工作区 vs server/main（最准确的真实差异，因为本地工作区往往比git main更新）---"
-    git --no-pager diff server/main -- "$f" 2>/dev/null
+    echo "--- 本地工作区(含未跟踪文件真实内容) vs server/main（最准确的真实差异）---"
+    SNAP=$(build_worktree_snapshot)
+    git --no-pager diff "server/main" "$SNAP" -- "$f" 2>/dev/null
     exit 0
 fi
 
@@ -44,22 +71,28 @@ echo "=== 拉取服务器最新git状态 ==="
 git fetch server 2>&1 | grep -v "^$" || true
 
 echo ""
+echo "=== 构造工作区快照(含未跟踪文件真实内容,避免误判为'已删除') ==="
+SNAP=$(build_worktree_snapshot)
+if [ -z "$SNAP" ]; then
+    echo "❌ 构造工作区快照失败"
+    exit 1
+fi
+
+echo ""
 echo "=== 本地工作区 vs server/main 差异清单（最准确，直接反映当前真实漂移；一次git diff完成，不逐文件循环）==="
 echo "（限定在本地实际tracked/存在的 backend 与 pages 路径，排除服务器上的历史死代码目录）"
-git ls-files backend/api backend/services backend/use_cases backend/routers backend/scripts backend/models backend/main.py backend/config.py pages app.js index.html styles.css sw.js 2>/dev/null > /tmp/.check_drift_tracked.txt
+git ls-files $SCAN_PATHS 2>/dev/null > /tmp/.check_drift_tracked.txt
 find backend/api backend/services backend/use_cases backend/routers backend/scripts backend/models pages -type f \( -name "*.py" -o -name "*.js" \) -not -path "*/__pycache__/*" 2>/dev/null >> /tmp/.check_drift_tracked.txt
 sort -u /tmp/.check_drift_tracked.txt -o /tmp/.check_drift_tracked.txt
 
 # 一次性调用 git diff --numstat，输出格式：added\tdeleted\tpath，比逐文件diff快得多
-git --no-pager diff --numstat server/main -- \
-    backend/api backend/services backend/use_cases backend/routers backend/scripts backend/models backend/main.py backend/config.py \
-    pages app.js index.html styles.css sw.js 2>/dev/null > /tmp/.check_drift_numstat.txt
+git --no-pager diff --numstat "server/main" "$SNAP" -- $SCAN_PATHS 2>/dev/null > /tmp/.check_drift_numstat.txt
 
 DIFF_COUNT=0
 OK_COUNT=0
 while IFS= read -r f; do
     [ -f "$f" ] || continue
-    # FIX:用行尾锚点精确匹配，避免 wxwork.py 被 wxwork.py.bak_xxx 这类历史遗留
+    # 用行尾锚点精确匹配，避免 wxwork.py 被 wxwork.py.bak_xxx 这类历史遗留
     # 备份文件前缀误匹配（曾导致 wxwork.py 被错误标记为漂移292行）
     line=$(grep -F "	$f" /tmp/.check_drift_numstat.txt | awk -v p="$f" '$0 ~ "\t"p"$"' | head -1)
     if [ -z "$line" ]; then
@@ -73,10 +106,10 @@ while IFS= read -r f; do
 done < /tmp/.check_drift_tracked.txt
 rm -f /tmp/.check_drift_tracked.txt /tmp/.check_drift_numstat.txt
 echo ""
-echo "汇总：一致 $OK_COUNT 个，漂移 $DIFF_COUNT 个"
+echo "汇总：一致 ${OK_COUNT} 个，漂移 ${DIFF_COUNT} 个"
 
 echo ""
-echo "=== 本地工作区 vs git main 差异文件清单（尚未commit的改动）==="
+echo "=== 本地工作区 vs git main 差异文件清单（尚未commit的改动，仅供参考——不代表和服务器不一致）==="
 LOCAL_DIFF=$(git --no-pager diff --name-only main -- backend pages app.js index.html styles.css sw.js 2>/dev/null)
 UNTRACKED=$(git status --porcelain -- backend pages 2>/dev/null | grep '^??' | awk '{print $2}')
 if [ -z "$LOCAL_DIFF" ] && [ -z "$UNTRACKED" ]; then
