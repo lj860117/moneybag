@@ -292,7 +292,12 @@ def run_smoke_tests() -> list[dict[str, Any]]:
     try:
         start = time.time()
         from services.signal import generate_daily_signal
-        sig = generate_daily_signal()
+        # NOTE: signal.py 是老代码（services/*，mypy ignore_errors），其
+        # `-> dict` 标注只是历史遗留、不代表运行时契约永不改变。这里显式
+        # 标 Any 是为了保留下面 isinstance(sig, dict) 的防御性兜底检查
+        # （防止未来 signal.py 改动返回非 dict），否则 mypy strict 会把
+        # 该分支判定为静态不可达（unreachable），CI 报错。
+        sig: Any = generate_daily_signal()
         elapsed = int((time.time() - start) * 1000)
         score = sig.get("score", -999) if isinstance(sig, dict) else -999
         confidence = sig.get("confidence", 0) if isinstance(sig, dict) else 0
