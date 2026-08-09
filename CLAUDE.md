@@ -210,3 +210,27 @@ api/ → use_cases/ → domain/ → infra/
 - 前端静态文件由后端 FastAPI 一体服务（`app.mount("/static", ...)` + 兜底路由）
 - 备选：Railway（`railway.toml` + `Procfile` 已配置）
 - 关键环境变量：`DATA_DIR`（持久化目录）、`LLM_API_KEY`、`LLM_API_URL`、`LLM_MODEL`
+
+---
+
+## ⚠️ 代码同步铁律（2026-08-09 教训：曾积压53 个文件的本地/git/服务器三方漂移）
+
+**根因**：`/opt/moneybag` 服务器上很长一段时间没有版本控制，靠 SSH 直接改代码 + 手动 cp 备份维护，任何改动都"隐身"，直到手动 diff 才被发现。已修复：服务器 `/opt/moneybag` 现在自己也是一个 git 仓库（`git log` 可查），本地仓库配置了 `server` remote 可直接 `git fetch server` 拉取服务器当前状态对比。
+
+**任何 AI 或人类在这个项目上工作，改代码必须走这个顺序，不能跳步：**
+
+1. 本地改代码 → 语法检查（`python -m py_compile` / `ast.parse`）
+2. `git add + git commit`（本地commit，说明改了什么）
+3. `git push origin main`（推到 GitHub，这是"权威版本"落脚点）
+4. 部署到服务器：先给要改的文件在服务器上打时间戳备份（`cp -p file file.bak_$(date +%Y%m%d_%H%M%S)`）→ `rsync` 覆盖 → 服务器端语法/import 检查 → `sudo systemctl restart moneybag` → 功能验证（`curl /api/models` 等）
+5. **在服务器自己的 git 仓库里也 `git add -A && git commit`**——这一步最容易被遗漏。忘了的话，服务器 `git status` 会一直显示一堆 `M`，看起来像"又漂移了"，其实只是"部署了但没在服务器本地落地 commit"
+6. 定期（大改动后，或每周）跑一次巡检：`cd ~/WorkBuddy/moneybag-for-claudecode && git fetch server && bash scripts/check-drift.sh`，几秒钟就能看出本地/服务器是否一致
+
+**绝对禁止**：
+- ❌ SSH 到服务器直接改代码"救急"，改完不同步回本地仓库——这是过去漂移的唯一根因
+- ❌ 部署后忘记在服务器 git 里 commit
+- ❌ 看到 diff 就无脑用一方覆盖另一方——漂移方向不固定（有时本地领先，有时服务器上有本地没有的独有逻辑），**必须先 diff 判断方向再决定，覆盖前一定先备份**
+
+**如果必须紧急热改服务器**（比如深夜故障来不及走完整流程）：改完立刻在服务器 git 里 commit（哪怕写"emergency hotfix, TODO sync back"），第二天第一件事 `git fetch server` 把这个diff 拉回本地看一遍，决定要不要合并回主仓库。
+
+详细排查方法见本地技能 `~/.workbuddy/skills/moneybag-server-drift-debug/SKILL.md`（含`check-drift.sh` 用法、常见坑）。
