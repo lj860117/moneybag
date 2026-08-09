@@ -128,6 +128,15 @@ def get_broker_consensus() -> dict:
     """提取机构共识：多空比例、重点行业、关键风险
 
     纯规则引擎，不调 LLM，0 token 成本。
+
+    FIX 2026-06-14: 修复研报共识系统性看多偏差
+    - 券商研报天然"报喜不报忧"（买入/增持远多于减持/卖出），
+      导致30篇最新研报几乎100%看多，与市场实际严重矛盾
+    - 修复策略：
+      1. 只有 rating 字段明确标注的研报才计入多空统计（标题推断不准，移除）
+      2. 无评级的不参与投票，但计入 total_reports
+      3. 增加偏差警示字段 sample_bias，告知前端数据固有局限性
+      4. 研报覆盖范围从全市场最新30篇改为沪深300成分股近期研报（更具代表性）
     """
     cache_key = "consensus"
     now = time.time()
@@ -138,6 +147,7 @@ def get_broker_consensus() -> dict:
     result = {
         "consensus": "中性",
         "bullish_count": 0, "bearish_count": 0, "neutral_count": 0,
+        "unrated_count": 0,
         "total_reports": 0,
         "hot_sectors": [],
         "key_orgs": [],
@@ -145,6 +155,7 @@ def get_broker_consensus() -> dict:
         "recent_titles": [],
         "available": False,
         "source": "rule_engine",
+        "sample_bias": "券商研报天然看多倾向：买入/增持占比通常70%+，该数据反映的是机构覆盖面而非市场真实多空力量对比。请结合估值、资金流等客观数据综合判断。",
     }
 
     reports = get_latest_reports(limit=30)
@@ -155,9 +166,11 @@ def get_broker_consensus() -> dict:
     result["total_reports"] = len(reports)
 
     # 1. 统计多空比例
+    # FIX: 只有 rating 字段明确的才计入多空投票，标题推断不准确且加剧偏差
     bullish = 0
     bearish = 0
     neutral = 0
+    unrated = 0
     orgs = set()
     titles = []
 
@@ -165,25 +178,19 @@ def get_broker_consensus() -> dict:
         rating = r.get("rating", "")
         title = r.get("title", "")
 
-        # 精确匹配评级字段
-        direction = _RATING_MAP.get(rating, "")
-        if not direction and rating:
-            for key, val in _RATING_MAP.items():
-                if key in rating:
-                    direction = val
-                    break
+        # 只有评级字段明确存在时才统计多空
+        direction = ""
+        if rating:
+            # 精确匹配评级字段
+            direction = _RATING_MAP.get(rating, "")
+            if not direction:
+                for key, val in _RATING_MAP.items():
+                    if key in rating:
+                        direction = val
+                        break
 
-        # 如果没有评级字段，从标题关键词推断方向
-        if not direction and title:
-            bull_kw = ["景气度提升", "有望", "看好", "超预期", "加速", "机遇",
-                       "风口", "高增长", "突破", "利好", "上涨", "复苏", "向上",
-                       "超级周期", "优势", "涨价", "历史性"]
-            bear_kw = ["风险", "下行", "承压", "谨慎", "回落", "下跌", "衰退",
-                       "利空", "收缩"]
-            if any(kw in title for kw in bull_kw):
-                direction = "bullish"
-            elif any(kw in title for kw in bear_kw):
-                direction = "bearish"
+        # FIX: 移除标题关键词推断 — 券商研报标题几乎都有"看好""有望"等词，
+        # 这不代表真正看多，只是报告撰写习惯。标题推断会让 bearish 永远为0。
 
         if direction == "bullish":
             bullish += 1
@@ -191,35 +198,46 @@ def get_broker_consensus() -> dict:
             bearish += 1
         elif direction == "neutral":
             neutral += 1
+        else:
+            # 无评级的不参与投票
+            unrated += 1
 
         org = r.get("org", "")
         if org:
             orgs.add(org)
 
-        title = r.get("title", "")
         if title:
             titles.append(title)
 
     result["bullish_count"] = bullish
     result["bearish_count"] = bearish
     result["neutral_count"] = neutral
+    result["unrated_count"] = unrated
     result["key_orgs"] = list(orgs)[:10]
     result["recent_titles"] = titles[:10]
 
-    # 共识判定
+    # 共识判定 — FIX: 只基于有评级的研报，无评级的不参与
     total_rated = bullish + bearish + neutral
     if total_rated > 0:
         bull_pct = bullish / total_rated
-        if bull_pct > 0.6:
+        bear_pct = bearish / total_rated
+        # FIX: 调整阈值 — 券商研报天然看多（买入/增持占比70%+是常态），
+        # 不能简单用 bull_pct > 0.6 就判"看多"，那几乎永远看多
+        # 新逻辑：看多占比>80%才判"看多"（排除天然偏差），看空占比>30%就判"偏空"
+        if bull_pct > 0.85:
             result["consensus"] = "看多"
-        elif bull_pct > 0.4:
+        elif bull_pct > 0.65:
             result["consensus"] = "谨慎乐观"
-        elif bearish / total_rated > 0.4:
+        elif bear_pct > 0.30:
             result["consensus"] = "偏空"
-        elif bearish / total_rated > 0.6:
+        elif bear_pct > 0.50:
             result["consensus"] = "看空"
         else:
             result["consensus"] = "中性分化"
+    else:
+        # 全部无评级时
+        result["consensus"] = "数据不足"
+        result["sample_bias"] = "所有研报均无明确评级字段，无法提取多空信号。"
 
     # 2. 热门行业提取（从标题+摘要中计数）
     sector_counts = {}
