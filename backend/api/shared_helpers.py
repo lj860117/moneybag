@@ -37,19 +37,44 @@ from infra.cache import MemoryCache
 
 
 # ========================================================
-# 市场上下文缓存
+# v9.5.122: 市场上下文 — 文件缓存优先，后台 cache_warmer 预热
 # ========================================================
-_MARKET_CTX_TTL = 300  # 5 分钟缓存
+_MARKET_CTX_FILE = os.path.join(os.environ.get("DATA_DIR", "data"), "_cache", "market_context.txt")
+_MARKET_CTX_TTL = 300  # 内存加速层（防同一秒多个对话重复读文件）
 _market_ctx_cache = MemoryCache(default_ttl=_MARKET_CTX_TTL)
 
 
 def _build_market_context() -> str:
-    """构建市场数据上下文（含恐惧贪婪、技术指标、新闻），5分钟缓存"""
-    now = time.time()
+    """构建市场数据上下文。
+    
+    v9.5.122 缓存策略：
+    1. 内存缓存 5min（防同秒重复调用）
+    2. 文件缓存 10h + stale 24h（后台 cache_warmer 刷新）
+    3. 都没命中才实时计算
+    """
     cache_key = "market_context"
     cached = _market_ctx_cache.get(cache_key)
     if cached is not None:
         return cached
+    # 读文件缓存（10h 有效 + stale 24h）
+    try:
+        if os.path.exists(_MARKET_CTX_FILE):
+            stat = os.stat(_MARKET_CTX_FILE)
+            age = time.time() - stat.st_mtime
+            if age < 36000:  # 10h
+                with open(_MARKET_CTX_FILE, "r", encoding="utf-8") as f:
+                    content = f.read()
+                if content.strip():
+                    _market_ctx_cache.set(cache_key, content, ttl=_MARKET_CTX_TTL)
+                    return content
+            elif age < 86400:  # stale 24h — 先返旧的，后台会刷新
+                with open(_MARKET_CTX_FILE, "r", encoding="utf-8") as f:
+                    content = f.read()
+                if content.strip():
+                    _market_ctx_cache.set(cache_key, content, ttl=60)
+                    return content
+    except Exception:
+        pass
     lines = []
     try:
         fgi_data = get_fear_greed_index()
@@ -193,7 +218,21 @@ def _build_market_context() -> str:
     try:
         north = get_northbound_flow()
         if north.get("available"):
-            lines.append(f"\n资金面：北向资金今日{north.get('net_flow_today', 0):+.1f}亿，5日{north.get('net_flow_5d', 0):+.1f}亿（{north.get('trend', '')}）")
+            # v9.5.130: 带日期标注，避免"今日单日"与"近5日累计"口径混淆
+            # data_date 是 Tushare 最新数据日期（通常比当日延迟1天），需明确标出
+            today_flow = north.get('net_flow_today', 0)
+            flow_5d = north.get('net_flow_5d', 0)
+            data_date = north.get('data_date', '')
+            # 把 20260603 → "6/3" 便于阅读
+            date_label = ""
+            if data_date and len(data_date) == 8:
+                date_label = f"{int(data_date[4:6])}/{int(data_date[6:8])}"
+            trend = north.get('trend', '')
+            range_label = north.get('flow_5d_range', '')
+            range_str = f"（{range_label}）" if range_label else (f"（截至{date_label}）" if date_label else "")
+            today_str = f"{date_label}单日{today_flow:+.1f}亿" if date_label else f"最新单日{today_flow:+.1f}亿"
+            fiveday_str = f"5日累计{flow_5d:+.1f}亿{range_str}"
+            lines.append(f"\n资金面：北向资金 {today_str} | {fiveday_str}（{trend}）\n  注：数据截至{date_label if date_label else '最新交易日'}，今日最新数据尚未披露")
     except Exception:
         pass
     try:
@@ -209,17 +248,107 @@ def _build_market_context() -> str:
     except Exception:
         pass
 
+    # v9.5.123: 注入预热数据 + 标注时效性(避免和晨报矛盾时用户困惑)
+    from datetime import datetime as _dt_ctx
+    lines.append(f"\n--- 以下为AI增强数据(更新: {_dt_ctx.now().strftime('%H:%M')}) ---")
+    # 行业热点
+    try:
+        from services.sector_rotation import get_sector_ranking
+        sr = get_sector_ranking()
+        if sr and sr.get("available") and sr.get("top_gainers"):
+            hot = sr["top_gainers"][:3]
+            hot_text = " | ".join(f"{s.get('name','')} {s.get('change_pct',0):+.1f}%" for s in hot)
+            lines.append(f"\n行业热点：{hot_text}")
+            cold = sr.get("top_losers", [])[:2]
+            if cold:
+                cold_text = " | ".join(f"{s.get('name','')} {s.get('change_pct',0):+.1f}%" for s in cold)
+                lines.append(f"行业冷门：{cold_text}")
+    except Exception:
+        pass
+
+    # 8维走势信号(偏多/偏空/震荡) + 定投倍率
+    try:
+        from services.precomputed_cache import get_precomputed
+        sig = get_precomputed("daily_signal")
+        # get_precomputed直接返回data dict(不是{data:xxx}), 所以sig就是signal本身
+        if sig and isinstance(sig, dict) and sig.get("overall"):
+            overall = sig.get("overall", "")  # HOLD/BUY/SELL
+            score = sig.get("score", 0)
+            summary = sig.get("summary", "")
+            dca_mult = sig.get("smartDca", {}).get("multiplier", 1.0)
+            if summary:
+                lines.append(f"\n今日综合信号：{summary}")
+                lines.append(f"信号评分：{score:+.1f}，方向：{overall}")
+                if dca_mult and dca_mult != 1.0:
+                    lines.append(f"定投倍率建议：{dca_mult:.1f}x（{'加码' if dca_mult > 1 else '缩减'}）")
+                else:
+                    lines.append("定投倍率建议：1.0x（标准定投）")
+    except Exception as e:
+        print(f"[MARKET_CTX] daily_signal injection failed: {e}")
+
+    # 选基TOP3摘要(用户问"有什么好基金"时AI能直接回答)
+    try:
+        import json as _json_ctx
+        import glob as _glob_ctx
+        cache_dir = os.environ.get("DATA_DIR", "data")
+        cache_path = os.path.join(cache_dir, "_cache")
+        # 找任何一个 fund_screen_all_score_*.json 文件
+        fs_files = _glob_ctx.glob(os.path.join(cache_path, "fund_screen_all_score_*.json"))
+        if fs_files:
+            fs_file = sorted(fs_files, key=os.path.getmtime, reverse=True)[0]  # 最新的
+            fs_data = _json_ctx.loads(open(fs_file, encoding="utf-8").read())
+            # 缓存结构: {"data": {"funds": [...]}, "expires_at": ...}
+            inner = fs_data.get("data", fs_data)  # 兼容直接结构和嵌套结构
+            funds = inner.get("funds", [])[:3]
+            if funds:
+                lines.append(f"\n选基推荐TOP3：")
+                for f in funds:
+                    r = f.get("returns", {})
+                    lines.append(f"  - {f.get('name','')[:12]} 评分{f.get('score',0):.0f} 近1年{r.get('1y','?')}%")
+    except Exception as e:
+        print(f"[MARKET_CTX] fund_screen injection failed: {e}")
+
     result = "\n".join(lines) if lines else "暂无市场数据"
     _market_ctx_cache.set("market_context", result, ttl=_MARKET_CTX_TTL)
+    # v9.5.122: 写文件缓存（供后续请求和重启后读取）
+    try:
+        os.makedirs(os.path.dirname(_MARKET_CTX_FILE), exist_ok=True)
+        with open(_MARKET_CTX_FILE, "w", encoding="utf-8") as f:
+            f.write(result)
+    except Exception:
+        pass
     return result
 
 
 # ========================================================
-# 持仓上下文构建
+# v9.5.122: 持仓上下文 — per-user 文件缓存，后台 cache_warmer 预热
 # ========================================================
+_PORTFOLIO_CTX_DIR = os.path.join(os.environ.get("DATA_DIR", "data"), "_cache")
+
 
 def _build_portfolio_context(p=None, user_id: str = "default") -> str:
-    """构建用户持仓+盈亏+风控+配置建议的完整上下文（多用户隔离）"""
+    """构建用户持仓+盈亏+风控+配置建议的完整上下文（多用户隔离）
+    
+    v9.5.122: 文件缓存 10h + stale 24h，cache_warmer 预热。
+    """
+    # 读 per-user 文件缓存
+    ctx_file = os.path.join(_PORTFOLIO_CTX_DIR, f"portfolio_ctx_{user_id}.txt")
+    try:
+        if os.path.exists(ctx_file):
+            age = time.time() - os.stat(ctx_file).st_mtime
+            if age < 36000:  # 10h
+                with open(ctx_file, "r", encoding="utf-8") as f:
+                    content = f.read()
+                if content.strip():
+                    return content
+            elif age < 86400:  # stale 24h
+                with open(ctx_file, "r", encoding="utf-8") as f:
+                    content = f.read()
+                if content.strip():
+                    return content
+    except Exception:
+        pass
+    
     from services.holding_intelligence import build_holding_context
 
     lines = []
@@ -339,6 +468,201 @@ def _build_portfolio_context(p=None, user_id: str = "default") -> str:
     except Exception:
         pass
 
+    # 5.5 v9.5.98: 持仓股票的业绩预告 + 龙虎榜活跃度
+    try:
+        from services.stock_monitor import load_stock_holdings
+        from services.tushare_data import get_earning_forecast, get_top_list
+        from datetime import datetime, timedelta
+        holdings = load_stock_holdings(user_id) or []
+        codes = [h.get("code", "") for h in holdings if h.get("code")][:10]  # 最多10只
+        if codes:
+            forecast_alerts = []
+            for code in codes:
+                try:
+                    fc = get_earning_forecast(code=code) or []
+                    if fc:
+                        latest = fc[0]
+                        ftype = latest.get("type", "")  # 预增/预减/预亏 等
+                        pmin = latest.get("p_change_min", 0) or 0
+                        pmax = latest.get("p_change_max", 0) or 0
+                        if ftype:
+                            sign = "📈" if "增" in ftype else ("📉" if "减" in ftype or "亏" in ftype else "•")
+                            forecast_alerts.append(f"{sign} {code}: {ftype}（净利变动 {pmin:.0f}%~{pmax:.0f}%）")
+                except Exception:
+                    pass
+            if forecast_alerts:
+                lines.append("\n【持仓股业绩预告】")
+                for a in forecast_alerts[:5]:
+                    lines.append(f"  {a}")
+
+            # 龙虎榜：今天上榜的持仓股
+            try:
+                today_top = get_top_list() or []
+                hit_top = [t for t in today_top if any(c in t.get("ts_code", "") for c in codes)]
+                if hit_top:
+                    lines.append("\n【今日上龙虎榜】")
+                    for t in hit_top[:3]:
+                        lines.append(f"  📊 {t.get('name','?')}({t.get('ts_code','')}) — {t.get('reason','')[:30]}, 净流入¥{t.get('net_amount',0)/1e8:.2f}亿")
+                    # v9.5.101: 进一步看席位类型（机构 vs 游资）
+                    try:
+                        from services.tushare_data import get_top_inst
+                        for t in hit_top[:3]:
+                            ts_code = t.get("ts_code", "")
+                            insts = get_top_inst(code=ts_code) or []
+                            if insts:
+                                # 区分机构席位（含\"机构\"或\"基金\"）vs 游资营业部
+                                inst_buy = sum((i.get("net_buy") or 0) for i in insts if "机构" in (i.get("exalter") or "") and (i.get("net_buy") or 0) > 0)
+                                inst_sell = sum((i.get("net_buy") or 0) for i in insts if "机构" in (i.get("exalter") or "") and (i.get("net_buy") or 0) < 0)
+                                hf_net = sum((i.get("net_buy") or 0) for i in insts if "机构" not in (i.get("exalter") or ""))
+                                role_lines = []
+                                if inst_buy > 0:
+                                    role_lines.append(f"机构净买¥{inst_buy/1e8:.2f}亿")
+                                if inst_sell < 0:
+                                    role_lines.append(f"机构净卖¥{abs(inst_sell)/1e8:.2f}亿")
+                                if abs(hf_net) > 1e7:
+                                    sign = "游资净" + ("买" if hf_net > 0 else "卖")
+                                    role_lines.append(f"{sign}¥{abs(hf_net)/1e8:.2f}亿")
+                                if role_lines:
+                                    lines.append(f"     席位明细：{' / '.join(role_lines)}")
+                    except Exception:
+                        pass
+            except Exception:
+                pass
+    except Exception:
+        pass
+
+    # 5.6 v9.5.99: 宏观背景（PMI / CPI / 沪深300估值）— 进程内缓存 1h，避免每次都拉
+    try:
+        from services.tushare_data import get_macro_pmi, get_macro_cpi, get_index_dailybasic
+        import time as _t
+        global _MACRO_CTX_CACHE
+        try:
+            cache = _MACRO_CTX_CACHE
+        except NameError:
+            cache = None
+        now_ts = _t.time()
+        if cache and (now_ts - cache.get("ts", 0)) < 3600:
+            macro_lines = cache.get("lines", [])
+        else:
+            macro_lines = []
+            try:
+                pmi_rows = get_macro_pmi(months=2)
+                if pmi_rows:
+                    latest = pmi_rows[0]
+                    pmi_val = latest.get("pmi010000")
+                    if pmi_val is not None:
+                        flag = "⬆扩张" if pmi_val > 50 else "⬇收缩"
+                        macro_lines.append(f"  📊 制造业PMI {pmi_val}（{flag}，{latest.get('month','?')}）")
+            except Exception:
+                pass
+            try:
+                cpi_rows = get_macro_cpi(months=2)
+                if cpi_rows:
+                    latest = cpi_rows[0]
+                    cpi_yoy = latest.get("nt_yoy")
+                    if cpi_yoy is not None:
+                        macro_lines.append(f"  💹 CPI同比 {cpi_yoy}%（{latest.get('month','?')}）")
+            except Exception:
+                pass
+            try:
+                idx_rows = get_index_dailybasic(ts_code="000300.SH", days=5)
+                if idx_rows:
+                    latest = idx_rows[0]
+                    pe = latest.get("pe_ttm")
+                    pb = latest.get("pb")
+                    dv = latest.get("dv_ttm")
+                    parts = []
+                    if pe is not None: parts.append(f"PE {pe:.1f}")
+                    if pb is not None: parts.append(f"PB {pb:.2f}")
+                    if dv is not None: parts.append(f"股息率 {dv:.2f}%")
+                    if parts:
+                        macro_lines.append(f"  📈 沪深300估值：{' · '.join(parts)}")
+            except Exception:
+                pass
+            try:
+                globals()["_MACRO_CTX_CACHE"] = {"ts": now_ts, "lines": macro_lines}
+            except Exception:
+                pass
+        if macro_lines:
+            lines.append("\n【宏观背景】")
+            lines.extend(macro_lines)
+    except Exception:
+        pass
+
+    # 5.7 v9.5.99: 持仓股回购信号（看好自家股票）
+    try:
+        from services.tushare_data import get_share_repurchase, get_holder_number
+        from services.stock_monitor import load_stock_holdings
+        held = load_stock_holdings(user_id) or []
+        codes = [h.get("code", "") for h in held if h.get("code")][:10]
+        if codes:
+            repurchase_alerts = []
+            for code in codes:
+                try:
+                    rep = get_share_repurchase(code=code, days=180) or []
+                    if rep:
+                        latest = rep[0]
+                        amt = latest.get("amount") or 0
+                        if amt > 1000000:  # 100w+ 才提
+                            repurchase_alerts.append(f"💰 {code} 回购¥{amt/1e8:.2f}亿（{latest.get('ann_date','?')[:10]}）— 公司看好自家股票")
+                except Exception:
+                    pass
+            if repurchase_alerts:
+                lines.append("\n【持仓股回购】")
+                for a in repurchase_alerts[:3]:
+                    lines.append(f"  {a}")
+
+            # 股东户数趋势：减少=筹码集中（看涨）
+            holder_alerts = []
+            for code in codes:
+                try:
+                    hn = get_holder_number(code) or []
+                    if len(hn) >= 2:
+                        cur = hn[0].get("holder_num") or 0
+                        prev = hn[1].get("holder_num") or 0
+                        if cur > 0 and prev > 0:
+                            chg = (cur - prev) / prev * 100
+                            if chg < -3:  # 减少 3% 以上
+                                holder_alerts.append(f"🎯 {code} 股东户数 {prev}→{cur}（{chg:+.1f}%）— 筹码集中信号")
+                            elif chg > 5:  # 增加 5% 以上
+                                holder_alerts.append(f"⚠️ {code} 股东户数 {prev}→{cur}（{chg:+.1f}%）— 筹码分散，警惕")
+                except Exception:
+                    pass
+            if holder_alerts:
+                lines.append("\n【股东户数变化】")
+                for a in holder_alerts[:3]:
+                    lines.append(f"  {a}")
+    except Exception:
+        pass
+
+    # 5.8 v9.5.99: 北向资金活跃股 — 持仓股是否被外资盯上
+    try:
+        from services.tushare_data import get_hsgt_top10
+        from services.stock_monitor import load_stock_holdings
+        held = load_stock_holdings(user_id) or []
+        held_codes = set(h.get("code", "")[:6] for h in held if h.get("code"))
+        if held_codes:
+            hsgt_alerts = []
+            try:
+                # 沪+深股通各取前10
+                for mt in ["1", "3"]:
+                    rows = get_hsgt_top10(market_type=mt) or []
+                    for r in rows[:10]:
+                        ts_code = r.get("ts_code", "")
+                        code6 = ts_code.split(".")[0] if ts_code else ""
+                        if code6 in held_codes:
+                            net = r.get("net_amount", 0) or 0
+                            sign = "🔥" if net > 0 else "❄️"
+                            hsgt_alerts.append(f"{sign} {r.get('name','?')}({code6}) 上{'沪' if mt=='1' else '深'}股通TOP10，净{'流入' if net>0 else '流出'}¥{abs(net)/1e8:.2f}亿")
+            except Exception:
+                pass
+            if hsgt_alerts:
+                lines.append("\n【北向资金活跃持仓】")
+                for a in hsgt_alerts[:3]:
+                    lines.append(f"  {a}")
+    except Exception:
+        pass
+
     # 6. 历史决策记忆（pending_insights + ironies）— 让 AI 知道你说过什么
     if user_id and user_id != "default":
         try:
@@ -403,7 +727,75 @@ def _build_portfolio_context(p=None, user_id: str = "default") -> str:
         except Exception:
             pass
 
-    return "\n".join(lines) if lines else "用户尚未建仓。"
+    # v9.5.95: 持仓基金"贵不贵"检查 — 把净值历史百分位/规模/经理换届注入 AI 上下文
+    if user_id and user_id != "default":
+        try:
+            from services.fund_monitor import load_fund_holdings
+            from api.signals import _get_fund_nav_percentile
+            my_funds = load_fund_holdings(user_id) or []
+            if my_funds:
+                high_pos = []      # 净值在历史高位
+                low_pos = []       # 净值在历史低位
+                manager_warns = [] # 经理换届预警
+                for mf in my_funds[:10]:  # 最多查 10 只，避免超时
+                    code = mf.get("code", "")
+                    name = mf.get("name", code)[:14]
+                    try:
+                        info = _get_fund_nav_percentile(code) or {}
+                        pct = info.get("nav_pct")
+                        if pct is not None:
+                            if pct >= 80:
+                                high_pos.append(f"{name}({pct}%)")
+                            elif pct <= 30:
+                                low_pos.append(f"{name}({pct}%)")
+                    except Exception:
+                        pass
+                    try:
+                        from api.fund_detail import _get_fund_manager_change
+                        mgr = _get_fund_manager_change(code) or {}
+                        if mgr.get("has_change"):
+                            manager_warns.append(f"{name}（{mgr.get('manager_name','新任')}近{mgr.get('days_since','?')}天上任）")
+                    except Exception:
+                        pass
+
+                if high_pos or low_pos or manager_warns:
+                    lines.append("\n【持仓基金估值与人事】")
+                    if high_pos:
+                        lines.append(f"  📈 历史高位（≥80%分位）：{', '.join(high_pos)} — 进一步加仓需谨慎")
+                    if low_pos:
+                        lines.append(f"  📉 历史低位（≤30%分位）：{', '.join(low_pos)} — 可优先加仓")
+                    if manager_warns:
+                        lines.append(f"  ⚠️ 基金经理近6月换届：{', '.join(manager_warns)} — 历史业绩参考价值降低")
+        except Exception:
+            pass
+
+    # v9.5.95: 再平衡缺口（如果前端有传 rebalanceGap 字段就用，否则用后端理想配置算）
+    if p and getattr(p, 'rebalanceGap', None):
+        try:
+            rg = p.rebalanceGap if isinstance(p.rebalanceGap, dict) else {}
+            gaps = rg.get('gaps', [])
+            surplus = rg.get('surplus', [])
+            if gaps or surplus:
+                lines.append("\n【再平衡缺口】")
+                lines.append(f"  当前总投入：¥{rg.get('totalInvest', 0):,}（偏离阈值 ±{rg.get('threshold', 5)}%）")
+                if gaps:
+                    gap_text = '、'.join([f"{g.get('label','?')}缺¥{g.get('need',0):,}" for g in gaps[:3]])
+                    lines.append(f"  ⬇ 欠配方向：{gap_text} — 用户问「该买什么」时建议优先补这些方向")
+                if surplus:
+                    surplus_text = '、'.join([f"{s.get('label','?')}超¥{s.get('excess',0):,}" for s in surplus[:3]])
+                    lines.append(f"  ⬆ 超配方向：{surplus_text} — 暂不加仓")
+        except Exception:
+            pass
+
+    result = "\n".join(lines) if lines else "用户尚未建仓。"
+    # v9.5.122: 写 per-user 文件缓存
+    try:
+        os.makedirs(_PORTFOLIO_CTX_DIR, exist_ok=True)
+        with open(ctx_file, "w", encoding="utf-8") as f:
+            f.write(result)
+    except Exception:
+        pass
+    return result
 
 
 # ========================================================
@@ -460,6 +852,9 @@ _INTENT_RULES = [
     (["周报", "weekly", "本周总结"], "weekly_request", None),
     # 现金/应急储备
     (["安全垫", "应急", "现金够", "留多少现金", "备用金"], "cash_safety", None),
+    # v9.5.123 P2-3: 操作指令(设目标/调纪律线/设止盈止损)
+    (["设定目标", "设个目标", "财务目标", "设目标", "攒够", "攒到", "存够", "万的目标", "万目标"], "operation_goal", "/api/goals/set"),
+    (["止盈线", "止损线", "纪律线", "设止盈", "设止损", "调止盈", "调止损"], "operation_discipline", "/api/fund-holdings/discipline"),
 ]
 
 
@@ -511,6 +906,36 @@ def _rule_based_reply_structured(msg: str, market_ctx: str, portfolio_ctx: str) 
     if any(k in msg_lower for k in _SAFETY_KEYWORDS):
         text = "🚫 我不能预测具体价格，也不能建议满仓、借钱投资或承诺保本收益。\n\n可以帮你做的：\n• 基于当前持仓做风险检查\n• 分析估值是否偏高\n• 给出仓位建议（但不是满仓）\n\n⚠️ 投资有风险，入市需谨慎。"
         return {"text": text, "confidence": 0.95, "intent": "safety_refusal"}
+
+    # ★ v9.5.123: 操作指令(设目标/纪律线) — 识别后引导用户提供参数
+    _GOAL_KW = ["设定目标", "设个目标", "财务目标", "设目标", "攒够", "攒到", "存够", "万的目标", "万目标"]
+    _DISC_KW = ["止盈线", "止损线", "纪律线", "设止盈", "设止损", "调止盈", "调止损"]
+    if any(k in msg_lower for k in _GOAL_KW):
+        # 尝试从消息里提取参数
+        import re as _re_op
+        amount_m = _re_op.search(r'(\d+)\s*[万w]', msg_lower)
+        text = "🎯 设定财务目标\n\n"
+        if amount_m:
+            amt = int(amount_m.group(1)) * 10000
+            text += f"已识别目标金额: ¥{amt:,.0f}\n\n"
+            text += '请补充以下信息（直接回复）：\n• 目标名称（如"装修费"）\n• 预计截止日期（如"2028年底"）\n• 每月可存入金额（如"5000元"）'
+        else:
+            text += '请告诉我：\n• 目标金额（如"30万"）\n• 目标名称（如"装修费"）\n• 截止日期 + 每月存入\n\n示例：帮我设一个30万装修目标，每月存5000，2028年底前'
+        return {"text": text, "confidence": 0.85, "intent": "operation_goal"}
+    
+    if any(k in msg_lower for k in _DISC_KW):
+        import re as _re_op2
+        pct_m = _re_op2.search(r'(\d+)\s*%', msg_lower)
+        text = "🎯 设定纪律线\n\n"
+        if pct_m:
+            pct = int(pct_m.group(1))
+            is_tp = any(k in msg_lower for k in ["止盈", "设止盈", "调止盈"])
+            line_type = "止盈" if is_tp else "止损"
+            text += f"已识别: {line_type}线 {pct}%\n\n"
+            text += '请指定基金代码或名称(如沪深300/005827)，我就帮你设好。到达纪律线时会通过企微推送提醒你执行。'
+        else:
+            text += '请告诉我：\n* 哪只基金(代码或名称)\n* 止盈线百分比(如+30%)\n* 止损线百分比(如-20%)\n\n示例：帮我给沪深300设止盈30%止损-20%'
+        return {"text": text, "confidence": 0.85, "intent": "operation_discipline"}
 
     # ★ 最高优先级2：用户持仓/资产查询（必须基于真实数据回答）
     # 排除：问"老婆/家人"的持仓 — 直接规则拒绝
@@ -833,9 +1258,11 @@ async def _do_ocr(file_path: Path, content: bytes) -> dict:
 1. 支付宝/微信消费记录 → 提取: 金额(amount), 商家(merchant), 分类(category:餐饮/交通/购物/娱乐/医疗/教育/其他), 备注(note)
 2. 支付宝/微信账单列表 → 提取: 多条记录records[{amount, merchant, date}]
 3. 银行卡交易记录 → 提取: 金额(amount), 交易类型(tx_type:转入/转出), 余额(bank_balance), 银行名(bank_name)
-4. 基金买入确认 → 提取: 基金名(fund_name), 基金代码(fund_code), 买入金额(amount), 确认份额(shares), 确认净值(nav), 日期(date)
-5. 基金赎回确认 → 提取: 基金名(fund_name), 基金代码(fund_code), 赎回份额(shares), 到账金额(amount), 确认净值(nav), 日期(date)
+4. 基金买入确认 → 提取: 基金名(fund_name), 基金代码(fund_code), 买入金额(amount), 确认份额(shares), 确认净值(nav), 日期(date：优先取"买入时间"，没有再取"确认时间"或"交易时间"，必须是 YYYY-MM-DD 格式)
+5. 基金赎回确认 → 提取: 基金名(fund_name), 基金代码(fund_code), 赎回份额(shares), 到账金额(amount), 确认净值(nav), 日期(date：同上)
 6. 工资条/收入 → 提取: 税后金额(amount), 日期(date)
+
+⚠️ 重要：基金买入截图里如果同时有"买入时间"和"确认时间"，**优先用"买入时间"**（这才是用户实际下单日，确认时间是T+1清算日）。如果只有日期没有时间，取日期部分（YYYY-MM-DD）。
 
 返回JSON格式:
 {
@@ -989,10 +1416,18 @@ NICKNAMES = {"LeiJiang": "厉害了哥", "BuLuoGeLi": "部落格里"}
 # ========================================================
 # 可用模型列表
 # ========================================================
+# FIX 2026-08-09: DeepSeek 已于2026-07-24 停用 deepseek-reasoner(R1)/deepseek-chat(V3)
+# 旧模型名，官方目前将其静默重定向到deepseek-v4-flash（返回200但content为空，
+# 只有reasoning_content，触发网关降级链，白白多耗一次调用+等待）。
+# 深度推理场景请直接选用 deepseek-v4-pro，故从可选列表移除 deepseek-reasoner。
 AVAILABLE_MODELS = [
-    {"id": "deepseek-v4-flash", "name": "DeepSeek V4", "provider": "deepseek", "base": "https://api.deepseek.com/v1", "env_key": "LLM_API_KEY"},
-    {"id": "deepseek-v4-pro", "name": "DeepSeek V4 Pro", "provider": "deepseek", "base": "https://api.deepseek.com/v1", "env_key": "LLM_API_KEY"},
-    {"id": "deepseek-reasoner", "name": "DeepSeek R1 (深度思考)", "provider": "deepseek", "base": "https://api.deepseek.com/v1", "env_key": "LLM_API_KEY"},
+    {"id": "deepseek-v4-flash", "name": "DeepSeek V4 (快速·主力)", "provider": "deepseek", "base": "https://api.deepseek.com/v1", "env_key": "LLM_API_KEY"},
+    {"id": "deepseek-v4-pro", "name": "DeepSeek V4 Pro (高质量·仲裁)", "provider": "deepseek", "base": "https://api.deepseek.com/v1", "env_key": "LLM_API_KEY"},
+    {"id": "doubao-seed-2-0-pro-260215", "name": "豆包 Seed 2.0 Pro (字节·旗舰)", "provider": "doubao", "base": "https://ark.cn-beijing.volces.com/api/v3", "env_key": "DOUBAO_API_KEY"},
+    {"id": "doubao-seed-2-0-lite-260215", "name": "豆包 Seed 2.0 Lite (字节·通用)", "provider": "doubao", "base": "https://ark.cn-beijing.volces.com/api/v3", "env_key": "DOUBAO_API_KEY"},
+    {"id": "doubao-seed-2-0-mini-260215", "name": "豆包 Seed 2.0 Mini (字节·快速)", "provider": "doubao", "base": "https://ark.cn-beijing.volces.com/api/v3", "env_key": "DOUBAO_API_KEY"},
+    {"id": "qwen3.6-plus", "name": "通义千问3.6 Plus (高性价比)", "provider": "qwen", "base": "https://dashscope.aliyuncs.com/compatible-mode/v1", "env_key": "DASHSCOPE_API_KEY"},
+    {"id": "qwen3.6-flash", "name": "通义千问3.6 Flash (轻量快速)", "provider": "qwen", "base": "https://dashscope.aliyuncs.com/compatible-mode/v1", "env_key": "DASHSCOPE_API_KEY"},
 ]
 
 

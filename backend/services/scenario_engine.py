@@ -26,12 +26,12 @@ MODULE_META = {
 import os
 import time
 import json
-import httpx
 from datetime import datetime
-from infra.cache import MemoryCache
 
-_SCENARIO_CACHE_TTL = 1800  # 30分钟（情景分析时效性要求高）
-_scenario_cache = MemoryCache(default_ttl=_SCENARIO_CACHE_TTL)
+from services.memory_cache import MemoryCache
+from services.llm_gateway import MODEL_ROUTING
+
+_scenario_cache = MemoryCache("scenario_engine", ttl=1800, max_entries=30)
 
 
 # ============================================================
@@ -150,8 +150,8 @@ def _collect_market_snapshot() -> dict:
 
     # 行业轮动
     try:
-        from services.sector_rotation import get_sector_ranking
-        sr = get_sector_ranking()
+        from services.sector_rotation import get_sector_rotation
+        sr = get_sector_rotation()
         if sr.get("available"):
             snapshot["sector_rotation"] = {
                 "pattern": sr.get("rotation_signal", "均衡"),
@@ -287,51 +287,36 @@ def _build_scenario_prompt(scenario: dict, market_snapshot: dict, user_portfolio
 # ============================================================
 
 def _call_llm_for_scenario(prompt: str, use_r1: bool = True) -> dict:
-    """调用 DeepSeek R1 或 V3 进行情景推理
+    """调用 DeepSeek R1 或 V3 进行情景推理 — 走 LLMGateway 统一入口
 
     R1 用于深度推理（主），V3 用于快速降级。
     """
-    from config import LLM_API_URL, LLM_API_KEY, LLM_MODEL
+    from services.llm_gateway import llm_call
 
-    api_key = LLM_API_KEY
-    api_url = LLM_API_URL
-    # R1 用 reasoner 模型，V3 用 chat 模型
-    model = "deepseek-reasoner" if use_r1 else LLM_MODEL
+    model_tier = "llm_heavy" if use_r1 else "llm_light"
+    result = llm_call(
+        prompt,
+        model_tier=model_tier,
+        module="scenario_engine",
+        max_tokens=1500,
+    )
 
-    if not api_key:
-        return {"error": "LLM API Key 未配置"}
+    content = result.get("content", "")
+    if not content:
+        return {"error": result.get("source", "unknown")}
 
-    try:
-        with httpx.Client(timeout=60) as client:
-            resp = client.post(
-                api_url,
-                headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
-                json={
-                    "model": model,
-                    "messages": [{"role": "user", "content": prompt}],
-                    "max_tokens": 1500,
-                    "temperature": 0.3 if use_r1 else 0.5,
-                },
-            )
-            if resp.status_code == 200:
-                data = resp.json()
-                text = data["choices"][0]["message"]["content"]
-                # 提取 JSON
-                import re
-                json_match = re.search(r'\{[\s\S]*\}', text)
-                if json_match:
-                    try:
-                        result = json.loads(json_match.group())
-                        result["_model"] = model
-                        result["_raw_length"] = len(text)
-                        return result
-                    except json.JSONDecodeError:
-                        return {"error": "LLM 返回格式解析失败", "_raw": text[:500]}
-                return {"error": "LLM 返回中无 JSON", "_raw": text[:500]}
-            else:
-                return {"error": f"LLM HTTP {resp.status_code}"}
-    except Exception as e:
-        return {"error": str(e)}
+    # 提取 JSON
+    import re
+    json_match = re.search(r'\{[\s\S]*\}', content)
+    if json_match:
+        try:
+            parsed = json.loads(json_match.group())
+            parsed["_model"] = MODEL_ROUTING.get(model_tier, "deepseek-v4-pro" if use_r1 else "deepseek-v4-flash")
+            parsed["_raw_length"] = len(content)
+            return parsed
+        except json.JSONDecodeError:
+            return {"error": "LLM 返回格式解析失败", "_raw": content[:500]}
+    return {"error": "LLM 返回中无 JSON", "_raw": content[:500]}
 
 
 # ============================================================
@@ -366,7 +351,6 @@ def analyze_scenario(scenario_id: str = "", custom_text: str = "", user_id: str 
 
     # 缓存检查
     cache_key = f"scenario_{scenario.get('id', 'custom')}_{user_id}"
-    now = time.time()
     cached = _scenario_cache.get(cache_key)
     if cached is not None:
         return cached
