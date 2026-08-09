@@ -10,6 +10,7 @@ V6 Phase 1 新增模块
 接入点：Pipeline enrich() → DecisionContext.modules_results["geopolitical"]
 """
 from __future__ import annotations
+import json
 import time
 from datetime import datetime, timedelta
 
@@ -26,11 +27,54 @@ MODULE_META = {
     "priority": 1,
 }
 
-from config import NEWS_CACHE_TTL
+from config import NEWS_CACHE_TTL, DATA_DIR
 from infra.cache import MemoryCache
 
 _GEO_CACHE_TTL = 1800  # 30 分钟
 _geo_cache = MemoryCache(default_ttl=_GEO_CACHE_TTL)
+
+# FIX 2026-08-09: 地缘风险打分时间平滑
+# 问题背景：get_geopolitical_risk_score() 完全依赖单次新闻抓取快照，
+#凌晨审计抓到几条突发新闻就打满分100(extreme)，几小时后新闻窗口一过又归零，
+# 导致跟新闻情绪/13维信号等其他指标经常"打架"，被周度自检误判为逻辑矛盾。
+# 修复：用指数移动平均(EMA)对 raw score 做平滑，落盘持久化跨进程/跨请求生效，
+# 单次新闻噪音不再造成分数骤变，同时仍能较快响应真实的风险升级。
+_GEO_SMOOTH_FILE = DATA_DIR / "precomputed" / "geo_risk_smoothed.json"
+_GEO_SMOOTH_ALPHA = 0.4  # 新样本权重（0-1，越大越灵敏，越小越平滑）
+_GEO_SMOOTH_MAX_AGE_HOURS = 12  # 超过此时长的历史平滑值视为失效，直接用当前值重置
+
+
+def _load_smoothed_score() -> dict | None:
+    try:
+        if _GEO_SMOOTH_FILE.exists():
+            return json.loads(_GEO_SMOOTH_FILE.read_text(encoding="utf-8"))
+    except Exception:
+        pass
+    return None
+
+
+def _save_smoothed_score(score: float, ts: float) -> None:
+    try:
+        _GEO_SMOOTH_FILE.parent.mkdir(parents=True, exist_ok=True)
+        _GEO_SMOOTH_FILE.write_text(
+            json.dumps({"smoothed_score": score, "ts": ts}, ensure_ascii=False),
+            encoding="utf-8",
+        )
+    except Exception as e:
+        print(f"[GEO] 平滑分数落盘失败: {e}")
+
+
+def _apply_smoothing(raw_score: float) -> float:
+    """对原始地缘风险分做EMA 平滑，返回平滑后的分数（0-100）"""
+    now = time.time()
+    prev = _load_smoothed_score()
+    if prev and (now - prev.get("ts", 0)) <= _GEO_SMOOTH_MAX_AGE_HOURS * 3600:
+        smoothed = _GEO_SMOOTH_ALPHA * raw_score + (1 - _GEO_SMOOTH_ALPHA) * prev.get("smoothed_score", raw_score)
+    else:
+        smoothed = raw_score  # 无历史或历史太旧，直接用当前值
+    smoothed = round(min(100, max(0, smoothed)), 1)
+    _save_smoothed_score(smoothed, now)
+    return smoothed
 
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -194,9 +238,11 @@ def get_geopolitical_risk_score() -> dict:
     """
     geo_data = get_geopolitical_events()
     if not geo_data["available"] or not geo_data["events"]:
+        smoothed = _apply_smoothing(0)
         return {
-            "score": 0,
-            "level": "low",
+            "score": smoothed,
+            "level": _score_to_level(smoothed),
+            "raw_score": 0,
             "top_events": [],
             "sector_impact": {},
             "available": True,
@@ -204,11 +250,14 @@ def get_geopolitical_risk_score() -> dict:
 
     # 风险分 = max_severity * 20（满分 100）
     max_sev = geo_data["max_severity"]
-    score = min(100, max_sev * 20)
+    raw_score = min(100, max_sev * 20)
 
     # 事件密度加分（同一轮超过 5 条地缘新闻 → +10）
     if geo_data["event_count"] >= 5:
-        score = min(100, score + 10)
+        raw_score = min(100, raw_score + 10)
+
+    # 时间平滑：单次新闻抓取快照做EMA平滑，避免分数骤变（见文件头 FIX 说明）
+    score = _apply_smoothing(raw_score)
 
     # 行业影响
     sector_impact = {}
@@ -218,16 +267,11 @@ def get_geopolitical_risk_score() -> dict:
                 impact = GEO_SECTOR_IMPACT[cat]
                 sector_impact[cat] = impact
 
-    level = "low"
-    if score >= 80:
-        level = "extreme"
-    elif score >= 60:
-        level = "high"
-    elif score >= 30:
-        level = "moderate"
+    level = _score_to_level(score)
 
     return {
         "score": score,
+        "raw_score": raw_score,  # 未平滑的本次采样原始分，供调试/审计对比
         "level": level,
         "max_severity": geo_data["max_severity"],  # 0-5 原始严重度
         "top_events": [
@@ -237,6 +281,16 @@ def get_geopolitical_risk_score() -> dict:
         "sector_impact": sector_impact,
         "available": True,
     }
+
+
+def _score_to_level(score: float) -> str:
+    if score >= 80:
+        return "extreme"
+    if score >= 60:
+        return "high"
+    if score >= 30:
+        return "moderate"
+    return "low"
 
 
 def get_geo_impact_on_sectors() -> dict:
@@ -353,6 +407,7 @@ def _extract_geo_events(df, seen_titles: set, max_count: int) -> list:
     title_col = next((c for c in df.columns if "标题" in c or "title" in c.lower()), df.columns[0])
     time_col = next((c for c in df.columns if "时间" in c or "date" in c.lower() or "发布" in c), None)
     source_col = next((c for c in df.columns if "来源" in c or "source" in c.lower()), None)
+    url_col = next((c for c in df.columns if "链接" in c or "url" in c.lower() or "link" in c.lower()), None)
 
     for _, row in df.iterrows():
         title = str(row[title_col]).strip()
@@ -375,6 +430,7 @@ def _extract_geo_events(df, seen_titles: set, max_count: int) -> list:
             "title": title,
             "time": str(row[time_col]) if time_col else "",
             "source": str(row[source_col]) if source_col else "东方财富",
+            "url": str(row[url_col]) if url_col and str(row[url_col]).startswith("http") else "",
             "categories": matched_categories,
             "severity": max_severity,
         })

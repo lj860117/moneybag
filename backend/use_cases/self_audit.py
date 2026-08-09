@@ -111,14 +111,24 @@ def _check(
                     result["issue"] += f" | {msg}"
 
         # value_summary：截取关键字段做摘要（供 LLM 阅读）
+        # FIX 2026-08-09: 旧逻辑只取字典前8个key，导致 pe_range/sample_bias/note等
+        # 解释性/免责字段（常排在字典后半段）被截断，LLM 看不到上下文就误判"逻辑矛盾"。
+        # 现在优先包含这些"说明类"字段，再补充其余常规字段，总数放宽到10个。
         if isinstance(val, dict):
-            keys_to_show = list(val.keys())[:8]
+            _PRIORITY_KEYS = (
+                "pe_range", "sample_bias", "note", "metric", "freshness",
+                "window_years", "window_days", "age_days", "reason", "level",
+            )
+            priority_present = [k for k in _PRIORITY_KEYS if k in val]
+            other_keys = [k for k in val.keys() if k not in priority_present]
+            keys_to_show = priority_present + other_keys
+            keys_to_show = keys_to_show[:10]
             summary_parts = []
             for k in keys_to_show:
                 v2 = val[k]
                 if isinstance(v2, (int, float, str, bool)):
                     summary_parts.append(f"{k}={v2}")
-            result["value_summary"] = ", ".join(summary_parts[:6])
+            result["value_summary"] = ", ".join(summary_parts)
         elif isinstance(val, list):
             result["value_summary"] = f"list[{len(val)}]"
 
@@ -152,6 +162,15 @@ def run_data_probes() -> list[dict[str, Any]]:
         pct = val.get("percentile", -1) if isinstance(val, dict) else -1
         if not (0 <= pct <= 100):
             return False, f"percentile={pct} 超范围"
+        # FIX 2026-06-14: 估值数据新鲜度检查
+        age_days = val.get("age_days") if isinstance(val, dict) else None
+        freshness = val.get("freshness", "") if isinstance(val, dict) else ""
+        if age_days is not None and age_days >= 3:
+            return False, f"估值数据滞后{age_days}天(freshness={freshness})"
+        if freshness == "stale":
+            return False, f"估值数据不新鲜(freshness={freshness})"
+        if freshness == "slight_lag":
+            return True, f"估值数据轻微滞后{age_days}天(T+1正常)"
         return True, ""
     results.append(_check("估值百分位", lambda: __import__("services.market_data", fromlist=["get_valuation_percentile"]).get_valuation_percentile(), validators=[_check_val]))
 
@@ -236,15 +255,19 @@ def run_data_probes() -> list[dict[str, Any]]:
     except Exception as e:
         results.append({"name": "全球市场", "status": "fail", "issue": str(e), "value_summary": "", "elapsed_ms": 0})
 
-    # --- 选股结果（检查缓存文件是否存在且不过期）---
+    # --- 选股结果（v9.5.120: 检查 per-user 缓存文件）---
     try:
-        cache_file = DATA_DIR / "_cache" / "stock_screen_50.json"
+        # 优先检查 per-user 缓存，fallback 旧通用缓存
+        cache_file = DATA_DIR / "_cache" / "stock_screen_LeiJiang.json"
+        if not cache_file.exists():
+            cache_file = DATA_DIR / "_cache" / "stock_screen_50.json"
         def _load_screen() -> dict[str, Any]:
             if not cache_file.exists():
                 raise FileNotFoundError("缓存文件不存在")
             data = json.loads(cache_file.read_text(encoding="utf-8"))
-            age_h = (time.time() - data.get("expires_at", 0) + data.get("ttl_hours", 18) * 3600) / 3600
-            return {"cached_at": data.get("cached_at", ""), "count": len(data.get("data", []))}
+            stocks = (data.get("data") or {}).get("stocks") or data.get("data", [])
+            count = len(stocks) if isinstance(stocks, list) else 0
+            return {"cached_at": data.get("created_at", ""), "count": count}
         results.append(_check("选股缓存", _load_screen, warn_age_hours=72))
     except Exception as e:
         results.append({"name": "选股缓存", "status": "warn", "issue": str(e), "value_summary": "", "elapsed_ms": 0})
@@ -271,11 +294,18 @@ def run_smoke_tests() -> list[dict[str, Any]]:
         from services.signal import generate_daily_signal
         sig = generate_daily_signal()
         elapsed = int((time.time() - start) * 1000)
-        score = sig.get("score", -1) if isinstance(sig, dict) else -1
-        if isinstance(sig, dict) and 0 <= score <= 100:
-            results.append({"name": "13维信号", "status": "pass", "value_summary": f"score={score}", "issue": "", "elapsed_ms": elapsed})
+        score = sig.get("score", -999) if isinstance(sig, dict) else -999
+        confidence = sig.get("confidence", 0) if isinstance(sig, dict) else 0
+        overall = sig.get("overall", "UNKNOWN") if isinstance(sig, dict) else "UNKNOWN"
+        # FIX 2026-06-14: 增加置信度检查，修复旧逻辑中 HOLD 置信度≈0 的 bug
+        if not isinstance(sig, dict):
+            results.append({"name": "13维信号", "status": "fail", "value_summary": str(sig)[:80], "issue": "返回非 dict", "elapsed_ms": elapsed})
+        elif confidence < 20:
+            results.append({"name": "13维信号", "status": "warn", "value_summary": f"overall={overall}, confidence={confidence}%", "issue": f"置信度异常低({confidence}%)，可能存在计算bug", "elapsed_ms": elapsed})
+        elif confidence >= 20 and -100 <= score <= 100:
+            results.append({"name": "13维信号", "status": "pass", "value_summary": f"overall={overall}, score={score}, confidence={confidence}%", "issue": "", "elapsed_ms": elapsed})
         else:
-            results.append({"name": "13维信号", "status": "warn", "value_summary": str(sig)[:80], "issue": f"score={score} 异常", "elapsed_ms": elapsed})
+            results.append({"name": "13维信号", "status": "warn", "value_summary": f"score={score}, confidence={confidence}", "issue": f"score={score} 或 confidence={confidence} 异常", "elapsed_ms": elapsed})
     except Exception as e:
         results.append({"name": "13维信号", "status": "fail", "value_summary": "", "issue": str(e)[:200], "elapsed_ms": 0})
 
@@ -285,11 +315,14 @@ def run_smoke_tests() -> list[dict[str, Any]]:
         from services.regime_engine import classify
         regime = classify()
         elapsed = int((time.time() - start) * 1000)
-        label = regime.get("label", "") if isinstance(regime, dict) else ""
+        # FIX 2026-08-09: regime_engine.classify() 返回字段名是 "regime" 不是 "label"，
+        # 旧代码一直读错字段名，导致每周误报"label为空"（实际数据一直正常）
+        label = regime.get("regime", "") if isinstance(regime, dict) else ""
         if label:
-            results.append({"name": "Regime判断", "status": "pass", "value_summary": f"label={label}", "issue": "", "elapsed_ms": elapsed})
+            confidence = regime.get("confidence", "") if isinstance(regime, dict) else ""
+            results.append({"name": "Regime判断", "status": "pass", "value_summary": f"regime={label}, confidence={confidence}", "issue": "", "elapsed_ms": elapsed})
         else:
-            results.append({"name": "Regime判断", "status": "warn", "value_summary": str(regime)[:80], "issue": "label 为空", "elapsed_ms": elapsed})
+            results.append({"name": "Regime判断", "status": "warn", "value_summary": str(regime)[:80], "issue": "regime 为空", "elapsed_ms": elapsed})
     except Exception as e:
         results.append({"name": "Regime判断", "status": "fail", "value_summary": "", "issue": str(e)[:200], "elapsed_ms": 0})
 
@@ -306,16 +339,23 @@ def run_smoke_tests() -> list[dict[str, Any]]:
     # --- RAG 检索 ---
     try:
         start = time.time()
-        from infra.knowledge import get_retriever
+        from infra.knowledge import get_retriever, load_and_index_articles
         from domain.protocols.knowledge_retriever import KnowledgeRetrieverProtocol
         from typing import cast as _cast
         retriever: KnowledgeRetrieverProtocol = _cast(KnowledgeRetrieverProtocol, get_retriever())
         total = retriever.total_chunks()
+        # FIX 2026-08-09: 自检脚本是独立进程，拿到的检索器单例是全新未建索引的实例，
+        # 之前一直漏了业务代码里都有的"惰性建索引"保护（见 api/rag.py / api/chat.py /
+        # api/decisions.py 的 _get_retriever()），导致每周误报"知识库为空"。
+        # 实际知识库数据完好（32篇文章/111 chunk），只是没触发索引构建。
+        if total == 0:
+            load_and_index_articles(retriever)
+            total = retriever.total_chunks()
         elapsed = int((time.time() - start) * 1000)
         if total > 0:
             results.append({"name": "RAG知识库", "status": "pass", "value_summary": f"chunks={total}", "issue": "", "elapsed_ms": elapsed})
         else:
-            results.append({"name": "RAG知识库", "status": "warn", "value_summary": "chunks=0", "issue": "知识库为空，可能未索引", "elapsed_ms": elapsed})
+            results.append({"name": "RAG知识库", "status": "warn", "value_summary": "chunks=0", "issue": "知识库为空，索引构建后仍为0，需检查content目录", "elapsed_ms": elapsed})
     except Exception as e:
         results.append({"name": "RAG知识库", "status": "fail", "value_summary": "", "issue": str(e)[:200], "elapsed_ms": 0})
 
