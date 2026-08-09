@@ -12,6 +12,8 @@
 import hmac
 import hashlib
 from fastapi import Request, HTTPException
+from starlette.middleware.base import BaseHTTPMiddleware
+from starlette.responses import JSONResponse
 from config import AUTH_SECRET, AUTH_ENABLED
 
 
@@ -60,3 +62,53 @@ def require_auth(request: Request, user_id: str = ""):
         return
     if not verify_request(request, user_id):
         raise HTTPException(status_code=401, detail="未授权访问，请重新登录")
+
+
+class AuthMiddleware(BaseHTTPMiddleware):
+    """对敏感路径验证 token（家庭级安全）
+
+    公开路径（不需要验证）：
+    - / (首页)
+    - /static/* (前端资源)
+    - /api/auth/* (登录/获取token)
+    - /api/health (健康检查)
+    - *.js, *.css, *.html, *.png 等静态文件
+
+    FIX2026-08-09: 从 main.py 抽出，避免main.py超过CI的200行硬约束
+    （main.py架构定位就是"只做FastAPI初始化+路由挂载"，业务逻辑不
+    应堆在这里，鉴权中间件本身也更适合跟 verify_request 放在一起）。
+    """
+
+    OPEN_PREFIXES = (
+        "/api/auth",
+        "/api/health",
+        "/api/wxwork",  # 企业微信回调
+        "/static/",
+    )
+    OPEN_EXTENSIONS = (".js", ".css", ".html", ".png", ".jpg", ".svg", ".ico", ".woff2")
+
+    async def dispatch(self, request, call_next):
+        if not AUTH_ENABLED:
+            return await call_next(request)
+
+        path = request.url.path
+
+        # 公开路径跳过验证
+        if path == "/" or path == "/favicon.ico":
+            return await call_next(request)
+        if any(path.startswith(p) for p in self.OPEN_PREFIXES):
+            return await call_next(request)
+        if any(path.endswith(ext) for ext in self.OPEN_EXTENSIONS):
+            return await call_next(request)
+
+        # 敏感路径（/api/*）需要验证
+        if path.startswith("/api/"):
+            # 从 query params 获取 userId
+            user_id = request.query_params.get("userId", "default")
+            if not verify_request(request, user_id):
+                return JSONResponse(
+                    status_code=401,
+                    content={"code": 401, "message": "未授权，请重新登录", "data": None},
+                )
+
+        return await call_next(request)

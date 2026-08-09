@@ -20,7 +20,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.staticfiles import StaticFiles
 
-from config import APP_VERSION as _APP_VERSION, AUTH_ENABLED
+from config import APP_VERSION as _APP_VERSION
 from api.shared_helpers import _cached_file_response
 
 # ---- FastAPI 应用 ----
@@ -36,58 +36,8 @@ app.add_middleware(
 )
 
 
-# ---- v9.5.123: API 鉴权中间件 ----
-from starlette.middleware.base import BaseHTTPMiddleware
-from starlette.responses import JSONResponse
-
-
-class AuthMiddleware(BaseHTTPMiddleware):
-    """对敏感路径验证 token（家庭级安全）
-    
-    公开路径（不需要验证）：
-    - / (首页)
-    - /static/* (前端资源)
-    - /api/auth/* (登录/获取token)
-    - /api/health (健康检查)
-    - *.js, *.css, *.html, *.png 等静态文件
-    """
-    
-    OPEN_PREFIXES = (
-        "/api/auth",
-        "/api/health",
-        "/api/wxwork",  # 企业微信回调
-        "/static/",
-    )
-    OPEN_EXTENSIONS = (".js", ".css", ".html", ".png", ".jpg", ".svg", ".ico", ".woff2")
-    
-    async def dispatch(self, request, call_next):
-        if not AUTH_ENABLED:
-            return await call_next(request)
-        
-        path = request.url.path
-        
-        # 公开路径跳过验证
-        if path == "/" or path == "/favicon.ico":
-            return await call_next(request)
-        if any(path.startswith(p) for p in self.OPEN_PREFIXES):
-            return await call_next(request)
-        if any(path.endswith(ext) for ext in self.OPEN_EXTENSIONS):
-            return await call_next(request)
-        
-        # 敏感路径（/api/*）需要验证
-        if path.startswith("/api/"):
-            from infra.auth import verify_request
-            # 从 query params 获取 userId
-            user_id = request.query_params.get("userId", "default")
-            if not verify_request(request, user_id):
-                return JSONResponse(
-                    status_code=401,
-                    content={"code": 401, "message": "未授权，请重新登录", "data": None},
-                )
-        
-        return await call_next(request)
-
-
+# ---- v9.5.123: API鉴权中间件（定义见 infra/auth.py，避免main.py超200行）----
+from infra.auth import AuthMiddleware
 app.add_middleware(AuthMiddleware)
 
 # ---- v9.5.123: 鉴权路由（公开，不需要token）----
