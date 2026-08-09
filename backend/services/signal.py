@@ -33,9 +33,7 @@ from services.data_layer import (
 )
 
 def calc_smart_dca(base_amount: float, valuation_pct: float) -> dict:
-    """智能定投：根据估值百分位动态调整定投金额
-    低估多买，高估少买，极度高估暂停
-    """
+    """智能定投（旧版，纯估值）：保留向后兼容"""
     if valuation_pct < 20:
         multiplier = 1.5
         advice = "极度低估，建议定投 1.5 倍"
@@ -61,6 +59,153 @@ def calc_smart_dca(base_amount: float, valuation_pct: float) -> dict:
         "smartAmount": round(base_amount * multiplier, 2),
         "advice": advice,
         "valuationPct": valuation_pct,
+    }
+
+
+# ═══ v9.5.123: 双因子智能定投（走势×估值） ═══
+
+# 定投倍率矩阵: DCA_MATRIX[trend_direction][valuation_tier]
+_DCA_MATRIX = {
+    # trend_direction: {valuation_tier: (multiplier, label)}
+    "up": {
+        "极低": (2.0, "最佳击球区"),
+        "低":   (1.5, "偏多+低位"),
+        "中":   (1.3, "偏多+中位"),
+        "高":   (0.8, "追高风险"),
+        "极高": (0.5, "高位追涨危险"),
+    },
+    "flat": {
+        "极低": (1.5, "低位待确认"),
+        "低":   (1.2, "低位震荡"),
+        "中":   (1.0, "标准定投"),
+        "高":   (0.7, "高位观望"),
+        "极高": (0.3, "高位少投"),
+    },
+    "down": {
+        "极低": (0.8, "低位但偏空"),
+        "低":   (0.7, "左侧控制节奏"),
+        "中":   (0.5, "偏空减半"),
+        "高":   (0.2, "偏空+高位极少"),
+        "极高": (0.0, "暂停定投"),
+    },
+}
+
+
+def _valuation_tier(nav_pct) -> str:
+    """将估值百分位映射为5档。None时返回"中"（保守默认，不做极端判断）"""
+    if nav_pct is None:
+        return "中"  # 无数据时保守处理，不给极端建议
+    # 确保是数值类型
+    try:
+        nav_pct = float(nav_pct)
+    except (TypeError, ValueError):
+        return "中"
+    if nav_pct < 15:
+        return "极低"
+    if nav_pct < 30:
+        return "低"
+    if nav_pct < 70:
+        return "中"
+    if nav_pct < 85:
+        return "高"
+    return "极高"
+
+
+def calc_smart_dca_v2(
+    trend_direction: str,
+    trend_score: int,
+    trend_confidence: int,
+    nav_percentile,
+    trend_conflict: str = "",
+    base_amount: float = 1000.0,
+) -> dict:
+    """v9.5.123: 双因子智能定投引擎（走势×估值）
+    
+    核心逻辑:
+    1. 走势方向(up/flat/down) × 估值档位(极低/低/中/高/极高) → 基准倍率
+    2. 置信度修正: confidence<50% → 倍率向1.0回归50%
+    3. 信号冲突保护: 有冲突 → 强制1.0x
+    
+    返回: {multiplier, advice, label, base_amount, smart_amount, factors}
+    """
+    # 1. 查矩阵获取基准倍率
+    val_tier = _valuation_tier(nav_percentile)
+    direction = trend_direction if trend_direction in ("up", "flat", "down") else "flat"
+    
+    base_mult, base_label = _DCA_MATRIX[direction].get(val_tier, (1.0, "标准定投"))
+    
+    # 2. 信号冲突保护：冲突时强制回归1.0
+    if trend_conflict:
+        final_mult = 1.0
+        advice = f"信号冲突({trend_conflict})，维持标准定投"
+        label = "⚖️ 1.0x 标准"
+    else:
+        # 3. 置信度修正
+        # 核心原则：不确定时应该更保守（减少偏离），而不是盲目回归1.0
+        # - 看多信号+低置信度 → 倍率从基准向下修正（别冲太猛）
+        # - 看空信号+低置信度 → 倍率从基准向上修正（别太悲观）
+        # 统一逻辑：向1.0方向回归，但保持方向不翻转
+        if trend_confidence < 50:
+            regression = (50 - trend_confidence) / 50.0  # 0~1
+            # 向1.0方向回归，回归幅度=偏离×regression×0.5
+            final_mult = base_mult + (1.0 - base_mult) * regression * 0.5
+            # 关键保护：偏空时回归后不能超过1.0（即不能变成加仓建议）
+            if base_mult < 1.0:
+                final_mult = min(final_mult, 1.0)
+            # 偏多时回归后不能低于1.0（即不能变成减仓建议）
+            if base_mult > 1.0:
+                final_mult = max(final_mult, 1.0)
+        elif trend_confidence >= 80:
+            # 高置信度允许更极端（放大偏离1.0的幅度10%）
+            deviation = base_mult - 1.0
+            final_mult = base_mult + deviation * 0.1
+        else:
+            final_mult = base_mult
+        
+        # 防御: NaN 检测（trend_confidence 异常时）
+        import math
+        if math.isnan(final_mult) or math.isinf(final_mult):
+            final_mult = 1.0
+        
+        # 确保范围 [0, 2.5]
+        final_mult = max(0.0, min(2.5, round(final_mult, 2)))
+        
+        # 生成建议文案
+        if final_mult >= 1.8:
+            advice = f"强势+低位共振，建议加大定投至 {final_mult}x"
+            label = f"🔥 {final_mult}x 加码"
+        elif final_mult >= 1.3:
+            advice = f"{base_label}，建议定投 {final_mult}x"
+            label = f"💪 {final_mult}x 加仓"
+        elif final_mult >= 0.9:
+            advice = "信号中性，维持标准节奏"
+            label = f"✋ {final_mult}x 标准"
+        elif final_mult >= 0.5:
+            advice = f"{base_label}，建议缩减至 {final_mult}x"
+            label = f"📉 {final_mult}x 减量"
+        elif final_mult > 0:
+            advice = f"高风险环境，建议极少量定投 {final_mult}x"
+            label = f"⚠️ {final_mult}x 极少"
+        else:
+            advice = "多维指标全面偏空+高位，建议暂停定投"
+            label = "🛑 暂停定投"
+    
+    return {
+        "multiplier": final_mult,
+        "advice": advice,
+        "label": label,
+        "base_amount": round(base_amount, 2),
+        "smart_amount": round(base_amount * final_mult, 2),
+        "factors": {
+            "trend_direction": direction,
+            "trend_score": trend_score,
+            "trend_confidence": trend_confidence,
+            "valuation_tier": val_tier if nav_percentile is not None else "无数据(默认中)",
+            "nav_percentile": nav_percentile,
+            "base_multiplier": base_mult,
+            "conflict": trend_conflict or None,
+            "has_valuation": nav_percentile is not None,
+        },
     }
 
 
@@ -427,7 +572,66 @@ def generate_daily_signal() -> dict:
         signal["overall"] = "STRONG_SELL"
         signal["summary"] = "🔴 强烈减仓 — 多个指标共振看空，建议止盈或暂停买入"
 
-    signal["confidence"] = min(abs(final_score), 100)
+    # FIX 2026-06-14: 置信度计算修复
+    # 旧逻辑：confidence = min(abs(final_score), 100)
+    # 问题：HOLD 时 final_score ≈ 0 → 置信度 ≈ 0%，完全不对
+    # 置信度应该衡量"这个判断有多可靠"，而不是"信号有多强"
+    # 新逻辑：基于各因子方向一致性 + 信号强度 双因子计算
+    #   1. 方向一致性：各因子加权后，有多少权重的因子方向与最终信号一致
+    #   2. 信号强度：|final_score| / 80（满分80分，对应极端信号）
+    #   最终置信度 = 一致性×0.6 + 强度×0.4，映射到 0~100
+
+    # 计算方向一致性
+    if final_score >= 0:
+        # 看多/HOLD偏多：统计权重中得分>=0的比例
+        consistent_weight = sum(w for s, w, _, _, _ in scores if s >= 0)
+    else:
+        # 看空：统计权重中得分<0的比例
+        consistent_weight = sum(w for s, w, _, _, _ in scores if s < 0)
+    consistency = consistent_weight / total_weight if total_weight > 0 else 0.5
+
+    # 信号强度
+    strength = min(abs(final_score) / 80.0, 1.0)
+
+    # 综合置信度
+    confidence = round(consistency * 60 + strength * 40, 1)
+    # 最低置信度保护：即使信号完全中性，一致性50%也至少给30分
+    confidence = max(confidence, 30.0)
+    # 异常保护：数据源全部为0时置信度不超过50
+    nonzero_count = sum(1 for s, w, _, _, _ in scores if s != 0)
+    if nonzero_count < 4:
+        confidence = min(confidence, 50.0)
+        signal["_confidence_degraded"] = f"仅{nonzero_count}个因子有有效数据"
+
+    # FIX 2026-08-09: 低置信度归因说明 —— 排查周度自检"信号可靠性偏低易误导
+    # 用户决策"的问题后发现：置信度公式本身没有算错，长期39%左右恰恰反映的是
+    # "13个维度里存在真实的多空分歧"（例如估值看空80分vs 股债性价比看多60分
+    # 同时出现），而不是数据缺失或计算bug。但产品端只展示一个孤零零的百分比，
+    # 用户看到"39%"只会觉得"这信号不靠谱"，却不知道背后到底是"分歧大"还是
+    # "数据差"。这里补充人话归因，供前端/审计/推送消费，明确区分两种低置信度：
+    #   - 分歧型（consistency低）：多空因子打架，市场处于胶着期，HOLD本身就是
+    #     该给出的合理结论，不是模型失灵
+    #   - 强度型（strength低）：各因子都不强烈，市场缺乏明确方向，同样是正常
+    #     的震荡市特征
+    # 只有 nonzero_count<4（数据源大面积缺失）才是真正的"不可信"，需要单独标注。
+    if signal.get("_confidence_degraded"):
+        confidence_note = f"⚠️ 置信度偏低：{signal['_confidence_degraded']}，建议等数据恢复后再参考"
+        confidence_reason = "data_missing"
+    elif confidence < 45:
+        if consistency < 0.6 and strength < 0.35:
+            confidence_note = "置信度偏低是因为13个维度存在明显分歧（比如估值看空但资金面看多），且各因子强度都不突出——这正说明当前市场处于多空胶着的震荡期，HOLD本身就是合理结论，不代表模型失灵"
+        elif consistency < 0.6:
+            confidence_note = "置信度偏低主要因为各维度方向分歧较大（有的看多有的看空），市场缺乏一致预期，建议降低操作频率，等信号更清晰再决策"
+        else:
+            confidence_note = "置信度偏低主要因为各维度信号强度都不突出，市场缺乏明确方向，属于正常震荡市特征"
+        confidence_reason = "market_divergence" if consistency < 0.6 else "weak_signal"
+    else:
+        confidence_note = ""
+        confidence_reason = "normal"
+    signal["confidence_note"] = confidence_note
+    signal["confidence_reason"] = confidence_reason
+
+    signal["confidence"] = confidence
     signal["score"] = round(final_score, 1)
     signal["details"] = [
         {"name": name, "score": round(s, 1), "weight": f"{w*100:.0f}%", "detail": detail, "category": cat}
@@ -593,13 +797,17 @@ def enrich(ctx):
     # 3. 解析结果
     try:
         score = result.get("weighted_score", 50)
-        signal = result.get("signal", "neutral")
-        direction = "bullish" if signal == "bullish" or score > 60 else ("bearish" if signal == "bearish" or score < 40 else "neutral")
+        sig_val = result.get("signal", "neutral")
+        overall = result.get("overall", "HOLD")
+        # FIX 2026-06-14: 使用 generate_daily_signal() 已计算好的 confidence
+        # 旧逻辑 confidence = round(abs(score - 50) + 50, 1) 也有同样问题
+        confidence = result.get("confidence", 50)
+        direction = "bullish" if overall in ("STRONG_BUY", "BUY") else ("bearish" if overall in ("STRONG_SELL", "SELL") else "neutral")
         ctx.modules_results["signal"] = {
             "available": True,
             "direction": direction,
-            "confidence": round(abs(score - 50) + 50, 1),
-            "data": {"weighted_score": score, "signal": signal, "factors": result.get("factors", {}), "masters": result.get("master_strategies", [])},
+            "confidence": confidence,
+            "data": {"weighted_score": score, "signal": sig_val, "overall": overall, "factors": result.get("factors", {}), "masters": result.get("master_strategies", [])},
             "cost": "cpu",
         }
         ctx.modules_called.append("signal")

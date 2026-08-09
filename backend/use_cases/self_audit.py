@@ -298,12 +298,23 @@ def run_smoke_tests() -> list[dict[str, Any]]:
         confidence = sig.get("confidence", 0) if isinstance(sig, dict) else 0
         overall = sig.get("overall", "UNKNOWN") if isinstance(sig, dict) else "UNKNOWN"
         # FIX 2026-06-14: 增加置信度检查，修复旧逻辑中 HOLD 置信度≈0 的 bug
+        # FIX 2026-08-09: 排查发现 confidence 长期在30~45%左右并非计算bug，而是
+        # signal.py 新增的confidence_reason 字段能明确归因（多空分歧/信号弱/
+        # 数据缺失）。只有 data_missing 才是真正的数据问题，market_divergence/
+        # weak_signal 是震荡市的正常特征，不应告警，否则每周都会误报。
+        confidence_reason = sig.get("confidence_reason", "") if isinstance(sig, dict) else ""
         if not isinstance(sig, dict):
             results.append({"name": "13维信号", "status": "fail", "value_summary": str(sig)[:80], "issue": "返回非 dict", "elapsed_ms": elapsed})
+        elif confidence_reason == "data_missing":
+            results.append({"name": "13维信号", "status": "warn", "value_summary": f"overall={overall}, confidence={confidence}%, reason={confidence_reason}", "issue": sig.get("confidence_note", "数据源缺失"), "elapsed_ms": elapsed})
         elif confidence < 20:
             results.append({"name": "13维信号", "status": "warn", "value_summary": f"overall={overall}, confidence={confidence}%", "issue": f"置信度异常低({confidence}%)，可能存在计算bug", "elapsed_ms": elapsed})
         elif confidence >= 20 and -100 <= score <= 100:
-            results.append({"name": "13维信号", "status": "pass", "value_summary": f"overall={overall}, score={score}, confidence={confidence}%", "issue": "", "elapsed_ms": elapsed})
+            note = sig.get("confidence_note", "") if isinstance(sig, dict) else ""
+            summary = f"overall={overall}, score={score}, confidence={confidence}%, reason={confidence_reason or 'normal'}"
+            if note:
+                summary += f", note={note}"
+            results.append({"name": "13维信号", "status": "pass", "value_summary": summary, "issue": "", "elapsed_ms": elapsed})
         else:
             results.append({"name": "13维信号", "status": "warn", "value_summary": f"score={score}, confidence={confidence}", "issue": f"score={score} 或 confidence={confidence} 异常", "elapsed_ms": elapsed})
     except Exception as e:
