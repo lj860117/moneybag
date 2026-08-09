@@ -108,12 +108,12 @@ def step_parallel_modules(ctx: DecisionContext) -> DecisionContext:
                 with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
                     future = executor.submit(enrich_fn, ctx)
                     try:
-                        ctx = future.result(timeout=8)
+                        ctx = future.result(timeout=15)  # FIX: 8s→15s，stock_screen 等模块数据量大时 8s 不够
                     except concurrent.futures.TimeoutError:
-                        raise _ModuleTimeout("timeout 8s")
+                        raise _ModuleTimeout("timeout 15s")
             except _ModuleTimeout:
-                err_msg = "timeout 8s"
-                print(f"[PIPELINE] module {name}.enrich() timeout 8s, skipped")
+                err_msg = "timeout 15s"
+                print(f"[PIPELINE] module {name}.enrich() timeout 15s, skipped")
                 ctx.modules_results[name] = {"available": False, "error": err_msg}
                 ctx.modules_errors[name] = err_msg
             except Exception as e:
@@ -436,9 +436,69 @@ def step_risk_firewall(ctx: DecisionContext) -> DecisionContext:
     
     if not ctx.risk_level:
         ctx.risk_level = "normal"
-    
+
+    # v9.5.44 修复：检查市场估值，如 >= 85% 则升级 risk_level
+    # FIX 2026-08-09: 从服务器版本合并回本地（发现本地/服务器代码漂移时，
+    # 服务器上这段逻辑正在生产环境生效，本地版本一直缺失）
+    _check_valuation_risk(ctx)
+
     ctx.pipeline_steps.append("risk_firewall")
     return ctx
+
+
+def _check_valuation_risk(ctx: DecisionContext) -> None:
+    """
+    检查市场估值风险
+    如估值百分位 >= 85%，升级 risk_level 并添加 alert
+    """
+    # 从 ctx 中提取估值百分位
+    val_pct = _extract_valuation_pct(ctx)
+
+    if val_pct is None:
+        return
+
+    # 估值 >= 85% 属于高位
+    if val_pct >= 85:
+        # 升级 risk_level
+        if ctx.risk_level == "normal":
+            ctx.risk_level = "warning"
+            ctx.risk_alerts.append({
+                "source": "valuation_check",
+                "level": "warning",
+                "msg": f"市场估值偏高（分位{val_pct:.0f}%），建议谨慎",
+            })
+        elif ctx.risk_level == "warning" and not getattr(ctx, 'risk_override', False):
+            # 已经是 warning，但添加估值 alert
+            ctx.risk_alerts.append({
+                "source": "valuation_check",
+                "level": "warning",
+                "msg": f"市场估值偏高（分位{val_pct:.0f}%），注意风险",
+            })
+
+
+def _extract_valuation_pct(ctx: DecisionContext) -> float:
+    """从 ctx 中提取估值百分位"""
+    # 尝试从 modules_results 中获取
+    if hasattr(ctx, 'modules_results') and isinstance(ctx.modules_results, dict):
+        # 检查 market_valuation 模块
+        if 'market_valuation' in ctx.modules_results:
+            val_data = ctx.modules_results['market_valuation']
+            if isinstance(val_data, dict):
+                return val_data.get('pct', None)
+
+        # 检查 unified 数据
+        if 'unified' in ctx.modules_results:
+            unified = ctx.modules_results['unified']
+            if isinstance(unified, dict):
+                return unified.get('val_pct', unified.get('valuation_pct', None))
+
+    # 尝试从 ctx 直接获取
+    if hasattr(ctx, 'val_pct'):
+        return ctx.val_pct
+    if hasattr(ctx, 'valuation_pct'):
+        return ctx.valuation_pct
+
+    return None
 
 
 def step_output(ctx: DecisionContext) -> DecisionContext:

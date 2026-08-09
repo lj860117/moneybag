@@ -31,18 +31,21 @@ MODULE_META = {
 from services.stock_monitor import load_stock_holdings
 from services.fund_monitor import load_fund_holdings
 from services.persistence import load_user as _persistence_load_user
+from infra.cache import MemoryCache
 
 # ---- 缓存 ----
-_NW_CACHE = {}  # userId -> {data, ts}
-_NW_CACHE_TTL = 120  # 2 分钟
+# FIX 2026-08-09: 统一改用项目通用的 MemoryCache（跟其余17个模块一致的迁移，
+# 见 2026-08-09 漂移排查），此前退化成普通 dict 没有 TTL 自动过期/LRU/线程安全保护
+_NW_CACHE = MemoryCache(default_ttl=120)
 
 
 def invalidate_networth_cache(user_id: str = ""):
     """清除指定用户的净资产缓存（资产变更后调用）"""
-    if user_id and user_id in _NW_CACHE:
-        del _NW_CACHE[user_id]
-    elif not user_id:
+    if user_id:
+        _NW_CACHE.delete(user_id)
+    else:
         _NW_CACHE.clear()
+
 
 
 def _load_user_data(user_id: str) -> dict:
@@ -70,10 +73,10 @@ def calc_unified_networth(user_id: str, force: bool = False) -> dict:
     记账只作为现金流参考展示
     """
     # 缓存检查
-    if not force and user_id in _NW_CACHE:
-        cached = _NW_CACHE[user_id]
-        if time.time() - cached["ts"] < _NW_CACHE_TTL:
-            return cached["data"]
+    if not force:
+        cached = _NW_CACHE.get(user_id)
+        if cached is not None:
+            return cached
 
     # ---- 1. 股票持仓市值（盯盘系统） ----
     stock_holdings = load_stock_holdings(user_id)
@@ -94,6 +97,7 @@ def calc_unified_networth(user_id: str, force: bool = False) -> dict:
             "currentPrice": current_price,
             "marketValue": round(mv, 2),
             "pnl": round(mv - cost_price * shares, 2) if cost_price > 0 else 0,
+            "pnlPct": round((current_price - cost_price) / cost_price * 100, 2) if cost_price > 0 else 0,
         })
 
     # ---- 2. 基金持仓市值（盯盘系统） ----
@@ -116,6 +120,7 @@ def calc_unified_networth(user_id: str, force: bool = False) -> dict:
                 pass
         mv = current_nav * shares
         fund_total += mv
+        cost_total_fund = cost_nav * shares if cost_nav > 0 else 0
         fund_items.append({
             "code": code,
             "name": h.get("name", ""),
@@ -123,6 +128,8 @@ def calc_unified_networth(user_id: str, force: bool = False) -> dict:
             "costNav": cost_nav,
             "currentNav": round(current_nav, 4),
             "marketValue": round(mv, 2),
+            "pnl": round(mv - cost_total_fund, 2) if cost_total_fund > 0 else 0,
+            "pnlPct": round((mv - cost_total_fund) / cost_total_fund * 100, 2) if cost_total_fund > 0 else 0,
         })
 
     # ---- 3. 手动资产（资产管理页添加的） ----
@@ -154,8 +161,11 @@ def calc_unified_networth(user_id: str, force: bool = False) -> dict:
         buckets[a_type]["total"] += val
 
     # ---- 4. 基金交易流水持仓（V4 旧系统，非盯盘系统） ----
+    # v9.5.15: 之前这里只累加 totalCost（成本），所以净值涨跌不反映
+    #          现在按"shares × 当前净值"算市值，与上面 fund_holdings 分支一致
     txn_fund_total = 0
     txn_fund_count = 0  # 统计V4交易流水中的活跃基金数量
+    txn_fund_items = []
     transactions = portfolio.get("transactions", [])
     if transactions:
         # 如果有交易流水但没在盯盘系统，也算进来
@@ -164,9 +174,37 @@ def calc_unified_networth(user_id: str, force: bool = False) -> dict:
         # 只算盯盘系统里没有的基金
         fund_codes_in_monitor = {f.get("code", "") for f in fund_holdings}
         for h in holdings_result.get("active", []):
-            if h["code"] not in fund_codes_in_monitor:
-                txn_fund_total += h.get("totalCost", 0)
-                txn_fund_count += 1
+            code = h.get("code", "")
+            if code in fund_codes_in_monitor:
+                continue
+            shares = h.get("shares", 0) or 0
+            cost = h.get("totalCost", 0) or 0
+            # v9.5.119: 字段名是 avgNav（来自 portfolio_calc），不是 avgPrice
+            avg_price = h.get("avgNav", 0) or h.get("avgPrice", 0) or 0
+            # 跳过非 6 位数字 code（如"余额宝"现金类，按 cost 算）
+            is_fundcode = code and code.isdigit() and len(code) == 6
+            current_nav = avg_price  # 默认成本价
+            if is_fundcode and shares > 0:
+                try:
+                    from services.market_data import get_fund_nav
+                    nav_info = get_fund_nav(code)
+                    if nav_info and nav_info.get("nav") not in ("N/A", None, ""):
+                        current_nav = float(nav_info["nav"])
+                except Exception:
+                    pass
+            mv = round(current_nav * shares, 2) if shares > 0 else cost
+            txn_fund_total += mv
+            txn_fund_count += 1
+            txn_fund_items.append({
+                "code": code,
+                "name": h.get("name", code),
+                "shares": shares,
+                "costNav": avg_price,
+                "currentNav": round(current_nav, 4),
+                "marketValue": mv,
+                "pnl": round(mv - cost, 2),
+                "pnlPct": round((mv - cost) / cost * 100, 2) if cost > 0 else 0,
+            })
 
     # ---- 5. 记账收支（仅展示参考，不计入净资产防重复） ----
     ledger = user_data.get("ledger") or []
@@ -260,6 +298,7 @@ def calc_unified_networth(user_id: str, force: bool = False) -> dict:
                 "fundCount": len(fund_items) + txn_fund_count,  # 合并盯盘+V4交易两个来源
                 "stockItems": stock_items[:10],  # 前端展示最多 10 只
                 "fundItems": fund_items[:10],
+                "txnFundItems": txn_fund_items[:10],  # v9.5.15: 暴露 V4 流水基金明细
             },
             "cash": {"total": round(buckets["cash"]["total"], 2), "items": buckets["cash"]["items"]},
             "property": {"total": round(buckets["property"]["total"], 2), "items": buckets["property"]["items"]},
@@ -283,6 +322,6 @@ def calc_unified_networth(user_id: str, force: bool = False) -> dict:
     }
 
     # 写缓存
-    _NW_CACHE[user_id] = {"data": result, "ts": time.time()}
+    _NW_CACHE.set(user_id, result)
 
     return result

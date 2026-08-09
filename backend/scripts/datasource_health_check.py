@@ -47,6 +47,12 @@ HEALTH_CHECKS = [
     {"name": "恒指日线(新浪)", "source": "akshare", "func": "stock_hk_index_daily_sina",
      "args": {"symbol": "HSI"}, "expect": "rows > 100"},
 
+    # 降级备份：用 stock_zh_a_spot（带缓存+超时控制）替代 stock_zh_a_spot_em，
+    # 避开东方财富接口偶发限流/封禁。critical=False，失败不影响整体健康结论。
+    {"name": "[降级]实时行情(优化)", "source": "akshare_optimized", "func": "optimized_stock_spot",
+     "args": {"use_cache": True, "timeout": 30}, "expect": "rows > 100",
+     "critical": False, "note": "带缓存和超时控制"},
+
     # === Tushare（付费 API，稳定，每次间隔 0.3s）===
     {"name": "股票日线", "source": "tushare", "api_name": "daily",
      "params": {"ts_code": "000001.SZ", "limit": 1}, "expect": "rows > 0"},
@@ -102,6 +108,37 @@ def _check_akshare(check: dict) -> dict:
         else:
             ok = data is not None and len(data) > 0
             detail = f"{len(data)} 行" if data is not None else "None"
+
+        return {"ok": ok, "detail": detail}
+    except Exception as e:
+        return {"ok": False, "detail": f"异常: {str(e)[:80]}"}
+
+
+def _check_akshare_optimized(check: dict) -> dict:
+    """检查 AKShare 接口（使用优化包装器：带缓存+超时控制）
+
+    FIX 2026-08-09: 从服务器版本合并回本地（该检查项配置在服务器
+    HEALTH_CHECKS 里一直生效，本地代码库此前缺失这个分支和依赖模块，
+    补齐 scripts/akshare_optimized.py 后一并合并这里的调度逻辑，
+    保持本地 dict 返回风格（{"ok":..,"detail":..}）与其余分支一致。
+    """
+    try:
+        from scripts.akshare_optimized import optimized_stock_spot
+
+        args = check.get("args", {})
+        data = optimized_stock_spot(**args)
+
+        if data is None:
+            return {"ok": False, "detail": "调用失败或超时"}
+
+        if check["expect"].startswith("rows"):
+            row_count = len(data) if data is not None else 0
+            threshold = int(check["expect"].split(">")[1].strip())
+            ok = row_count > threshold
+            detail = f"{row_count} 行"
+        else:
+            ok = data is not None and len(data) > 0
+            detail = "有数据" if ok else "无数据"
 
         return {"ok": ok, "detail": detail}
     except Exception as e:
@@ -167,6 +204,8 @@ def run_health_check() -> list:
         # 执行检查
         if source == "akshare":
             result = _check_akshare(check)
+        elif source == "akshare_optimized":
+            result = _check_akshare_optimized(check)
         elif source == "tushare":
             result = _check_tushare(check)
         else:
