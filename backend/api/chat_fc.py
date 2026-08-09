@@ -546,11 +546,103 @@ def _tool_get_weekly_report(user_id: str, weeks_ago: int = 1) -> str:
 # FC Agent 循环（流式）
 # ========================================================
 
+def _fc_call_with_fallback(model: str, messages: list, max_tokens: int = 1200) -> tuple[dict, str, bool]:
+    """v9.5.70: Function Calling 三层降级
+    返回 (data, actual_model, fallback_used)
+    - data: API 返回的 JSON（choices 等）
+    - actual_model: 实际成功的模型 ID
+    - fallback_used: 是否触发了降级
+    抛出 RuntimeError 表示所有 provider 都失败。
+    """
+    def _route(m: str) -> tuple[str, str, str]:
+        """返回 (api_key, api_base, provider)"""
+        if m.startswith("qwen"):
+            return (os.environ.get("DASHSCOPE_API_KEY", ""),
+                    os.environ.get("DASHSCOPE_API_BASE", "https://dashscope.aliyuncs.com/compatible-mode/v1"), "qwen")
+        if m.startswith("doubao") or m.startswith("ep-"):
+            return (os.environ.get("DOUBAO_API_KEY", "") or os.environ.get("ARK_API_KEY", ""),
+                    os.environ.get("DOUBAO_API_BASE", os.environ.get("ARK_API_BASE", "https://ark.cn-beijing.volces.com/api/v3")), "doubao")
+        return (os.environ.get("LLM_API_KEY", "") or os.environ.get("OPENAI_API_KEY", ""),
+                os.environ.get("LLM_API_BASE", "https://api.deepseek.com/v1"), "deepseek")
+
+    def _do(use_model: str, use_key: str, use_base: str) -> tuple[int, any]:
+        with httpx.Client(timeout=60) as client:
+            r = client.post(
+                f"{use_base}/chat/completions",
+                headers={"Authorization": f"Bearer {use_key}", "Content-Type": "application/json"},
+                json={
+                    "model": use_model, "messages": messages,
+                    "tools": TOOLS, "tool_choice": "auto",
+                    "max_tokens": max_tokens, "temperature": 0.7, "stream": False,
+                },
+            )
+            if r.status_code == 200:
+                return r.status_code, r.json()
+            return r.status_code, r.text[:500]
+
+    # L1: 主模型
+    api_key, api_base, provider = _route(model)
+    if not api_key:
+        # 主 key 没配，直接尝试 L2
+        primary_err = f"{provider} api_key 未配置"
+    else:
+        try:
+            status, payload = _do(model, api_key, api_base)
+            if status == 200:
+                return payload, model, False
+            primary_err = f"HTTP {status}: {str(payload)[:200]}"
+        except Exception as e:
+            primary_err = str(e)
+    print(f"[FC_AGENT] {provider} {model} 失败: {primary_err}")
+
+    # L2: 豆包（只有主模型是 deepseek 时才降级到豆包）
+    if provider == "deepseek":
+        doubao_key = os.environ.get("DOUBAO_API_KEY", "")
+        if doubao_key:
+            # FC 场景永远用 Lite 或 Pro（Mini 工具调用准确率低）
+            DOUBAO_MAP = {
+                "deepseek-reasoner": "doubao-seed-2-0-pro-260215",
+                "deepseek-v4-pro": "doubao-seed-2-0-pro-260215",
+                "deepseek-v4-flash": "doubao-seed-2-0-lite-260215",   # FC 必须用 Lite
+            }
+            l2_model = DOUBAO_MAP.get(model, "doubao-seed-2-0-lite-260215")
+            print(f"[FC_AGENT] 降级路由(L2): {model} → {l2_model}")
+            try:
+                status, payload = _do(l2_model, doubao_key, os.environ.get("DOUBAO_API_BASE", os.environ.get("ARK_API_BASE", "https://ark.cn-beijing.volces.com/api/v3")))
+                if status == 200:
+                    print(f"[FC_AGENT] ✅ 豆包降级成功 ({l2_model})")
+                    return payload, l2_model, True
+                print(f"[FC_AGENT] 豆包失败 HTTP {status}: {str(payload)[:200]}")
+            except Exception as e:
+                print(f"[FC_AGENT] 豆包异常: {e}")
+
+    # L3: 千问（最终兜底）
+    qwen_key = os.environ.get("DASHSCOPE_API_KEY", "")
+    if qwen_key and not model.startswith("qwen"):
+        QWEN_MAP = {
+            "deepseek-reasoner": "qwen3.6-plus",
+            "deepseek-v4-pro": "qwen3.6-plus",
+            "deepseek-v4-flash": "qwen3.6-plus",  # FC 用 Plus 确保工具调用准确
+        }
+        l3_model = QWEN_MAP.get(model, "qwen3.6-plus")
+        print(f"[FC_AGENT] 降级路由(L3): → {l3_model}")
+        try:
+            status, payload = _do(l3_model, qwen_key, os.environ.get("DASHSCOPE_API_BASE", "https://dashscope.aliyuncs.com/compatible-mode/v1"))
+            if status == 200:
+                print(f"[FC_AGENT] ✅ 千问降级成功 ({l3_model})")
+                return payload, l3_model, True
+            print(f"[FC_AGENT] 千问失败 HTTP {status}: {str(payload)[:200]}")
+        except Exception as e:
+            print(f"[FC_AGENT] 千问异常: {e}")
+
+    raise RuntimeError(f"所有 provider 都失败，主错: {primary_err}")
+
+
 def run_fc_agent_stream(
     user_msg: str,
     system_prompt: str,
     user_id: str,
-    model: str = "deepseek-v4-flash",
+    model: str = "",
     history: list | None = None,
     max_rounds: int = 4,
 ) -> Iterator[dict]:
@@ -563,12 +655,21 @@ def run_fc_agent_stream(
       最多循环 max_rounds 次防止死循环。
 
     自我纠正：工具返回"数据不可用/失败/无结果"时，自动注入提示让 LLM 用 search_web 补充。
+
+    v9.5.70: 接入三层降级 — DeepSeek 失败时自动降级到豆包 Lite/Pro，再失败到千问 Plus
     """
-    api_key = os.environ.get("LLM_API_KEY", "") or os.environ.get("OPENAI_API_KEY", "")
-    api_base = os.environ.get("LLM_API_BASE", "https://api.deepseek.com/v1")
-    if not api_key:
-        yield {"delta": "AI 暂时不可用（API Key 未配置）", "done": True, "source": "error"}
+    if not model:
+        from services.llm_gateway import resolve_default_model
+        model = resolve_default_model("llm_light", module="chat_fc")
+
+    # 至少要有一个 provider 的 key
+    if not (os.environ.get("LLM_API_KEY") or os.environ.get("DOUBAO_API_KEY") or os.environ.get("DASHSCOPE_API_KEY")):
+        yield {"delta": "AI 暂时不可用（所有 API Key 未配置）", "done": True, "source": "error"}
         return
+
+    # 跟踪本轮使用的模型（用于 done 事件透传）
+    _final_model = model
+    _any_fallback = False
 
     # 构建初始 messages
     messages = []
@@ -584,26 +685,16 @@ def run_fc_agent_stream(
 
     for round_num in range(max_rounds):
         try:
-            with httpx.Client(timeout=60) as client:
-                resp = client.post(
-                    f"{api_base}/chat/completions",
-                    headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
-                    json={
-                        "model": model,
-                        "messages": messages,
-                        "tools": TOOLS,
-                        "tool_choice": "auto",
-                        "max_tokens": 1200,
-                        "temperature": 0.7,
-                        "stream": False,  # FC 先用非流式，拿到 tool_calls 后再流式
-                    },
-                )
-
-            if resp.status_code != 200:
-                yield {"delta": f"API 错误 {resp.status_code}", "done": True, "source": "error"}
+            # v9.5.70: 用三层降级封装替代直接 httpx
+            try:
+                data, actual_model, fallback_used = _fc_call_with_fallback(model, messages, max_tokens=1200)
+                _final_model = actual_model
+                if fallback_used:
+                    _any_fallback = True
+            except RuntimeError as fb_err:
+                yield {"delta": f"AI 暂时不可用（所有模型都失败）", "done": True, "source": "error"}
                 return
 
-            data = resp.json()
             choice = data.get("choices", [{}])[0]
             message = choice.get("message", {})
             finish_reason = choice.get("finish_reason", "stop")
@@ -701,7 +792,13 @@ def run_fc_agent_stream(
                         "phase": "answering",
                         "source": "ai",
                     }
-                yield {"delta": "", "done": True, "source": "ai", "served_by": "fc_agent"}
+                # v9.5.70: done 事件透传实际模型 + 降级标志
+                yield {
+                    "delta": "", "done": True, "source": "ai",
+                    "served_by": "fc_agent",
+                    "model": _final_model,
+                    "fallback_used": _any_fallback,
+                }
                 return
 
             # 空回复，退出
@@ -714,7 +811,8 @@ def run_fc_agent_stream(
             return
 
     # 超出最大轮次
-    yield {"delta": "（工具调用轮次超限）", "done": True, "source": "error"}
+    yield {"delta": "（工具调用轮次超限）", "done": True, "source": "error",
+           "model": _final_model, "fallback_used": _any_fallback}
 
 
 # ========================================================

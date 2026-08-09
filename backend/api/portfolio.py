@@ -457,10 +457,12 @@ def calc_portfolio_pnl(portfolio: Portfolio):
         total_cost += cost
 
         nav_info = get_fund_nav(h.code) if h.code != "余额宝" else None
+        is_estimate = False
         if nav_info and nav_info["nav"] != "N/A":
             current_nav = float(nav_info["nav"])
             nav_date = nav_info["date"]
             change_pct = float(nav_info.get("change", "0"))
+            is_estimate = bool(nav_info.get("is_estimate"))
         else:
             if h.buyDate:
                 try:
@@ -534,6 +536,7 @@ def calc_portfolio_pnl(portfolio: Portfolio):
             "nav": current_nav,
             "navDate": nav_date,
             "dayChange": change_pct,
+            "isEstimate": is_estimate,  # v9.5.115: 是否盘中估值（与支付宝一致）
         })
 
     total_pnl = total_market - total_cost
@@ -605,6 +608,24 @@ def family_portfolio_summary(userId: str = ""):
             inv = nw.get("breakdown", {}).get("investment", {})
             cash = nw.get("breakdown", {}).get("cash", {}).get("total", 0)
             liab = nw.get("breakdown", {}).get("liability", {}).get("total", 0)
+            # v9.5.15: 计算该成员的投资盈亏（fundItems + stockItems + txnFundItems）
+            items = (inv.get("fundItems") or []) + (inv.get("stockItems") or []) + (inv.get("txnFundItems") or [])
+            total_cost = 0; total_mv = 0
+            for it in items:
+                mv = it.get("marketValue", 0) or 0
+                shares = it.get("shares", 0) or 0
+                # txnFundItems 已自带 pnl 字段，直接用；其它从 cost*shares 算
+                if "pnl" in it and shares > 0:
+                    cost = mv - (it.get("pnl") or 0)
+                elif "costNav" in it and shares > 0:
+                    cost = (it.get("costNav") or 0) * shares
+                elif "costPrice" in it and shares > 0:
+                    cost = (it.get("costPrice") or 0) * shares
+                else:
+                    cost = mv  # 没成本数据 → 盈亏 0
+                total_cost += cost; total_mv += mv
+            pnl = round(total_mv - total_cost, 2)
+            pnl_pct = round((total_mv - total_cost) / total_cost * 100, 2) if total_cost > 0 else 0
             members.append({
                 "userId": mid,
                 "stockTotal": inv.get("stockTotal", 0),
@@ -615,9 +636,25 @@ def family_portfolio_summary(userId: str = ""):
                 "netWorth": nw.get("netWorth", 0),
                 "stockCount": inv.get("stockCount", 0),
                 "fundCount": inv.get("fundCount", 0),
+                "pnl": pnl,
+                "pnlPct": pnl_pct,
+                # v9.5.16: 家庭成员持仓明细，前端弹窗显示对方有哪些基金 + 涨幅
+                "holdings": [
+                    {
+                        "code": it.get("code", ""),
+                        "name": it.get("name", ""),
+                        "marketValue": round(it.get("marketValue", 0) or 0, 2),
+                        "pnl": round(it.get("pnl", 0) or 0, 2),
+                        "pnlPct": round(it.get("pnlPct", 0) or 0, 2),
+                        "type": "stock" if "costPrice" in it else "fund",
+                    }
+                    for it in sorted(items, key=lambda x: -(x.get("marketValue", 0) or 0))[:20]
+                    if (it.get("marketValue", 0) or 0) > 0
+                ],
             })
-        except Exception:
-            members.append({"userId": mid, "investTotal": 0, "stockTotal": 0, "fundTotal": 0, "cashTotal": 0, "liabilityTotal": 0, "netWorth": 0, "stockCount": 0, "fundCount": 0})
+        except Exception as e:
+            print(f"[FAMILY] {mid} skip: {e}")
+            members.append({"userId": mid, "investTotal": 0, "stockTotal": 0, "fundTotal": 0, "cashTotal": 0, "liabilityTotal": 0, "netWorth": 0, "stockCount": 0, "fundCount": 0, "pnl": 0, "pnlPct": 0, "holdings": []})
 
     family_invest = sum(m["investTotal"] for m in members)
     family_net = sum(m["netWorth"] for m in members)

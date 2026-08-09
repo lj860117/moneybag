@@ -2,10 +2,9 @@
 let insightTab='overview';
 function _insightTabs(){
 const all=[
-['overview','📊 总览'],['fundpick','🔍 选基'],['stockpick','🧠 选股'],['decisions','🎯 决策复盘'],['sector','🔥 行业'],['broker','🏛️ 研报'],['scenario','🎭 情景'],['news','📰 新闻'],['policy','🏛️ 政策'],['tech','📈 技术'],['macro','📊 宏观'],['global','🌐 全球'],['signals','📡 信号'],['scorecard','📊 成绩单'],['doctor','🏥 体检'],['steward','🤖 管家'],['factorictest','🔬 因子检验'],['montecarlo','🎲 蒙特卡洛'],['geneticfactor','🧬 遗传因子'],['optimizer','⚡ 组合优化'],['altdata','📡 另类数据'],['rlposition','🎮 RL仓位'],['llmfactor','🧠 LLM因子'],['weekly','📋 周报']];
-const simple=['overview','fundpick','stockpick','decisions','news','doctor'];
-return isProMode()?all:all.filter(t=>simple.includes(t[0]))}
-async function renderInsight(){currentPage='insight';renderNav();const tabs=_insightTabs();
+['overview','📊 总览'],['fundpick','🔍 选基'],['stockpick','🧠 选股'],['longterm','♾️ 长持'],['ipo','🚀 IPO'],['decisions','🎯 决策复盘'],['sector','🔥 行业'],['broker','🏛️ 研报'],['scenario','🎭 情景'],['news','📰 新闻'],['policy','🏛️ 政策'],['tech','📈 技术'],['macro','📊 宏观'],['global','🌐 全球'],['signals','📡 信号'],['scorecard','📊 成绩单'],['doctor','🏥 体检'],['steward','🤖 管家'],['factorictest','🔬 因子检验'],['montecarlo','🎲 蒙特卡洛'],['geneticfactor','🧬 遗传因子'],['optimizer','⚡ 组合优化'],['altdata','📡 另类数据'],['rlposition','🎮 RL仓位'],['llmfactor','🧠 LLM因子'],['weekly','📋 周报']];
+const simple=['overview','fundpick','stockpick','longterm','ipo','decisions','news','doctor'];
+return isProMode()?all:all.filter(t=>simple.includes(t[0]))}async function renderInsight(){currentPage='insight';renderNav();const tabs=_insightTabs();
 $('#app').innerHTML=`<div class="insight-page fade-up"><div class="insight-header"><h2>📰 市场资讯</h2><p>${API_AVAILABLE?'实时数据更新中':'后端离线'} <button onclick="runDataAudit()" style="background:rgba(245,158,11,.15);border:1px solid rgba(245,158,11,.3);border-radius:6px;padding:2px 8px;font-size:11px;color:#F59E0B;cursor:pointer;margin-left:4px" id="auditBtn">🔍 数据体检</button></p></div><div class="section-tab-bar" id="insightTabBar">${tabs.map(t=>`<button class="section-tab ${insightTab===t[0]?'active':''}" data-tab="${t[0]}" onclick="insightTab='${t[0]}';renderInsight()">${t[1]}</button>`).join('')}</div>${insightTab!=='overview'?`<div style="display:flex;align-items:center;gap:8px;padding:8px 16px 0;flex-wrap:wrap"><button onclick="insightTab='overview';renderInsight()" style="display:inline-flex;align-items:center;gap:4px;font-size:11px;padding:4px 10px;border-radius:20px;border:0.5px solid rgba(255,255,255,.12);background:rgba(255,255,255,.05);color:var(--text2,#7A8499);cursor:pointer">← 资讯首页</button><button onclick="navigateTo('landing')" style="display:inline-flex;align-items:center;gap:4px;font-size:11px;padding:4px 10px;border-radius:20px;border:0.5px solid rgba(255,255,255,.12);background:rgba(255,255,255,.05);color:var(--text2,#7A8499);cursor:pointer">🏠 App首页</button></div>`:''}<div id="insightContent"><div style="text-align:center;padding:40px;color:var(--text2)"><div class="loading-spinner" style="width:32px;height:32px;margin:0 auto 12px;border-width:3px"></div><div id="loadingMsg" style="margin-top:8px">正在加载市场数据...</div><div style="font-size:12px;color:var(--text3,#94a3b8);margin-top:8px">☁️ 免费云服务器，首次加载可能需要 10~30 秒</div></div></div></div>`;
 // Tab栏自动滚动到选中位置
 setTimeout(()=>{const bar=document.getElementById('insightTabBar');const active=bar&&bar.querySelector('.section-tab.active');if(active&&bar){active.scrollIntoView({behavior:'smooth',inline:'center',block:'nearest'})}},50);
@@ -17,6 +16,7 @@ if(insightTab==='scenario'){const el=document.getElementById('insightContent');i
 if(insightTab==='decisions'){const el=document.getElementById('insightContent');if(el)renderDecisionsTab(el);return}
 if(insightTab==='fundpick'){const el=document.getElementById('insightContent');if(el)renderFundPick(el);return}
 if(insightTab==='stockpick'){const el=document.getElementById('insightContent');if(el)renderStockPick(el);return}
+if(insightTab==='longterm'){const el=document.getElementById('insightContent');if(el)renderLongtermScreen(el);return}
 if(insightTab==='factorictest'){const el=document.getElementById('insightContent');if(el)renderFactorIC(el);return}
 if(insightTab==='montecarlo'){const el=document.getElementById('insightContent');if(el)renderMonteCarlo(el);return}
 if(insightTab==='geneticfactor'){const el=document.getElementById('insightContent');if(el)renderGeneticFactor(el);return}
@@ -29,6 +29,7 @@ if(insightTab==='scorecard'){const el=document.getElementById('insightContent');
 if(insightTab==='doctor'){const el=document.getElementById('insightContent');if(el)renderDoctor(el);return}
 if(insightTab==='steward'){const el=document.getElementById('insightContent');if(el)renderSteward(el);return}
 if(insightTab==='weekly'){const el=document.getElementById('insightContent');if(el)renderWeeklyReport(el);return}
+if(insightTab==='ipo'){const el=document.getElementById('insightContent');if(el)renderIpoWatch(el);return}
 if(insightTab==='policy'){const el=document.getElementById('insightContent');if(el)renderInsightPolicy(el);return}
 if(insightTab==='news'){const el=document.getElementById('insightContent');if(el){const cached=getCached('news');if(cached){renderInsightNews(el,{news:cached.news||[]});return}el.innerHTML='<div style="text-align:center;padding:20px;color:var(--text2)"><div class="loading-spinner" style="width:24px;height:24px;margin:0 auto 8px;border-width:2px"></div>加载新闻中...</div>';try{const r=await fetch(API_BASE+'/news',{signal:AbortSignal.timeout(15000)});if(r.ok){const d=await r.json();setCached('news',d);renderInsightNews(el,{news:d.news||[]});}else{el.innerHTML='<div style="text-align:center;padding:40px;color:var(--text2)">新闻加载失败<br><button onclick="renderInsight()" style="margin-top:8px;padding:6px 16px;border-radius:8px;border:none;background:var(--accent);color:#fff;cursor:pointer">🔄 重试</button></div>';}}catch(e){el.innerHTML='<div style="text-align:center;padding:40px;color:var(--text2)">新闻加载超时<br><button onclick="renderInsight()" style="margin-top:8px;padding:6px 16px;border-radius:8px;border:none;background:var(--accent);color:#fff;cursor:pointer">🔄 重试</button></div>';}}return}
 // 需要 dashboard 的 tab: overview / tech / macro
@@ -193,9 +194,25 @@ fetch(API_BASE+'/news/impact',{signal:AbortSignal.timeout(30000)}).then(r=>r.jso
 
 function renderInsightNews(el,d){
 const news=d.news||[];
-// 情绪/影响标签匹配（增强版7类）
-const tagMap=[{kw:['降息','降准','宽松','LPR','利好','上涨','增持','加仓','反弹'],tag:'🟢 利好',color:'var(--green)'},{kw:['加息','收紧','缩表','利空','下跌','减持','暴跌','回调'],tag:'🔴 利空',color:'var(--red)'},{kw:['关税','制裁','贸易战','中美'],tag:'⚠️ 贸易',color:'#F59E0B'},{kw:['战争','冲突','地缘','中东','俄乌'],tag:'🛡️ 地缘',color:'#F59E0B'},{kw:['半导体','芯片','AI','科技','人工智能'],tag:'🚀 科技',color:'var(--blue)'},{kw:['房地产','楼市','房价','限购'],tag:'🏠 地产',color:'#A78BFA'},{kw:['央行','货币','MLF','逆回购'],tag:'🏦 央行',color:'#06B6D4'}];
-function getTag(title){for(const t of tagMap){if(t.kw.some(k=>title.includes(k)))return t}return null}
+// IPO观察公司名单（用于新闻自动标注）
+const IPO_NAMES=['长鑫科技','长江存储','xAI','SpaceX','Starlink','星链','字节跳动','TikTok','抖音上市','Bytedance'];
+// 情绪/影响标签匹配（增强版8类，含IPO）
+const tagMap=[
+  {kw:['降息','降准','宽松','LPR','利好','上涨','增持','加仓','反弹'],tag:'🟢 利好',color:'var(--green)'},
+  {kw:['加息','收紧','缩表','利空','下跌','减持','暴跌','回调'],tag:'🔴 利空',color:'var(--red)'},
+  {kw:['关税','制裁','贸易战','中美'],tag:'⚠️ 贸易',color:'#F59E0B'},
+  {kw:['战争','冲突','地缘','中东','俄乌'],tag:'🛡️ 地缘',color:'#F59E0B'},
+  {kw:['半导体','芯片','AI','科技','人工智能'],tag:'🚀 科技',color:'var(--blue)'},
+  {kw:['房地产','楼市','房价','限购'],tag:'🏠 地产',color:'#A78BFA'},
+  {kw:['央行','货币','MLF','逆回购'],tag:'🏦 央行',color:'#06B6D4'},
+  {kw:['上市','IPO','科创板','注册制','过会','敲钟'],tag:'🚀 IPO',color:'#F97316'},
+];
+function getTag(title){
+  // 优先检查IPO观察公司名
+  if(IPO_NAMES.some(n=>title.includes(n)))return{tag:'🚀 IPO追踪',color:'#F97316'};
+  for(const t of tagMap){if(t.kw.some(k=>title.includes(k)))return t}
+  return null
+}
 el.innerHTML=`<div class="dashboard-card"><div class="dashboard-card-title">📰 市场新闻（${news.length}条）</div>${news.length?news.map(n=>{const t=getTag(n.title);const tagHtml=t?`<span style="font-size:10px;padding:1px 6px;border-radius:3px;background:rgba(255,255,255,.06);color:${t.color};margin-left:4px;white-space:nowrap">${t.tag}</span>`:'';return`<div class="news-item" onclick="${n.url?`window.open('${n.url}','_blank')`:''}"${n.url?'':' style="cursor:default"'}><div class="news-icon">📰</div><div class="news-content"><div class="news-title">${n.title}${tagHtml}</div><div class="news-meta">${n.source||''}${n.time?' · '+n.time:''}</div></div>${n.url?'<div class="news-arrow">›</div>':''}</div>`}).join(''):'<div style="text-align:center;padding:20px;color:var(--text2)">暂无新闻</div>'}</div>
 <div style="text-align:center;margin-top:12px"><button class="action-btn secondary" style="display:inline-block;min-width:auto;padding:10px 24px" onclick="renderInsight()">🔄 刷新</button></div>`}
 
@@ -397,203 +414,167 @@ return topics.map(t=>'<span style="font-size:10px;padding:2px 6px;border-radius:
 
 // 基金智能筛选页
 let fundPickType='all';let fundPickSort='score';
-function _fundTagsHTML(f){const r=f.returns;const tags=[];if(r['1y']!=null&&r['3m']!=null&&r['6m']!=null&&r['1y']>0&&r['3m']>0&&r['6m']>0)tags.push('📈稳定上涨');if(r['1y']!=null&&r['1y']>15)tags.push('\u{1F525}高收益');if(f.fee&&parseFloat(f.fee)<0.5)tags.push('💰低费率');if(r['3y']!=null&&r['3y']>30)tags.push('⭐长期优秀');const policyBadges=_policyBadgesHTML(f.code,f.name||'');let h='';if(tags.length||policyBadges)h+='<div style="display:flex;gap:4px;flex-wrap:wrap;margin-bottom:4px">'+tags.map(t=>'<span style="font-size:10px;padding:2px 6px;border-radius:4px;background:rgba(16,185,129,.1);color:#6EE7B7">'+t+'</span>').join('')+policyBadges+'</div>';
-// 持仓关联提示（只显示已持仓和风格重叠，新敞口太多不显示）
-if(f.holding_relation&&f.holding_relation!=='🟢 新敞口'&&f.holding_hint){const hintColor=f.holding_relation==='🔵 已持仓'?'rgba(59,130,246,.15)':'rgba(234,179,8,.1)';const hintText=f.holding_relation==='🔵 已持仓'?'#93C5FD':'#FDE68A';h+='<div style="font-size:11px;padding:4px 8px;background:'+hintColor+';border-radius:6px;margin-bottom:4px;color:'+hintText+'">'+f.holding_relation+' '+f.holding_hint+'</div>';}
-if(f.aiComment){let cmt=f.aiComment.replace(/^[\s\S]*?(?:逐只思考[：:]?\s*|思考[：:]?\s*|分析[：:]?\s*)/,'').trim();if(cmt&&cmt.length>2)h+='<div style="font-size:12px;color:#E0E7FF;padding:6px 10px;background:rgba(99,102,241,.08);border-radius:8px;line-height:1.5">\u{1F916} '+cmt+'</div>';}return h?'<div style="padding:4px 12px 8px 32px">'+h+'</div>':''}
-function _fundPickBtnsHTML(){
-return `<div id="fundPickTypeBar" style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:10px">
-${[['all','全部'],['stock','股票型'],['bond','债券型'],['index','指数型'],['qdii','QDII']].map(([k,l])=>`<button class="section-tab ${fundPickType===k?'active':''}" onclick="fundPickType='${k}';_updateFundPickBtns();renderFundPickResult()" style="font-size:12px;padding:5px 10px">${l}</button>`).join('')}
-</div>
-<div id="fundPickSortBar" style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:12px">
-${[['score','📊 综合评分'],['1y','📈 近1年'],['3y','📈 近3年'],['ytd','📈 今年来']].map(([k,l])=>`<button class="section-tab ${fundPickSort===k?'active':''}" onclick="fundPickSort='${k}';_updateFundPickBtns();renderFundPickResult()" style="font-size:11px;padding:4px 8px">${l}</button>`).join('')}
-</div>`}
-function _updateFundPickBtns(){
-const tb=document.getElementById('fundPickTypeBar');const sb=document.getElementById('fundPickSortBar');
-if(tb)tb.innerHTML=[['all','全部'],['stock','股票型'],['bond','债券型'],['index','指数型'],['qdii','QDII']].map(([k,l])=>`<button class="section-tab ${fundPickType===k?'active':''}" onclick="fundPickType='${k}';_updateFundPickBtns();renderFundPickResult()" style="font-size:12px;padding:5px 10px">${l}</button>`).join('');
-if(sb)sb.innerHTML=[['score','📊 综合评分'],['1y','📈 近1年'],['3y','📈 近3年'],['ytd','📈 今年来']].map(([k,l])=>`<button class="section-tab ${fundPickSort===k?'active':''}" onclick="fundPickSort='${k}';_updateFundPickBtns();renderFundPickResult()" style="font-size:11px;padding:4px 8px">${l}</button>`).join('')}
-async function renderFundPick(el){
-el.innerHTML=`<div class="dashboard-card" style="overflow:hidden">
-<div class="dashboard-card-title">🔍 基金智能筛选</div>
-<div style="font-size:12px;color:var(--text2);margin-bottom:12px">多维度打分：近1年(30%)+近3年(20%)+近6月(15%)+近3月(10%)+稳定性(15%)+费率(10%)</div>
-${_fundPickBtnsHTML()}
-<div id="fundPickList"><div style="text-align:center;padding:20px;color:var(--text2)"><div class="loading-spinner" style="width:24px;height:24px;margin:0 auto 8px;border-width:2px"></div>正在筛选基金...</div></div>
-</div>`;
-renderFundPickResult()}
 
-async function renderFundPickResult(){
-const listEl=document.getElementById('fundPickList');
-if(!listEl)return;
-const cacheKey='fund_screen_'+fundPickType+'_'+fundPickSort;
-const cached=getCached(cacheKey);
-// 旧缓存没有 holding_relation 时强制刷新
-if(cached&&cached.funds&&cached.funds[0]&&cached.funds[0].holding_relation!==undefined){_showFundData(listEl,cached);return}
-listEl.innerHTML='<div style="text-align:center;padding:20px;color:var(--text2)"><div class="loading-spinner" style="width:24px;height:24px;margin:0 auto 8px;border-width:2px"></div>正在筛选基金...</div>';
-try{
-const r=await fetch(API_BASE+'/fund-screen?fund_type='+fundPickType+'&sort_by='+fundPickSort+'&top_n=20&userId='+getProfileId(),{signal:AbortSignal.timeout(30000)});
-if(!r.ok)throw new Error('fetch failed');
-const data=await r.json();
-setCached(cacheKey,data);
-_showFundData(listEl,data);
-}catch(e){console.warn('Fund pick failed:',e);listEl.innerHTML='<div style="text-align:center;padding:20px;color:var(--text2)">📡 数据源加载中，请稍后重试<br><span style="font-size:11px;opacity:0.6">（首次加载可能需要 10-30 秒）</span><br><button onclick="renderFundPickResult()" style="margin-top:8px;padding:6px 16px;border-radius:6px;border:none;background:var(--accent);color:#fff;cursor:pointer;font-size:12px">🔄 重试</button></div>'}}
-function _showFundData(listEl,data){
-const funds=data.funds||[];
-if(!funds.length){listEl.innerHTML='<div style="text-align:center;padding:20px;color:var(--text2)">暂无符合条件的基金</div>';return}
-// 大盘时机横幅（选基版，加 regime_hint 和 style_timing 行业流动提示）
-const mt=data.market_timing||{};
-// regime_hint 来自接口（今日加了这个字段）
-const regimeHintFund = mt.regime_hint || '';
-// style_timing：高位/低位行业
-const stFund = data.style_timing || {};
-const stylesFund = stFund.styles || [];
-const highFund = stylesFund.filter(s=>(s.avg_3m||0)>12).map(s=>s.style).slice(0,3);
-const lowFund  = stylesFund.filter(s=>(s.avg_3m||0)<-2).map(s=>s.style).slice(0,3);
-let styleHintFund = '';
-if(highFund.length||lowFund.length){
-  const p=[];
-  if(highFund.length) p.push(`高位: ${highFund.join('/')}`);
-  if(lowFund.length)  p.push(`低估: ${lowFund.join('/')}`);
-  styleHintFund = p.join('　');
+// ============================================================
+// 基金/股票模块已拆分到 insight-fund.js / insight-stock.js（v9.5.48 E1）
+// 加载顺序：insight-fund.js + insight-stock.js → insight.js
+// ============================================================
+
+// ============================================================
+// IPO 观察台
+// ============================================================
+const IPO_WATCHLIST = [
+  // ---- 即将/进行中 ----
+  {name:'长鑫科技', market:'A股科创板', status:'进行中', statusColor:'#F59E0B',
+   index:['科创50','中证1000'],
+   funds:[
+     {name:'华夏科创50ETF联接A', code:'011612', participate_type:'available_now', note:'已可买，上市后自动纳入'},
+     {name:'国泰中证1000ETF联接A', code:'011554', participate_type:'available_now', note:'已可买'},
+   ],
+   note:'国内DRAM存储芯片龙头，与三星/海力士竞争HBM，上市进程持续推进',
+   flag:'🇨🇳', fundType:'index'},
+  {name:'长江存储', market:'A股科创板', status:'传闻中', statusColor:'#F59E0B',
+   index:['科创50','中证半导体'],
+   funds:[
+     {name:'华夏科创50ETF联接A', code:'011612', participate_type:'available_now', note:'已可买，上市后自动纳入'},
+     {name:'国联安中证半导体ETF联接A', code:'007301', participate_type:'available_now', note:'已可买'},
+   ],
+   note:'国内NAND Flash龙头，3D NAND研发实力强，上市预期持续升温',
+   flag:'🇨🇳', fundType:'index'},
+  {name:'字节跳动', market:'港股/美股待定', status:'传闻中', statusColor:'#F59E0B',
+   index:['恒生科技','纳斯达克100'],
+   funds:[
+     {name:'华夏恒生科技ETF联接A', code:'013154', participate_type:'available_now', note:'已可买，若港股上市则利好'},
+     {name:'博时纳斯达克100ETF联接C', code:'013179', participate_type:'available_now', note:'已可买'},
+   ],
+   note:'TikTok/抖音母公司，若港股上市则利好恒生科技指数',
+   flag:'🌐', fundType:'qdii'},
+  // ---- 已上市 ----
+  {name:'SpaceX (SPCX)', market:'美股纳斯达克', status:'✅ 已上市', statusColor:'#10B981',
+   stock_code:'SPCX',
+   index:['纳斯达克100'],
+   funds:[
+     {name:'博时纳斯达克100ETF联接C', code:'013179', participate_type:'pending_index', available_date:'2026-07-15', note:'纳指100将在约1个月后纳入SpaceX，届时自动持有'},
+     {name:'南方港美科技ETF', code:'03442.HK', participate_type:'available_now', note:'港股通已可买，已纳入SPCX'},
+   ],
+   indirect:[
+     {name:'卫星互联网ETF', code:'159627', participate_type:'a_share_indirect', note:'A股商业航天概念，间接受益'},
+     {name:'航天ETF', code:'159267', participate_type:'a_share_indirect', note:'航天军工主题'},
+   ],
+   note:'2026-06-12 纳斯达克上市（代码 SPCX），发行价$135，估值≈1.77万亿美元，史上最大IPO',
+   flag:'🇺🇸', fundType:'qdii'},
+  {name:'xAI', market:'美股', status:'已取消', statusColor:'#9CA3AF',
+   index:['纳斯达克100','标普500'],
+   funds:[
+     {name:'博时纳斯达克100ETF联接C', code:'013179', participate_type:'available_now', note:'2025年已被SpaceX收购，持有纳指基金即可间接覆盖'},
+   ],
+   note:'2025年已被SpaceX收购，不再独立IPO。持有纳指基金即可间接覆盖',
+   flag:'🇺🇸', fundType:'qdii'},
+  // ---- 已上市参考（回顾布局逻辑） ----
+  {name:'英伟达', market:'美股纳斯达克', status:'✅ 已上市', statusColor:'#10B981',
+   stock_code:'NVDA',
+   index:['纳斯达克100','标普500'],
+   funds:[
+     {name:'博时纳斯达克100ETF联接C', code:'013179', participate_type:'available_now', note:'已可买，自动持有NVDA'},
+   ],
+   note:'AI算力核心标的，持有纳指基金即自动持有。启示：提前布局指数 > 追涨个股',
+   flag:'🇺🇸', fundType:'qdii'},
+  {name:'宁德时代', market:'A股', status:'✅ 已上市', statusColor:'#10B981',
+   stock_code:'300750',
+   index:['科创50','沪深300'],
+   funds:[
+     {name:'华夏科创50ETF联接A', code:'011612', participate_type:'available_now', note:'已可买，自动持有'},
+     {name:'易方达沪深300ETF联接A', code:'110020', participate_type:'available_now', note:'已可买'},
+   ],
+   note:'2018年上市，新能源龙头。启示：上市前布局科创板基金，可自动获取大部分涨幅',
+   flag:'🇨🇳', fundType:'index'},
+];
+
+// v9.9.0: IPO基金渲染辅助函数 — 兼容新旧两种数据格式
+function _renderIpoFunds(funds, title, isIndirect){
+  if(!funds||!funds.length) return '';
+  const items = funds.map(f => {
+    // 兼容旧格式（字符串）和新格式（对象）
+    const name = typeof f === 'string' ? f : (f.name || '');
+    const code = typeof f === 'string' ? '' : (f.code || '');
+    const ptype = typeof f === 'string' ? '' : (f.participate_type || '');
+    const note = typeof f === 'string' ? '' : (f.note || '');
+    // 状态标签
+    let tag = '';
+    if(isIndirect){
+      tag = '<span style="font-size:10px;padding:2px 6px;border-radius:4px;background:rgba(148,163,184,.08);color:#94A3B8">A股</span>';
+    } else if(ptype === 'available_now'){
+      tag = '<span style="font-size:10px;padding:2px 6px;border-radius:4px;background:rgba(16,185,129,.12);color:#10B981">✅ 已可买</span>';
+    } else if(ptype === 'pending_index'){
+      tag = '<span style="font-size:10px;padding:2px 6px;border-radius:4px;background:rgba(245,158,11,.12);color:#F59E0B">⏳ 待纳入</span>';
+    }
+    const codeSpan = code ? '<span style="font-size:10px;color:var(--text2)">'+code+'</span>' : '';
+    const noteDiv = note ? '<div style="font-size:10px;color:var(--text2);margin-top:2px;line-height:1.4">'+note+'</div>' : '';
+    return '<div style="display:inline-flex;align-items:center;gap:5px;flex-wrap:wrap;margin-top:4px;padding:3px 6px;background:rgba(99,102,241,.05);border-radius:6px">'
+      + tag
+      + '<b style="font-size:11px;color:var(--text1)">'+name+'</b>'
+      + codeSpan
+      + '</div>'
+      + noteDiv;
+  }).join('');
+  return '<div style="color:var(--text2);margin-top:6px">'+title+'</div>' + items;
 }
-const timingBanner=mt.signal?`<div style="padding:10px 12px;margin-bottom:12px;background:rgba(245,158,11,.06);border:1px solid rgba(245,158,11,.12);border-radius:10px">
-  <div style="display:flex;align-items:center;gap:8px">
-    <span style="font-size:18px">${mt.signal}</span>
-    <div>
-      <div style="font-size:12px;font-weight:700;color:var(--text1)">大盘时机: ${mt.verdict}</div>
-      <div style="font-size:11px;color:var(--text2)">${mt.detail}</div>
+
+async function renderIpoWatch(el){
+el.innerHTML='<div style="text-align:center;padding:20px;color:var(--text2)"><div class="loading-spinner" style="width:24px;height:24px;margin:0 auto 8px;border-width:2px"></div>加载IPO数据...</div>';
+// 并行拉A股新股日历 + 统一观察列表
+let aShareIpos=[], watchlist=IPO_WATCHLIST;
+try{
+  const [r1,r2]=await Promise.allSettled([
+    fetch(API_BASE+'/ipo/upcoming',{signal:AbortSignal.timeout(10000)}),
+    fetch(API_BASE+'/ipo/watchlist',{signal:AbortSignal.timeout(10000)}),
+  ]);
+  if(r1.status==='fulfilled'&&r1.value.ok){const d=await r1.value.json();aShareIpos=d.ipos||[];}
+  if(r2.status==='fulfilled'&&r2.value.ok){const d=await r2.value.json();if(d.watchlist&&d.watchlist.length)watchlist=d.watchlist;}
+}catch(e){}
+
+let html=`<div style="padding:0 0 16px">
+<div style="font-size:16px;font-weight:700;margin-bottom:4px">🚀 IPO 观察台</div>
+<div style="font-size:11px;color:var(--text2)">热门上市事件追踪 + 对应基金布局建议 · 长期持续更新</div>
+</div>`;
+
+// A股新股日历
+if(aShareIpos.length){
+  html+=`<div style="font-size:12px;font-weight:700;color:var(--text1);margin-bottom:8px">📅 A股近期新股</div>`;
+  html+=aShareIpos.map(s=>`<div style="padding:10px 12px;margin-bottom:8px;background:var(--bg-elevated,#10131C);border-radius:10px;border:1px solid rgba(148,163,184,.08)">
+    <div style="display:flex;justify-content:space-between;align-items:center">
+      <div><b style="font-size:13px">${s.name}</b> <span style="font-size:11px;color:var(--text2)">${s.market||'A股'}</span></div>
+      <span style="font-size:11px;color:#10B981;background:rgba(16,185,129,.1);padding:2px 8px;border-radius:4px">${s.ipo_date||'待定'}</span>
     </div>
+    ${s.funds&&s.funds.length?`<div style="font-size:11px;color:var(--text2);margin-top:6px">上市后纳入指数 → 可关注：<b style="color:var(--accent)">${s.funds.join('、')}</b></div>`:''}
+  </div>`).join('');
+}
+
+// 热门观察列表
+html+=`<div style="font-size:12px;font-weight:700;color:var(--text1);margin:16px 0 8px">👁️ 热门公司 IPO 追踪</div>`;
+html+=watchlist.map(w=>`<div style="padding:12px;margin-bottom:10px;background:var(--bg-elevated,#10131C);border-radius:12px;border:1px solid rgba(148,163,184,.08)">
+  <div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:6px">
+    <div>
+      <span style="font-size:16px">${w.flag||''}</span>
+      <b style="font-size:14px;margin-left:4px">${w.name}</b>
+      <span style="font-size:11px;color:var(--text2);margin-left:6px">${w.market}</span>
+      ${w.hot_label?`<span style="font-size:10px;color:#F97316;margin-left:6px">${w.hot_label}</span>`:''}
+    </div>
+    <span style="font-size:11px;padding:2px 8px;border-radius:4px;background:rgba(148,163,184,.08);color:${w.statusColor||'#94A3B8'};white-space:nowrap">${w.status}</span>
   </div>
-  ${regimeHintFund?`<div style="font-size:11px;color:var(--color-brand-400,#FFB755);margin-top:4px;line-height:1.6">${regimeHintFund}</div>`:''}
-  ${styleHintFund?`<div style="font-size:10px;color:var(--text2);margin-top:2px;opacity:0.8">${styleHintFund}</div>`:''}
-</div>`:'';
-const qualityNote=data.quality_note?`<div style="font-size:11px;color:var(--green);margin-bottom:6px;padding:4px 8px;background:rgba(16,185,129,.06);border-radius:6px">🛡️ ${data.quality_note}</div>`:'';
-listEl.innerHTML=`${timingBanner}${qualityNote}<div style="font-size:11px;color:var(--text2);margin-bottom:8px">共筛选 ${data.total} 只基金，显示 TOP ${funds.length}</div>
-${funds.map((f,i)=>{
-const scoreColor=f.score>15?'var(--green)':f.score>5?'var(--accent)':'var(--red)';
-const r1y=f.returns['1y'];const r3y=f.returns['3y'];const rytd=f.returns.ytd;
-const r1yColor=r1y>0?'var(--green)':'var(--red)';
-return`<div style="display:flex;align-items:center;gap:10px;padding:10px 0;border-bottom:1px solid rgba(148,163,184,.06);cursor:pointer" onclick="showFundDetailModal('${f.code}','${(f.name||'').replace(/'/g,'')}')">
-<div style="font-size:12px;color:var(--text2);min-width:20px;text-align:center;font-weight:700">${i+1}</div>
-<div style="flex:1;min-width:0">
-<div style="font-size:13px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${f.name}</div>
-<div style="font-size:11px;color:var(--text2);margin-top:2px">${f.code}${f.industry_tag?' · <b style="color:#10B981">'+f.industry_tag+'</b>':''} · 费率${f.fee||'-'}${f.timing_label?' · <b>'+f.timing_label+'</b>':''}${f.holding_relation&&f.holding_relation!=='🟢 新敞口'?' · <span style="font-size:10px;opacity:0.9">'+f.holding_relation+'</span>':''}${f.quality_tags&&f.quality_tags.length?' · '+f.quality_tags.join(' '):''}</div></div>
-<div style="text-align:right;min-width:70px">
-<div style="font-size:14px;font-weight:800;color:${r1yColor}">${r1y!=null?(r1y>0?'+':'')+r1y+'%':'—'}</div>
-<div style="font-size:10px;color:var(--text2)">近1年</div></div>
-<div style="min-width:40px;text-align:right">
-<div style="font-size:12px;font-weight:700;color:${scoreColor}">${f.score}</div>
-<div style="font-size:10px;color:var(--text2)">评分</div></div>
-<button onclick="event.stopPropagation();showFundChart('${f.code}')" style="padding:3px 6px;font-size:10px;border:1px solid var(--accent);border-radius:4px;background:transparent;color:var(--accent);cursor:pointer;white-space:nowrap">K线</button></div>${_fundTagsHTML(f)}`}).join('')}
-<div style="text-align:center;margin-top:12px"><button class="action-btn secondary" style="display:inline-block;min-width:auto;padding:10px 24px" onclick="renderFundPickResult()">🔄 刷新</button></div>`;
-// 注册每只基金的白话弹窗
-funds.forEach(f=>{
-const r=f.returns;
-setExplain('fund_'+f.code,f.name+' ('+f.code+')',
-'📊 综合评分：'+f.score+'\n\n📈 收益表现：\n• 近3月：'+(r['3m']!=null?r['3m']+'%':'—')+'\n• 近6月：'+(r['6m']!=null?r['6m']+'%':'—')+'\n• 近1年：'+(r['1y']!=null?r['1y']+'%':'—')+'\n• 近3年：'+(r['3y']!=null?r['3y']+'%':'—')+'\n• 今年来：'+(r.ytd!=null?r.ytd+'%':'—')+'\n\n💰 费率：'+(f.fee||'—')+'\n\n💡 评分方法：近1年35%+近3年25%+近6月20%+近3月10%+费率加减分。仅供参考，不构成投资建议。',
-{type:'fund',code:f.code,name:f.name,score:f.score,fee:f.fee||'',returns:r})
-})}
+  <div style="font-size:11px;color:var(--text2);line-height:1.6;margin-bottom:8px">${w.note}</div>
+  <div style="padding:8px 10px;background:rgba(99,102,241,.06);border-radius:8px;font-size:11px">
+    <div style="color:var(--text2);margin-bottom:4px">📈 上市后纳入指数：<b>${(w.index||[]).join(' / ')}</b></div>
+    ${_renderIpoFunds(w.funds, '💡 可布局基金')}
+    ${_renderIpoFunds(w.indirect, '🔗 A股间接受益', true)}
+  </div>
+</div>`).join('');
 
-// AI 多因子选股页
-function _stockTagsHTML(s){const sc=s.scores||{};const tags=[];if(sc.value>=70)tags.push('💰低估值');if(sc.momentum>=70)tags.push('📈强动量');if(sc.liquidity>=70)tags.push('🏦高流动');if(sc.risk>=80)tags.push('🛡️低风险');if(sc.quality>=75)tags.push('⭐高质量');if(sc.growth>=70)tags.push('🚀高成长');if(s.roe&&s.roe>20)tags.push('💎ROE>20%');if(s.gross_margin&&s.gross_margin>50)tags.push('🏆高毛利');
-// 行业标签（从模板库获取）
-const indTags=s.industry_tags||[];
-const policyBadges=_policyBadgesHTML(s.code?s.code.replace(/^(sh|sz)/i,''):'',s.name||'');let h='';if(tags.length||indTags.length||policyBadges)h+='<div style="display:flex;gap:4px;flex-wrap:wrap;margin-bottom:4px">'+indTags.map(t=>'<span style="font-size:10px;padding:2px 6px;border-radius:4px;background:rgba(16,185,129,.1);color:#10B981">'+t+'</span>').join('')+tags.map(t=>'<span style="font-size:10px;padding:2px 6px;border-radius:4px;background:rgba(99,102,241,.1);color:#818CF8">'+t+'</span>').join('')+policyBadges+'</div>';
-// 行业解读（一句话）
-if(s.industry_insight)h+='<div style="font-size:11px;color:var(--text2);padding:2px 0;margin-bottom:2px">'+s.industry_insight+'</div>';
-if(s.aiComment)h+='<div style="font-size:12px;color:#E0E7FF;padding:6px 10px;background:rgba(99,102,241,.08);border-radius:8px;line-height:1.5">\u{1F916} '+s.aiComment+'</div>';return h?'<div style="padding:4px 0 8px 34px;border-bottom:1px solid rgba(148,163,184,.04)">'+h+'</div>':''}
-async function renderStockPick(el){
-el.innerHTML=`<div class="dashboard-card" style="overflow:hidden">
-<div class="dashboard-card-title">🧠 AI 多因子选股</div>
-<div style="font-size:12px;color:var(--text2);margin-bottom:8px">30因子7维打分 V3：AI 动态权重 + LLM 舆情 + 因子生成器加分</div>
-<div style="font-size:11px;color:var(--accent);margin-bottom:12px;padding:6px 8px;background:rgba(245,158,11,.06);border-radius:6px">⚠️ 含真实财务数据（ROE/毛利率/净利率/现金流/负债率），DeepSeek 根据市场环境动态调权重。仅供参考，不构成投资建议。</div>
-<div id="stockScreenMeta" style="display:none;font-size:11px;color:var(--accent);margin-bottom:8px;padding:6px 8px;background:rgba(59,130,246,.06);border-radius:6px"></div>
-<div id="stockPickList"><div style="text-align:center;padding:20px;color:var(--text2)"><div class="loading-spinner" style="width:24px;height:24px;margin:0 auto 8px;border-width:2px"></div>正在从 5000+ A股中筛选（AI 动态调权中）...</div></div>
-</div>`;
-const _stockCache=getCached('stock_screen');
-// 旧缓存如果没有 regime 字段，强制刷新（兼容旧版本缓存）
-if(_stockCache&&_stockCache.regime!==undefined){_fillStockList(_stockCache);return}
-try{
-const _uid=getProfileId()||'';
-const r=await fetch(API_BASE+'/stock-screen?top_n=50'+(_uid?'&userId='+_uid:''),{signal:AbortSignal.timeout(60000)});
-if(!r.ok)throw new Error('fetch failed');
-const data=await r.json();
-setCached('stock_screen',data);
-_fillStockList(data);
-}catch(e){console.warn('Stock pick failed:',e);
-const listEl=document.getElementById('stockPickList');
-if(listEl)listEl.innerHTML='<div style="text-align:center;padding:20px;color:var(--text2)">📡 选股数据加载中<br><span style="font-size:11px;opacity:0.6">需分析5000+只A股，首次约30秒</span><br><span style="font-size:11px;opacity:0.5">非交易时段数据源可能不稳定</span><br><button onclick="insightTab=\'stockpick\';renderInsight()" style="margin-top:8px;padding:6px 16px;border-radius:6px;border:none;background:var(--accent);color:#fff;cursor:pointer;font-size:12px">🔄 重试</button></div>'}}
-function _fillStockList(data){
-const stocks=data.stocks||[];
-const listEl=document.getElementById('stockPickList');if(!listEl)return;
-// 大盘时机横幅
-const mt=data.market_timing||{};
-const timingBanner=mt.signal?`<div style="display:flex;align-items:center;gap:8px;padding:10px 12px;margin-bottom:10px;background:rgba(245,158,11,.06);border:1px solid rgba(245,158,11,.12);border-radius:10px"><span style="font-size:18px">${mt.signal}</span><div><div style="font-size:12px;font-weight:700;color:var(--text1)">大盘时机: ${mt.verdict}</div><div style="font-size:11px;color:var(--text2)">${mt.detail}</div></div></div>`:'';
-// 展示 V3 动态权重元信息
-const metaEl=document.getElementById('stockScreenMeta');
-if(metaEl&&(data.regime||data.weights)){
-const regime=data.regime||'未知';
-const _regimeMap={
-  'trending_bull':'趋势牛市','trending_bear':'趋势熊市',
-  'volatile':'震荡市','neutral':'中性','recovery':'修复期',
-  'overheated':'过热','panic':'恐慌',
-  // 后端中文 regime 直接映射（DeepSeek 有时输出中文）
-  '牛市':'牛市','熊市':'熊市','震荡':'震荡市','中性':'中性',
-  '轮动':'行业轮动','过热':'过热','恐慌':'恐慌底部',
-  'rotation':'行业轮动','bull':'牛市','bear':'熊市',
-};
-const regimeZh=_regimeMap[regime]||regime;
-const weights=data.weights||{};
-const _wMap={'value':'价值','growth':'成长','quality':'质量','momentum':'动量','risk':'风险','liquidity':'流动性','sentiment':'舆情'};
-const wText=Object.entries(weights).map(([k,v])=>`${_wMap[k]||k}:${v}%`).join(' · ');
-
-// ★ 行业流动提示：来自 market_timing.regime_hint 或 style_timing
-const regimeHint = mt.regime_hint || '';
-// style_timing：高位/低位行业
-const st = data.style_timing || {};
-const styles = st.styles || [];
-const highStyles = styles.filter(s=>(s.avg_3m||0) > 12).map(s=>s.style).slice(0,3);
-const lowStyles  = styles.filter(s=>(s.avg_3m||0) < -2).map(s=>s.style).slice(0,3);
-let styleHint = '';
-if(highStyles.length || lowStyles.length){
-  const parts=[];
-  if(highStyles.length) parts.push(`高位: ${highStyles.join('/')}（涨多）`);
-  if(lowStyles.length)  parts.push(`低估: ${lowStyles.join('/')}（潜力）`);
-  styleHint = parts.join('　');
-}
-
-metaEl.innerHTML=`<div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap">
-  <span>🧠 市场判断: <b>${regimeZh}</b></span>
-  <span style="opacity:0.4">|</span>
-  <span style="font-size:10px;color:var(--text2)">动态权重: ${wText}</span>
+html+=`<div style="font-size:11px;color:var(--text2);margin-top:12px;padding:10px 12px;background:rgba(99,102,241,.04);border-radius:8px;line-height:1.7">
+💡 <b>核心逻辑</b>：个股上市前无法直接买入，但上市后会纳入对应指数（科创板→科创50，美股→纳指100）。<b>提前持有对应指数基金</b>，即可在公司上市后自动获得配置，无需择时追高。
 </div>
-${regimeHint?`<div style="font-size:11px;color:var(--color-brand-400,#FFB755);margin-top:3px;line-height:1.6">${regimeHint}</div>`:''}
-${styleHint?`<div style="font-size:10px;color:var(--text2);margin-top:2px;opacity:0.85">${styleHint}</div>`:''}`;
-metaEl.style.display='block';
-}
-if(!stocks.length){listEl.innerHTML='<div style="text-align:center;padding:20px;color:var(--text2)">'+(data.error||'暂无数据')+'</div>';return}
-window._stockScreenData=stocks;
-listEl.innerHTML=`${timingBanner}<div style="font-size:11px;color:var(--text2);margin-bottom:8px">从 ${data.total} 只股票中筛选 TOP ${stocks.length}</div>
-<div style="display:grid;grid-template-columns:30px 1fr 70px 50px 32px;gap:4px;font-size:11px;color:var(--text2);font-weight:600;padding:6px 0;border-bottom:1px solid rgba(148,163,184,.1)">
-<div>#</div><div>股票</div><div style="text-align:right">涨跌</div><div style="text-align:right">评分</div><div></div></div>
-${stocks.map((s,i)=>{
-const chgColor=s.change_pct>0?'var(--green)':s.change_pct<0?'var(--red)':'var(--text2)';
-const scoreColor=s.score>65?'var(--green)':s.score>50?'var(--accent)':'var(--red)';
-return`<div style="display:grid;grid-template-columns:30px 1fr 70px 50px 32px;gap:4px;padding:8px 0;border-bottom:1px solid rgba(148,163,184,.04);align-items:center;cursor:pointer" onclick="showStockDetailModal(window._stockScreenData[${i}])">
-<div style="font-size:11px;color:var(--text2);font-weight:700">${i+1}</div>
-<div><div style="font-size:13px;font-weight:600">${s.name}</div>
-<div style="font-size:10px;color:var(--text2)">${s.code.replace(/^(sh|sz)/i,'')}${s.industry?' · '+s.industry:''} · PE ${s.pe!=null?s.pe:'暂无'}${s.timing_label?' · <b>'+s.timing_label+'</b>':''}${s.stock_relation&&s.stock_relation!=='🟢 新方向'?' · <span style="font-size:9px;opacity:0.8">'+s.stock_relation+'</span>':''}</div></div>
-<div style="text-align:right;font-size:13px;font-weight:700;color:${chgColor}">${s.change_pct!=null?(s.change_pct>0?'+':'')+s.change_pct+'%':'—'}</div>
-<div style="text-align:right;font-size:13px;font-weight:800;color:${scoreColor}">${s.score}</div>
-<button onclick="event.stopPropagation();showFundChart('${s.code.replace(/^(sh|sz)/i,'')}')" style="padding:2px 4px;font-size:9px;border:1px solid var(--accent);border-radius:3px;background:transparent;color:var(--accent);cursor:pointer">K线</button></div>${_stockTagsHTML(s)}`}).join('')}
-<div style="text-align:center;margin-top:12px"><button class="action-btn secondary" style="display:inline-block;min-width:auto;padding:10px 24px" onclick="insightTab='stockpick';renderInsight()">🔄 刷新</button></div>
-<div style="font-size:11px;color:#475569;margin-top:8px;line-height:1.5">${data.method||''}<br>${data.note||''}</div>`;
-stocks.forEach(s=>{
-const sc=s.scores||{};
-setExplain('stock_'+s.code,s.name+' ('+s.code+')',
-'💰 价格：¥'+s.price+' · 涨跌：'+(s.change_pct!=null?s.change_pct+'%':'—')+'\n📊 PE：'+(s.pe||'—')+' · PB：'+(s.pb||'—')+' · 换手率：'+(s.turnover||'—')+'%\n📈 市值：'+(s.market_cap?s.market_cap+'亿':'—')+'\n\n📋 财务指标：\n• ROE：'+(s.roe||'—')+'%\n• 毛利率：'+(s.gross_margin||'—')+'%\n• 净利率：'+(s.net_margin||'—')+'%\n• 负债率：'+(s.debt_ratio||'—')+'%\n• 营收增速：'+(s.revenue_growth||'—')+'%\n• EPS：'+(s.eps||'—')+'\n\n🎯 综合评分：'+s.score+'/100\n\n7维30因子详情：\n• 价值(20%)：'+sc.value+' (PE/PB/股息率/ROE-PB/EPS/低PE高ROE)\n• 成长(15%)：'+sc.growth+' (营收增速/ROE/EPS/60日动量/PEG)\n• 质量(18%)：'+sc.quality+' (ROE/毛利率/净利率/负债率/现金流/市值)\n• 动量(15%)：'+sc.momentum+' (5日/20日/60日/今日)\n• 风险(12%)：'+sc.risk+' (振幅/负债率/现金流/PE极端)\n• 流动性(10%)：'+sc.liquidity+' (换手率/市值/成交额)\n• 舆情(10%)：'+sc.sentiment+' (新闻情绪/LLM评分)\n\n⚠️ 仅供参考，不构成投资建议。',
-{type:'stock',code:s.code,name:s.name,score:s.score,pe:s.pe||0,roe:s.roe||0,gross_margin:s.gross_margin||0})
-})}
-
+<div style="font-size:10px;color:var(--text2);opacity:0.5;text-align:center;margin-top:12px;padding-top:12px;border-top:1px solid rgba(148,163,184,.06)">以上信息仅供参考，不构成投资建议 · 上市时间以官方公告为准 · 如有新热门公司可直接告知AI更新</div>`;
+el.innerHTML=html;}
 
 // --- 02-insight-protabs.js ---
 /* =========================================================================
@@ -947,25 +928,59 @@ setExplain('stock_'+s.code,s.name+' ('+s.code+')',
     let html = '';
 
     // === 入场时机卡 ===
-    if (timing && timing.signal) {
-      const colorMap = {
-        'STRONG_BUY':'var(--green)', 'BUY':'var(--green)',
-        'HOLD':'#F59E0B', 'WAIT':'#F59E0B',
-        'SELL':'var(--red)', 'STRONG_SELL':'var(--red)'
-      };
+    if (timing && (timing.signal || timing.verdict)) {
+      // v9.5.10: 兼容后端两种返回格式
+      // 旧格式: signal=英文枚举(STRONG_BUY/HOLD/...) + reason
+      // 新格式: signal=emoji(🔴/🟡/🟢) + verdict="🔴 不建议入场" + detail
+      const verdict = timing.verdict || '';
+      const signalRaw = timing.signal || '';
+      const score = timing.timingScore;
+
+      // 优先用 verdict（已经是完整中文标签），否则用 signal 枚举映射
       const labelMap = {
-        'STRONG_BUY':'🔥 绝佳时机', 'BUY':'🟢 适合加仓',
-        'HOLD':'🟡 暂观望', 'WAIT':'🟡 不急',
-        'SELL':'🟠 谨慎', 'STRONG_SELL':'🔴 建议等待'
+        'STRONG_BUY':'🔥 绝佳时机，建议加仓', 'BUY':'🟢 适合加仓',
+        'HOLD':'🟡 持有观望', 'WAIT':'🟡 暂不入场',
+        'SELL':'🟠 谨慎，考虑减仓', 'STRONG_SELL':'🔴 建议等待回调'
       };
-      const c = colorMap[timing.signal] || '#F59E0B';
-      const label = labelMap[timing.signal] || timing.signal;
+      let label = verdict || labelMap[signalRaw] || signalRaw || '🟡 持有观望';
+
+      // 颜色：优先按 timingScore 判断（与后端口径一致：越低越买）
+      let c = '#F59E0B';
+      if (typeof score === 'number') {
+        if (score < 30) c = 'var(--green)';
+        else if (score < 55) c = 'var(--green)';
+        else if (score < 70) c = '#F59E0B';
+        else c = 'var(--red)';
+      } else if (signalRaw.includes('🟢') || /STRONG_BUY|BUY/.test(signalRaw)) c = 'var(--green)';
+      else if (signalRaw.includes('🔴') || /STRONG_SELL|SELL/.test(signalRaw)) c = 'var(--red)';
+
+      // 行动建议：根据 timingScore 给明确"加仓/观望/减仓"
+      let action = '';
+      if (typeof score === 'number') {
+        if (score < 30) action = '✅ 当前可分批加仓，估值与情绪都在低位';
+        else if (score < 55) action = '🟢 适合定投或小幅加仓';
+        else if (score < 70) action = '🟡 建议观望，不急于加仓';
+        else action = '🔴 不建议加仓，等回调后再说';
+      }
+
+      const detail = timing.reason || timing.summary || timing.detail || '';
+      const valPct = timing.valuationPct || timing.valuation?.percentile;
+      const fgi = timing.fgi;
+      const basis = [
+        (valPct !== undefined) ? `估值${Math.round(valPct)}%分位` : '',
+        (fgi !== undefined) ? `恐惧贪婪${Math.round(fgi)}` : '',
+        (typeof score === 'number') ? `时机分${Math.round(score)}` : ''
+      ].filter(Boolean).join(' · ');
+      const confPct = Math.round((timing.confidence || 0) * (timing.confidence > 1 ? 1 : 100));
+
       html += _v6Card('⏰ 入场时机判断', `
-        <div style="display:flex;align-items:center;gap:12px">
+        <div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap">
           <div style="font-size:18px;font-weight:900;color:${c}">${label}</div>
-          <div style="font-size:11px;color:var(--text2)">置信度 ${Math.round((timing.confidence || 0) * 100)}%</div>
+          <div style="font-size:11px;color:var(--text2)">置信度 ${confPct}%</div>
         </div>
-        <div style="font-size:13px;color:var(--text2);margin-top:6px;line-height:1.6">${timing.reason || timing.summary || ''}</div>
+        ${action ? `<div style="font-size:13px;font-weight:600;margin-top:8px;color:${c}">${action}</div>` : ''}
+        ${basis ? `<div style="font-size:11px;color:var(--text2);margin-top:6px">依据：${basis}</div>` : ''}
+        ${detail ? `<div style="font-size:12px;color:var(--text2);margin-top:6px;line-height:1.6">${detail}</div>` : ''}
         ${timing.suggestion ? `<div style="font-size:12px;margin-top:8px;padding:8px;background:var(--bg3);border-radius:8px">💡 ${timing.suggestion}</div>` : ''}
       `, { border: c });
     }

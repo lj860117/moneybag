@@ -138,20 +138,105 @@ const d=await r.json();if(d.error){alert(d.error);return}
 if(d.warnings&&d.warnings.length>0){const warnMsg=d.warnings.map(w=>w.msg).join('\n');setTimeout(()=>alert('⚠️ 纪律提醒\n\n'+warnMsg),200)}
 document.querySelector('.modal-overlay')?.remove();renderStocksContent()}catch(e){alert('添加失败: '+e.message)}}
 
-function showStockDetail(code){const h=(_stockScanData?.holdings||[]).find(x=>x.code===code);if(!h)return;
+function _calcStockAdvice(pnlPct, rsi14, changePct){
+// 规则引擎：股票操作建议（加仓/持有/观望/减仓/止损）
+const p = pnlPct ?? 0;
+const rsi = rsi14 || 50;
+const chg = changePct || 0;
+
+let level, action, hint, tag;
+
+if(p <= -15){
+  level='red'; action='⛔ 考虑止损'; tag='止损线';
+  hint='亏损超过 -15%（你设置的止损线），建议复核持仓逻辑，若基本面未变化可继续持有，否则应果断止损';
+} else if(p <= -8){
+  level='yellow'; action='🟡 谨慎持有'; tag='深度回调';
+  hint='中度亏损，建议暂缓加仓，等待企稳信号（如 RSI < 35 或放量止跌）再考虑补仓';
+} else if(p <= 0){
+  level='yellow'; action='🟡 持有观望'; tag='小幅回撤';
+  hint='轻微亏损，不急于操作，可设置价格提醒，跌破关键支撑再止损';
+} else if(p <= 20){
+  level='green'; action='✅ 继续持有'; tag='盈利中';
+  hint='持仓盈利，无需操作，按原有止盈目标持有';
+} else if(p <= 40){
+  level='yellow'; action='🔆 考虑减仓'; tag='高盈利';
+  hint='盈利较高，可考虑减仓 1/3 锁定收益，剩余仓位继续持有博更高收益';
+} else {
+  level='red'; action='⚠️ 接近止盈线'; tag='止盈线';
+  hint='盈利超过 +40%（接近止盈 +50%），建议分批减仓，至少兑现一半利润';
+}
+
+// RSI 叠加修正
+const extras = [];
+if(rsi > 75 && level !== 'red'){
+  extras.push(`RSI ${rsi} 进入超买区（>75），短期涨幅透支，可减少加仓频率`);
+} else if(rsi < 30 && (level === 'yellow' || level === 'green')){
+  extras.push(`RSI ${rsi} 进入超卖区（<30），短期下跌过度，可少量补仓`);
+}
+if(chg < -5){
+  extras.push(`今日大跌 ${chg.toFixed(1)}%，注意确认是否有利空消息，非系统性下跌才适合补仓`);
+}
+
+return {level, action, hint, tag, extras};
+}
+
+async function showStockDetail(code){
+let h=(_stockScanData?.holdings||[]).find(x=>x.code===code);
+if(!h){
+  try{
+    const r=await fetch(API_BASE+'/stock-holdings/scan?'+getProfileParam(),{signal:AbortSignal.timeout(10000)});
+    if(r.ok){const d=await r.json();_stockScanData=d;h=d.holdings?.find(x=>x.code===code);}
+  }catch(e){}
+}
+if(!h)return;
 const overlay=document.createElement('div');overlay.className='modal-overlay';overlay.onclick=e=>{if(e.target===overlay)overlay.remove()};
 const ind=h.indicators||{};const sigs=h.signals||[];
-overlay.innerHTML=`<div class="modal-sheet"><div class="modal-handle"></div><div class="modal-title">${h.name||h.code}</div><div class="modal-subtitle">${h.code} · ${h.changePct!=null?(h.changePct>=0?'+':'')+h.changePct.toFixed(2)+'%':'--'}</div><div class="modal-stat-grid"><div class="modal-stat"><div class="modal-stat-label">当前价</div><div class="modal-stat-value">${h.price?'¥'+h.price.toFixed(2):'--'}</div></div><div class="modal-stat"><div class="modal-stat-label">RSI14</div><div class="modal-stat-value" style="color:${ind.rsi14>70?'var(--red)':ind.rsi14<30?'var(--green)':'var(--text)'}">${ind.rsi14||'--'}</div></div><div class="modal-stat"><div class="modal-stat-label">MACD</div><div class="modal-stat-value">${ind.macd_trend||'--'}</div></div><div class="modal-stat"><div class="modal-stat-label">量比</div><div class="modal-stat-value" style="color:${ind.volume_ratio>2?'var(--red)':'var(--text)'}">${ind.volume_ratio||'--'}</div></div></div>${sigs.length?'<div style="margin-top:16px"><div style="font-size:13px;font-weight:700;margin-bottom:8px">📡 信号</div>'+sigs.map(s=>`<div style="padding:6px 0;font-size:13px;border-bottom:1px solid var(--bg3)">${s.msg}</div>`).join('')+'</div>':''}<div id="stockIntel_${code}" style="margin-top:16px"><div style="text-align:center;padding:12px;color:var(--text2);font-size:12px">📰 加载个股情报...</div></div><div style="margin-top:16px;display:flex;gap:8px"><button class="action-btn secondary" style="flex:1" onclick="if(confirm('删除 ${h.name}？'))deleteStock('${h.code}')">🗑️ 删除</button></div></div>`;
+
+// 操作建议
+const pnlPct = h.pnlPct ?? null;
+const adv = pnlPct != null ? _calcStockAdvice(pnlPct, ind.rsi14, h.changePct) : null;
+const advColor = adv?.level==='red'?'var(--red)':adv?.level==='yellow'?'#F59E0B':'var(--green)';
+const advBg = adv?.level==='red'?'rgba(239,68,68,.06)':adv?.level==='yellow'?'rgba(245,158,11,.06)':'rgba(16,185,129,.06)';
+const advBorder = adv?.level==='red'?'rgba(239,68,68,.2)':adv?.level==='yellow'?'rgba(245,158,11,.2)':'rgba(16,185,129,.2)';
+const advHtml = adv ? `
+<div style="margin-top:16px;padding:14px;background:${advBg};border:1px solid ${advBorder};border-radius:12px">
+  <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px">
+    <div style="font-size:13px;font-weight:700">📋 持仓建议</div>
+    <div style="font-size:10px;color:var(--text2)">规则引擎 · 非投资建议</div>
+  </div>
+  <div style="display:flex;align-items:center;gap:12px;margin-bottom:8px">
+    <div style="font-size:18px;font-weight:800;color:${advColor}">${adv.action}</div>
+    <div style="padding:2px 10px;background:${advColor}20;border-radius:20px;font-size:11px;color:${advColor};font-weight:600">${adv.tag}</div>
+  </div>
+  <div style="font-size:12px;color:var(--text2);line-height:1.7">${adv.hint}</div>
+  ${adv.extras.length ? '<div style="margin-top:8px">'+adv.extras.map(e=>`<div style="font-size:11px;color:#F59E0B;margin-top:4px">⚡ ${e}</div>`).join('')+'</div>' : ''}
+  <div style="font-size:10px;color:var(--text3,#475569);margin-top:8px;border-top:1px solid rgba(148,163,184,.1);padding-top:6px">当前盈亏 ${pnlPct>=0?'+':''}${pnlPct.toFixed(1)}% · 止损 -15% · 止盈 +50%</div>
+</div>` : '';
+
+overlay.innerHTML=`<div class="modal-sheet" style="max-height:90vh;overflow-y:auto"><div class="modal-handle"></div>
+<div class="modal-title">${h.name||h.code}</div>
+<div class="modal-subtitle">${h.code} · ${h.changePct!=null?(h.changePct>=0?'+':'')+h.changePct.toFixed(2)+'%':'--'}</div>
+<div class="modal-stat-grid">
+<div class="modal-stat"><div class="modal-stat-label">当前价</div><div class="modal-stat-value">${h.price?'¥'+h.price.toFixed(2):'--'}</div></div>
+<div class="modal-stat"><div class="modal-stat-label">RSI14</div><div class="modal-stat-value" style="color:${ind.rsi14>70?'var(--red)':ind.rsi14<30?'var(--green)':'var(--text)'}">${ind.rsi14||'--'}</div></div>
+<div class="modal-stat"><div class="modal-stat-label">MACD</div><div class="modal-stat-value">${ind.macd_trend||'--'}</div></div>
+<div class="modal-stat"><div class="modal-stat-label">量比</div><div class="modal-stat-value" style="color:${ind.volume_ratio>2?'var(--red)':'var(--text)'}">${ind.volume_ratio||'--'}</div></div>
+</div>
+${advHtml}
+${sigs.length?'<div style="margin-top:16px"><div style="font-size:13px;font-weight:700;margin-bottom:8px">📡 信号</div>'+sigs.map(s=>`<div style="padding:6px 0;font-size:13px;border-bottom:1px solid var(--bg3)">${s.msg}</div>`).join('')+'</div>':''}
+<div id="stockIntel_${code}" style="margin-top:16px"><div style="text-align:center;padding:12px;color:var(--text2);font-size:12px">📰 加载个股情报...</div></div>
+<div style="margin-top:16px;display:flex;gap:8px"><button class="action-btn secondary" style="flex:1" onclick="if(confirm('删除 ${h.name}？'))deleteStock('${h.code}')">🗑️ 删除</button></div>
+</div>`;
 document.body.appendChild(overlay);
 // 异步加载持仓关联智能
 if(API_AVAILABLE){fetch(API_BASE+'/holding-intelligence/'+code+'?'+getProfileParam(),{signal:AbortSignal.timeout(15000)}).then(r=>r.json()).then(d=>{
 const el=document.getElementById('stockIntel_'+code);if(!el)return;
-let h='';
-if(d.news&&d.news.length){h+=`<div style="font-size:13px;font-weight:700;margin-bottom:6px">📰 个股新闻</div>`;h+=d.news.slice(0,3).map(n=>`<div style="padding:4px 0;font-size:12px;border-bottom:1px solid var(--bg3)">${n.title}</div>`).join('')}
-if(d.fund_flow){const ff=d.fund_flow;h+=`<div style="font-size:13px;font-weight:700;margin-top:10px;margin-bottom:4px">💰 主力资金</div><div style="font-size:12px;color:${ff.net_amount>0?'var(--green)':'var(--red)'}">今日主力净${ff.net_amount>0?'流入':'流出'} ${Math.abs(ff.net_amount||0).toFixed(0)}万</div>`}
-if(d.industry){h+=`<div style="font-size:12px;color:var(--text2);margin-top:8px">🏭 所属行业：${d.industry}</div>`}
-if(d.unlock_risk){h+=`<div style="font-size:12px;color:var(--red);margin-top:6px;padding:6px;background:rgba(239,68,68,.06);border-radius:6px">🔓 解禁预警：${d.unlock_risk}</div>`}
-el.innerHTML=h||'<div style="font-size:12px;color:var(--text2)">暂无关联情报</div>'
+let h2='';
+if(d.news&&d.news.length){h2+=`<div style="font-size:13px;font-weight:700;margin-bottom:6px">📰 个股新闻</div>`;h2+=d.news.slice(0,3).map(n=>`<div style="padding:4px 0;font-size:12px;border-bottom:1px solid var(--bg3)">${n.title}</div>`).join('')}
+if(d.fund_flow){const ff=d.fund_flow;h2+=`<div style="font-size:13px;font-weight:700;margin-top:10px;margin-bottom:4px">💰 主力资金</div><div style="font-size:12px;color:${ff.net_amount>0?'var(--green)':'var(--red)'}">今日主力净${ff.net_amount>0?'流入':'流出'} ${Math.abs(ff.net_amount||0).toFixed(0)}万</div>`}
+if(d.industry){h2+=`<div style="font-size:12px;color:var(--text2);margin-top:8px">🏭 所属行业：${d.industry}</div>`}
+if(d.unlock_risk){h2+=`<div style="font-size:12px;color:var(--red);margin-top:6px;padding:6px;background:rgba(239,68,68,.06);border-radius:6px">🔓 解禁预警：${d.unlock_risk}</div>`}
+el.innerHTML=h2||'<div style="font-size:12px;color:var(--text2)">暂无关联情报</div>'
 }).catch(()=>{const el=document.getElementById('stockIntel_'+code);if(el)el.innerHTML=''})}}
 
 async function deleteStock(code){try{await fetch(API_BASE+'/stock-holdings/'+code+'?'+getProfileParam(),{method:'DELETE'});document.querySelector('.modal-overlay')?.remove();renderStocksContent()}catch(e){alert('删除失败')}}
@@ -165,18 +250,19 @@ const el=document.getElementById('holdingsContent');
 el.innerHTML='<div style="text-align:center;padding:40px"><div class="loading-spinner"></div><div style="color:var(--text2);margin-top:12px">加载基金持仓...</div></div>';
 try{const[hRes,scanRes]=await Promise.all([fetch(API_BASE+'/fund-holdings?'+getProfileParam()).then(r=>r.json()),fetch(API_BASE+'/fund-holdings/scan?'+getProfileParam()).then(r=>r.json())]);
 _fundScanData=scanRes;const holdings=scanRes.holdings||[];
+const fromCache=scanRes.from_cache;
 // 信号汇总
 let signalHtml='';const alerts=scanRes.alerts||[];
 if(alerts.length){signalHtml='<div class="signal-summary"><div style="font-size:13px;font-weight:700;margin-bottom:8px">⚡ 基金异动信号</div>'+alerts.map(a=>{const bg=a.level==='warning'?'rgba(239,68,68,.08)':'rgba(34,197,94,.08)';return`<div style="background:${bg};border-radius:8px;padding:8px 10px;margin-bottom:4px;font-size:12px">${a.fund||''} ${a.msg}</div>`}).join('')+'</div>'}
 // 列表
 let listHtml='';
-if(!holdings.length){listHtml='<div style="text-align:center;padding:40px;color:var(--text2)">暂无基金持仓<br><span style="font-size:12px">点击下方"添加基金"开始</span></div>'}
+if(!holdings.length){listHtml='<div style="text-align:center;padding:40px;color:var(--text2)"><div style="font-size:48px;margin-bottom:16px">💰</div><div style="font-size:16px;margin-bottom:8px">还没有基金持仓</div><div style="font-size:13px">点击底部"+ 新交易"添加你的第一只基金<br><span style="opacity:0.7">支持粘贴支付宝/天天基金凭证自动识别</span></div></div>'}
 else{listHtml=holdings.map(h=>{const rt=h.realtime||{};const risk=h.risk||{};
 const estRate=rt.estRate;const rateColor=estRate==null?'var(--text2)':estRate>=0?'var(--green)':'var(--red)';
 const pnlColor=h.pnlPct==null?'var(--text2)':h.pnlPct>=0?'var(--green)':'var(--red)';
 const ddStr=risk.maxDrawdown!=null?(risk.maxDrawdown*100).toFixed(1)+'%':'--';
 const ddColor=risk.maxDrawdown!=null&&risk.maxDrawdown>0.03?'var(--red)':'var(--text2)';
-return`<div class="stock-card" onclick="showFundHoldingDetail('${h.code}')" style="cursor:pointer">
+return`<div class="stock-card" onclick="showFundHoldingDetail('${h.code}')" style="cursor:pointer;border:1px solid rgba(148,163,184,.08)">
 <div style="display:flex;justify-content:space-between;align-items:center">
 <div><div style="font-size:14px;font-weight:700">${h.name||h.code}</div><div style="font-size:11px;color:var(--text2)">${h.code}</div></div>
 <div style="display:flex;align-items:center;gap:8px"><button class="action-btn secondary" onclick="event.stopPropagation();showFundChart('${h.code}')" style="padding:3px 8px;font-size:11px">K线</button><div style="text-align:right"><div style="font-size:14px;font-weight:600">${rt.estNav||'--'}</div>
@@ -185,26 +271,252 @@ return`<div class="stock-card" onclick="showFundHoldingDetail('${h.code}')" styl
 <span>净值 ${rt.nav||'--'}</span><span style="color:${ddColor}">回撤 ${ddStr}</span>
 <span>连跌 ${risk.downDays||0}天</span>
 ${h.pnlPct!=null?`<span style="color:${pnlColor};font-weight:600">盈亏 ${h.pnlPct>=0?'+':''}${h.pnlPct.toFixed(1)}%</span>`:''}
-</div>${h.alerts&&h.alerts.length?'<div style="margin-top:6px;font-size:11px;color:var(--accent)">'+h.alerts.map(a=>a.msg).join(' · ')+'</div>':''}</div>`}).join('')}
+</div>
+${h.alerts&&h.alerts.length?'<div style="margin-top:6px;font-size:11px;color:var(--accent)">'+h.alerts.map(a=>a.msg).join(' · ')+'</div>':''}
+<div style="margin-top:8px;display:flex;align-items:center;justify-content:space-between;padding-top:6px;border-top:1px solid rgba(148,163,184,.06)">
+<span style="font-size:11px;color:var(--accent)">📋 点击查看定投建议 ›</span>
+${h.pnlPct!=null?`<span style="font-size:11px;padding:2px 8px;background:${h.pnlPct>=-2&&h.pnlPct<=15?'rgba(16,185,129,.08)':h.pnlPct>15?'rgba(245,158,11,.08)':'rgba(239,68,68,.08)'};border-radius:4px;color:${h.pnlPct>=-2&&h.pnlPct<=15?'var(--green)':h.pnlPct>15?'#F59E0B':'var(--red)'}">${h.pnlPct>15?'考虑减半定投':h.pnlPct<=-8?'加倍定投时机':'正常定投'}</span>`:''}
+</div></div>`}).join('')}
 // Hero
 let heroHtml='';const totalPnl=holdings.reduce((s,h)=>s+(h.pnl||0),0);
-if(holdings.length>0){heroHtml=`<div class="pnl-hero"><div class="pnl-label">基金持仓 ${holdings.length} 只</div><div class="pnl-change ${totalPnl>=0?'pos':'neg'}" style="color:${totalPnl>=0?'var(--green)':'var(--red)'}">总盈亏 ${totalPnl>=0?'+':''}¥${totalPnl.toFixed(0)}</div><div class="pnl-sub">${scanRes.scannedAt?'更新于 '+scanRes.scannedAt.slice(11,16):''}</div></div>`}
-el.innerHTML=heroHtml+signalHtml+listHtml+`<div style="margin-top:16px"><button class="action-btn primary" onclick="showAddFundModal()" style="width:100%">➕ 添加基金</button></div><div style="margin-top:8px"><button class="action-btn secondary" onclick="renderFundsContent()" style="width:100%">🔄 刷新估值</button></div>`;
+if(holdings.length>0){heroHtml=`<div class="pnl-hero"><div class="pnl-label">基金持仓 ${holdings.length} 只${fromCache?' <span style="font-size:10px;opacity:0.6">· 缓存</span>':''}</div><div class="pnl-change ${totalPnl>=0?'pos':'neg'}" style="color:${totalPnl>=0?'var(--green)':'var(--red)'}">总盈亏 ${totalPnl>=0?'+':''}¥${totalPnl.toFixed(0)}</div><div class="pnl-sub">${scanRes.scannedAt?'更新于 '+scanRes.scannedAt.slice(11,16):(fromCache?'已缓存':'')}</div></div>`}
+el.innerHTML=heroHtml+signalHtml+listHtml+(holdings.length?`<div style="margin-top:16px"><button class="action-btn secondary" onclick="forceScanFunds()" style="width:100%">🔄 重新计算估值</button></div>`:'');
 }catch(e){console.error('Fund load error:',e);el.innerHTML='<div style="text-align:center;padding:40px;color:var(--red)">加载失败: '+e.message+'</div>'}}
 
+async function forceScanFunds(){
+// 强制跳过缓存，实时重新计算
+const el=document.getElementById('holdingsContent');if(!el)return;
+el.innerHTML='<div style="text-align:center;padding:40px"><div class="loading-spinner"></div><div style="color:var(--text2);margin-top:12px">重新计算估值（约15-30秒）...</div></div>';
+try{
+const scanRes=await fetch(API_BASE+'/fund-holdings/scan?'+getProfileParam()+'&force=true',{signal:AbortSignal.timeout(60000)}).then(r=>r.json());
+_fundScanData=scanRes;
+renderFundsContent();  // 再正常渲染（此时缓存已更新）
+}catch(e){el.innerHTML='<div style="text-align:center;padding:20px;color:var(--red)">重新计算失败: '+e.message+'<br><button onclick="renderFundsContent()" style="margin-top:8px;padding:6px 16px;border-radius:8px;border:none;background:var(--accent);color:#fff;cursor:pointer;font-size:12px">返回</button></div>'}}
+
 function showAddFundModal(){const overlay=document.createElement('div');overlay.className='modal-overlay';overlay.onclick=e=>{if(e.target===overlay)overlay.remove()};
-overlay.innerHTML=`<div class="modal-sheet"><div class="modal-handle"></div><div class="modal-title">添加基金持仓</div><div class="input-group"><label>基金代码</label><input id="addFundCode" placeholder="如 110011" class="input-field"></div><div class="input-group"><label>成本净值（选填）</label><input id="addFundCost" type="number" step="0.0001" placeholder="买入时的净值" class="input-field"></div><div class="input-group"><label>持有份额（选填）</label><input id="addFundShares" type="number" step="0.01" placeholder="持有份额" class="input-field"></div><div class="input-group"><label>备注（选填）</label><input id="addFundNote" placeholder="如：定投" class="input-field"></div><button class="action-btn primary" onclick="doAddFund()" style="width:100%;margin-top:16px">确认添加</button></div>`;
+overlay.innerHTML=`<div class="modal-sheet"><div class="modal-handle"></div><div class="modal-title">添加基金持仓</div>
+<div style="margin-bottom:12px">
+  <button onclick="showReceiptParser()" style="width:100%;padding:10px;border-radius:10px;border:1px dashed rgba(99,102,241,.4);background:rgba(99,102,241,.06);color:#818CF8;font-size:13px;cursor:pointer">
+    📋 粘贴买入凭证文字 → 自动识别填入
+  </button>
+</div>
+<div class="input-group"><label>基金代码</label><input id="addFundCode" placeholder="如 016501" class="input-field"></div>
+<div id="addFundNameHint" style="font-size:11px;color:var(--accent);margin:-8px 0 8px 0;padding-left:2px"></div>
+<div class="input-group"><label>成本净值（选填）</label><input id="addFundCost" type="number" step="0.0001" placeholder="买入确认净值" class="input-field"></div>
+<div class="input-group"><label>持有份额（选填）</label><input id="addFundShares" type="number" step="0.01" placeholder="确认份额" class="input-field"></div>
+<div class="input-group"><label>备注（选填）</label><input id="addFundNote" placeholder="如：定投 2026-05-22" class="input-field"></div>
+<button class="action-btn primary" onclick="doAddFund()" style="width:100%;margin-top:16px">确认添加</button></div>`;
 document.body.appendChild(overlay)}
 
-async function doAddFund(){const code=$('#addFundCode')?.value?.trim();if(!code){alert('请输入基金代码');return}
-const cost=parseFloat($('#addFundCost')?.value)||0;const shares=parseFloat($('#addFundShares')?.value)||0;const note=$('#addFundNote')?.value||'';
-try{const r=await fetch(API_BASE+'/fund-holdings',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({code,costNav:cost,shares,note,userId:getProfileId()})});
-const d=await r.json();if(d.error){alert(d.error);return}document.querySelector('.modal-overlay')?.remove();renderFundsContent()}catch(e){alert('添加失败: '+e.message)}}
+// 凭证文字解析弹窗
+function showReceiptParser(){
+const overlay=document.createElement('div');overlay.className='modal-overlay';overlay.id='receiptOverlay';overlay.onclick=e=>{if(e.target===overlay)overlay.remove()};
+overlay.innerHTML=`<div class="modal-sheet" style="max-height:80vh;overflow-y:auto">
+  <div class="modal-handle"></div>
+  <div class="modal-title">📋 粘贴买入凭证</div>
+  <div style="font-size:12px;color:var(--text2);margin-bottom:10px;line-height:1.6">
+    在支付宝/天天基金 → 交易记录 → 长按复制页面文字，粘贴到下方：
+  </div>
+  <textarea id="receiptText" style="width:100%;height:140px;padding:10px;border-radius:10px;border:1px solid rgba(148,163,184,.2);background:var(--bg2);color:var(--text1);font-size:12px;resize:none;box-sizing:border-box" placeholder="买入产品 华夏半导体龙头混合C&#10;确认净值 3.0270&#10;确认份额 33.04份&#10;买入金额 100.00元&#10;确认时间 2026-05-22"></textarea>
+  <button class="action-btn primary" onclick="doParseReceipt()" style="width:100%;margin-top:12px">🔍 识别并填入</button>
+  <div id="receiptResult" style="margin-top:8px;font-size:12px;color:var(--accent)"></div>
+</div>`;
+document.body.appendChild(overlay);}
 
-function showFundHoldingDetail(code){const h=(_fundScanData?.holdings||[]).find(x=>x.code===code);if(!h)return;
+async function doParseReceipt(){
+const text=document.getElementById('receiptText')?.value?.trim();
+if(!text){alert('请先粘贴凭证文字');return;}
+const btn=document.querySelector('#receiptOverlay .action-btn');
+if(btn){btn.textContent='识别中...';btn.disabled=true;}
+try{
+  const r=await fetch(API_BASE+'/fund/parse-receipt',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({text}),signal:AbortSignal.timeout(15000)});
+  const d=await r.json();
+  if(!d.ok){
+    document.getElementById('receiptResult').textContent='❌ '+d.reason;
+    if(btn){btn.textContent='🔍 识别并填入';btn.disabled=false;}
+    return;
+  }
+  // 填入主表单
+  if(d.fund_code) document.getElementById('addFundCode').value=d.fund_code;
+  if(d.nav) document.getElementById('addFundCost').value=d.nav;
+  if(d.shares) document.getElementById('addFundShares').value=d.shares;
+  if(d.fund_name||d.date){
+    document.getElementById('addFundNote').value=[d.fund_name||'',d.date||''].filter(Boolean).join(' ').trim();
+  }
+  // 显示基金名提示
+  if(d.fund_name){
+    const hint=document.getElementById('addFundNameHint');
+    if(hint) hint.textContent='✅ '+d.fund_name+(d.fund_code?' ('+d.fund_code+')':'');
+  }
+  document.getElementById('receiptResult').innerHTML='<span style="color:#10B981">✅ 识别成功！请确认后点击添加</span>';
+  setTimeout(()=>document.getElementById('receiptOverlay')?.remove(),1200);
+}catch(e){
+  document.getElementById('receiptResult').textContent='❌ 识别失败: '+e.message;
+  if(btn){btn.textContent='🔍 识别并填入';btn.disabled=false;}
+}}
+
+async function doAddFund(){
+const code=$('#addFundCode')?.value?.trim();if(!code){alert('请输入基金代码');return}
+const cost=parseFloat($('#addFundCost')?.value)||0;const shares=parseFloat($('#addFundShares')?.value)||0;const note=$('#addFundNote')?.value||'';
+try{
+  const r=await fetch(API_BASE+'/fund-holdings',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({code,costNav:cost,shares,note,userId:getProfileId()})});
+  const d=await r.json();
+  if(d.error){
+    // 重复基金：提示是否合并（加权平均）
+    if(d.error.includes('已在持仓中')){
+      const merge=confirm(`${code} 已在持仓中。\n\n是否合并本次买入（加权平均成本）？\n\n【确定】= 合并（推荐，适合定投）\n【取消】= 不添加`);
+      if(merge){
+        // 先拉现有数据
+        const hr=await fetch(API_BASE+'/fund-holdings?userId='+getProfileId());
+        const hd=await hr.json();
+        const existing=(hd.holdings||hd||[]).find(h=>h.code===code);
+        if(existing){
+          const oldShares=existing.shares||0;const oldCost=existing.costNav||0;
+          const newShares=oldShares+shares;
+          // 加权平均成本 = (旧份额×旧净值 + 新份额×新净值) / 总份额
+          const newCost=newShares>0?((oldShares*oldCost+shares*cost)/newShares):cost;
+          const ur=await fetch(API_BASE+'/fund-holdings/'+code,{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({costNav:parseFloat(newCost.toFixed(4)),shares:parseFloat(newShares.toFixed(4)),note:(existing.note||'')+(note?` + ${note}`:''),userId:getProfileId()})});
+          const ud=await ur.json();
+          if(ud.ok||ud.error===undefined){alert(`✅ 合并成功！\n总份额：${newShares.toFixed(2)}\n加权成本净值：${newCost.toFixed(4)}`);document.querySelector('.modal-overlay')?.remove();renderFundsContent();}
+          else{alert('合并失败: '+(ud.error||'未知错误'));}
+        }
+      }
+    } else {
+      alert(d.error);
+    }
+    return;
+  }
+  document.querySelector('.modal-overlay')?.remove();renderFundsContent();
+}catch(e){alert('添加失败: '+e.message);}}
+
+function _calcDcaAdvice(pnlPct, downDays, maxDrawdown){
+// 规则引擎：基于盈亏%、连跌天数、最大回撤，生成定投建议
+// 返回 {level:'red'|'yellow'|'green', action:'...', hint:'...', multiplier:'...'}
+const p = pnlPct ?? 0;
+const dd = downDays || 0;
+const mdd = (maxDrawdown || 0) * 100; // 转为 %
+
+let level, action, hint, multiplier;
+
+if(p <= -15){
+  level='red'; action='⛔ 已达止损线'; multiplier='暂停定投';
+  hint='持仓亏损超过 -15%（你设置的止损线），建议冷静审视基金逻辑，考虑止损或减仓';
+} else if(p <= -8){
+  level='yellow'; action='📉 加倍定投'; multiplier='2× 倍率';
+  hint='中等亏损区间，适合加大定投摊低成本，下跌越多可适当加仓';
+} else if(p <= -2){
+  level='green'; action='🟢 加码定投'; multiplier='1.5× 倍率';
+  hint='轻度回撤，是小幅加仓的好时机，按 1.5 倍定投额买入';
+} else if(p <= 15){
+  level='green'; action='✅ 正常定投'; multiplier='1× 标准';
+  hint='盈利区间，按原计划正常定投即可，不追涨也不减仓';
+} else if(p <= 35){
+  level='yellow'; action='🔆 减半定投'; multiplier='0.5× 倍率';
+  hint='盈利较高，建议定投减半，等待回调后再恢复标准额';
+} else {
+  level='red'; action='⚠️ 接近止盈线'; multiplier='暂停/分批减仓';
+  hint='盈利已超 +35%（接近止盈线 +50%），可考虑分批兑现，锁定部分收益';
+}
+
+// 修正信号：连跌叠加
+const extras = [];
+if(dd >= 3 && level !== 'red'){
+  extras.push(`连跌 ${dd} 天，短期承压，可额外加购一次`);
+}
+if(mdd > 20 && level === 'green'){
+  extras.push(`该基金历史最大回撤 ${mdd.toFixed(0)}%，波动较大，建议单次金额不超过月计划的 30%`);
+}
+
+return {level, action, hint, multiplier, extras};
+}
+
+async function showFundHoldingDetail(code){
+// 优先从已有 scan 数据取，没有则直接拉 API
+let h=(_fundScanData?.holdings||[]).find(x=>x.code===code);
+if(!h){
+  try{
+    const r=await fetch(API_BASE+'/fund-holdings/scan?'+getProfileParam(),{signal:AbortSignal.timeout(10000)});
+    if(r.ok){const d=await r.json();_fundScanData=d;h=d.holdings?.find(x=>x.code===code);}
+  }catch(e){}
+}
+// v9.5.12 兜底：scan API 没拿到该基金（持仓未同步到服务器），从本地 portfolio + window._holdingsPnl 自造
+if(!h){
+  try{
+    const txns=(typeof loadTxns==='function')?loadTxns():[];
+    const localHoldings=(typeof calcHoldingsFromTxns==='function')?calcHoldingsFromTxns(txns):[];
+    const lh=localHoldings.find(x=>x.code===code);
+    const pn=(window._holdingsPnl||{})[code]||{};
+    const fd=(typeof FUND_DETAILS!=='undefined'&&FUND_DETAILS)?FUND_DETAILS[code]:null;
+    if(lh||pn.marketValue){
+      h={
+        code,
+        name: lh?.name || fd?.fullName || code,
+        shares: lh?.shares || 0,
+        totalCost: lh?.totalCost || 0,
+        avgPrice: lh?.avgPrice || 0,
+        pnlPct: pn.pnlPct ?? null,
+        pnl: pn.pnl || 0,
+        realtime: { nav: pn.nav || '', estNav: '', estRate: pn.dayChange || null, estDeviation: null },
+        risk: {},
+        alerts: [],
+        _localFallback: true,
+      };
+    }
+  }catch(e){console.warn('local fallback failed:',e)}
+}
+if(!h){
+  // 还是没拿到 → 给可见反馈，而不是静默 return
+  const o2=document.createElement('div');o2.className='modal-overlay';o2.onclick=e=>{if(e.target===o2)o2.remove()};
+  o2.innerHTML=`<div class="modal-sheet" onclick="event.stopPropagation()"><div class="modal-handle"></div>
+    <div class="modal-title">📋 定投建议</div>
+    <div style="padding:20px;text-align:center;color:var(--text2);font-size:13px;line-height:1.7">
+      暂无 <b>${code}</b> 的实时数据<br>
+      <span style="font-size:11px;color:var(--text3,#7A8499)">该基金尚未同步到服务器，请稍后再试，或先在「基金详情」里查看</span>
+    </div>
+    <button class="action-btn" onclick="document.querySelector('.modal-overlay')?.remove()" style="width:100%;margin-top:8px">知道了</button>
+  </div>`;
+  document.body.appendChild(o2);
+  return;
+}
 const rt=h.realtime||{};const risk=h.risk||{};const alerts=h.alerts||[];
+
+// 定投建议
+const pnlPct = h.pnlPct ?? null;
+const dca = pnlPct != null ? _calcDcaAdvice(pnlPct, risk.downDays, risk.maxDrawdown) : null;
+const dcaColor = dca?.level==='red'?'var(--red)':dca?.level==='yellow'?'#F59E0B':'var(--green)';
+const dcaBg = dca?.level==='red'?'rgba(239,68,68,.06)':dca?.level==='yellow'?'rgba(245,158,11,.06)':'rgba(16,185,129,.06)';
+const dcaBorder = dca?.level==='red'?'rgba(239,68,68,.2)':dca?.level==='yellow'?'rgba(245,158,11,.2)':'rgba(16,185,129,.2)';
+const dcaHtml = dca ? `
+<div style="margin-top:16px;padding:14px;background:${dcaBg};border:1px solid ${dcaBorder};border-radius:12px">
+  <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px">
+    <div style="font-size:13px;font-weight:700">📋 定投建议</div>
+    <div style="font-size:11px;color:var(--text2)">基于当前盈亏自动计算</div>
+  </div>
+  <div style="display:flex;align-items:center;gap:12px;margin-bottom:8px">
+    <div style="font-size:18px;font-weight:800;color:${dcaColor}">${dca.action}</div>
+    <div style="padding:2px 10px;background:${dcaColor}20;border-radius:20px;font-size:11px;color:${dcaColor};font-weight:600">${dca.multiplier}</div>
+  </div>
+  <div style="font-size:12px;color:var(--text2);line-height:1.7">${dca.hint}</div>
+  ${dca.extras.length ? '<div style="margin-top:8px">'+dca.extras.map(e=>`<div style="font-size:11px;color:#F59E0B;margin-top:4px">⚡ ${e}</div>`).join('')+'</div>' : ''}
+  <div style="font-size:10px;color:var(--text3,#475569);margin-top:8px;border-top:1px solid rgba(148,163,184,.1);padding-top:6px">当前盈亏 ${pnlPct>=0?'+':''}${pnlPct.toFixed(1)}% · 止损 -15% · 止盈 +50%</div>
+</div>` : '';
+
 const overlay=document.createElement('div');overlay.className='modal-overlay';overlay.onclick=e=>{if(e.target===overlay)overlay.remove()};
-overlay.innerHTML=`<div class="modal-sheet"><div class="modal-handle"></div><div class="modal-title">${h.name||h.code}</div><div class="modal-subtitle">${h.code} · 估算 ${rt.estRate!=null?(rt.estRate>=0?'+':'')+rt.estRate.toFixed(2)+'%':'--'}</div><div class="modal-stat-grid"><div class="modal-stat"><div class="modal-stat-label">估算净值</div><div class="modal-stat-value">${rt.estNav||'--'}</div></div><div class="modal-stat"><div class="modal-stat-label">最新净值</div><div class="modal-stat-value">${rt.nav||'--'}</div></div><div class="modal-stat"><div class="modal-stat-label">估算偏差</div><div class="modal-stat-value">${rt.estDeviation!=null?rt.estDeviation.toFixed(2)+'%':'--'}</div></div><div class="modal-stat"><div class="modal-stat-label">最大回撤</div><div class="modal-stat-value" style="color:${risk.maxDrawdown>0.03?'var(--red)':'var(--text)'}">${risk.maxDrawdown!=null?(risk.maxDrawdown*100).toFixed(1)+'%':'--'}</div></div><div class="modal-stat"><div class="modal-stat-label">年化波动</div><div class="modal-stat-value">${risk.volatility!=null?(risk.volatility*100).toFixed(1)+'%':'--'}</div></div><div class="modal-stat"><div class="modal-stat-label">连跌天数</div><div class="modal-stat-value" style="color:${risk.downDays>=3?'var(--red)':'var(--text)'}">${risk.downDays||0}天</div></div></div>${alerts.length?'<div style="margin-top:16px"><div style="font-size:13px;font-weight:700;margin-bottom:8px">⚡ 信号</div>'+alerts.map(a=>`<div style="background:rgba(239,68,68,.06);border-radius:8px;padding:8px;margin-bottom:4px;font-size:12px">${a.msg}</div>`).join('')+'</div>':''}<button class="action-btn" onclick="deleteFund('${h.code}')" style="width:100%;margin-top:16px;color:var(--red);border-color:var(--red)">🗑️ 删除此基金</button></div>`;
+overlay.innerHTML=`<div class="modal-sheet" style="max-height:90vh;overflow-y:auto"><div class="modal-handle"></div>
+<div class="modal-title">${h.name||h.code}</div>
+<div class="modal-subtitle">${h.code} · 估算 ${rt.estRate!=null?(rt.estRate>=0?'+':'')+rt.estRate.toFixed(2)+'%':'--'}</div>
+<div class="modal-stat-grid">
+<div class="modal-stat"><div class="modal-stat-label">估算净值</div><div class="modal-stat-value">${rt.estNav||'--'}</div></div>
+<div class="modal-stat"><div class="modal-stat-label">最新净值</div><div class="modal-stat-value">${rt.nav||'--'}</div></div>
+<div class="modal-stat"><div class="modal-stat-label">估算偏差</div><div class="modal-stat-value">${rt.estDeviation!=null?rt.estDeviation.toFixed(2)+'%':'--'}</div></div>
+<div class="modal-stat"><div class="modal-stat-label">最大回撤</div><div class="modal-stat-value" style="color:${risk.maxDrawdown>0.03?'var(--red)':'var(--text)'}">${risk.maxDrawdown!=null?(risk.maxDrawdown*100).toFixed(1)+'%':'--'}</div></div>
+<div class="modal-stat"><div class="modal-stat-label">年化波动</div><div class="modal-stat-value">${risk.volatility!=null?(risk.volatility*100).toFixed(1)+'%':'--'}</div></div>
+<div class="modal-stat"><div class="modal-stat-label">连跌天数</div><div class="modal-stat-value" style="color:${risk.downDays>=3?'var(--red)':'var(--text)'}">${risk.downDays||0}天</div></div>
+</div>
+${dcaHtml}
+${alerts.length?'<div style="margin-top:16px"><div style="font-size:13px;font-weight:700;margin-bottom:8px">⚡ 信号</div>'+alerts.map(a=>`<div style="background:rgba(239,68,68,.06);border-radius:8px;padding:8px;margin-bottom:4px;font-size:12px">${a.msg}</div>`).join('')+'</div>':''}
+<button class="action-btn" onclick="deleteFund('${h.code}')" style="width:100%;margin-top:16px;color:var(--red);border-color:var(--red)">🗑️ 删除此基金</button>
+</div>`;
 document.body.appendChild(overlay)}
 
 async function deleteFund(code){try{await fetch(API_BASE+'/fund-holdings/'+code+'?'+getProfileParam(),{method:'DELETE'});document.querySelector('.modal-overlay')?.remove();renderFundsContent()}catch(e){alert('删除失败')}}

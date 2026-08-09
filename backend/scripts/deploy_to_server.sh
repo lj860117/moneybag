@@ -170,6 +170,8 @@ if [ "$USE_PASSWORD_LOGIN" = true ]; then
     echo "     sudo systemctl restart moneybag"
     echo "     sudo systemctl status moneybag"
 else
+    # FIX: 部署后修复 data/ 目录权限（防止 root 创建的文件导致 ubuntu 写入失败）
+    $SSH "sudo chown -R ubuntu:ubuntu $REMOTE_PATH/data/ 2>/dev/null; echo '  ✅ data/ 权限已修复'" || true
     $SSH "sudo systemctl restart moneybag 2>/dev/null || \
         (pkill -f 'uvicorn main:app' 2>/dev/null; sleep 2; \
          cd $REMOTE_PATH/backend && nohup /opt/moneybag/venv/bin/uvicorn main:app \

@@ -24,6 +24,28 @@ from api.shared_helpers import (
 router = APIRouter()
 
 
+def _resolve_chat_model(requested_model: str | None, *, model_tier: str = "llm_light", module: str = "chat") -> str:
+    if requested_model:
+        return requested_model
+
+    try:
+        from services.llm_gateway import LLMGateway
+
+        gw = LLMGateway.instance()
+        api_cfg = gw.get_api_config(model_tier=model_tier, module=module)
+        if api_cfg.get("model"):
+            return api_cfg["model"]
+    except Exception:
+        pass
+
+    try:
+        from services.llm_gateway import resolve_default_model
+
+        return resolve_default_model(model_tier, module=module)
+    except Exception:
+        return "deepseek-v4-flash"
+
+
 def _extract_and_save_memory(user_id: str, user_msg: str, reply: str) -> None:
     """后台线程：用轻量 LLM 提取本次对话的关键决策/偏好，存入 pending_insights。
 
@@ -68,7 +90,136 @@ FAST_PATH_INTENTS = {"safety_refusal", "holdings_query", "empty_holdings_query",
                      "cross_account_refusal",
                      "timing", "take_profit", "dca", "sentiment", "macro_summary",
                      "smart_dca", "news", "macro", "valuation", "northbound",
-                     "briefing_request", "weekly_request", "cash_safety"}
+                     "briefing_request", "weekly_request", "cash_safety",
+                     "operation_goal", "operation_discipline"}
+
+
+# ========================================================
+# v9.5.123: AI 追问建议生成器
+# ========================================================
+_FOLLOW_UP_MAP = {
+    "timing": ["现在适合定投吗", "哪些板块比较安全", "大盘什么时候企稳"],
+    "holdings_query": ["帮我分析持仓风险", "哪只基金建议减仓", "持仓行业集中度如何"],
+    "dca": ["定投频率多久合适", "哪只基金适合加大定投", "如果暴跌了还要继续定投吗"],
+    "smart_dca": ["给我看看每只基金的定投建议", "本月定投金额建议多少", "和固定定投相比优势在哪"],
+    "take_profit": ["设多少止盈线合适", "分批止盈还是一次卖出", "止盈后的钱放哪里"],
+    "valuation": ["现在哪些指数低估", "估值高位该怎么操作", "估值百分位多少算便宜"],
+    "macro": ["利率变化对我持仓有什么影响", "美联储政策对A股影响", "通胀数据怎么看"],
+    "sentiment": ["市场情绪指数现在多少", "恐慌时应该怎么做", "当前市场贪婪还是恐惧"],
+    "news": ["最近有什么利好政策", "哪些板块最近有利空", "市场热点是什么"],
+    "general": ["帮我做个持仓体检", "本周有什么需要注意的", "我的资产配置合理吗"],
+}
+
+
+def _generate_follow_ups(intent: str, user_msg: str) -> list:
+    """根据意图生成2-3个追问建议"""
+    suggestions = _FOLLOW_UP_MAP.get(intent, _FOLLOW_UP_MAP["general"])
+    # 过滤掉和用户问题太相似的
+    filtered = [s for s in suggestions if s not in user_msg and user_msg not in s]
+    return filtered[:3] if filtered else suggestions[:2]
+
+
+# ========================================================
+# v9.5.122: 预制问题秒回 + 长期记忆
+# ========================================================
+
+# 预制问题关键词匹配规则
+_PRESET_QUESTIONS = [
+    {"keywords": ["诊断", "持仓", "有没有问题", "健康"], "cache_key": "preset_diagnosis"},
+    {"keywords": ["估值", "高吗", "入场", "现在贵吗"], "cache_key": "preset_valuation"},
+    {"keywords": ["再平衡", "调仓", "配置", "比例"], "cache_key": "preset_rebalance"},
+    {"keywords": ["重叠", "精简", "合并", "赛道重复"], "cache_key": "preset_overlap"},
+    {"keywords": ["复盘", "本周", "总结", "回顾"], "cache_key": "preset_review"},
+    {"keywords": ["风险", "最大风险", "危险", "要注意"], "cache_key": "preset_risk"},
+]
+
+
+def _is_market_anomaly() -> bool:
+    """v9.5.123: 检测盘中异动（大盘日跌>2%或日涨>3%），异动时废弃预制答案
+    
+    通过读取市场行情缓存（shared_helpers 的 market_ctx）快速判断，不额外请求。
+    """
+    try:
+        from pathlib import Path
+        import json as _j, time as _t
+        cache_dir = Path(os.environ.get("DATA_DIR", "data")) / "_cache"
+        # 读市场上下文缓存（由 cache_warmer 维护）
+        for fn in ["market_ctx.json", "market_context.json"]:
+            fp = cache_dir / fn
+            if fp.exists() and (_t.time() - fp.stat().st_mtime) < 7200:  # 2h 内有效
+                data = _j.loads(fp.read_text(encoding="utf-8"))
+                # 检查大盘日涨跌
+                indices = data.get("indices") or data.get("market") or {}
+                for idx_name, idx_data in indices.items():
+                    if isinstance(idx_data, dict):
+                        chg = idx_data.get("change_pct") or idx_data.get("pct_change") or 0
+                        if isinstance(chg, (int, float)):
+                            if chg < -2.0 or chg > 3.0:
+                                print(f"[PRESET] 市场异动检测: {idx_name} 日涨跌 {chg}%, 废弃预制答案")
+                                return True
+        return False
+    except Exception:
+        return False  # 检测失败不阻塞
+
+
+def _check_preset_answer(user_msg: str, user_id: str) -> str | None:
+    """检查用户消息是否匹配预制问题，命中则直接返回预计算答案（不调 LLM）
+    
+    v9.5.123: 盘中异动时自动失效，走实时 LLM 确保准确性。
+    """
+    import time as _t
+    from pathlib import Path
+    
+    # v9.5.123: 盘中异动检测 — 异动时废弃所有预制答案
+    if _is_market_anomaly():
+        return None
+    
+    cache_dir = Path(os.environ.get("DATA_DIR", "data")) / "_cache" / "preset_answers"
+    
+    for preset in _PRESET_QUESTIONS:
+        # 需要匹配至少2个关键词（避免误触）
+        matched = sum(1 for kw in preset["keywords"] if kw in user_msg)
+        if matched >= 1 and any(kw in user_msg for kw in preset["keywords"][:2]):
+            fp = cache_dir / f"{preset['cache_key']}_{user_id}.txt"
+            try:
+                if fp.exists():
+                    age = _t.time() - fp.stat().st_mtime
+                    if age < 86400:  # 24h 有效
+                        content = fp.read_text(encoding="utf-8").strip()
+                        if content and len(content) > 20:
+                            return content + f"\n\n_（预计算回答，数据截至 {datetime.fromtimestamp(fp.stat().st_mtime).strftime('%m-%d %H:%M')}。如需最新分析请追问）_"
+            except Exception:
+                pass
+    return None
+
+
+def _load_user_memory(user_id: str) -> str:
+    """加载用户长期记忆（v9.5.122: 只取3个月内的 insights，过期的自动衰减）"""
+    try:
+        from domain.services.user_preference_service import get_pending_insights
+        insights = get_pending_insights(user_id) or []
+        if not insights:
+            return ""
+        # v9.5.122: 只保留3个月内的记忆（过期的不注入避免误导 AI）
+        from datetime import datetime, timedelta
+        cutoff = (datetime.now() - timedelta(days=90)).isoformat()
+        valid = []
+        for i in insights:
+            text = i.get("text", "")
+            if not text or text == "无":
+                continue
+            created = i.get("created_at", "")
+            # 没有时间戳的老数据也保留（兼容）
+            if created and created < cutoff:
+                continue  # 超过3个月，跳过
+            valid.append(text)
+        if not valid:
+            return ""
+        # 取最近10条
+        recent = valid[-10:]
+        return "用户过往表达的偏好/决策（近3个月）：\n" + "\n".join(f"- {r}" for r in recent)
+    except Exception:
+        return ""
 
 
 @router.get("/api/models")
@@ -79,7 +230,7 @@ def list_models():
         key = os.environ.get(m["env_key"], "")
         if key:
             result.append({"id": m["id"], "name": m["name"], "provider": m["provider"]})
-    return {"models": result, "default": "deepseek-v4-flash"}
+    return {"models": result, "default": _resolve_chat_model(None, model_tier="llm_light", module="chat_ui")}
 
 
 @router.post("/api/chat")
@@ -89,12 +240,25 @@ async def chat_analysis(req: ChatRequest):
     if not user_msg:
         raise HTTPException(400, "消息不能为空")
 
+    # v9.5.123: 数据来源追踪
+    import time as _time
+    _data_sources = []  # 记录本次回答用了哪些数据源
+    _data_cutoff = ""   # 数据截止时间
+    
+    # v9.5.122: 预制问题秒回 — 匹配高频问题的预计算答案（不调 LLM）
+    uid = req.userId or "default"
+    preset_hit = _check_preset_answer(user_msg, uid)
+    if preset_hit:
+        return {
+            "reply": preset_hit, "source": "preset_cache", "served_by": "preset",
+            "data_meta": {"sources": ["预计算答案(定时更新)"], "note": "此回答来自后台定时预算,非实时计算"},
+        }
+
     # Phase 0 (3.6): 意图预分类（规则优先，不调 LLM）
     intent = classify_chat_intent(user_msg)
 
     # 构建市场上下文
     market_ctx = _build_market_context()
-    uid = req.userId or "default"
     portfolio_ctx = _build_portfolio_context(req.portfolio, user_id=uid) if req.portfolio else _build_portfolio_context(user_id=uid)
 
     # ★ 规则优先：快速路径（<1s，用真实数据计算，比 LLM 编造更可靠）
@@ -116,37 +280,40 @@ async def chat_analysis(req: ChatRequest):
                              source="rules", intent=rule_result["intent"], model="rules")
             except Exception:
                 pass
-            return {"reply": rule_result["text"], "source": "rules", "served_by": "rules"}
+            from datetime import datetime
+            return {
+                "reply": rule_result["text"], "source": "rules", "served_by": "rules",
+                "data_meta": {"sources": ["规则引擎(实时计算)"], "cutoff": datetime.now().strftime("%m-%d %H:%M"), "note": "基于确定性数据,无AI推测"},
+            }
         # 不命中 → fall through 到 LLM
 
-    # 多用户记忆注入（B1修复：get_memory_summary→build_memory_summary）
+    # v9.5.122: 长期记忆注入（跨会话偏好积累）
     if req.userId:
         try:
-            from services.agent_memory import build_memory_summary, record_emotion
-            # 2026-04-19 M6: 先记录本次情绪，再 build（这样当前情绪会影响下次的 summary）
+            from services.agent_memory import record_emotion
             record_emotion(req.userId, user_msg)
-            mem = build_memory_summary(req.userId)
+        except Exception:
+            pass
+        try:
+            mem = _load_user_memory(uid)
             if mem:
-                portfolio_ctx += f"\n\n## 用户记忆\n{mem}"
+                portfolio_ctx += f"\n\n## 用户长期偏好记忆\n{mem}"
         except Exception as e:
             print(f"[CHAT] memory inject failed: {e}")
 
-    # 尝试调用 LLM（支持 OpenAI 兼容 API）
-    api_key = os.environ.get("OPENAI_API_KEY") or os.environ.get("LLM_API_KEY")
-    api_base = os.environ.get("LLM_API_BASE", "https://api.deepseek.com/v1")
-    model = req.model or os.environ.get("LLM_MODEL", "deepseek-v4-flash")
-    # 根据模型查找对应 base URL
-    for m in AVAILABLE_MODELS:
-        if m["id"] == model:
-            api_base = m["base"]
-            api_key = os.environ.get(m["env_key"], api_key)
-            break
+    # 尝试调用 LLM（显式选模优先，默认模型走 gateway 的峰谷路由）
+    from services.llm_gateway import LLMGateway
+    gw = LLMGateway.instance()
+    model = _resolve_chat_model(req.model, model_tier="llm_light", module="chat")
+    api_cfg = gw.get_api_config(model_tier="llm_light", module="chat")
+    api_key = req.model or api_cfg.get("api_key")
+    api_base = next((m["base"] for m in AVAILABLE_MODELS if m["id"] == model), api_cfg.get("api_base"))
     print(f"[CHAT] api_key={'SET' if api_key else 'EMPTY'}, base={api_base}, model={model}")
 
     if api_key:
         try:
             import httpx
-            print(f"[CHAT] Calling DeepSeek API... intent={intent}")
+            print(f"[CHAT] Calling LLM Gateway... intent={intent}")
             system_prompt = _build_system_prompt(market_ctx, portfolio_ctx)
             # Phase 0: 注入意图提示（帮 LLM 聚焦回答方向）
             if intent.get("intent") != "general":
@@ -174,8 +341,6 @@ async def chat_analysis(req: ChatRequest):
                 print(f"[CHAT] RAG injection failed (non-blocking): {e}")
                 rag_context = {"has_rag": False, "further_reading": []}
 
-            from services.llm_gateway import LLMGateway
-            gw = LLMGateway.instance()
             gw_result = gw.call_sync(
                 user_msg,
                 system=system_prompt,
@@ -183,6 +348,7 @@ async def chat_analysis(req: ChatRequest):
                 user_id=uid,
                 module="chat",
                 max_tokens=800,
+                explicit_model=model,
             )
             print(f"[CHAT] Gateway result source={gw_result.get('source')}")
             if gw_result.get("content") and not gw_result.get("fallback"):
@@ -233,11 +399,38 @@ async def chat_analysis(req: ChatRequest):
                     except Exception as e:
                         print(f"[CHAT] Response validator failed (non-blocking): {e}")
 
+                    # D4: LLM 输出守卫 — 过滤 prompt 泄漏（宽松模式）
+                    try:
+                        from services.llm_output_guard import LLMOutputGuard
+                        reply_guarded = LLMOutputGuard.filter_chat(reply, fallback=reply)
+                        if reply_guarded != reply:
+                            print(f"[CHAT] OutputGuard filtered {len(reply)-len(reply_guarded)} chars")
+                        reply = reply_guarded
+                    except Exception as e:
+                        print(f"[CHAT] OutputGuard failed (non-blocking): {e}")
+
+                    # v9.5.123: 数据来源标注
+                    _data_sources.append(f"AI模型({gw_result.get('model','DeepSeek')})")
+                    if market_ctx:
+                        _data_sources.append("市场行情数据")
+                    if portfolio_ctx and "持仓" in portfolio_ctx:
+                        _data_sources.append("个人持仓数据")
+                    if rag_context.get("has_rag"):
+                        _data_sources.append("知识库文献")
+                    from datetime import datetime
+                    _data_cutoff = datetime.now().strftime("%m-%d %H:%M")
+                    
                     return {
                         "reply": reply,
                         "source": "ai",
                         "served_by": "llm",
                         "further_reading": rag_context.get("further_reading", []),
+                        "follow_ups": _generate_follow_ups(intent.get("intent", "general"), user_msg),
+                        "data_meta": {
+                            "sources": _data_sources,
+                            "cutoff": _data_cutoff,
+                            "note": "AI分析基于上述数据源,仅供参考不构成投资建议",
+                        },
                     }
         except Exception as e:
             import traceback
@@ -252,7 +445,15 @@ async def chat_analysis(req: ChatRequest):
         log_decision(user_id=uid, question=user_msg, advice=reply, source="rules", intent=intent.get("intent", "general"), model="rules")
     except Exception:
         pass
-    return {"reply": reply, "source": "rules", "served_by": "rules"}
+    from datetime import datetime
+    return {
+        "reply": reply, "source": "rules", "served_by": "rules",
+        "data_meta": {
+            "sources": ["规则引擎(基于实时市场数据计算)"],
+            "cutoff": datetime.now().strftime("%m-%d %H:%M"),
+            "note": "此回答由规则引擎生成,基于确定性数据,不含AI推测",
+        },
+    }
 
 
 @router.post("/api/chat/stream")
@@ -290,11 +491,12 @@ async def chat_analysis_stream(req: ChatRequest):
             history_dicts = [h.dict() for h in req.history] if req.history else None
 
             async def fc_stream_gen():
+                default_model = _resolve_chat_model(req.model, model_tier="llm_light", module="chat_stream")
                 for chunk in run_fc_agent_stream(
                     user_msg,
                     system_prompt=system_prompt,
                     user_id=uid,
-                    model=req.model or "deepseek-v4-flash",
+                    model=default_model,
                     history=history_dicts,
                 ):
                     yield f"data: {json.dumps(chunk, ensure_ascii=False)}\n\n"
@@ -543,15 +745,10 @@ async def chat_analysis_stream(req: ChatRequest):
     # API key + 模型选择（通过 gateway 统一获取配置）
     from services.llm_gateway import LLMGateway
     gw = LLMGateway.instance()
-    api_cfg = gw.get_api_config()
-    api_key = api_cfg["api_key"]
-    api_base = api_cfg["api_base"]
-    model = req.model or api_cfg["model"]
-    for m in AVAILABLE_MODELS:
-        if m["id"] == model:
-            api_base = m["base"]
-            api_key = os.environ.get(m["env_key"], api_key)
-            break
+    model = _resolve_chat_model(req.model, model_tier="llm_light", module="chat_stream")
+    api_cfg = gw.get_api_config(model_tier="llm_light", module="chat_stream")
+    api_key = req.model or api_cfg["api_key"]
+    api_base = next((m["base"] for m in AVAILABLE_MODELS if m["id"] == model), api_cfg["api_base"])
 
     if not api_key or not gw.pre_check():
         reply = "AI 暂时不可用，请稍后再试~" if not api_key else _rule_based_reply(user_msg, market_ctx, portfolio_ctx)
@@ -575,6 +772,7 @@ async def chat_analysis_stream(req: ChatRequest):
                 module="chat_stream",
                 max_tokens=1200,
                 history=[h.dict() for h in req.history] if req.history else None,
+                explicit_model=model,  # 用户主动选择的模型（含千问）
             ):
                 if chunk.get("fallback"):
                     # gateway 限流/错误 → 降级规则引擎
@@ -582,7 +780,7 @@ async def chat_analysis_stream(req: ChatRequest):
                     yield f"data: {json.dumps({'delta': reply, 'source': 'rules', 'done': True}, ensure_ascii=False)}\n\n"
                     return
                 if chunk.get("done"):
-                    yield f"data: {json.dumps({'delta': '', 'source': 'ai', 'done': True, 'served_by': 'llm'}, ensure_ascii=False)}\n\n"
+                    yield f"data: {json.dumps({'delta': '', 'source': 'ai', 'done': True, 'served_by': 'llm', 'model': chunk.get('model', ''), 'fallback_used': chunk.get('fallback_used', False)}, ensure_ascii=False)}\n\n"
                     # ★ 回复完成后，后台轻量提取关键决策/偏好存入记忆
                     _full_reply_text = "".join(_full_reply)
                     if uid and uid != "default" and _full_reply_text and len(user_msg) > 6:

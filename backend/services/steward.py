@@ -277,6 +277,26 @@ class Steward:
             "timestamp": datetime.now().isoformat(),
         }
 
+        # 附加地缘事件 top3（带 url），让前端可点击查看具体新闻
+        try:
+            from services.geopolitical import get_geopolitical_events
+            geo = get_geopolitical_events()
+            top_events = []
+            if geo.get("available") and geo.get("events"):
+                for ev in geo["events"][:3]:
+                    top_events.append({
+                        "title": ev.get("title", "")[:80],
+                        "url": ev.get("url", ""),
+                        "source": ev.get("source", ""),
+                        "category": (ev.get("categories") or [""])[0],
+                        "severity": ev.get("severity", 0),
+                    })
+            briefing["geopolitical_events"] = top_events
+            briefing["geopolitical_top_category"] = geo.get("top_category") if geo.get("available") else None
+        except Exception as e:
+            print(f"[STEWARD] attach geo events failed: {e}")
+            briefing["geopolitical_events"] = []
+
         # 写入当日缓存（供同日后续调用直接命中）
         try:
             _BRIEF_DIR.mkdir(parents=True, exist_ok=True)
@@ -438,16 +458,20 @@ def _get_top_signal(ctx: DecisionContext) -> str:
 
 
 def _generate_one_line(ctx: DecisionContext) -> str:
-    """生成管家一句话总结"""
+    """生成管家一句话总结
+    v9.5.43 A1 修复：增加估值百分位交叉判断
+    问题：原版只看 regime+risk，trending_bull + 估值 91% 仍输出"风控正常"
+    修复：估值 ≥85% 必须加"⚠️ 估值偏高"前缀；≤25% 加"💰 估值便宜"
+    """
     regime_map = {
         "trending_bull": "📈 市场趋势向上",
         "oscillating": "📊 市场震荡整理",
         "high_vol_bear": "📉 市场波动加大",
         "rotation": "🔄 板块轮动中",
     }
-    
+
     regime_text = regime_map.get(ctx.regime, "📊 市场状态未知")
-    
+
     risk = ctx.risk_level or "normal"
     risk_map = {
         "normal": "风控正常",
@@ -456,9 +480,33 @@ def _generate_one_line(ctx: DecisionContext) -> str:
         "blocked": "🚫 操作被拦截",
     }
     risk_text = risk_map.get(risk, "")
-    
+
+    # ★ v9.5.43 A1：估值百分位交叉警示
+    valuation_warning = ""
+    try:
+        from services.market_data import get_valuation_percentile
+        val = get_valuation_percentile() or {}
+        pct = val.get("percentile")
+        # v9.5.124: 添加详细日志，便于排查估值数据获取失败问题
+        print(f"[ONE_LINE] valuation data: pct={pct}, source={val.get('metric', 'unknown')}, "
+              f"freshness={val.get('freshness', 'unknown')}")
+        if pct is not None:
+            if pct >= 85:
+                valuation_warning = f"⚠️ 估值{pct:.0f}%分位（高位，谨慎追高）"
+            elif pct >= 70:
+                valuation_warning = f"📊 估值{pct:.0f}%分位（偏高）"
+            elif pct <= 25:
+                valuation_warning = f"💰 估值{pct:.0f}%分位（便宜，分批布局）"
+        else:
+            print(f"[ONE_LINE] WARNING: valuation percentile is None, using default risk_text")
+    except Exception as e:
+        print(f"[ONE_LINE] valuation pct fetch failed: {e}")
+
     parts = [regime_text]
-    if risk_text:
+    # 估值警示优先于 risk_text，避免"趋势向上+风控正常"误导
+    if valuation_warning:
+        parts.append(valuation_warning)
+    elif risk_text:
         parts.append(risk_text)
     return "，".join(parts)
 

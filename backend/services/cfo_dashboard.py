@@ -191,11 +191,18 @@ def _format_net_worth(nw) -> dict:
     breakdown = nw.get("breakdown", {})
     invest_data = breakdown.get("investment") or {}
 
-    # 计算累计盈亏：市值 - 成本
+    # 计算累计盈亏：市值 - 成本（合并盯盘系统 + V4交易流水两个数据源）
     total_market = invest_data.get("total", 0)
     total_cost = 0
+    # 盯盘系统基金
     fund_items = invest_data.get("fundItems") or []
     for item in fund_items:
+        shares = item.get("shares", 0) or 0
+        cost_nav = item.get("costNav", 0) or 0
+        total_cost += shares * cost_nav
+    # V4 交易流水基金（v9.5.119: 之前漏算了这部分，导致盈亏百分比基数过小）
+    txn_fund_items = invest_data.get("txnFundItems") or []
+    for item in txn_fund_items:
         shares = item.get("shares", 0) or 0
         cost_nav = item.get("costNav", 0) or 0
         total_cost += shares * cost_nav
@@ -329,8 +336,12 @@ def _estimate_monthly_expense(user_id: str, net_worth: dict) -> float:
 def _build_allocation(nw, val_pct: int = 50, user_id: str = "") -> dict | None:
     """从已获取的 unified-networth + 估值百分位构建配置数据
 
-    优先用 portfolio_overview 的精确分配（fund_classifier 拆分基金为股/债/现金），
-    fallback 到旧逻辑（全部投资当权益）。
+    数据分层：
+    - actual_cash：用户手录的现金资产（明确知道是现金）
+    - actual_stock：用户直接持有的股票市值
+    - fund_equity/bond/cash：基金穿透估算的内部仓位（估算值，非确定值）
+
+    两层不混合：配置图优先展示"实际持有"，基金穿透仅作参考。
     """
     try:
         if not nw or nw.get("netWorth", 0) <= 0:
@@ -338,15 +349,27 @@ def _build_allocation(nw, val_pct: int = 50, user_id: str = "") -> dict | None:
 
         breakdown = nw.get("breakdown", {})
         inv = (breakdown.get("investment") or {}).get("total", 0)
-        cash = (breakdown.get("cash") or {}).get("total", 0)
-        total = inv + cash
+        actual_cash = (breakdown.get("cash") or {}).get("total", 0)  # 手录现金
+        total = inv + actual_cash
         if total <= 0:
             return None
 
-        # 优先用 portfolio_overview 的精确分配（fund_classifier 正确拆分混合/QDII基金）
-        equity_pct = 0.0
-        bond_pct = 0.0
-        cash_pct = round(cash / total * 100, 1)
+        # 直接持有股票市值（非基金）
+        actual_stock_mv = 0.0
+        try:
+            from services.stock_monitor import get_stock_holdings
+            sh = get_stock_holdings(user_id) if user_id else []
+            has_direct_stock = bool(sh and len(sh) > 0)
+            # 简单用持仓数量估算（实际市值需要实时行情，这里用成本近似）
+            for s in (sh or []):
+                actual_stock_mv += float(s.get("shares", 0)) * float(s.get("costPrice", s.get("cost", 0)))
+        except Exception:
+            has_direct_stock = False
+
+        # 基金穿透估算
+        fund_equity = 0.0
+        fund_bond = 0.0
+        fund_cash_est = 0.0  # 基金内部现金估算
         used_precise = False
 
         if user_id:
@@ -355,28 +378,38 @@ def _build_allocation(nw, val_pct: int = 50, user_id: str = "") -> dict | None:
                 overview = get_portfolio_overview(user_id)
                 alloc = overview.get("allocation", {})
                 if alloc.get("equity", 0) > 0 or alloc.get("bond", 0) > 0:
-                    # portfolio_overview 返回的是投资部分内部的比例
-                    # 需要按 inv/total 比例缩放到含现金的整体比例
                     inv_ratio = inv / total if total > 0 else 0
-                    equity_pct = round(alloc["equity"] * inv_ratio / 100 * 100, 1)
-                    bond_pct = round(alloc["bond"] * inv_ratio / 100 * 100, 1)
-                    # 现金 = 用户手动现金 + 基金中的现金部分
-                    cash_from_fund = round(alloc.get("cash", 0) * inv_ratio / 100 * 100, 1)
-                    cash_pct = round(cash_pct + cash_from_fund, 1)
+                    fund_equity = round(alloc["equity"] * inv_ratio / 100 * 100, 1)
+                    fund_bond = round(alloc["bond"] * inv_ratio / 100 * 100, 1)
+                    fund_cash_est = round(alloc.get("cash", 0) * inv_ratio / 100 * 100, 1)
                     used_precise = True
             except Exception as e:
                 print(f"[CFO] portfolio_overview fallback: {e}")
 
         if not used_precise:
-            # fallback: 所有投资当权益（旧逻辑）
-            equity_pct = round(inv / total * 100, 1)
-            bond_pct = 0.0
+            fund_equity = round(inv / total * 100, 1)
+            fund_bond = 0.0
+            fund_cash_est = 0.0
+
+        # 合并：手录股票 + 基金穿透股权
+        actual_stock_pct = round(actual_stock_mv / total * 100, 1) if total > 0 else 0
+        equity_pct = round(fund_equity + actual_stock_pct, 1)
+        bond_pct = round(fund_bond, 1)
+        # 现金：手录现金 和 基金估算现金 分开存储
+        actual_cash_pct = round(actual_cash / total * 100, 1)
+        # 总现金 = 手录现金 + 基金内现金估算
+        cash_pct = round(actual_cash_pct + fund_cash_est, 1)
 
         current = {
-            "stock": equity_pct,   # 兼容旧前端
+            "stock": equity_pct,
             "equity": equity_pct,
             "bond": bond_pct,
             "cash": cash_pct,
+            # 分层数据（前端可用来区分显示）
+            "actual_cash_pct": actual_cash_pct,       # 手录现金占比
+            "fund_cash_est_pct": fund_cash_est,        # 基金估算现金占比
+            "actual_stock_pct": actual_stock_pct,      # 直接持股占比
+            "fund_equity_pct": fund_equity,            # 基金穿透股权占比
         }
 
         if val_pct > 70:
@@ -398,6 +431,7 @@ def _build_allocation(nw, val_pct: int = 50, user_id: str = "") -> dict | None:
             "deviation": deviation,
             "zone": "高估" if val_pct > 70 else "低估" if val_pct < 30 else "适中",
             "total_market": round(total, 0),
+            "has_direct_stock": has_direct_stock,
         }
     except Exception as e:
         print(f"[CFO] _build_allocation error: {e}")

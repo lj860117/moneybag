@@ -414,3 +414,46 @@ def clear_cache():
     except Exception as e:
         print(f"[CALENDAR] 清除缓存失败: {e}")
         return False
+
+
+# ============================================================
+# 兼容别名（供 weekly_review_cron.py 等外部调用）
+# ============================================================
+
+def get_upcoming_week_events(days_ahead: int = 7, countries: list = None) -> list:
+    """获取下周重要财经事件（兼容别名，内部调用 get_calendar_events）"""
+    return get_calendar_events(days_ahead=days_ahead, countries=countries)
+
+
+def format_for_weekly_report(events: list, max_events: int = 5) -> str:
+    """将事件列表格式化为周报文本
+    
+    参数：
+        events: get_calendar_events 返回的事件列表
+        max_events: 最多显示的事件数
+    
+    返回：
+        格式化后的文本（如 "• 06/18 美国 美联储利率决议 [高]"）
+    """
+    if not events:
+        return "暂无重要事件"
+    
+    lines = []
+    for ev in events[:max_events]:
+        date_str = ev.get("date", "")
+        # 格式化日期: "20260618" → "06/18"
+        display_date = ""
+        if len(date_str) == 8:
+            display_date = f"{date_str[4:6]}/{date_str[6:8]}"
+        elif len(date_str) == 10:
+            display_date = date_str[5:]  # "2026-06-18" → "06-18"
+        
+        country = ev.get("country", "")
+        event_name = ev.get("event", "")
+        importance = ev.get("importance", "")
+        imp_tag = f" [{importance}]" if importance else ""
+        
+        line = f"• {display_date} {country} {event_name}{imp_tag}"
+        lines.append(line)
+    
+    return "\n".join(lines)

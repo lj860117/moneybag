@@ -209,29 +209,227 @@ el.innerHTML='<div style="text-align:center;padding:20px"><div class="loading-sp
 try{
 const uid=getProfileId();
 const r=await fetch(API_BASE+'/decisions/review/'+uid+'?limit=20',{signal:AbortSignal.timeout(15000)});
-if(!r.ok){el.innerHTML='<div style="text-align:center;padding:20px;color:var(--text2)">决策复盘数据暂不可用<br><button onclick="renderInsight()" style="margin-top:8px;padding:6px 16px;border-radius:8px;border:none;background:var(--accent);color:#fff;cursor:pointer">🔄 重试</button></div>';return}
+if(!r.ok){el.innerHTML='<div style="text-align:center;padding:20px;color:var(--text2)">决策复盘数据暂不可用<br><button onclick="renderDecisionsTab(document.getElementById(\'insightContent\'))" style="margin-top:8px;padding:6px 16px;border-radius:8px;border:none;background:var(--accent);color:#fff;cursor:pointer">🔄 重试</button></div>';return}
 const d=await r.json();
 const reviews=d.reviews||[];
-if(!reviews.length){el.innerHTML='<div style="text-align:center;padding:20px;color:var(--text2)">暂无决策复盘记录<br><div style="font-size:12px;margin-top:8px">每次交易后提交复盘，系统会分析你的决策模式</div></div>';return}
-let html='<div class="dashboard-card" style="border-left:3px solid var(--accent);margin-bottom:12px"><div class="dashboard-card-title">🎯 决策复盘记录</div><div style="font-size:12px;color:var(--text2)">共 '+reviews.length+' 条复盘 · 记录越多，行为模式分析越准确</div></div>';
+// 公共操作栏（无论有无记录都显示）
+const actionBar=`<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px">
+<div style="font-size:11px;color:var(--text2)">记录越多，AI行为模式分析越准确</div>
+<button onclick="showDecisionReviewForm()" style="padding:8px 16px;border-radius:20px;border:none;background:var(--accent);color:#fff;font-size:12px;font-weight:600;cursor:pointer;flex-shrink:0">+ 记录一笔</button>
+</div>`;
+if(!reviews.length){
+el.innerHTML=`<div style="padding:16px">
+${actionBar}
+<div style="text-align:center;padding:32px 16px;background:var(--bg2);border-radius:16px">
+<div style="font-size:40px;margin-bottom:12px">🎯</div>
+<div style="font-size:15px;font-weight:700;margin-bottom:8px">暂无决策复盘记录</div>
+<div style="font-size:12px;color:var(--text2);line-height:1.7;margin-bottom:16px">每次买入/卖出后记录决策原因<br>AI 会给出评分并识别你的行为模式</div>
+<button onclick="showDecisionReviewForm()" style="padding:10px 24px;border-radius:12px;border:none;background:var(--accent);color:#fff;font-size:13px;font-weight:600;cursor:pointer">📝 记录第一笔</button>
+</div></div>`;
+return}
+let html=`<div style="padding:16px 16px 0">${actionBar}<div style="font-size:13px;font-weight:700;margin-bottom:10px">📋 决策历史（共 ${reviews.length} 条）</div>`;
 reviews.forEach(rev=>{
 const qs=rev.quality_score||{};
 const score=qs.total||0;
 const grade=qs.grade||'';
-const gradeLabel=grade==='excellent'?'优秀':grade==='good'?'良好':grade==='mediocre'?'一般':'较差';
+const gradeLabel=score>=80?'优秀':score>=60?'良好':score>=40?'一般':'较差';
 const gradeColor=score>=80?'#10B981':score>=60?'#3B82F6':score>=40?'#F59E0B':'#EF4444';
 const actionMap={buy:'🟢 买入',sell:'🔴 卖出',hold:'⚪ 持有',reduce:'🟠 减仓',add:'🟢 加仓'};
 const actionLabel=actionMap[rev.action]||rev.action||'买入';
 const time=(rev.time||rev.trade_time||'').slice(0,10);
-html+='<div class="dashboard-card" style="padding:12px;margin-bottom:8px"><div style="display:flex;justify-content:space-between;align-items:center"><div><span style="font-size:14px;font-weight:700">'+(rev.asset_name||'')+'</span><span style="font-size:11px;color:var(--text2);margin-left:6px">'+(rev.asset_code||'')+'</span></div><div style="font-size:14px;font-weight:800">'+actionLabel+'</div></div>';
-html+='<div style="display:flex;justify-content:space-between;align-items:center;margin-top:8px"><div style="font-size:12px;color:var(--text2)">'+time+'</div><div style="display:flex;align-items:center;gap:6px"><span style="font-size:20px;font-weight:800;color:'+gradeColor+'">'+score+'</span><span style="font-size:11px;color:'+gradeColor+'">'+gradeLabel+'</span></div></div>';
+html+=`<div style="background:var(--bg2);border-radius:12px;padding:12px;margin-bottom:8px">
+<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px">
+<div><span style="font-size:14px;font-weight:700">${rev.asset_name||'未知资产'}</span><span style="font-size:11px;color:var(--text2);margin-left:6px">${rev.asset_code||''}</span></div>
+<div style="font-size:13px;font-weight:700">${actionLabel}</div>
+</div>
+<div style="display:flex;justify-content:space-between;align-items:center">
+<div style="font-size:11px;color:var(--text2)">${time}</div>
+<div style="display:flex;align-items:center;gap:6px">
+<span style="font-size:22px;font-weight:900;color:${gradeColor}">${score}</span>
+<span style="font-size:11px;padding:2px 8px;background:${gradeColor}20;color:${gradeColor};border-radius:20px">${gradeLabel}</span>
+</div></div>`;
 const reasons=rev.reasons||[];
 if(reasons.length){
-const labels=reasons.map(r=>{const sig=r.signal;const icon=sig==='red'?'🚨':sig==='yellow'?'⚠️':'✅';return icon+(r.reason_id||r.custom_text||'').replace(/_/g,' ')}).join(' · ');
-html+='<div style="font-size:11px;margin-top:6px;padding:4px 8px;background:var(--bg2);border-radius:6px;color:var(--text2)">'+labels+'</div>'}
+const labels=reasons.map(r=>{const sig=r.signal;const icon=sig==='red'?'🚨':sig==='yellow'?'⚠️':'✅';const txt=r.custom_text||r.reason_id||'';return icon+' '+txt.replace(/_/g,' ')}).join('  ');
+html+=`<div style="font-size:11px;margin-top:6px;padding:4px 8px;background:var(--bg3);border-radius:6px;color:var(--text2)">${labels}</div>`}
+if(qs.warnings?.length){html+=`<div style="font-size:11px;color:#F59E0B;margin-top:4px">⚠️ ${qs.warnings[0]}</div>`}
 html+='</div>'});
+html+='</div>';
+// v9.5.123: 追加卖出追踪(自动判断卖对了还是卖早了)
+html+=await _renderSellReviews();
 el.innerHTML=html;
-}catch(e){el.innerHTML='<div style="text-align:center;padding:20px;color:var(--text2)">加载超时<br><span style="font-size:12px">'+e.message+'</span><br><button onclick="renderInsight()" style="margin-top:8px;padding:6px 16px;border-radius:8px;border:none;background:var(--accent);color:#fff;cursor:pointer">🔄 重试</button></div>'}}
+}catch(e){el.innerHTML='<div style="text-align:center;padding:20px;color:var(--text2)">加载超时<br><span style="font-size:12px">'+e.message+'</span><br><button onclick="renderDecisionsTab(document.getElementById(\'insightContent\'))" style="margin-top:8px;padding:6px 16px;border-radius:8px;border:none;background:var(--accent);color:#fff;cursor:pointer">🔄 重试</button></div>'}}
+
+// v9.5.123: 卖出后追踪 — 判断卖对了还是卖早了
+async function _renderSellReviews(){
+  try{
+    const r=await fetch(`${API_BASE}/investor/sell-reviews?userId=${getProfileId()}`,{signal:AbortSignal.timeout(8000)});
+    if(!r.ok)return '';
+    const d=await r.json();
+    if(!d.available||!d.reviews||!d.reviews.length)return '';
+    const stats=d.stats||{};
+    let html=`<div style="padding:0 16px 16px;margin-top:16px">
+      <div style="font-size:13px;font-weight:700;margin-bottom:4px">📈 卖出后追踪 <span style="font-size:11px;font-weight:400;color:var(--text-tertiary)">自动跟踪卖出后净值变化</span></div>
+      <div style="font-size:11px;color:var(--text-secondary);margin-bottom:10px">
+        正确率: <b style="color:${stats.correct_rate>=50?'#86EFAC':'#F59E0B'}">${stats.correct_rate||0}%</b> · 行为模式: ${stats.pattern||'未知'}
+      </div>`;
+    for(const rv of d.reviews.slice(0,5)){
+      const chgColor=rv.change_pct>0?'#F87171':'#86EFAC';
+      html+=`<div style="display:flex;align-items:center;gap:8px;padding:6px 0;border-bottom:1px solid rgba(255,255,255,.04);font-size:11px">
+        <span style="font-size:14px">${rv.icon}</span>
+        <span style="flex:1;color:var(--text-default)">${(rv.name||'').slice(0,8)} <span style="color:var(--text-tertiary)">${rv.sell_date||''}</span></span>
+        <span style="color:${chgColor}">${rv.change_pct>0?'+':''}${rv.change_pct}%</span>
+        <span style="color:var(--text-secondary)">${rv.verdict}</span>
+      </div>`;
+    }
+    html+='</div>';
+    return html;
+  }catch(e){return ''}
+}
+
+// 预定义原因（与后端 domain/models/decision.py 同步）
+const _DECISION_REASONS=[
+{id:'valuation_low',label:'估值已到历史低位（<30% 分位）',signal:'green'},
+{id:'sector_logic',label:'基本面 / 行业长期逻辑改善',signal:'green'},
+{id:'allocation_gap',label:'目标配比缺这部分，补齐即可',signal:'green'},
+{id:'dca_plan',label:'定投计划，例行操作',signal:'green'},
+{id:'momentum_chase',label:'最近涨得好 / 势头猛',signal:'red'},
+{id:'hot_news',label:'热搜 / 新闻 / 朋友推荐',signal:'red'},
+{id:'averaging_down',label:'前期亏损，想摊平成本（补仓）',signal:'yellow'},
+{id:'fomo',label:'其他人都在买，怕错过',signal:'red'},
+];
+
+async function showDecisionReviewForm(prefillCode, prefillName){
+// 拉持仓列表作为快捷选项
+let holdingOptions='<option value="">手动输入</option>';
+try{
+const [fRes,sRes]=await Promise.all([
+fetch(API_BASE+'/fund-holdings?'+getProfileParam(),{signal:AbortSignal.timeout(5000)}).then(r=>r.ok?r.json():{}),
+fetch(API_BASE+'/stock-holdings?'+getProfileParam(),{signal:AbortSignal.timeout(5000)}).then(r=>r.ok?r.json():{}),
+]);
+const funds=(fRes.holdings||[]);
+const stocks=(sRes.holdings||[]);
+if(funds.length)holdingOptions+='<optgroup label="基金持仓">'+funds.map(h=>`<option value="${h.code}|${h.name||h.code}">${h.name||h.code}（${h.code}）</option>`).join('')+'</optgroup>';
+if(stocks.length)holdingOptions+='<optgroup label="股票持仓">'+stocks.map(h=>`<option value="${h.code}|${h.name||h.code}">${h.name||h.code}（${h.code}）</option>`).join('')+'</optgroup>';
+}catch(e){}
+
+const reasonsHtml=_DECISION_REASONS.map(r=>{
+const ic=r.signal==='red'?'🚨':r.signal==='yellow'?'⚠️':'✅';
+const bc=r.signal==='red'?'rgba(239,68,68,.08)':r.signal==='yellow'?'rgba(245,158,11,.08)':'rgba(16,185,129,.08)';
+const cc=r.signal==='red'?'#EF4444':r.signal==='yellow'?'#F59E0B':'#10B981';
+return `<label style="display:flex;align-items:center;gap:8px;padding:8px 10px;background:${bc};border-radius:8px;cursor:pointer;margin-bottom:6px;border:1px solid transparent" id="rl_${r.id}">
+<input type="checkbox" name="reasons" value="${r.id}" style="width:16px;height:16px;cursor:pointer" onchange="document.getElementById('rl_${r.id}').style.borderColor=this.checked?'${cc}':'transparent'">
+<span style="font-size:12px">${ic} ${r.label}</span></label>`;
+}).join('');
+
+const overlay=document.createElement('div');
+overlay.className='modal-overlay';
+overlay.onclick=e=>{if(e.target===overlay)overlay.remove()};
+overlay.innerHTML=`<div class="modal-sheet" onclick="event.stopPropagation()" style="max-height:90vh;overflow-y:auto">
+<div class="modal-handle"></div>
+<div class="modal-title">📝 记录决策复盘</div>
+<div style="padding:0 16px 24px">
+<!-- 持仓快选 -->
+<div style="margin-bottom:12px">
+<div style="font-size:12px;color:var(--text2);margin-bottom:6px">选择资产（从持仓快选，或手动输入）</div>
+<select id="dfHoldingPick" onchange="(function(){const v=this.value;if(v){const[code,name]=v.split('|');document.getElementById('dfCode').value=code;document.getElementById('dfName').value=name;}}).call(this)" style="width:100%;padding:10px;border-radius:10px;border:1px solid var(--bg3);background:var(--bg2);color:var(--text);font-size:13px;margin-bottom:6px">${holdingOptions}</select>
+<div style="display:grid;grid-template-columns:1fr 1fr;gap:8px">
+<input id="dfCode" placeholder="代码 如 110011" style="padding:10px;border-radius:10px;border:1px solid var(--bg3);background:var(--bg2);color:var(--text);font-size:13px" value="${prefillCode||''}">
+<input id="dfName" placeholder="名称 如 易方达蓝筹" style="padding:10px;border-radius:10px;border:1px solid var(--bg3);background:var(--bg2);color:var(--text);font-size:13px" value="${prefillName||''}">
+</div></div>
+<!-- 操作+金额 -->
+<div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:12px">
+<div>
+<div style="font-size:12px;color:var(--text2);margin-bottom:6px">操作类型</div>
+<select id="dfAction" style="width:100%;padding:10px;border-radius:10px;border:1px solid var(--bg3);background:var(--bg2);color:var(--text);font-size:13px">
+<option value="buy">🟢 买入</option><option value="add">🟢 加仓</option>
+<option value="sell">🔴 卖出</option><option value="reduce">🟠 减仓</option>
+</select></div>
+<div>
+<div style="font-size:12px;color:var(--text2);margin-bottom:6px">金额（元，可选）</div>
+<input id="dfAmount" type="number" placeholder="0" style="width:100%;padding:10px;border-radius:10px;border:1px solid var(--bg3);background:var(--bg2);color:var(--text);font-size:13px;box-sizing:border-box">
+</div></div>
+<!-- 原因多选 -->
+<div style="margin-bottom:12px">
+<div style="font-size:12px;color:var(--text2);margin-bottom:8px">买入/卖出原因（多选）</div>
+${reasonsHtml}
+<input id="dfCustomReason" placeholder="其他原因（可选填写）" style="width:100%;padding:8px 10px;border-radius:8px;border:1px solid var(--bg3);background:var(--bg2);color:var(--text);font-size:12px;margin-top:4px;box-sizing:border-box">
+</div>
+<!-- 备注 -->
+<div style="margin-bottom:16px">
+<div style="font-size:12px;color:var(--text2);margin-bottom:6px">备注（可选）</div>
+<textarea id="dfNotes" placeholder="记录当时的想法..." rows="2" style="width:100%;padding:10px;border-radius:10px;border:1px solid var(--bg3);background:var(--bg2);color:var(--text);font-size:12px;resize:none;box-sizing:border-box"></textarea>
+</div>
+<!-- 提交 -->
+<button onclick="submitDecisionReview()" id="dfSubmitBtn" style="width:100%;padding:14px;border-radius:12px;border:none;background:var(--accent);color:#fff;font-size:14px;font-weight:700;cursor:pointer">提交复盘 → 获取AI评分</button>
+<div id="dfResult" style="margin-top:12px"></div>
+</div></div>`;
+document.body.appendChild(overlay);}
+
+async function submitDecisionReview(){
+const btn=document.getElementById('dfSubmitBtn');
+const code=document.getElementById('dfCode')?.value?.trim();
+const name=document.getElementById('dfName')?.value?.trim();
+const action=document.getElementById('dfAction')?.value||'buy';
+const amount=parseFloat(document.getElementById('dfAmount')?.value||'0')||0;
+const customReason=document.getElementById('dfCustomReason')?.value?.trim()||'';
+const notes=document.getElementById('dfNotes')?.value?.trim()||'';
+const checkedReasons=[...document.querySelectorAll('input[name="reasons"]:checked')].map(i=>i.value);
+const resultEl=document.getElementById('dfResult');
+
+if(!code){alert('请输入资产代码');return}
+if(!checkedReasons.length&&!customReason){alert('请至少选择一个决策原因');return}
+
+if(btn){btn.textContent='提交中...';btn.disabled=true}
+try{
+const uid=getProfileId();
+const body={
+user_id:uid,asset_code:code,asset_name:name||code,
+action,amount,reason_ids:checkedReasons,
+custom_reason_text:customReason,notes,
+};
+const r=await fetch(API_BASE+'/decisions/review',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body),signal:AbortSignal.timeout(15000)});
+const d=await r.json();
+if(!r.ok||d.status==='error'){throw new Error(d.detail||d.error||'提交失败')}
+// 展示评分结果
+const qs=d.quality_score||d.review?.quality_score||{};
+const score=qs.total||0;
+const gradeLabel=score>=80?'优秀':score>=60?'良好':score>=40?'一般':'较差';
+const gradeColor=score>=80?'#10B981':score>=60?'#3B82F6':score>=40?'#F59E0B':'#EF4444';
+// warnings 在 response 顶层
+const warnings=(d.warnings||[]).filter(w=>!w.startsWith('📚'));
+const reading=(d.warnings||[]).filter(w=>w.startsWith('📚'));
+// 各维度评分
+const dims=[
+{k:'reason_clarity',label:'决策清晰度'},
+{k:'info_source',label:'信息来源质量'},
+{k:'risk_awareness',label:'风险意识'},
+{k:'time_horizon',label:'时间维度'},
+];
+const dimsHtml=dims.map(dim=>{
+const val=qs[dim.k]||0;const pct=val/25*100;
+const c=val>=20?'var(--green)':val>=12?'#3B82F6':'#F59E0B';
+return`<div style="display:flex;align-items:center;gap:8px;margin-bottom:4px">
+<div style="width:72px;font-size:10px;color:var(--text2)">${dim.label}</div>
+<div style="flex:1;height:5px;background:var(--bg3);border-radius:3px"><div style="height:100%;width:${pct}%;background:${c};border-radius:3px"></div></div>
+<div style="width:24px;text-align:right;font-size:11px;font-weight:700">${val}</div>
+</div>`;}).join('');
+if(resultEl){
+resultEl.innerHTML=`<div style="background:var(--bg2);border-radius:12px;padding:14px;border-left:3px solid ${gradeColor}">
+<div style="display:flex;align-items:center;gap:10px;margin-bottom:10px">
+<span style="font-size:36px;font-weight:900;color:${gradeColor}">${score}</span>
+<div><div style="font-size:14px;font-weight:700;color:${gradeColor}">${gradeLabel}</div><div style="font-size:11px;color:var(--text2)">AI决策质量评分</div></div>
+</div>
+<div style="margin-bottom:10px">${dimsHtml}</div>
+${warnings.length?`<div style="font-size:12px;color:#F59E0B;margin-bottom:6px;line-height:1.7">${warnings.map(w=>'⚠️ '+w).join('<br>')}</div>`:''}
+${qs.red_flags>0?`<div style="font-size:11px;color:var(--red);margin-bottom:6px">🚨 包含 ${qs.red_flags} 个高风险信号（情绪化/跟风），建议冷静后再决策</div>`:''}
+${reading.length?`<div style="font-size:11px;color:var(--text2);margin-bottom:8px">${reading.slice(0,2).join('<br>')}</div>`:''}
+<button onclick="document.querySelector('.modal-overlay')?.remove();renderDecisionsTab(document.getElementById('insightContent'))" style="width:100%;margin-top:10px;padding:10px;border-radius:10px;border:none;background:var(--accent);color:#fff;font-size:13px;font-weight:600;cursor:pointer">✓ 完成，查看历史</button>
+</div>`}
+if(btn){btn.style.display='none'}
+}catch(e){
+if(resultEl)resultEl.innerHTML=`<div style="color:var(--red);font-size:12px;text-align:center">提交失败: ${e.message}</div>`;
+if(btn){btn.textContent='提交复盘 → 获取AI评分';btn.disabled=false}}}
 
 async function runCustomScenario(){
 const input=document.getElementById('customScenarioInput');if(!input||!input.value.trim())return alert('请输入情景描述');

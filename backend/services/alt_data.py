@@ -58,70 +58,107 @@ def _clean_nan(obj):
 # ============================================================
 
 def get_northbound_flow_detail() -> dict:
-    """北向资金实时流向 + 近期趋势"""
+    """北向资金实时流向 + 近期趋势
+
+    策略：Tushare 主（moneyflow_hsgt 日级别明细） + AKShare 降级（top 持股）
+    """
     cache_key = "nb_flow_detail"
     now = time.time()
     cached = _alt_cache.get(cache_key)
     if cached is not None:
         return cached
 
-    result = {"today": {}, "trend": [], "top_stocks": [], "signal": ""}
+    result = {"today": {}, "trend": [], "top_stocks": [], "signal": "", "source": "unknown"}
 
+    # 策略：Tushare 主（使用 tushare_data.py 的 get_northbound_flow）
     try:
-        from infra.data_source.alt.flows import get_north_net_flow, get_hsgt_hold_stock
-
-        # 今日实时
-        try:
-            df = get_north_net_flow()
-            if df is not None and len(df) > 0:
-                latest = df.tail(20)
-                result["trend"] = []
-                for _, row in latest.iterrows():
-                    # 兼容多种列名：value / 当日净流入 / 北向资金(亿) / 第一个数值列
-                    net_val = (
-                        row.get("value") or
-                        row.get("当日净流入") or
-                        row.get("北向资金(亿)") or
-                        row.get("北向资金") or
-                        # 找第一个非日期数值
-                        next((v for k, v in row.items() if isinstance(v, float) and not _is_nan(v)), None)
-                    )
-                    date_val = str(row.get("date") or row.get("日期") or "")
-                    result["trend"].append({
-                        "date": date_val,
-                        "net_flow": float(net_val) if net_val is not None and not _is_nan(net_val) else 0
-                    })
-        except Exception:
-            pass
-
-        # 北向持股 top
-        try:
-            df = get_hsgt_hold_stock(market="北向", indicator="今日排行")
-            if df is not None and len(df) > 0:
-                for _, row in df.head(15).iterrows():
-                    result["top_stocks"].append({
-                        "code": str(row.get("代码", "")),
-                        "name": str(row.get("名称", "")),
-                        "holding_value": float(row.get("持股市值", 0)) if not _is_nan(row.get("持股市值", 0)) else 0,
-                        "change_pct": float(row.get("今日增持估计金额", 0)) if not _is_nan(row.get("今日增持估计金额", 0)) else 0,
-                    })
-        except Exception:
-            pass
-
-        # 信号判断
-        if result["trend"] and len(result["trend"]) >= 5:
-            recent_5d = sum(d["net_flow"] for d in result["trend"][-5:])
-            if recent_5d > 100:
-                result["signal"] = "🟢 强势流入（5日 > 100亿），外资看多"
-            elif recent_5d > 0:
-                result["signal"] = "🟡 温和流入，外资偏乐观"
-            elif recent_5d > -50:
-                result["signal"] = "🟡 小幅流出，外资观望"
-            else:
-                result["signal"] = "🔴 大幅流出（5日 < -50亿），外资避险"
-
+        from services.tushare_data import is_configured, get_northbound_flow
+        if is_configured():
+            nb_data = get_northbound_flow(days=30)
+            if nb_data and nb_data.get("available"):
+                # Tushare 返回日级别明细（daily_flows）
+                if nb_data.get("daily_flows"):
+                    result["trend"] = nb_data["daily_flows"]
+                    result["source"] = "tushare"
+                    result["data_date"] = nb_data.get("data_date", "")
+                    result["flow_5d_range"] = nb_data.get("flow_5d_range", "")
+                    print(f"[ALT] 北向资金 from Tushare: {len(result['trend'])}天明细, "
+                          f"today={nb_data['net_flow_today']}亿, 5d={nb_data['net_flow_5d']}亿")
+                else:
+                    print(f"[ALT] 北向资金 Tushare 无 daily_flows，降级")
     except Exception as e:
-        result["error"] = str(e)
+        print(f"[ALT] 北向资金 Tushare failed: {e}")
+
+    # 补充 top_stocks（Tushare hsgt_top10 或 AKShare 降级）
+    if len(result["top_stocks"]) == 0:
+        try:
+            # 尝试 Tushare hsgt_top10（沪股通+深股通 Top10）
+            from services.tushare_data import is_configured, _call_tushare
+            if is_configured():
+                # 沪股通 Top10
+                rows_h = _call_tushare(
+                    "hsgt_top10",
+                    {"trade_date": result.get("data_date", ""), "market_type": "1"},
+                    "ts_code,name,net_amount,rank"
+                )
+                # 深股通 Top10
+                rows_s = _call_tushare(
+                    "hsgt_top10",
+                    {"trade_date": result.get("data_date", ""), "market_type": "3"},
+                    "ts_code,name,net_amount,rank"
+                )
+                all_rows = (rows_h or []) + (rows_s or [])
+                if all_rows:
+                    # 按 net_amount 降序
+                    all_rows.sort(key=lambda x: float(x.get("net_amount", 0) or 0), reverse=True)
+                    for r in all_rows[:15]:
+                        code = r.get("ts_code", "")
+                        result["top_stocks"].append({
+                            "code": code.split(".")[0] if "." in code else code,
+                            "name": str(r.get("name", "")),
+                            "holding_value": 0,  # Tushare 不提供持股市值，用 0 占位
+                            "change_pct": round(float(r.get("net_amount", 0) or 0) / 10000, 2),  # 万元→亿元（粗略）
+                        })
+                    result["top_stocks_source"] = "tushare_hsgt_top10"
+                    print(f"[ALT] 北向 Top10 from Tushare: {len(result['top_stocks'])} 只")
+        except Exception as e:
+            print(f"[ALT] Tushare hsgt_top10 failed: {e}")
+
+    # 降级：AKShare（如果 Tushare 没拿到 top_stocks）
+    if len(result["top_stocks"]) == 0:
+        try:
+            from infra.data_source.alt.flows import get_hsgt_hold_stock
+
+            # 北向持股 top
+            try:
+                df = get_hsgt_hold_stock(market="北向", indicator="今日排行")
+                if df is not None and len(df) > 0:
+                    for _, row in df.head(15).iterrows():
+                        result["top_stocks"].append({
+                            "code": str(row.get("代码", "")),
+                            "name": str(row.get("名称", "")),
+                            "holding_value": float(row.get("持股市值", 0)) if not _is_nan(row.get("持股市值", 0)) else 0,
+                            "change_pct": float(row.get("今日增持估计金额", 0)) if not _is_nan(row.get("今日增持估计金额", 0)) else 0,
+                        })
+                    result["top_stocks_source"] = "akshare"
+                    print(f"[ALT] 北向 Top 持股 from AKShare (Tushare hsgt_top10 unavailable)")
+            except Exception:
+                pass
+        except Exception as e:
+            result["error"] = str(e)
+
+    # 信号判断（基于趋势数据）
+    if result["trend"] and len(result["trend"]) >= 5:
+        recent_5d = sum(d["net_flow"] for d in result["trend"][-5:])
+        # 单位：亿元
+        if recent_5d > 50:
+            result["signal"] = "🟢 强势流入（5日 > 50亿），外资看多"
+        elif recent_5d > 10:
+            result["signal"] = "🟡 温和流入，外资偏乐观"
+        elif recent_5d > -30:
+            result["signal"] = "🟡 小幅流出，外资观望"
+        else:
+            result["signal"] = "🔴 大幅流出（5日 < -30亿），外资避险"
 
     result = _clean_nan(result)
     _alt_cache.set(cache_key, result)
@@ -133,26 +170,31 @@ def get_northbound_flow_detail() -> dict:
 # ============================================================
 
 def get_margin_detail() -> dict:
-    """融资融券余额趋势 + 信号"""
+    """融资融券余额趋势 + 信号
+
+    策略：Tushare 主 + AKShare 降级
+    """
     cache_key = "margin_detail"
     now = time.time()
     cached = _alt_cache.get(cache_key)
     if cached is not None:
         return cached
 
-    result = {"trend": [], "signal": "", "latest": {}}
+    result = {"trend": [], "signal": "", "latest": {}, "source": "unknown"}
 
+    # 策略：Tushare 主
     try:
-        from infra.data_source.alt.flows import get_margin_sse
-        df = get_margin_sse()
-        if df is not None and len(df) > 0:
-            df = df.tail(30)
-            for _, row in df.iterrows():
+        from services.tushare_fallback import TusharePrimary
+        tp = TusharePrimary.instance()
+        margin_data = tp.get_margin_detail()
+        if margin_data and len(margin_data) > 0:
+            # 取最近 30 条
+            for item in margin_data[:30]:
                 result["trend"].append({
-                    "date": str(row.get("信用交易日期", "")),
-                    "margin_buy": float(row.get("融资买入额(元)", 0)) / 1e8 if not _is_nan(row.get("融资买入额(元)", 0)) else 0,
-                    "margin_balance": float(row.get("融资余额(元)", 0)) / 1e8 if not _is_nan(row.get("融资余额(元)", 0)) else 0,
-                    "short_sell": float(row.get("融券卖出量(股)", 0)) if not _is_nan(row.get("融券卖出量(股)", 0)) else 0,
+                    "date": item.get("trade_date", ""),
+                    "margin_buy": item.get("margin_buy", 0) / 1e8,  # 转为亿元
+                    "margin_balance": item.get("margin_balance", 0) / 1e8,
+                    "short_sell": item.get("short_balance", 0),
                 })
 
             if len(result["trend"]) >= 2:
@@ -169,8 +211,44 @@ def get_margin_detail() -> dict:
                 else:
                     result["signal"] = "🔴 融资余额骤降（<-50亿），杠杆资金撤退"
 
+            result["source"] = "tushare"
+            print(f"[ALT] 融资融券 from Tushare: {len(result['trend'])} 条")
     except Exception as e:
-        result["error"] = str(e)
+        print(f"[ALT] 融资融券 Tushare failed: {e}")
+
+    # 降级：AKShare
+    if len(result["trend"]) == 0:
+        try:
+            from infra.data_source.alt.flows import get_margin_sse
+            df = get_margin_sse()
+            if df is not None and len(df) > 0:
+                df = df.tail(30)
+                for _, row in df.iterrows():
+                    result["trend"].append({
+                        "date": str(row.get("信用交易日期", "")),
+                        "margin_buy": float(row.get("融资买入额(元)", 0)) / 1e8 if not _is_nan(row.get("融资买入额(元)", 0)) else 0,
+                        "margin_balance": float(row.get("融资余额(元)", 0)) / 1e8 if not _is_nan(row.get("融资余额(元)", 0)) else 0,
+                        "short_sell": float(row.get("融券卖出量(股)", 0)) if not _is_nan(row.get("融券卖出量(股)", 0)) else 0,
+                    })
+
+                if len(result["trend"]) >= 2:
+                    latest = result["trend"][-1]
+                    prev = result["trend"][-2]
+                    result["latest"] = latest
+                    balance_change = latest["margin_balance"] - prev["margin_balance"]
+                    if balance_change > 50:
+                        result["signal"] = "🟢 融资余额大增（>50亿），杠杆资金看多"
+                    elif balance_change > 0:
+                        result["signal"] = "🟡 融资余额小增，杠杆情绪温和"
+                    elif balance_change > -50:
+                        result["signal"] = "🟡 融资余额小降，杠杆情绪降温"
+                    else:
+                        result["signal"] = "🔴 融资余额骤降（<-50亿），杠杆资金撤退"
+
+                result["source"] = "akshare"
+                print(f"[ALT] 融资融券 from AKShare (Tushare unavailable)")
+        except Exception as e:
+            result["error"] = str(e)
 
     result = _clean_nan(result)
     _alt_cache.set(cache_key, result, ttl=_ALT_CACHE_TTL)
@@ -225,35 +303,63 @@ def get_dragon_tiger() -> dict:
 # ============================================================
 
 def get_block_trade() -> dict:
-    """大宗交易数据"""
+    """大宗交易数据
+
+    策略：Tushare 主 + AKShare 降级
+    """
     cache_key = "block_trade"
     now = time.time()
     cached = _alt_cache.get(cache_key)
     if cached is not None:
         return cached
 
-    result = {"records": [], "premium_count": 0, "discount_count": 0}
+    result = {"records": [], "premium_count": 0, "discount_count": 0, "source": "unknown"}
 
+    # 策略：Tushare 主
     try:
-        from infra.data_source.alt.flows import get_block_trade_daily
-        df = get_block_trade_daily()
-        if df is not None and len(df) > 0:
-            for _, row in df.head(30).iterrows():
+        from services.tushare_fallback import TusharePrimary
+        tp = TusharePrimary.instance()
+        block_data = tp.get_block_trade()
+        if block_data and len(block_data) > 0:
+            for item in block_data[:30]:
                 trade = {
-                    "code": str(row.get("证券代码", "")),
-                    "name": str(row.get("证券简称", "")),
-                    "amount": float(row.get("成交总额", 0)) / 1e4 if not _is_nan(row.get("成交总额", 0)) else 0,
-                    "premium": float(row.get("溢价率", 0)) if not _is_nan(row.get("溢价率", 0)) else 0,
-                    "count": int(row.get("成交笔数", 0)) if not _is_nan(row.get("成交笔数", 0)) else 0,
+                    "code": item.get("ts_code", ""),
+                    "name": "",  # Tushare 无股票名称，需额外查询
+                    "amount": item.get("amount", 0) / 1e4,  # 转为万元
+                    "premium": 0,  # Tushare 无溢价率，需计算
+                    "count": 1,
+                    "source": "tushare",
                 }
                 result["records"].append(trade)
-                if trade["premium"] > 0:
-                    result["premium_count"] += 1
-                else:
-                    result["discount_count"] += 1
-
+            result["source"] = "tushare"
+            print(f"[ALT] 大宗交易 from Tushare: {len(result['records'])} 条")
     except Exception as e:
-        result["error"] = str(e)
+        print(f"[ALT] 大宗交易 Tushare failed: {e}")
+
+    # 降级：AKShare
+    if len(result["records"]) == 0:
+        try:
+            from infra.data_source.alt.flows import get_block_trade_daily
+            df = get_block_trade_daily()
+            if df is not None and len(df) > 0:
+                for _, row in df.head(30).iterrows():
+                    trade = {
+                        "code": str(row.get("证券代码", "")),
+                        "name": str(row.get("证券简称", "")),
+                        "amount": float(row.get("成交总额", 0)) / 1e4 if not _is_nan(row.get("成交总额", 0)) else 0,
+                        "premium": float(row.get("溢价率", 0)) if not _is_nan(row.get("溢价率", 0)) else 0,
+                        "count": int(row.get("成交笔数", 0)) if not _is_nan(row.get("成交笔数", 0)) else 0,
+                        "source": "akshare",
+                    }
+                    result["records"].append(trade)
+                    if trade["premium"] > 0:
+                        result["premium_count"] += 1
+                    else:
+                        result["discount_count"] += 1
+                result["source"] = "akshare"
+                print(f"[ALT] 大宗交易 from AKShare (Tushare unavailable)")
+        except Exception as e:
+            result["error"] = str(e)
 
     result = _clean_nan(result)
     _alt_cache.set(cache_key, result, ttl=_ALT_CACHE_TTL)

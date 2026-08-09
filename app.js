@@ -64,6 +64,54 @@ const API_BASE = (() => {
 })();
 
 // ============================================================
+// E2 v9.5.47: 统一 API 请求封装 — apiFetch(path, opts)
+// 替代各处散落的 fetch + AbortSignal.timeout + catch
+// 用法：
+//   const d = await apiFetch('/fund/detail/110019')          // GET
+//   const d = await apiFetch('/chat', {method:'POST',json:{msg}}) // POST JSON
+//   const d = await apiFetch('/url', {timeout:5000})          // 自定义超时
+// 返回：已解析的 JSON 对象，失败时返回 null（不抛异常）
+// ============================================================
+async function apiFetch(path, opts = {}) {
+  if (!API_AVAILABLE && !opts.ignoreOffline) return null;
+  const {
+    method = 'GET', json = null, timeout = 15000,
+    cache = null, cacheKey = null, cacheTTL = 300,
+  } = opts;
+  // 缓存命中（短期内存缓存）
+  const ck = cacheKey || (cache ? path : null);
+  if (ck) { const hit = getCached(ck); if (hit !== null) return hit; }
+  // v9.5.123: 附加鉴权 token
+  const authToken = localStorage.getItem('moneybag_auth_token') || '';
+  const headers = {};
+  if (json) headers['Content-Type'] = 'application/json';
+  if (authToken) headers['Authorization'] = 'Bearer ' + authToken;
+  const fetchOpts = {
+    method,
+    signal: AbortSignal.timeout(timeout),
+    headers,
+    ...(json ? {body: JSON.stringify(json)} : {}),
+  };
+  try {
+    const r = await fetch(API_BASE + path, fetchOpts);
+    // v9.5.123: 401 时跳转登录
+    if (r.status === 401) {
+      if (!path.includes('/auth/')) { _showLoginDialog(); }
+      return null;
+    }
+    if (!r.ok) return null;
+    const d = await r.json();
+    if (ck) setCached(ck, d, cacheTTL);
+    return d;
+  } catch (e) {
+    if (!(e instanceof DOMException && e.name === 'AbortError')) {
+      console.warn(`[apiFetch] ${method} ${path} failed:`, e.message || e);
+    }
+    return null;
+  }
+}
+
+// ============================================================
 // V7.5 全局翻译对象（修复数据展示问题）
 // ============================================================
 const ANALYSIS_TRANSLATE = {
@@ -221,7 +269,8 @@ function getProfileId(){
 function getProfileParam(){ return `userId=${encodeURIComponent(getProfileId())}` }
 
 async function ensureProfile(){
-  if(_profileId) return; // 已有身份
+  // v9.5.119: 检查所有身份来源（profileId / profileName / wxwork_uid）
+  if(_profileId || _profileName || localStorage.getItem('moneybag_wxwork_uid')) return; // 已有身份
   return new Promise(resolve => {
     const overlay=document.createElement('div');
     overlay.style.cssText='position:fixed;inset:0;background:rgba(0,0,0,.6);z-index:9999;display:flex;align-items:center;justify-content:center';
@@ -266,6 +315,12 @@ async function confirmProfile(){
       _profileId=d.profile.id;_profileName=d.profile.name;
       localStorage.setItem('moneybag_profile_id',_profileId);
       localStorage.setItem('moneybag_profile_name',_profileName);
+      // v9.5.123: 注册/登录后获取 auth token
+      try{
+        const ar=await fetch(`${API_BASE}/auth/login`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({userId:_profileName,password:code})});
+        const ad=await ar.json();
+        if(ad.token)localStorage.setItem('moneybag_auth_token',ad.token);
+      }catch(e){console.warn('[AUTH] token获取失败:',e)}
       if(window._profileOverlay)window._profileOverlay.remove();
       if(window._profileResolve)window._profileResolve();
     }else{
@@ -275,6 +330,42 @@ async function confirmProfile(){
     if(errEl){errEl.style.display='block';errEl.textContent='网络错误，请重试'}
   }
 }
+// v9.5.123: 登录弹窗（401时触发）
+function _showLoginDialog(){
+  if(document.querySelector('.auth-login-overlay'))return; // 防重复弹
+  const o=document.createElement('div');
+  o.className='auth-login-overlay';
+  o.style.cssText='position:fixed;inset:0;background:rgba(0,0,0,.7);z-index:99999;display:flex;align-items:center;justify-content:center';
+  o.innerHTML=`<div style="background:var(--bg2,#1e293b);border-radius:16px;padding:28px;max-width:300px;width:90%;text-align:center">
+    <div style="font-size:36px;margin-bottom:12px">🔐</div>
+    <h3 style="color:var(--text,#f1f5f9);margin:0 0 8px">需要重新登录</h3>
+    <p style="color:var(--text2,#94a3b8);font-size:13px;margin:0 0 16px">请输入密码验证身份</p>
+    <input id="authPwdIn" type="password" placeholder="密码（即邀请码）"
+      style="width:100%;box-sizing:border-box;padding:10px;border-radius:8px;border:1px solid var(--bg3,#334155);background:var(--bg,#0f172a);color:var(--text,#f1f5f9);font-size:14px;text-align:center;margin-bottom:12px">
+    <div id="authLoginErr" style="color:#EF4444;font-size:12px;margin-bottom:8px;display:none"></div>
+    <button onclick="_doReLogin()" style="width:100%;padding:10px;border-radius:8px;border:none;background:var(--accent,#F59E0B);color:#000;font-size:14px;font-weight:700;cursor:pointer">登录</button>
+  </div>`;
+  document.body.appendChild(o);
+  setTimeout(()=>{const inp=document.getElementById('authPwdIn');if(inp)inp.focus()},100);
+}
+async function _doReLogin(){
+  const pwd=(document.getElementById('authPwdIn')||{}).value||'';
+  const errEl=document.getElementById('authLoginErr');
+  if(!pwd){if(errEl){errEl.style.display='block';errEl.textContent='请输入密码'}return}
+  try{
+    const uid=getProfileId();
+    const r=await fetch(`${API_BASE}/auth/login`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({userId:uid,password:pwd})});
+    const d=await r.json();
+    if(r.ok&&d.token){
+      localStorage.setItem('moneybag_auth_token',d.token);
+      document.querySelector('.auth-login-overlay')?.remove();
+      location.reload(); // 刷新重试
+    }else{
+      if(errEl){errEl.style.display='block';errEl.textContent=d.detail||'密码错误'}
+    }
+  }catch(e){if(errEl){errEl.style.display='block';errEl.textContent='网络错误'}}
+}
+
 const EXPENSE_ICONS={'餐饮':'🍜','交通':'🚗','购物':'🛍️','娱乐':'🎮','医疗':'🏥','教育':'📚','房租':'🏠','日用':'🧴','通讯':'📱','其他':'📌'};
 const INCOME_ICONS={'工资':'💰','兼职':'🔧','民宿':'🏡','外包':'💻','理财收益':'📈','红包':'🧧','退款':'↩️','出租房':'🏘️','其他收入':'💵'};
 const SOURCE_TYPE_ICONS={'民宿':'🏡','出租房':'🏘️','外包':'💻','兼职':'🔧','工资':'💰','理财收益':'📈','电商':'🛒','自媒体':'📱','其他':'💵'};
@@ -283,9 +374,65 @@ let ledgerDirection='expense'; // 当前记账方向
 
 // ---- V4 交易流水 + 资产管理数据层 ----
 function loadTxns(){try{return JSON.parse(localStorage.getItem(TXN_KEY))||[]}catch{return[]}}
-function saveTxns(d){localStorage.setItem(TXN_KEY,JSON.stringify(d))}
+function saveTxns(d){
+  localStorage.setItem(TXN_KEY,JSON.stringify(d));
+  // v9.5.13: 持仓变更后自动同步到后端（debounced 1s，避免连续写时多次推送）
+  try{ _scheduleHoldingsSync(); }catch(e){console.warn('sync schedule fail:',e)}
+}
 function loadAssets(){try{return JSON.parse(localStorage.getItem(ASSETS_KEY))||[]}catch{return[]}}
 function saveAssets(d){localStorage.setItem(ASSETS_KEY,JSON.stringify(d))}
+
+// ---- v9.5.13: 前端持仓 → 后端覆盖式同步 ----
+// 修复历史欠账：之前持仓只在浏览器 localStorage，导致后端晨报/复盘/定投建议拿不到数据
+let _holdingsSyncTimer=null;
+let _holdingsSyncLast=0;
+function _scheduleHoldingsSync(){
+  if(_holdingsSyncTimer)clearTimeout(_holdingsSyncTimer);
+  _holdingsSyncTimer=setTimeout(()=>{ syncHoldingsToBackend().catch(e=>console.warn('sync fail:',e)); }, 1000);
+}
+async function syncHoldingsToBackend(force){
+  if(!API_AVAILABLE)return;
+  const uid=getProfileId(); if(!uid||uid==='default')return;
+  // 节流：非 force 模式下，同一用户 30 秒内只推一次
+  const now=Date.now();
+  if(!force && (now-_holdingsSyncLast)<30000) return;
+  _holdingsSyncLast=now;
+
+  try{
+    const txns=loadTxns();
+    const all=calcHoldingsFromTxns(txns);
+    // 判断股票 vs 基金（v9.5.119: 名称优先，修复基金被误判为股票）
+    const isStockFn=h=>{
+      if(h.assetType==='stock')return true;
+      if(h.assetType==='fund')return false;
+      const fkw=['基金','债券','货币','指数','ETF','QDII','混合','商品','联接','LOF'];
+      const nm=(h.name||'')+(h.category||'');
+      if(fkw.some(k=>nm.includes(k)))return false;
+      const c=(h.code||'').replace(/^(sh|sz)/i,'');
+      if(/^(00|30|60)\d{4}$/.test(c) && !(typeof FUND_DETAILS!=='undefined' && FUND_DETAILS && FUND_DETAILS[c])) return true;
+      return false;
+    };
+    const stocks=[]; const funds=[];
+    for(const h of all){
+      if(!h.shares||h.shares<=0||!h.avgPrice||h.avgPrice<=0)continue;
+      const code=(h.code||'').replace(/^(sh|sz)/i,'');
+      if(!/^\d{6}$/.test(code))continue; // 跳过非 6 位数字（如"余额宝"）
+      if(isStockFn(h)){
+        stocks.push({code, name:h.name||code, costPrice:h.avgPrice, shares:Math.round(h.shares), note:''});
+      }else{
+        funds.push({code, name:h.name||code, costNav:h.avgPrice, shares:h.shares, note:''});
+      }
+    }
+    const headers={'Content-Type':'application/json'};
+    const tasks=[
+      fetch(API_BASE+'/stock-holdings/sync',{method:'POST',headers,body:JSON.stringify({userId:uid,holdings:stocks}),signal:AbortSignal.timeout(8000)}).then(r=>r.json()).catch(e=>({err:String(e)})),
+      fetch(API_BASE+'/fund-holdings/sync', {method:'POST',headers,body:JSON.stringify({userId:uid,holdings:funds}),signal:AbortSignal.timeout(8000)}).then(r=>r.json()).catch(e=>({err:String(e)})),
+    ];
+    const [sr,fr]=await Promise.all(tasks);
+    console.log(`[SYNC] ${uid}: stocks ${sr?.before||0}→${sr?.after||0}, funds ${fr?.before||0}→${fr?.after||0}`);
+  }catch(e){console.warn('syncHoldingsToBackend:',e)}
+}
+window.syncHoldingsToBackend=syncHoldingsToBackend;
 
 // 从交易流水计算持仓（加权平均成本法）
 function calcHoldingsFromTxns(txns){
@@ -293,12 +440,20 @@ function calcHoldingsFromTxns(txns){
   txns.filter(t=>t.type==='BUY'||t.type==='SELL').sort((a,b)=>new Date(a.date)-new Date(b.date)).forEach(t=>{
     if(!map[t.code])map[t.code]={code:t.code,name:t.name||t.code,shares:0,totalCost:0,avgPrice:0,category:t.category||'',assetType:t.assetType||''};
     const h=map[t.code];
+    // v9.5.109: OCR 上传的字段名是 nav，手动添加是 price，amount 兜底
+    const unitPrice = Number(t.price || t.nav || 0);
+    const shares = Number(t.shares || 0);
+    const amount = Number(t.amount || (shares * unitPrice));
     if(t.type==='BUY'){
-      h.totalCost+=t.shares*t.price;h.shares+=t.shares;h.avgPrice=h.shares>0?h.totalCost/h.shares:0;
+      // 优先用 amount（最准），其次 shares*price
+      h.totalCost += amount > 0 ? amount : shares*unitPrice;
+      h.shares += shares;
+      h.avgPrice = h.shares>0 ? h.totalCost/h.shares : 0;
       if(t.name)h.name=t.name;if(t.category)h.category=t.category;if(t.assetType)h.assetType=t.assetType;
     }else if(t.type==='SELL'){
-      const sellShares=Math.min(t.shares,h.shares);
-      h.totalCost-=sellShares*h.avgPrice;h.shares-=sellShares;
+      const sellShares=Math.min(shares, h.shares);
+      h.totalCost -= sellShares*h.avgPrice;
+      h.shares -= sellShares;
       if(h.shares<=0){h.shares=0;h.totalCost=0;h.avgPrice=0}
     }
   });
@@ -391,7 +546,30 @@ shares:buyAmt/nav,price:nav,amount:buyAmt,date:now,note:'测评配置',source:'q
 saveTxns(txns)}
 
 async function syncCloud(portfolio){if(!API_AVAILABLE)return;try{await fetch(API_BASE+'/user/save',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({userId:getUserId(),portfolio})})}catch{}}
-async function syncFromCloud(){if(!API_AVAILABLE)return;try{const r=await fetch(API_BASE+'/user/'+getUserId());if(r.ok){const d=await r.json();if(d.portfolio?.transactions?.length){const l=loadPortfolio();if(!l.transactions?.length){const p=Object.assign(loadPortfolio(),{transactions:d.portfolio.transactions,assets:d.portfolio.assets||[]});savePortfolio(p)}}}}catch{}}
+// v9.5.112: 云端优先 — 之前只在本地为空时才同步，导致后端清理脏数据后用户前端还看老的
+//          现在每次登录都用云端 transactions/assets 覆盖本地
+async function syncFromCloud(){
+  if(!API_AVAILABLE)return;
+  try{
+    // v9.5.119: 用轻量接口只拉 portfolio（避免拉 4MB+ 全量用户数据导致手机超时/OOM）
+    const r=await fetch(API_BASE+'/user/'+getUserId()+'/portfolio',{signal:AbortSignal.timeout(10000)});
+    if(!r.ok)return;
+    const d=await r.json();
+    if(d.portfolio){
+      const l=loadPortfolio();
+      // 云端 transactions/assets 是 source of truth，总是覆盖
+      const cloudTxns = d.portfolio.transactions || [];
+      const cloudAssets = d.portfolio.assets || [];
+      l.transactions = cloudTxns;
+      l.assets = cloudAssets;
+      // holdings/history/profile 保留本地（这些是 V3 客户端计算的）
+      savePortfolio(l);
+      // v9.5.119: 同步写入独立的 TXN_KEY 和 ASSETS_KEY（持仓页用这两个 key 读数据）
+      if(cloudTxns.length) saveTxns(cloudTxns);
+      if(cloudAssets.length) saveAssets(cloudAssets);
+    }
+  }catch(e){console.warn('[syncFromCloud] failed:',e.message)}
+}
 
 // ---- 工具 ----
 function $(s){return document.querySelector(s)}
@@ -403,6 +581,7 @@ function calcReturns(a,amt,sc){let t=0;a.forEach(x=>{t+=(amt*x.pct/100)*x.return
 
 // ---- 客户端数据缓存（P0 性能优化：避免重复 fetch 造成的 3-4s 等待）----
 // 2026-05-11 FIX: 基于后端 TTL 配置实现的前端内存缓存
+// v9.5.93: 升级为 localStorage 持久化（刷新后仍命中），并加 SWR 模式
 // 缓存结构: { [cacheKey]: { data, timestamp, ttl }, ... }
 const INSIGHT_CACHE = {
   dashboard: { ttl: 120000 },    // 2 分钟（数据源有多个 TTL，取保守值）
@@ -422,39 +601,102 @@ const INSIGHT_CACHE = {
   news_impact: { ttl: 900000 },   // 15 分钟
   sector: { ttl: 900000 },        // 15 分钟（行业板块）
   broker: { ttl: 900000 },        // 15 分钟（研报）
-  fund_screen: { ttl: 600000 },   // 10 分钟（选基）
-  stock_screen: { ttl: 900000 },  // 15 分钟（选股）
+  fund_screen: { ttl: 1800000 },  // 30 分钟（选基，v9.5.93 延长）
+  fund_potential: { ttl: 1800000 }, // 30 分钟（潜力榜独立缓存，v9.5.117）
+  stock_screen: { ttl: 1800000 }, // 30 分钟（选股，v9.5.93 延长）
+  longterm: { ttl: 1800000 },     // 30 分钟（长持，v9.5.93 新增）
 };
+
+// v9.5.93: localStorage 持久化前缀（按用户隔离）
+// v9.5.104: bump v1→v2 解决 aiComment 错位
+// v9.5.111: bump v2→v3 — 之前缓存的 fund_screen 不含 D 信号潜力数据（v9.5.103 才加的）
+// v9.5.116: bump v3→v4 — 强制清残留 fund_screen 缓存，让选基潜力榜能正确显示 11 只
+const _LS_CACHE_PREFIX = 'moneybag_cache_v4_';
+
+// 启动时清理旧版本缓存
+try {
+  for (let i = localStorage.length - 1; i >= 0; i--) {
+    const k = localStorage.key(i);
+    if (k && (k.startsWith('moneybag_cache_v1_') || k.startsWith('moneybag_cache_v2_') || k.startsWith('moneybag_cache_v3_'))) {
+      localStorage.removeItem(k);
+    }
+  }
+} catch {}
+function _lsCacheKey(key) {
+  const uid = (typeof getProfileId === 'function' ? getProfileId() : '') || 'anon';
+  return _LS_CACHE_PREFIX + uid + '_' + key;
+}
 
 function getCached(key) {
   let cfg = INSIGHT_CACHE[key];
   if (!cfg) {
-    // 动态 key 支持：fund_news_600519 → 用 fund_news 的 ttl
-    const base = key.replace(/_[^_]+$/, '');
-    cfg = INSIGHT_CACHE[base];
-    if (!cfg) return null;
-    cfg = INSIGHT_CACHE[key] = { ttl: cfg.ttl };
+    // v9.5.119: 递归去掉后缀查找基础 key（fund_screen_all_score → fund_screen_all → fund_screen）
+    let base = key;
+    let baseCfg = null;
+    while (base.includes('_')) {
+      base = base.replace(/_[^_]+$/, '');
+      baseCfg = INSIGHT_CACHE[base];
+      if (baseCfg) break;
+    }
+    if (!baseCfg) return null;
+    cfg = INSIGHT_CACHE[key] = { ttl: baseCfg.ttl };
   }
-  if (!cfg.cached) return null;
-  const age = Date.now() - cfg.timestamp;
-  if (age > cfg.ttl) {
+  // 1) 内存命中（最快）
+  if (cfg.cached) {
+    const age = Date.now() - cfg.timestamp;
+    if (age <= cfg.ttl) return cfg.cached;
     cfg.cached = null;
     cfg.timestamp = 0;
-    return null;
   }
-  return cfg.cached;
+  // 2) localStorage 命中（v9.5.93 跨刷新）
+  try {
+    const raw = localStorage.getItem(_lsCacheKey(key));
+    if (!raw) return null;
+    const parsed = JSON.parse(raw);
+    if (!parsed || !parsed.data || !parsed.timestamp) return null;
+    const age = Date.now() - parsed.timestamp;
+    if (age > cfg.ttl) {
+      localStorage.removeItem(_lsCacheKey(key));
+      return null;
+    }
+    // 回填内存缓存
+    cfg.cached = parsed.data;
+    cfg.timestamp = parsed.timestamp;
+    return parsed.data;
+  } catch { return null; }
 }
 
 function setCached(key, data) {
   let cfg = INSIGHT_CACHE[key];
   if (!cfg) {
-    const base = key.replace(/_[^_]+$/, '');
-    const baseCfg = INSIGHT_CACHE[base];
+    // v9.5.119: 递归去后缀匹配（同 getCached）
+    let base = key;
+    let baseCfg = null;
+    while (base.includes('_')) {
+      base = base.replace(/_[^_]+$/, '');
+      baseCfg = INSIGHT_CACHE[base];
+      if (baseCfg) break;
+    }
     if (!baseCfg) return;
     cfg = INSIGHT_CACHE[key] = { ttl: baseCfg.ttl };
   }
   cfg.cached = data;
   cfg.timestamp = Date.now();
+  // v9.5.93: 同步写 localStorage（持久化）
+  try {
+    localStorage.setItem(_lsCacheKey(key), JSON.stringify({ data, timestamp: cfg.timestamp }));
+  } catch (e) {
+    // 配额超出时清掉旧缓存重试一次
+    if (e && e.name === 'QuotaExceededError') {
+      try {
+        for (let i = localStorage.length - 1; i >= 0; i--) {
+          const k = localStorage.key(i);
+          if (k && k.startsWith(_LS_CACHE_PREFIX)) localStorage.removeItem(k);
+        }
+        localStorage.setItem(_lsCacheKey(key), JSON.stringify({ data, timestamp: cfg.timestamp }));
+      } catch {}
+    }
+  }
 }
 
 function clearInsightCache() {
@@ -465,7 +707,55 @@ function clearInsightCache() {
 }
 
 // ---- API ----
-async function checkAPI(){try{const r=await fetch(API_BASE+'/health',{signal:AbortSignal.timeout(3000)});API_AVAILABLE=r.ok}catch{API_AVAILABLE=false}}
+// v9.5.55: 修复「后端未连接」假阴性 — 8秒超时 + 失败自动重试 + 周期性恢复检测
+async function checkAPI(opts){
+  const timeout = (opts&&opts.timeout) || 8000;
+  try{
+    const authToken = localStorage.getItem('moneybag_auth_token') || '';
+    const headers = authToken ? {'Authorization': 'Bearer ' + authToken} : {};
+    const r=await fetch(API_BASE+'/health',{signal:AbortSignal.timeout(timeout), headers});
+    const newState = r.ok;
+    if(newState !== API_AVAILABLE){
+      console.log('[API] state change:', API_AVAILABLE, '→', newState);
+    }
+    API_AVAILABLE = newState;
+    // v9.5.123: 数据源降级检测
+    if(r.ok){
+      try{
+        const d=await r.json();
+        const dh=d.data_health||{};
+        if(dh.overall==='degraded'&&dh.degraded&&dh.degraded.length){
+          _showDegradeBanner(dh.degraded);
+        }else{
+          _hideDegradeBanner();
+        }
+      }catch{}
+    }
+    return newState;
+  }catch(e){
+    if(API_AVAILABLE===false){} else {
+      console.warn('[API] check failed:', e.message||e);
+      API_AVAILABLE=false;
+    }
+    return false;
+  }
+}
+// v9.5.123: 数据源降级提示横幅
+function _showDegradeBanner(issues){
+  let el=document.getElementById('degradeBanner');
+  if(!el){
+    el=document.createElement('div');el.id='degradeBanner';
+    el.style.cssText='position:fixed;top:0;left:0;right:0;z-index:9990;padding:6px 16px;background:rgba(245,158,11,.95);color:#000;font-size:12px;font-weight:500;text-align:center;display:flex;align-items:center;justify-content:center;gap:6px';
+    document.body.appendChild(el);
+  }
+  el.innerHTML=`⚠️ 数据源异常: ${issues.join(', ')} — 当前展示最近有效数据，可能不是最新 <button onclick="this.parentElement.remove()" style="margin-left:12px;padding:2px 8px;border-radius:4px;border:1px solid rgba(0,0,0,.3);background:transparent;cursor:pointer;font-size:11px">关闭</button>`;
+  el.style.display='flex';
+}
+function _hideDegradeBanner(){const el=document.getElementById('degradeBanner');if(el)el.style.display='none'}
+// 周期性恢复检测：每 60s 重试一次（如果当前离线）
+setInterval(()=>{ if(!API_AVAILABLE) checkAPI({timeout:5000}); }, 60000);
+// 窗口聚焦时立即重试（用户切回 App 时第一时间恢复）
+window.addEventListener('focus', ()=>{ if(!API_AVAILABLE) checkAPI({timeout:5000}); });
 async function fetchNav(){if(!API_AVAILABLE)return;let cached=getCached('nav');if(cached){liveNavData=cached;return}try{const r=await fetch(API_BASE+'/nav/all');if(r.ok){liveNavData=await r.json();setCached('nav',liveNavData)}}catch{}}
 async function fetchSignals(){if(!API_AVAILABLE)return null;try{const p=loadPortfolio();if(!p.holdings.length)return null;const r=await fetch(API_BASE+'/signals',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(p)});if(r.ok)return await r.json()}catch{}return null}
 async function fetchPnl(){if(!API_AVAILABLE)return null;try{const p=loadPortfolio();if(!p.holdings.length)return null;const r=await fetch(API_BASE+'/portfolio/pnl',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(p)});if(r.ok)return await r.json()}catch{}return null}
@@ -556,14 +846,35 @@ localStorage.setItem('moneybag_wxwork_uid',wxId);
 document.querySelector('.modal-overlay')?.remove();
 if(wxId){alert('✅ 绑定成功！盯盘异动将推送给: '+wxId)}else{alert('已清除企微绑定')}}
 
-function navigateTo(p){
+function navigateTo(p, tab){
+  const prev = currentPage;
+  // 离开 chat 页时保存"距底部距离"（用负数表示，0=在底部）
+  if(prev==='chat'){
+    const el=document.getElementById('chatMsgs');
+    if(el&&typeof _chatScrollPos!=='undefined'){
+      const distFromBottom=el.scrollTop-el.scrollHeight+el.clientHeight;
+      // distFromBottom 接近 0 = 在底部，负值 = 往上翻了
+      _chatScrollPos=distFromBottom<-50?distFromBottom:0;
+    }
+  }
   currentPage=p;
   renderNav();
   if(p==='landing')renderLanding();
   else if(p==='portfolio')renderPortfolio();
   else if(p==='stocks')renderStocks();
-  else if(p==='insight'){insightTab='overview';renderInsight();}  // 外部导航进来重置到首页tab
-  else if(p==='chat')renderChat();
+  else if(p==='insight'){
+    // C5 v9.5.46: 支持 tab 参数直接跳到指定 tab（如 'weekly'）
+    insightTab=tab||'overview';
+    renderInsight();
+  }
+  else if(p==='chat'){
+    // chat页面：只要 DOM 还在就不重渲染
+    if(document.getElementById('chatMsgs')){
+      currentPage='chat';renderNav();
+    }else{
+      renderChat(); // renderChat 内部会用 _chatScrollPos 恢复位置
+    }
+  }
   else if(p==='history')renderHistory();
   else if(p==='ledger')renderLedger();
   else if(p==='assets')renderAssets();
@@ -592,7 +903,7 @@ if(API_AVAILABLE&&code!=='余额宝'){fetchFundNews(code).then(news=>{const ne=d
 fetchFundDynamic(code).then(info=>{if(!info||info.error)return;const grid=document.getElementById('fundHistGrid_'+code);const src=document.getElementById('fundHistSrc_'+code);const scaleEl=document.getElementById('fundScale_'+code);const feeEl=document.getElementById('fundFee_'+code);
 const fmt=v=>v!=null?(v>=0?'+':'')+v.toFixed(2)+'%':'\u2014';
 if(grid&&info.returns){const r=info.returns;grid.innerHTML='<div class="modal-history-item"><div class="modal-history-label">\u8fd11\u5468</div><div class="modal-history-value">'+fmt(r['1w'])+'</div></div><div class="modal-history-item"><div class="modal-history-label">\u8fd11\u6708</div><div class="modal-history-value">'+fmt(r['1m'])+'</div></div><div class="modal-history-item"><div class="modal-history-label">\u8fd13\u6708</div><div class="modal-history-value">'+fmt(r['3m'])+'</div></div><div class="modal-history-item"><div class="modal-history-label">\u8fd16\u6708</div><div class="modal-history-value">'+fmt(r['6m'])+'</div></div><div class="modal-history-item"><div class="modal-history-label">\u8fd11\u5e74</div><div class="modal-history-value">'+fmt(r['1y'])+'</div></div><div class="modal-history-item"><div class="modal-history-label">\u8fd13\u5e74</div><div class="modal-history-value">'+fmt(r['3y'])+'</div></div>'}
-if(src){src.textContent='\ud83d\udce1 \u5b9e\u65f6\u6570\u636e\u00b7'+info.source}
+if(src){let srcText='📊 实时数据·'+info.source;if(info.returns_date&&info.returns_date.length===8){srcText+='（截至 '+info.returns_date.slice(0,4)+'-'+info.returns_date.slice(4,6)+'-'+info.returns_date.slice(6,8)+'）'}src.textContent=srcText}
 if(scaleEl&&info.nav){scaleEl.textContent='\u51c0\u503c '+info.nav}
 if(feeEl&&info.fee){feeEl.textContent=info.fee}})}}
 
@@ -626,9 +937,142 @@ function restart(){currentPage='landing';currentQuestion=0;answers=[];selectedAm
 function clearPortfolio(){if(confirm('确定清除持仓？')){localStorage.removeItem(STORAGE_KEY);restart()}}
 
 
-// ---- B3修复: 聊天记录持久化 ----
-function _saveChatHistory(){try{localStorage.setItem(_uk('moneybag_chat_history'),JSON.stringify(chatMessages.slice(-50)))}catch{}}
-function _loadChatHistory(){try{const s=localStorage.getItem(_uk('moneybag_chat_history'));if(s)chatMessages=JSON.parse(s)}catch{}}
+// ---- B3修复: 聊天记录持久化 + 会话管理（v9.5.5）----
+// 当前会话：moneybag_chat_history（保持兼容旧key）
+// 归档：moneybag_chat_archive，按日期分组，保留30天
+function _saveChatHistory(){
+  try{
+    localStorage.setItem(_uk('moneybag_chat_history'),JSON.stringify(chatMessages.slice(-50)));
+    // 同时记录当前会话最后活跃日期，用于自动归档判断
+    localStorage.setItem(_uk('moneybag_chat_lastdate'),new Date().toISOString().slice(0,10));
+  }catch{}
+}
+function _loadChatHistory(){
+  try{
+    const s=localStorage.getItem(_uk('moneybag_chat_history'));
+    if(s)chatMessages=JSON.parse(s);
+    // 启动时检查：如果上次活跃日期不是今天，自动归档
+    _autoArchiveIfNewDay();
+  }catch{}
+}
+// 自动归档：进入新一天时，把昨天的对话归档为新会话条目
+function _autoArchiveIfNewDay(){
+  try{
+    const lastDate=localStorage.getItem(_uk('moneybag_chat_lastdate'));
+    const today=new Date().toISOString().slice(0,10);
+    if(lastDate&&lastDate!==today&&chatMessages&&chatMessages.length>0){
+      _archiveCurrentChat(lastDate);
+      chatMessages=[]; // 开始新一天的对话
+      localStorage.removeItem(_uk('moneybag_chat_history'));
+    }
+  }catch(e){console.warn('auto archive failed',e)}
+}
+function _archiveCurrentChat(dateStr){
+  if(!chatMessages||chatMessages.length===0)return;
+  try{
+    const key=_uk('moneybag_chat_archive');
+    const raw=localStorage.getItem(key);
+    const archive=raw?JSON.parse(raw):[];
+    // 取首条用户消息当标题
+    const firstUserMsg=chatMessages.find(m=>m.role==='user');
+    const title=firstUserMsg?(firstUserMsg.text||'').slice(0,30):'对话';
+    archive.unshift({
+      id:Date.now()+'-'+Math.random().toString(36).slice(2,8),
+      date:dateStr||new Date().toISOString().slice(0,10),
+      title:title,
+      msgCount:chatMessages.length,
+      messages:chatMessages.slice(),
+      createdAt:Date.now()
+    });
+    // 只保留近30天
+    const cutoff=Date.now()-30*24*3600*1000;
+    const trimmed=archive.filter(a=>a.createdAt>cutoff).slice(0,50); // 最多50条
+    localStorage.setItem(key,JSON.stringify(trimmed));
+  }catch(e){console.warn('archive failed',e)}
+}
+function _loadArchives(){
+  try{
+    const raw=localStorage.getItem(_uk('moneybag_chat_archive'));
+    return raw?JSON.parse(raw):[];
+  }catch{return []}
+}
+// 手动新建对话：归档当前 + 清空
+window.newChatSession=function(){
+  if(chatMessages&&chatMessages.length>0){
+    _archiveCurrentChat(new Date().toISOString().slice(0,10));
+  }
+  chatMessages=[];
+  localStorage.removeItem(_uk('moneybag_chat_history'));
+  if(typeof _chatScrollPos!=='undefined')_chatScrollPos=0;
+  if(typeof _chatLastMsgCount!=='undefined')_chatLastMsgCount=0;
+  if(typeof renderChat==='function')renderChat();
+};
+// 从历史恢复某个会话到当前
+window.restoreChatSession=function(sessionId){
+  const archives=_loadArchives();
+  const sess=archives.find(a=>a.id===sessionId);
+  if(!sess)return;
+  if(chatMessages&&chatMessages.length>0){
+    if(!confirm('当前对话会被归档，是否继续？'))return;
+    _archiveCurrentChat(new Date().toISOString().slice(0,10));
+  }
+  chatMessages=sess.messages.slice();
+  _saveChatHistory();
+  document.querySelector('.modal-overlay')?.remove();
+  if(typeof _chatScrollPos!=='undefined')_chatScrollPos=0;
+  if(typeof _chatLastMsgCount!=='undefined')_chatLastMsgCount=0;
+  renderChat();
+};
+// 删除归档中的某条
+window.deleteArchiveSession=function(sessionId){
+  if(!confirm('删除这条历史对话？'))return;
+  const archives=_loadArchives().filter(a=>a.id!==sessionId);
+  localStorage.setItem(_uk('moneybag_chat_archive'),JSON.stringify(archives));
+  if(typeof showChatHistoryPanel==='function')showChatHistoryPanel();
+};
+// 历史会话面板
+window.showChatHistoryPanel=function(){
+  const archives=_loadArchives();
+  // 移除旧面板（刷新）
+  document.querySelectorAll('.modal-overlay').forEach(o=>{if(o.dataset.kind==='chatHistory')o.remove()});
+  const o=document.createElement('div');
+  o.className='modal-overlay';
+  o.dataset.kind='chatHistory';
+  o.onclick=e=>{if(e.target===o)o.remove()};
+  let body='';
+  if(!archives.length){
+    body='<div style="text-align:center;padding:40px;color:var(--text-tertiary,#7A8499)"><div style="font-size:36px;margin-bottom:12px">📭</div>暂无历史对话</div>';
+  }else{
+    // 按日期分组
+    const groups={};
+    archives.forEach(a=>{(groups[a.date]=groups[a.date]||[]).push(a)});
+    body=Object.keys(groups).sort().reverse().map(date=>{
+      const items=groups[date].map(a=>`<div onclick="restoreChatSession('${a.id}')" style="padding:10px 12px;background:var(--bg-elevated,#10131C);border-radius:10px;margin-bottom:6px;cursor:pointer;border:1px solid rgba(148,163,184,.06)">
+        <div style="display:flex;justify-content:space-between;align-items:center;gap:8px">
+          <div style="flex:1;min-width:0">
+            <div style="font-size:13px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${a.title||'对话'}</div>
+            <div style="font-size:10px;color:var(--text-tertiary,#7A8499);margin-top:2px">${a.msgCount} 条消息</div>
+          </div>
+          <button onclick="event.stopPropagation();deleteArchiveSession('${a.id}')" style="background:transparent;border:none;color:var(--text-tertiary,#7A8499);font-size:14px;cursor:pointer;padding:4px">🗑️</button>
+        </div>
+      </div>`).join('');
+      return `<div style="margin-bottom:14px"><div style="font-size:11px;color:var(--text-tertiary,#7A8499);margin-bottom:6px">📅 ${date}</div>${items}</div>`;
+    }).join('');
+  }
+  o.innerHTML=`<div class="modal-sheet" style="max-height:80vh;display:flex;flex-direction:column" onclick="event.stopPropagation()">
+    <div class="modal-handle"></div>
+    <div class="modal-title">📜 历史对话<span style="font-size:11px;color:var(--text-tertiary,#7A8499);font-weight:400;margin-left:8px">保留30天</span></div>
+    <div style="display:flex;gap:6px;margin-top:8px;padding-bottom:10px;border-bottom:1px solid rgba(148,163,184,.08)">
+      ${chatMessages&&chatMessages.length>0
+        ? `<button onclick="document.querySelector('.modal-overlay[data-kind=chatHistory]')?.remove();newChatSession();setTimeout(()=>showChatHistoryPanel(),50)" style="flex:1;padding:8px;border-radius:8px;border:1px solid rgba(99,102,241,.3);background:rgba(99,102,241,.08);color:#818CF8;font-size:12px;cursor:pointer">＋ 新建对话（归档当前 ${chatMessages.length} 条）</button>
+           <button onclick="if(confirm('彻底清除当前对话？不保存到历史')){chatMessages=[];try{localStorage.removeItem(_uk('moneybag_chat_history'))}catch{};if(typeof _chatScrollPos!=='undefined')_chatScrollPos=0;if(typeof _chatLastMsgCount!=='undefined')_chatLastMsgCount=0;renderChat();document.querySelector('.modal-overlay[data-kind=chatHistory]')?.remove();setTimeout(()=>showChatHistoryPanel(),50);}" style="padding:8px 12px;border-radius:8px;border:1px solid rgba(239,68,68,.3);background:rgba(239,68,68,.08);color:var(--red);font-size:12px;cursor:pointer" title="清除当前对话">🗑️ 清除当前</button>`
+        : `<button disabled style="flex:1;padding:8px;border-radius:8px;border:1px dashed rgba(148,163,184,.25);background:transparent;color:var(--text-tertiary,#7A8499);font-size:12px;cursor:not-allowed">＋ 新建对话（当前已为空）</button>`
+      }
+    </div>
+    <div style="flex:1;overflow-y:auto;margin-top:12px;min-height:200px">${body}</div>
+  </div>`;
+  document.body.appendChild(o);
+};
 
 
 // ---- 启动 ----
@@ -639,7 +1083,9 @@ migrateV3toV4();
   try{var prefR=await fetch(API_BASE+'/user/preference?userId='+encodeURIComponent(getProfileId()),{signal:AbortSignal.timeout(5000)});
   if(prefR.ok){var prefs=await prefR.json();if(prefs.display_mode&&!localStorage.getItem('moneybag_ui_mode_set_by_user')){_uiMode=prefs.display_mode;localStorage.setItem('moneybag_ui_mode',_uiMode)}}}catch(e){}
   _loadChatHistory(); // B3: 恢复聊天记录
-  fetchNav();syncFromCloud();loadModelList();
+  fetchNav();await syncFromCloud();loadModelList();
+  // v9.5.13: 启动后 3 秒做一次持仓全量同步（修历史欠账）
+  setTimeout(()=>{try{ if(typeof syncHoldingsToBackend==='function') syncHoldingsToBackend(true); }catch(e){}}, 3000);
   // 老用户跳过问卷：有 profile 且后端有数据 → 直接进首页
   const pid=getProfileId();
   if(pid && pid!=='default'){
@@ -713,7 +1159,17 @@ function startAlertPolling(){
 }
 function stopAlertPolling(){if(_alertPolling){clearInterval(_alertPolling);_alertPolling=null}}
 document.addEventListener('visibilitychange',function(){
-  if(document.hidden){stopAlertPolling()}else{startAlertPolling()}
+  if(document.hidden){stopAlertPolling()}else{
+    startAlertPolling();
+    // v9.5.29: 从后台切回前台时检查跨天归档（修复"App 不关跨天后还显示昨天对话"）
+    try{ if(typeof _autoArchiveIfNewDay==='function'){
+      _autoArchiveIfNewDay();
+      // 如果当前在 chat 页，刷新一下显示
+      if(typeof currentPage!=='undefined' && currentPage==='chat' && typeof renderChat==='function'){
+        renderChat();
+      }
+    }}catch(e){}
+  }
 });
 function checkTradingHours(){
   var now=new Date(),h=now.getHours(),m=now.getMinutes(),day=now.getDay();

@@ -86,6 +86,13 @@ def update_user_preference(userId: str, body: dict):
     return {"success": True, "changed": list(changed.keys())}
 
 
+@router.get("/api/user/{user_id}/portfolio")
+def get_user_portfolio(user_id: str):
+    """v9.5.119: 轻量接口 — 只返回 portfolio（syncFromCloud 用，避免拉 4MB+ 全量数据）"""
+    user = load_user(user_id)
+    return {"portfolio": user.get("portfolio")}
+
+
 @router.get("/api/user/{user_id}")
 def get_user_data(user_id: str):
     """读取用户数据"""

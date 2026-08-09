@@ -29,25 +29,249 @@ from config import ALLOCATION_PROFILES, VALUATION_HIGH, VALUATION_LOW, RISK_REBA
 from services.portfolio_calc import calc_holdings_from_transactions
 from services.data_layer import get_fund_nav, get_valuation_percentile, get_fear_greed_index
 from infra.cache import MemoryCache
+from pathlib import Path
+import os
 
-# ---- AI 动态选基缓存 ----
-_AI_FUND_CACHE_TTL = 3600  # 1 小时
+# ---- AI 动态选基缓存（内存 + 持久化文件，重启不丢失）----
+_AI_FUND_CACHE_TTL = 3600  # 内存缓存 1 小时
 _ai_fund_cache = MemoryCache(default_ttl=_AI_FUND_CACHE_TTL)
+
+_ALLOC_CACHE_FILE = Path(os.environ.get("DATA_DIR", "data")) / "alloc_cache.json"
+_ALLOC_CACHE_MAX_AGE = 7 * 24 * 3600  # 文件缓存 7 天
+
+def _load_file_cache() -> dict:
+    """读取持久化配置缓存"""
+    try:
+        if _ALLOC_CACHE_FILE.exists():
+            d = json.loads(_ALLOC_CACHE_FILE.read_text(encoding="utf-8"))
+            # 检查是否过期
+            if time.time() - d.get("ts", 0) < _ALLOC_CACHE_MAX_AGE:
+                return d.get("data", {})
+    except Exception:
+        pass
+    return {}
+
+def _save_file_cache(key: str, value: list):
+    """写入持久化配置缓存"""
+    try:
+        _ALLOC_CACHE_FILE.parent.mkdir(parents=True, exist_ok=True)
+        existing = {}
+        if _ALLOC_CACHE_FILE.exists():
+            try:
+                existing = json.loads(_ALLOC_CACHE_FILE.read_text(encoding="utf-8")).get("data", {})
+            except Exception:
+                pass
+        existing[key] = value
+        _ALLOC_CACHE_FILE.write_text(
+            json.dumps({"ts": time.time(), "data": existing}, ensure_ascii=False),
+            encoding="utf-8"
+        )
+    except Exception as e:
+        print(f"[ALLOC_CACHE] 写文件缓存失败: {e}")
 
 # 颜色池（用于饼图）
 _FUND_COLORS = ["#3B82F6", "#10B981", "#F59E0B", "#F97316", "#EF4444", "#8B5CF6",
                 "#EC4899", "#14B8A6", "#F43F5E", "#6366F1"]
 
 
+# ============================================================
+# v9.5.11 规则引擎选基 — 0 LLM，纯数据驱动
+# ============================================================
+
+# 每个风险档位 → 各基金类型目标占比（合计 95%，留 5% 货基兜底）
+# 数据来源：参考全市场资产配置经典模型 + 塔勒布反脆弱原则
+_RULE_TYPE_MIX = {
+    "保守型": {"bond": 60, "index": 15, "qdii": 10, "stock": 10},
+    "稳健型": {"bond": 35, "index": 30, "qdii": 15, "stock": 15},
+    "平衡型": {"bond": 25, "index": 30, "qdii": 20, "stock": 20},
+    "进取型": {"bond": 15, "index": 30, "qdii": 25, "stock": 25},
+    "激进型": {"bond": 10, "index": 25, "qdii": 30, "stock": 30},
+}
+
+# 各档每个类型应选几只
+_RULE_TYPE_COUNT = {
+    "保守型": {"bond": 2, "index": 1, "qdii": 1, "stock": 1},
+    "稳健型": {"bond": 1, "index": 2, "qdii": 1, "stock": 1},
+    "平衡型": {"bond": 1, "index": 2, "qdii": 1, "stock": 1},
+    "进取型": {"bond": 1, "index": 2, "qdii": 1, "stock": 1},
+    "激进型": {"bond": 1, "index": 1, "qdii": 2, "stock": 1},
+}
+
+
+def _market_adjust_mix(base_mix: dict, val_pct: float, fgi: float) -> dict:
+    """根据估值/恐贪指数微调各类型权重"""
+    mix = dict(base_mix)
+    # 估值极高 → 减股增债，QDII（海外）分散
+    if val_pct > 85:
+        mix["stock"] = max(5, mix["stock"] - 8)
+        mix["index"] = max(10, mix["index"] - 5)
+        mix["bond"] += 8
+        mix["qdii"] += 5
+    elif val_pct > 70:
+        mix["stock"] = max(5, mix["stock"] - 4)
+        mix["bond"] += 4
+    elif val_pct < 30:
+        mix["stock"] += 3
+        mix["index"] += 3
+        mix["bond"] = max(5, mix["bond"] - 6)
+    # 恐贪偏贪婪 → 留更多现金（货基），轻微减股
+    if fgi > 80:
+        mix["stock"] = max(5, mix["stock"] - 3)
+        mix["bond"] += 3
+    elif fgi < 20:
+        mix["stock"] += 3
+        mix["bond"] = max(5, mix["bond"] - 3)
+    # 归一化到 95%
+    total = sum(mix.values()) or 1
+    return {k: round(v * 95 / total) for k, v in mix.items()}
+
+
+def _make_reason(fund: dict, ftype: str, val_pct: float, fgi: float) -> str:
+    """根据基金类型 + 市场状态 拼出一句话理由（无 LLM）"""
+    r = fund.get("returns", {}) or {}
+    r1y = r.get("1y")
+    score = fund.get("score", 0)
+    name = fund.get("name", "")
+
+    # 优先按基金类型
+    if ftype == "bond":
+        if val_pct > 70:
+            return "估值偏高，债基平滑波动"
+        return f"评分{score:.0f}，稳健底仓"
+    if ftype == "qdii":
+        if "标普" in name or "纳" in name or "美" in name:
+            return "海外资产分散A股风险"
+        if "黄金" in name:
+            return "避险资产，对冲不确定性"
+        return f"全球配置，分散波动"
+    if ftype == "index":
+        if val_pct < 30:
+            return f"宽基指数+估值低位{val_pct:.0f}%分位，定投良机"
+        if val_pct > 70:
+            return f"宽基防御，估值{val_pct:.0f}%分位需控仓"
+        return f"宽基指数，长期跟踪市场β"
+    # stock 主动权益
+    if r1y is not None and r1y > 20:
+        return f"近1年涨{r1y:.0f}%，主动管理优势"
+    if fgi < 25:
+        return "市场恐惧期，主动权益反弹空间大"
+    return f"评分{score:.0f}，多因子精选"
+
+
+def _rule_pick_funds(risk_profile: str, val_pct: float, fgi: float) -> list:
+    """规则引擎选基 — 0 LLM，按风险偏好 + 市场环境 + 评分排序
+    返回: [{name, code, fullName, color, pct, category, assetType, ruleReason, returns, score}, ...]
+    """
+    try:
+        from services.fund_screen import screen_funds
+
+        # 取候选池 TOP（评分排序，过滤过的）
+        pools = {
+            "stock": screen_funds(fund_type="stock", top_n=10).get("funds", []),
+            "bond":  screen_funds(fund_type="bond",  top_n=10).get("funds", []),
+            "index": screen_funds(fund_type="index", top_n=10).get("funds", []),
+            "qdii":  screen_funds(fund_type="qdii",  top_n=8).get("funds", []),
+        }
+        if not any(pools.values()):
+            return None
+
+        base_mix = _RULE_TYPE_MIX.get(risk_profile, _RULE_TYPE_MIX["稳健型"])
+        adjusted_mix = _market_adjust_mix(base_mix, val_pct, fgi)
+        counts = _RULE_TYPE_COUNT.get(risk_profile, _RULE_TYPE_COUNT["稳健型"])
+
+        result = []
+        color_idx = 0
+        seen_codes = set()
+        for ftype, type_pct in adjusted_mix.items():
+            n = counts.get(ftype, 1)
+            picked = []
+            for fund in pools.get(ftype, []):
+                code = str(fund.get("code", ""))
+                if not code or code in seen_codes:
+                    continue
+                picked.append(fund)
+                seen_codes.add(code)
+                if len(picked) >= n:
+                    break
+            if not picked:
+                continue
+            # 类型内按"评分排序顺位"分摊百分比（前者多）
+            per = type_pct / len(picked)
+            for j, fund in enumerate(picked):
+                # 头部+5%尾部-5%，让差异显出来
+                p = round(per * (1.05 if j == 0 and len(picked) > 1 else (0.95 if j == len(picked)-1 and len(picked) > 1 else 1)))
+                r = fund.get("returns", {}) or {}
+                # 类别映射：bond → bond，其它都算 stock，方便前端饼图聚合
+                category = "bond" if ftype == "bond" else ("qdii" if ftype == "qdii" else "stock")
+                result.append({
+                    "name": fund.get("name", "")[:24],
+                    "code": str(fund.get("code", "")),
+                    "fullName": fund.get("name", ""),
+                    "color": _FUND_COLORS[color_idx % len(_FUND_COLORS)],
+                    "pct": max(1, p),
+                    "category": category,
+                    "assetType": "fund",
+                    "ruleReason": _make_reason(fund, ftype, val_pct, fgi),
+                    "score": fund.get("score", 0),
+                    "returns": {
+                        "good": round((r.get("1y") or 12) / 100, 2),
+                        "mid":  round((r.get("6m") or 4) / 100, 2),
+                        "bad":  round((r.get("3m") or -4) / 100, 2),
+                    },
+                })
+                color_idx += 1
+
+        # 货币基金兜底 5%
+        if result:
+            result.append({
+                "name": "货币(应急)",
+                "code": "余额宝",
+                "fullName": "余额宝",
+                "color": "#E5E7EB",
+                "pct": 5,
+                "category": "cash",
+                "assetType": "fund",
+                "ruleReason": "现金应急储备（塔勒布反脆弱）",
+                "returns": {"good": 0.02, "mid": 0.018, "bad": 0.015},
+            })
+
+        # 总和归一化到 100
+        total = sum(x["pct"] for x in result) or 100
+        if abs(total - 100) > 2:
+            scale = 100 / total
+            for x in result:
+                x["pct"] = max(1, round(x["pct"] * scale))
+
+        print(f"[RULE_FUND] Picked {len(result)} funds for {risk_profile} (val={val_pct:.0f}%, fgi={fgi:.0f})")
+        return result if len(result) >= 3 else None
+
+    except Exception as e:
+        print(f"[RULE_FUND] Failed: {e}")
+        import traceback
+        traceback.print_exc()
+        return None
+
+
 def _ai_pick_funds(risk_profile: str, val_pct: float, fgi: float) -> list:
     """让 DeepSeek 从 fund_screen 排行里选出最优 5 只基金 + 货币基金兜底
     返回: [{name, code, fullName, color, category, returns, aiReason}, ...]
+    优先级：内存缓存 → 文件缓存（7天）→ 实时LLM调用
     """
-    cache_key = f"ai_fund_{risk_profile}_{int(val_pct)}_{int(fgi)}"
+    cache_key = f"ai_fund_{risk_profile}_{int(val_pct//10)*10}_{int(fgi//10)*10}"  # 按10%精度分桶，减少缓存碎片
     now = time.time()
+
+    # 1. 内存缓存
     cached = _ai_fund_cache.get(cache_key)
     if cached is not None:
         return cached
+
+    # 2. 文件缓存（跨重启，7天有效）
+    file_cache = _load_file_cache()
+    if cache_key in file_cache:
+        result = file_cache[cache_key]
+        _ai_fund_cache.set(cache_key, result)  # 回填内存
+        print(f"[AI_FUND] File cache hit for {risk_profile}")
+        return result
 
     try:
         from services.fund_screen import screen_funds
@@ -107,14 +331,14 @@ def _ai_pick_funds(risk_profile: str, val_pct: float, fgi: float) -> list:
 只返回 JSON 数组，不要其他内容。"""
 
         import httpx
-        with httpx.Client(timeout=20) as client:
+        with httpx.Client(timeout=40) as client:  # 从20秒提高到40秒
             resp = client.post(
                 LLM_API_URL,
                 headers={"Authorization": f"Bearer {LLM_API_KEY}", "Content-Type": "application/json"},
                 json={
                     "model": LLM_MODEL,
                     "messages": [{"role": "user", "content": prompt}],
-                    "max_tokens": 500,
+                    "max_tokens": 600,  # 从500提高到600，避免JSON被截断
                     "temperature": 0.3,
                 },
             )
@@ -171,6 +395,7 @@ def _ai_pick_funds(risk_profile: str, val_pct: float, fgi: float) -> list:
 
         print(f"[AI_FUND] Picked {len(result)} funds for {risk_profile}")
         _ai_fund_cache.set(cache_key, result)
+        _save_file_cache(cache_key, result)  # 同时写文件缓存
         return result
 
     except Exception as e:
@@ -408,15 +633,6 @@ RECOMMENDED_FUNDS = [
      "returns": {"good": 0.02, "mid": 0.018, "bad": 0.015}, "category": "cash", "assetType": "fund"},
 ]
 
-# 风险等级 → 各基金占比
-ALLOC_PCTS = {
-    "保守型":  [10, 5, 50, 15, 10, 10],
-    "稳健型":  [20, 10, 35, 15, 10, 10],
-    "平衡型":  [30, 20, 20, 15, 10, 5],
-    "进取型":  [35, 25, 10, 10, 15, 5],
-    "激进型":  [40, 30, 5, 5, 15, 5],
-}
-
 
 def get_recommend_allocations(risk_profile: str = "稳健型", with_ai: bool = False, preference: str = "fund") -> dict:
     """返回推荐配置列表 + 配置理由 + 可选 AI 点评
@@ -457,19 +673,31 @@ def get_recommend_allocations(risk_profile: str = "稳健型", with_ai: bool = F
     allocations = []
 
     if preference == "fund":
-        # 纯基金模式 — 优先 AI 动态选基，失败降级硬编码
-        ai_picks = _ai_pick_funds(risk_profile, val_pct, fgi)
-        if ai_picks:
-            allocations = ai_picks
-            adjustments.append("🤖 AI 根据市场环境从全量基金排行中动态精选")
+        # v9.5.11: 默认走规则引擎（0 LLM），with_ai=True 时才用 AI 选基
+        rule_picks = _rule_pick_funds(risk_profile, val_pct, fgi)
+        if rule_picks:
+            allocations = rule_picks
+            adjustments.append("⚙️ 规则引擎从基金排行中按风险偏好+市场环境自动精选（无AI，结果稳定）")
+        elif with_ai:
+            ai_picks = _ai_pick_funds(risk_profile, val_pct, fgi)
+            if ai_picks:
+                allocations = ai_picks
+                adjustments.append("🤖 AI 从全量基金排行中动态精选")
+            else:
+                pcts = ALLOC_PCTS.get(risk_profile, ALLOC_PCTS["稳健型"])
+                for i, fund in enumerate(RECOMMENDED_FUNDS):
+                    f = dict(fund)
+                    f["pct"] = pcts[i] if i < len(pcts) else 0
+                    allocations.append(f)
+                adjustments.append("⚠️ 规则引擎和 AI 都暂不可用，使用经典配置")
         else:
-            # 降级：硬编码 6 只经典基金
+            # 规则引擎失败，且未启用 AI → 经典硬编码
             pcts = ALLOC_PCTS.get(risk_profile, ALLOC_PCTS["稳健型"])
             for i, fund in enumerate(RECOMMENDED_FUNDS):
                 f = dict(fund)
                 f["pct"] = pcts[i] if i < len(pcts) else 0
                 allocations.append(f)
-            adjustments.append("⚠️ AI 选基暂不可用，使用经典配置")
+            adjustments.append("⚠️ 基金排行数据加载失败，使用经典配置")
 
     elif preference == "stock":
         # 纯股票模式 — 从选股引擎拿 TOP 6

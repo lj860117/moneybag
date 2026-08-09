@@ -264,3 +264,73 @@ def format_search_for_prompt(results: list) -> str:
             lines.append(f"   {r['snippet']}")
     lines.append("\n请基于以上搜索结果回答用户问题，如信息不足请如实说明。")
     return "\n".join(lines)
+
+
+# ============================================================
+# v9.5.98: 通用结构化数据提取工具
+# ============================================================
+
+def search_extract_number(query: str, pattern: str, max_results: int = 3) -> float | None:
+    """搜索后用正则提取一个数字（用于规模/PE/PB/股价等单值场景）
+
+    Args:
+        query: 搜索关键词，如"基金 160518 资产规模 亿元"
+        pattern: 正则，必须有 1 个捕获组返回数字字符串
+        max_results: 最多扫描前 N 条搜索结果
+    Returns:
+        提取到的 float 或 None
+    """
+    try:
+        results = search_web(query, limit=max_results)
+        for it in results:
+            text = (it.get("title", "") + " " + it.get("snippet", ""))
+            m = re.search(pattern, text)
+            if m:
+                try:
+                    return float(m.group(1).replace(",", "").replace("，", ""))
+                except (ValueError, TypeError):
+                    continue
+    except Exception as e:
+        print(f"[SEARCH] extract_number failed: {e}")
+    return None
+
+
+def search_extract_text(query: str, pattern: str, max_results: int = 3) -> str | None:
+    """搜索后用正则提取文本（用于公司名、新闻标题等）"""
+    try:
+        results = search_web(query, limit=max_results)
+        for it in results:
+            text = (it.get("title", "") + " " + it.get("snippet", ""))
+            m = re.search(pattern, text)
+            if m:
+                return m.group(1).strip()
+    except Exception as e:
+        print(f"[SEARCH] extract_text failed: {e}")
+    return None
+
+
+# v9.5.98: 高频场景的预设搜索辅助函数
+def lookup_fund_scale_by_search(code: str) -> float | None:
+    """搜索某基金当前规模（亿元）"""
+    return search_extract_number(
+        f"{code} 基金 资产规模 亿元 当前",
+        r"(?:资产规模|基金规模|当前规模|最新规模|总规模)[^0-9]{0,12}([0-9.,]+)\s*亿"
+    )
+
+
+def lookup_stock_pe_by_search(code: str, name: str = "") -> float | None:
+    """搜索个股 PE-TTM（市盈率）"""
+    return search_extract_number(
+        f"{code} {name} 市盈率 PE",
+        r"(?:市盈率|PE-TTM|PE\(TTM\))[^0-9-]{0,8}([0-9.,]+)"
+    )
+
+
+def lookup_breaking_news(keyword: str) -> list:
+    """搜索某关键词的最新新闻（如停牌/重组/业绩预告）"""
+    return search_web(f"{keyword} 最新", limit=5)
+
+
+def lookup_industry_status(industry: str) -> list:
+    """搜索某行业景气度（用于 AI 对话补充）"""
+    return search_web(f"{industry} 行业 最新动态 景气度 2026", limit=5)

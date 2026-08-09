@@ -25,11 +25,11 @@
   --color-ai-700: #4527A0;
   --color-ai-gradient: linear-gradient(135deg, #B89DFF 0%, #6B4FD9 100%);
 
-  /* 数据语义色 */
-  --color-bull:    #00E5A0;     /* 涨/正面 */
-  --color-bull-bg: rgba(0, 229, 160, 0.12);
-  --color-bear:    #FF6B6B;     /* 跌/负面 */
-  --color-bear-bg: rgba(255, 107, 107, 0.12);
+  /* 数据语义色 — v9.5.19: 改为 A 股惯例（涨红跌绿） */
+  --color-bull:    #FF6B6B;     /* 涨/正面 → 红色 */
+  --color-bull-bg: rgba(255, 107, 107, 0.12);
+  --color-bear:    #00E5A0;     /* 跌/负面 → 绿色 */
+  --color-bear-bg: rgba(0, 229, 160, 0.12);
   --color-warn:    #FFB800;     /* 警示 */
   --color-warn-bg: rgba(255, 184, 0, 0.12);
   --color-info:    #00B8D9;     /* 中性提示 */

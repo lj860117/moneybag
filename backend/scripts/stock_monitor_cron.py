@@ -38,6 +38,12 @@ PROFILES_FILE = DATA_DIR / "profiles.json"
 # MB-002: 集中度预警冷却（24小时/天），文件缓存跨 cron 进程持久化
 _COOLDOWN_FILE = DATA_DIR / "_cache" / "alert_cooldown.json"
 
+# 深度影响推送：去重文件（记录已推送的新闻 hash）
+_DEEP_IMPACT_PUSH_FILE = DATA_DIR / "_cache" / "deep_impact_pushed.json"
+
+# 深度影响每天最多推送次数（防刷屏）
+_DEEP_IMPACT_MAX_DAILY = 3
+
 
 def _load_cooldown() -> dict:
     """读取预警冷却状态（跨进程持久化）"""
@@ -47,6 +53,186 @@ def _load_cooldown() -> dict:
     except Exception:
         pass
     return {}
+
+
+def _load_deep_impact_push_state() -> dict:
+    """读取深度影响推送状态（去重 + 每日计数）"""
+    try:
+        if _DEEP_IMPACT_PUSH_FILE.exists():
+            return json.loads(_DEEP_IMPACT_PUSH_FILE.read_text(encoding="utf-8"))
+    except Exception:
+        pass
+    return {}
+
+
+def _save_deep_impact_push_state(state: dict):
+    """保存深度影响推送状态"""
+    try:
+        _DEEP_IMPACT_PUSH_FILE.parent.mkdir(parents=True, exist_ok=True)
+        _DEEP_IMPACT_PUSH_FILE.write_text(
+            json.dumps(state, ensure_ascii=False, indent=2), encoding="utf-8")
+    except Exception as e:
+        print(f"[DEEP_IMPACT] 保存推送状态失败: {e}")
+
+
+def check_and_push_deep_impact(profiles: list):
+    """检测高影响新闻，命中持仓行业则推送企微
+    
+    规则：
+    - 只推 magnitude=high 的条目
+    - 必须命中至少一个持仓行业（sectors 交叉）
+    - 同条新闻24小时内不重复推
+    - 每天最多推 _DEEP_IMPACT_MAX_DAILY 次
+    - 非交易日也可以推（重大新闻不分交易日）
+    """
+    today = datetime.now().strftime("%Y-%m-%d")
+    state = _load_deep_impact_push_state()
+
+    # 清理昨日状态，保留今日
+    if state.get("date") != today:
+        state = {"date": today, "pushed_hashes": [], "push_count": 0}
+
+    if state.get("push_count", 0) >= _DEEP_IMPACT_MAX_DAILY:
+        print(f"[DEEP_IMPACT] 今日已推送 {state['push_count']} 次，达上限，跳过")
+        return
+
+    # 拉最新新闻深度分析
+    try:
+        from api.news import get_policy_news, get_market_news
+        policy = get_policy_news(8)
+        market = get_market_news(5)
+        all_news = policy + market
+    except Exception as e:
+        print(f"[DEEP_IMPACT] 拉新闻失败: {e}")
+        return
+
+    if not all_news:
+        print("[DEEP_IMPACT] 无新闻数据，跳过")
+        return
+
+    # 调 DeepSeek 分析（用公共数据，不按用户区分，节省调用次数）
+    try:
+        from services.ds_enhance import deep_analyze_news_impact
+        impacts = deep_analyze_news_impact(all_news)
+    except Exception as e:
+        print(f"[DEEP_IMPACT] DeepSeek分析失败: {e}")
+        return
+
+    if not impacts:
+        print("[DEEP_IMPACT] 无影响条目，跳过")
+        return
+
+    # 过滤高影响条目
+    high_impacts = [i for i in impacts if i.get("magnitude") == "high"]
+    if not high_impacts:
+        print(f"[DEEP_IMPACT] {len(impacts)} 条影响中无 magnitude=high，跳过")
+        return
+
+    # 去重（24h内推过的不再推）
+    pushed_hashes = set(state.get("pushed_hashes", []))
+    new_items = []
+    for item in high_impacts:
+        h = str(hash(item.get("title", "")[:50]))
+        if h not in pushed_hashes:
+            item["_hash"] = h
+            new_items.append(item)
+
+    if not new_items:
+        print("[DEEP_IMPACT] 所有高影响条目已在24h内推送过，跳过")
+        return
+
+    # 按用户过滤：sectors 命中持仓行业
+    SECTOR_KEYWORDS = {
+        "科技": ["计算机", "电子", "通信", "半导体", "软件", "AI", "人工智能", "芯片"],
+        "医药": ["医药", "生物", "医疗", "医健"],
+        "消费": ["消费", "食品", "零售", "商业"],
+        "金融": ["银行", "保险", "证券", "金融"],
+        "新能源": ["新能源", "光伏", "风电", "储能", "电池"],
+        "军工": ["军工", "国防", "航天"],
+        "地产": ["地产", "房地产", "建筑"],
+        "制造": ["制造", "机械", "汽车"],
+        "纳斯达克": ["美股", "纳斯达克", "科技股", "美联储"],
+        "标普": ["标普", "S&P", "美股", "道琼斯"],
+    }
+
+    for profile in profiles:
+        uid = profile["id"]
+        wxwork_uid = profile.get("wxworkUserId", "")
+        if not wxwork_uid:
+            continue
+
+        # 获取用户持仓行业关键词
+        user_sectors = set()
+        try:
+            holdings = load_fund_holdings(uid) or []
+            for h in holdings:
+                name = h.get("name", "") + h.get("code", "")
+                for sector, kws in SECTOR_KEYWORDS.items():
+                    if any(kw in name for kw in kws):
+                        user_sectors.add(sector)
+            # 也把代码本身加进去（ETF代码直接匹配）
+            for h in holdings:
+                code = h.get("code", "")
+                if "159" in code or "512" in code:  # ETF 大概率是行业ETF
+                    user_sectors.add("ETF")
+        except Exception:
+            pass
+
+        # 过滤：sectors 与用户持仓行业有交叉，或者 direction=bearish（利空要无论如何通知）
+        matched = []
+        for item in new_items:
+            item_sectors = item.get("sectors", [])
+            direction = item.get("direction", "neutral")
+            # 利空无论如何推；利多只推命中持仓的
+            if direction == "bearish":
+                matched.append(item)
+            elif user_sectors:
+                for s in item_sectors:
+                    if any(kw in s for kw_list in [SECTOR_KEYWORDS.get(us, [us]) for us in user_sectors] for kw in kw_list):
+                        matched.append(item)
+                        break
+
+        if not matched:
+            print(f"[DEEP_IMPACT] 用户 {uid}: 无命中持仓行业的高影响新闻，跳过推送")
+            continue
+
+        # 推送到企微
+        try:
+            from services.wxwork_push import is_configured, send_markdown
+            if not is_configured():
+                print("[DEEP_IMPACT] 企微未配置")
+                break
+
+            direction_map = {"bullish": "📈 利好", "bearish": "📉 利空", "neutral": "⚖️ 中性"}
+            lines = []
+            for item in matched[:3]:  # 最多3条
+                d = direction_map.get(item.get("direction", "neutral"), "⚖️")
+                mag = "🔴 高" if item.get("magnitude") == "high" else "🟡 中"
+                lines.append(f"> **{item.get('title','未知')}**\n"
+                              f"> {d} · {mag}影响 · 行业：{','.join(item.get('sectors',[])[:3])}\n"
+                              f"> {item.get('impact','')}")
+
+            content = (f"### 📢 持仓影响预警\n"
+                       f"今日高影响新闻命中你的持仓：\n\n"
+                       + "\n\n".join(lines)
+                       + f"\n\n> 💡 点击 [资讯→深度影响](http://150.158.47.189:8000/) 查看完整分析")
+
+            result = send_markdown(content, user_id=wxwork_uid)
+            if result.get("ok"):
+                print(f"[DEEP_IMPACT] 推送成功 → {wxwork_uid}，{len(matched)} 条命中")
+                state["push_count"] = state.get("push_count", 0) + 1
+            else:
+                print(f"[DEEP_IMPACT] 推送失败: {result.get('error', '')}")
+        except Exception as e:
+            print(f"[DEEP_IMPACT] 推送异常: {e}")
+
+    # 记录已推送的 hash，无论是否命中用户持仓（全局去重）
+    for item in new_items:
+        if item.get("_hash"):
+            pushed_hashes.add(item["_hash"])
+    state["pushed_hashes"] = list(pushed_hashes)[-200:]  # 只保留最近200条
+    _save_deep_impact_push_state(state)
+    print(f"[DEEP_IMPACT] 今日已推送 {state['push_count']} 次")
 
 
 def _save_cooldown(cooldown: dict):
@@ -59,7 +245,12 @@ def _save_cooldown(cooldown: dict):
 
 
 def _filter_alerts_with_cooldown(user_id: str, alerts: list) -> list:
-    """对纪律类告警（集中度/行业集中度）施加 24 小时冷却，其余保持 30 分钟冷却"""
+    """对各类告警施加冷却，防止重复推送
+    
+    冷却规则：
+    - 集中度/纪律类：24小时
+    - 盯盘类（回撤/连跌/异动）：每只资产独立冷却 4 小时（原30分钟太短，cron10分钟一次容易重发）
+    """
     import time
     now = time.time()
     cooldown = _load_cooldown()
@@ -67,11 +258,17 @@ def _filter_alerts_with_cooldown(user_id: str, alerts: list) -> list:
     for a in alerts:
         alert_type = a.get("type", "unknown")
         # 集中度类型 → 24 小时冷却
-        if alert_type in ("concentration", "industry_concentration"):
+        if alert_type in ("concentration", "industry_concentration", "stop_loss", "take_profit"):
             cd_sec = 86400
+        elif alert_type in ("drawdown", "consecutive_drop", "drop", "surge", "deviation", "hot"):
+            cd_sec = 14400  # 盯盘类：4小时（避免每10分钟重发）
         else:
-            cd_sec = 1800  # 其他预警 30 分钟
-        key = f"{user_id}_{alert_type}_{a.get('code', alert_type)}"
+            cd_sec = 3600  # 其他：1小时
+
+        # key 必须包含具体资产代码，避免不同基金/股票共用同一冷却
+        asset_code = a.get("code", "") or a.get("fund", "").split("(")[-1].rstrip(")") or alert_type
+        key = f"{user_id}_{alert_type}_{asset_code}"
+
         last_sent = cooldown.get(key, 0)
         if now - last_sent > cd_sec:
             filtered.append(a)
@@ -148,23 +345,183 @@ def scan_user(user_id: str) -> dict:
 
 
 def push_user_alerts(user_id: str, wxwork_uid: str, alerts: list):
-    """按用户推送异动到企微"""
+    """按用户推送异动到企微
+
+    v9.5.73: 持仓异动类（drawdown/连跌/单日异动）打包到日报，盘中不实时推
+        - 立即推：纪律类（止损/止盈/集中度），地缘风险，重大新闻
+        - 入池等日报：drawdown / consecutive_drop / drop / surge / deviation / hot / RSI
+    """
     if not alerts:
         return
-    
-    print(f"  [推送] {len(alerts)} 条 → {wxwork_uid}")
+
+    # v9.5.73: 拆分 立即推 vs 入池
+    INSTANT_TYPES = {
+        "stop_loss", "take_profit",                    # 止损/止盈纪律
+        "concentration", "industry_concentration",      # 集中度
+        "geo_risk", "deep_impact",                     # 地缘/重大新闻
+    }
+    instant = [a for a in alerts if a.get("type") in INSTANT_TYPES]
+    pool_alerts = [a for a in alerts if a.get("type") not in INSTANT_TYPES]
+
+    # 入池：写入今日异动池，等 15:35 打包推送
+    if pool_alerts:
+        _add_to_daily_pool(user_id, pool_alerts)
+        print(f"  [日报池] 入池 {len(pool_alerts)} 条（盘中不推）")
+
+    # 立即推：仅高优先级
+    if not instant:
+        return
+
+    print(f"  [立即推] {len(instant)} 条 → {wxwork_uid}")
     try:
         from services.wxwork_push import is_configured, send_stock_alert_to
         if is_configured():
-            result = send_stock_alert_to(wxwork_uid, alerts)
+            result = send_stock_alert_to(wxwork_uid, instant)
             if result.get("ok"):
-                print(f"  [推送] 成功")
+                print(f"  [立即推] 成功")
             else:
-                print(f"  [推送] 失败: {result.get('error', '')}")
+                print(f"  [立即推] 失败: {result.get('error', '')}")
         else:
-            print(f"  [推送] 企微未配置")
+            print(f"  [立即推] 企微未配置")
     except Exception as e:
-        print(f"  [推送] 异常: {e}")
+        print(f"  [立即推] 异常: {e}")
+
+
+# ============================================================
+# v9.5.73: 异动日报池 — 盘中所有非紧急 alerts 入池，15:35 打包推送
+# ============================================================
+_DAILY_POOL_FILE = DATA_DIR / "_cache" / "daily_alerts_pool.json"
+
+
+def _load_daily_pool() -> dict:
+    """读取异动日报池（按日清理）"""
+    today = datetime.now().strftime("%Y-%m-%d")
+    try:
+        if _DAILY_POOL_FILE.exists():
+            data = json.loads(_DAILY_POOL_FILE.read_text(encoding="utf-8"))
+            if data.get("date") == today:
+                return data
+    except Exception:
+        pass
+    return {"date": today, "users": {}}
+
+
+def _save_daily_pool(pool: dict):
+    """保存异动日报池"""
+    try:
+        _DAILY_POOL_FILE.parent.mkdir(parents=True, exist_ok=True)
+        _DAILY_POOL_FILE.write_text(json.dumps(pool, ensure_ascii=False, indent=2), encoding="utf-8")
+    except Exception as e:
+        print(f"[DAILY_POOL] 保存失败: {e}")
+
+
+def _add_to_daily_pool(user_id: str, alerts: list):
+    """把 alerts 加入今日异动池，按 (asset_code, type) 去重保留最新一条"""
+    pool = _load_daily_pool()
+    user_pool = pool["users"].setdefault(user_id, {})
+    for a in alerts:
+        code = a.get("code") or a.get("fund", "").split("(")[-1].rstrip(")") or "?"
+        atype = a.get("type", "?")
+        key = f"{code}_{atype}"
+        # 保留最新一条（带时间戳）
+        user_pool[key] = {
+            **a,
+            "_pooled_at": datetime.now().strftime("%H:%M"),
+        }
+    _save_daily_pool(pool)
+
+
+def push_daily_summary():
+    """v9.5.73: 收盘后 15:35 调用，把今日异动池打包成日报推送（已废弃，合并进收盘复盘）
+
+    v9.5.74: 此函数仍可独立调用（兼容老 cron），但默认推荐使用 build_daily_summary_text()
+    嵌入收盘复盘消息中。
+    """
+    text_by_user = build_daily_summary_text()
+    profiles = _load_profiles()
+    if not profiles:
+        print("[DAILY_SUMMARY] 无用户 Profile，跳过")
+        return
+
+    for p in profiles:
+        uid = p["id"]
+        wxwork_uid = p.get("wxworkUserId", "")
+        if not wxwork_uid:
+            continue
+        text = text_by_user.get(uid, "")
+        if not text:
+            print(f"[DAILY_SUMMARY] {uid} 今日无异动，跳过")
+            continue
+
+        try:
+            from services.wxwork_push import is_configured, send_daily_report_to
+            if is_configured():
+                # 算总条数（从 build_daily_summary_text 返回的文本里推断）
+                pool = _load_daily_pool().get("users", {}).get(uid, {})
+                total = len(pool)
+                result = send_daily_report_to(wxwork_uid, text, title=f"📊 持仓异动日报（{total}条）")
+                if result.get("ok"):
+                    print(f"[DAILY_SUMMARY] ✅ {uid} 推送 {total} 条异动汇总")
+                else:
+                    print(f"[DAILY_SUMMARY] ❌ {uid}: {result.get('error', '')}")
+        except Exception as e:
+            print(f"[DAILY_SUMMARY] {uid} 推送异常: {e}")
+
+
+def build_daily_summary_text() -> dict:
+    """v9.5.74: 构建当日异动汇总文本，返回 {user_id: text}
+
+    供收盘复盘 (15:30) 拼接使用，避免和单独的 15:35 日报重复。
+    """
+    pool = _load_daily_pool()
+    out = {}
+    for uid, user_pool in pool.get("users", {}).items():
+        if not user_pool:
+            continue
+
+        # 按类型分组
+        groups = {
+            "drawdown": [], "consecutive_drop": [], "drop": [], "surge": [],
+            "deviation": [], "hot": [], "_other": [],
+        }
+        for k, a in user_pool.items():
+            t = a.get("type")
+            (groups[t] if t in groups else groups["_other"]).append(a)
+
+        total = sum(len(v) for v in groups.values())
+        if total == 0:
+            continue
+
+        lines = [f"\n📊 **本日异动明细（{total} 条）**"]
+
+        if groups["drawdown"]:
+            lines.append(f"🔻 回撤类（{len(groups['drawdown'])} 条）")
+            for a in groups["drawdown"]:
+                lines.append(f"• {a.get('fund') or a.get('code', '?')}：{a.get('msg', '')}")
+        if groups["consecutive_drop"]:
+            lines.append(f"📉 连跌（{len(groups['consecutive_drop'])} 条）")
+            for a in groups["consecutive_drop"]:
+                lines.append(f"• {a.get('fund') or a.get('code', '?')}：{a.get('msg', '')}")
+        if groups["drop"] or groups["surge"]:
+            n = len(groups["drop"]) + len(groups["surge"])
+            lines.append(f"⚡ 单日异动（{n} 条）")
+            for a in groups["drop"] + groups["surge"]:
+                lines.append(f"• {a.get('fund') or a.get('code', '?')}：{a.get('msg', '')}")
+        if groups["hot"]:
+            lines.append(f"🔥 周热点（{len(groups['hot'])} 条）")
+            for a in groups["hot"]:
+                lines.append(f"• {a.get('fund') or a.get('code', '?')}：{a.get('msg', '')}")
+        if groups["deviation"]:
+            lines.append(f"⚠️ 估算偏差（{len(groups['deviation'])} 条）")
+            for a in groups["deviation"]:
+                lines.append(f"• {a.get('fund') or a.get('code', '?')}：{a.get('msg', '')}")
+        if groups["_other"]:
+            for a in groups["_other"]:
+                lines.append(f"• {a.get('msg', '')}")
+
+        out[uid] = "\n".join(lines)
+
+    return out
 
 
 def run_scan():
@@ -233,6 +590,13 @@ def run_scan():
         json.dumps(all_results, ensure_ascii=False, indent=2), encoding="utf-8")
 
     cleanup_old_snapshots()
+
+    # 深度影响检测：高影响新闻命中持仓行业则推企微
+    # 每天最多3次，24h内同条去重，非交易日也可以跑（重大新闻不分交易日）
+    try:
+        check_and_push_deep_impact(profiles)
+    except Exception as e:
+        print(f"[DEEP_IMPACT] 检测异常（不影响主流程）: {e}")
 
 
 def _sanitize_reasoning_for_extraction(reasoning: str) -> str:
@@ -519,6 +883,28 @@ def _humanize_terms(text: str) -> str:
     return text
 
 
+def _build_portfolio_thermometer_oneliner(uid: str) -> str:
+    """v9.5.123: 一行版组合温度计 — "今日: +¥3.2 (+0.4%) 总市值¥742" """
+    try:
+        import sys as _sys
+        _sys.path.insert(0, str(Path(__file__).parent.parent))
+        from scripts.night_worker import _build_portfolio_thermometer
+        full = _build_portfolio_thermometer(uid)
+        if not full:
+            return ""
+        # 从完整温度计提取关键数字
+        import re
+        # 匹配 "当前市值 ¥740" 和 "整体浮盈 📈 +4.4%"
+        value_m = re.search(r'当前市值\s*¥([\d,.]+)', full)
+        pnl_m = re.search(r'整体浮[盈亏]\s*[📈📉]?\s*([+\-][\d.]+%)', full)
+        cost_m = re.search(r'总投入\s*¥([\d,.]+)', full)
+        if value_m and pnl_m:
+            return f"总市值 ¥{value_m.group(1)} | 浮盈 {pnl_m.group(1)}"
+        return ""
+    except Exception:
+        return ""
+
+
 def _sanitize_push_text(text: str) -> str:
     """检测文本是否为原始 JSON，如果是则提取关键信息格式化"""
     stripped = text.strip()
@@ -607,6 +993,18 @@ def run_close_review():
                         print(f"  [诊断] {name}: 拉取 {h_news['summary']}")
                 except Exception as e:
                     print(f"  [诊断] {name}: 持仓新闻拉取失败: {e}")
+
+                # v9.5.76: 加组合温度计（盈亏锚点），让 R1 基于真实成本给诊断
+                thermometer_text = ""
+                try:
+                    import sys as _sys, os as _os
+                    _sys.path.insert(0, str(Path(__file__).parent.parent))
+                    from scripts.night_worker import _build_portfolio_thermometer
+                    thermometer_text = _build_portfolio_thermometer(uid)
+                    if thermometer_text:
+                        print(f"  [诊断] {name}: 温度计已注入 ({len(thermometer_text)}字)")
+                except Exception as e:
+                    print(f"  [诊断] {name}: 温度计失败: {e}")
                 
                 # 加载 close_review prompt
                 from pathlib import Path as _P
@@ -617,10 +1015,14 @@ def run_close_review():
                     prompt = f"""## 持仓数据
 {scan_data}
 
+## 盈亏锚点（买入成本 vs 当前净值，真实数据）
+{thermometer_text if thermometer_text else "暂无成本数据"}
+
 ## 持仓相关新闻
 {holdings_news_text if holdings_news_text else "暂无个股/基金新闻"}
 
-请按 close_review 格式输出收盘复盘，300 字以内。
+请按 close_review 格式输出收盘复盘，800 字以内。
+重点：基于盈亏锚点，告诉用户哪只已浮盈多少、是否接近止盈，哪只还在亏损需要持有。
 重要：用普通人能看懂的大白话，不要输出 JSON，不要英文术语。"""
                     
                     result = gw.call_sync(
@@ -629,7 +1031,7 @@ def run_close_review():
                         model_tier="llm_heavy",  # R1 深度推理
                         user_id=uid,
                         module="close_review",
-                        max_tokens=600,
+                        max_tokens=2000,  # v9.8.10: 900→2000，防止诊断文本不完整
                     )
                     diagnosis_text = result.get("content", "")
                     
@@ -651,18 +1053,120 @@ def run_close_review():
             try:
                 from services.wxwork_push import is_configured, send_daily_report_to
                 if is_configured():
-                    # 组装推送内容（确保不推原始 JSON）
+                    # v9.5.123: 重构推送 — 加今日盈亏+精简异动+加A50
                     msg_parts = [f"📊 {date} 收盘复盘"]
+                    
+                    # 1. 今日盈亏（温度计数据）
+                    try:
+                        thermo = _build_portfolio_thermometer_oneliner(uid)
+                        if thermo:
+                            msg_parts.append(f"\n💰 {thermo}")
+                    except Exception:
+                        pass
+                    
+                    # 2. 市场方向（review）
                     if review_text:
-                        msg_parts.append(f"\n{review_text[:300]}")
-                    if diagnosis_text:
-                        # 防止 LLM 输出原始 JSON
-                        safe_diag = _sanitize_push_text(diagnosis_text)
-                        msg_parts.append(f"\n🤖 AI诊断:\n{safe_diag[:300]}")
-                    msg_parts.append("\n打开钱袋子查看完整报告")
+                        msg_parts.append(f"\n{review_text}")
 
-                    send_daily_report_to(wxwork_uid, "\n".join(msg_parts))
-                    print(f"  [推送] {name}: 复盘+诊断已推企微")
+                    # 3. AI诊断（完整版）
+                    if diagnosis_text:
+                        safe_diag = _sanitize_push_text(diagnosis_text)
+                        # v9.8.10: 不再截断，send_markdown 会自动分段推送长消息
+                        msg_parts.append(f"\n🤖 AI诊断:\n{safe_diag}")
+
+                    # 4. 持仓预警（合并盘中监控，每天收盘检查一次）
+                    # v9.8.10: 长期投资者不需要盘中实时监控，合并到收盘复盘
+                    try:
+                        from services.fund_monitor import load_fund_holdings, detect_fund_alerts
+                        fund_holdings = load_fund_holdings(uid)
+                        if fund_holdings:
+                            alerts = []
+                            for fund in fund_holdings:
+                                code = fund.get("code", "")
+                                if not code:
+                                    continue
+                                # 获取实时数据
+                                try:
+                                    from infra.data_source.fund_realtime import get_fund_realtime
+                                    realtime = get_fund_realtime(code)
+                                    # 获取风险数据
+                                    from services.fund_monitor import calc_fund_risk
+                                    risk = calc_fund_risk(code)
+                                    # 检测预警
+                                    fund_alerts = detect_fund_alerts(code, realtime, risk)
+                                    # 补全基金名称
+                                    for alert in fund_alerts:
+                                        alert["name"] = fund.get("name", code)
+                                        alert["code"] = code
+                                    alerts.extend(fund_alerts)
+                                except Exception as e:
+                                    print(f"  [预警] {name}: {code} 数据获取失败: {e}")
+                                    continue
+                            
+                            if alerts:
+                                msg_parts.append("\n🔔 持仓预警:")
+                                for alert in alerts[:5]:  # 最多显示5条
+                                    level_emoji = "🔴" if alert.get("level") == "warning" else "🟡"
+                                    name = alert.get("name", alert.get("code", ""))
+                                    message = alert.get("message", alert.get("msg", ""))
+                                    msg_parts.append(f"{level_emoji} {name}\n  {message}")
+                                    if len(msg_parts) > 8:  # 防止消息过长
+                                        msg_parts.append("  ...更多预警请打开钱袋子查看")
+                                        break
+                    except Exception as e:
+                        print(f"  [复盘] {name}: 持仓预警检查失败: {e}")
+                    
+                    # 5. 异动精简为TOP 3（不再全量推送）
+                    try:
+                        all_summaries = build_daily_summary_text()
+                        user_summary = all_summaries.get(uid, "")
+                        if user_summary:
+                            # 只取前3条异动
+                            lines = user_summary.strip().split("\n")
+                            # 保留标题行 + 前3条具体异动
+                            filtered = []
+                            count = 0
+                            for line in lines:
+                                if line.startswith("📊") or line.startswith("🔻") or line.startswith("⚡"):
+                                    filtered.append(line)
+                                elif line.strip().startswith("•") and count < 3:
+                                    filtered.append(line)
+                                    count += 1
+                                elif count >= 3:
+                                    break
+                            if filtered:
+                                msg_parts.append("\n" + "\n".join(filtered))
+                                if count >= 3:
+                                    msg_parts.append("  ...更多异动请打开钱袋子查看")
+                    except Exception as e:
+                        print(f"  [复盘] {name}: 异动明细拼接失败: {e}")
+                    
+                    # 6. A50期货(预判明天)
+                    try:
+                        from infra.data_source.macro.indicators import get_global_futures_snapshot
+                        futures = get_global_futures_snapshot()
+                        if futures and futures.get("available") and futures.get("a50"):
+                            a50_pct = futures["a50"].get("change_pct", 0)
+                            msg_parts.append(f"\n📡 A50期货: {a50_pct:+.1f}% (预判明日方向)")
+                    except Exception:
+                        pass
+
+                    msg_parts.append("\n⚠️ 仅供参考")
+                    
+                    # v9.8.10: 存档推送内容（用于质量评估）
+                    try:
+                        from services.wxwork_push import archive_push
+                        archive_push(
+                            user_id=uid,
+                            push_type="closing_review",
+                            content="\n".join(msg_parts),
+                            timestamp=datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                        )
+                    except Exception as e:
+                        print(f"  [存档] 失败: {e}")
+                    
+                    send_daily_report_to(wxwork_uid, "\n".join(msg_parts), title="📊 钱袋子收盘复盘")
+                    print(f"  [推送] {name}: 复盘+诊断+异动已推企微")
             except Exception as e:
                 print(f"  [推送] {name}: 失败: {e}")
 
@@ -707,7 +1211,7 @@ def run_close_review():
                 for p in profiles:
                     wxid = p.get("wxworkUserId", "")
                     if wxid:
-                        send_daily_report_to(wxid, geo_msg)
+                        send_daily_report_to(wxid, geo_msg, title="🌍 钱袋子地缘预警")
                 print(f"  [地缘] severity={severity}, 已推送预警")
             else:
                 print(f"  [地缘] severity={severity}, 企微未配置")
@@ -744,9 +1248,12 @@ def cleanup_old_snapshots(max_days: int = 7):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="持仓盯盘 cron（多用户按人推送）")
     parser.add_argument("--close", action="store_true", help="收盘复盘模式")
+    parser.add_argument("--daily-summary", action="store_true", help="v9.5.73: 推送当日持仓异动日报")
     args = parser.parse_args()
 
-    if args.close:
+    if args.daily_summary:
+        push_daily_summary()
+    elif args.close:
         run_close_review()
     else:
         run_scan()

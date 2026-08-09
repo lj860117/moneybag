@@ -21,15 +21,62 @@ function _md(text){
 let chatModel='deepseek-v4-flash';
 let chatModelList=[];
 async function loadModelList(){try{const r=await fetch(API_BASE+'/models',{signal:AbortSignal.timeout(5000)});if(r.ok){const d=await r.json();chatModelList=d.models||[];if(d.default)chatModel=localStorage.getItem('chatModel')||d.default}}catch{chatModelList=[{id:'deepseek-v4-flash',name:'DeepSeek V4',provider:'deepseek'}]}}
+
+// v9.5.65: 模型名 → 显示名映射（含降级标识）
+function _formatModelName(model, fallbackUsed){
+  if(!model) return fallbackUsed ? '🔄 降级' : 'DeepSeek';
+  const lc = String(model).toLowerCase();
+  let name = 'AI';
+  if(lc.includes('qwen3.6-plus') || lc.includes('qwen-plus')) name = '通义千问 Plus';
+  else if(lc.includes('qwen3.6-flash') || lc.includes('qwen-flash')) name = '通义千问 Flash';
+  else if(lc.includes('qwen')) name = '通义千问';
+  else if(lc.includes('seed-2-0-pro') || lc.includes('seed-2.0-pro')) name = '豆包 Seed 2.0 Pro';
+  else if(lc.includes('seed-2-0-lite') || lc.includes('seed-2.0-lite')) name = '豆包 Seed 2.0 Lite';
+  else if(lc.includes('seed-2-0-mini') || lc.includes('seed-2.0-mini')) name = '豆包 Seed 2.0 Mini';
+  else if(lc.includes('doubao-seed-1-6') || lc.includes('seed-1-6') || lc.includes('seed-1.6')) name = '豆包 Seed 1.6';
+  else if(lc.includes('doubao-1-5-pro') || lc.includes('doubao-pro')) name = '豆包 Pro';
+  else if(lc.includes('doubao-1-5-lite') || lc.includes('doubao-lite')) name = '豆包 Lite';
+  else if(lc.includes('doubao') || lc.startsWith('ep-')) name = '豆包';
+  else if(lc.includes('reasoner')) name = 'DeepSeek R1';
+  else if(lc.includes('v4-pro') || lc.includes('deepseek-v4-pro')) name = 'DeepSeek V4 Pro';
+  else if(lc.includes('v4-flash') || lc.includes('deepseek-v4-flash')) name = 'DeepSeek V4 Flash';
+  else if(lc.includes('deepseek-chat')) name = 'DeepSeek Chat';
+  else if(lc.includes('deepseek')) name = 'DeepSeek';
+  return fallbackUsed ? `🔄 ${name}（降级）` : name;
+}
 function renderChat(){currentPage='chat';renderNav();
-const sugs=[
-  {emoji:'📈',text:'现在适合入场吗？'},
-  {emoji:'🛡️',text:'我的持仓风险大吗？'},
-  {emoji:'💰',text:'智能定投怎么投？'},
-  {emoji:'🌐',text:'今天市场怎么样？'},
-  {emoji:'🏛️',text:'政策对我有啥影响？'}
+// v9.5.29: 进入聊天页时也检查跨天归档（之前只在启动时检查，App 后台不关跨天会漏）
+try{ if(typeof _autoArchiveIfNewDay==='function') _autoArchiveIfNewDay(); }catch(e){}
+// v9.5.82: 快捷问题动态化 — 基础5个 + 根据持仓情况追加情境化问题
+const _baseSugs=[
+  {emoji:'🏥',text:'诊断我的持仓，有没有问题？'},
+  {emoji:'📊',text:'帮我做个本周复盘'},
+  {emoji:'📈',text:'现在估值高吗？适合入场吗？'},
+  {emoji:'⚖️',text:'我需要再平衡吗？'},
+  {emoji:'💰',text:'我想再投入1000元，应该买哪只基金、买多少？'},
+  {emoji:'🛡️',text:'当前最大风险是什么？'}
 ];
-const modelPill=chatModelList.length>1?`<span class="mb-pill mb-pill--ai" style="font-size:10px;cursor:pointer" onclick="showModelPicker()">${chatModelList.find(m=>m.id===chatModel)?.name||'DeepSeek'}</span>`:'';
+// 动态生成情境化问题
+function _buildDynamicSugs(){
+  const extra=[];
+  try{
+    const snap=_buildChatPortfolioSnapshot();
+    if(!snap)return _baseSugs;
+    const holdings=snap.holdings||[];
+    // 如果有 A股超配（根据再平衡逻辑 — 简单判断是否大量主动混合基金）
+    const aStockFunds=holdings.filter(h=>h.category&&(h.category.includes('混合')||h.category.includes('A股')));
+    if(aStockFunds.length>=5) extra.push({emoji:'⚖️',text:'我A股仓位是否过重，需要减仓吗？'});
+    // 如果有 QDII/美股（提示加仓）
+    const qdii=holdings.filter(h=>h.code&&(h.code.startsWith('006')||h.code.startsWith('005'))&&(h.category||'').includes('QDII'));
+    if(qdii.length===0&&holdings.length>3) extra.push({emoji:'🌐',text:'我应该配置美股/QDII基金吗？'});
+    // 如果持仓超过 6 只
+    if(holdings.length>=6) extra.push({emoji:'🔍',text:'我的持仓有没有重叠，能精简吗？'});
+  }catch(e){}
+  const all=[..._baseSugs,...extra];
+  return all.slice(0,7); // 最多7个
+}
+const sugs=_buildDynamicSugs();
+const modelPill=chatModelList.length>1?`<span class="mb-pill mb-pill--ai" style="font-size:10px;padding:2px 8px;cursor:pointer;white-space:nowrap;max-width:100px;overflow:hidden;text-overflow:ellipsis" onclick="showModelPicker()" title="点击切换模型">${(chatModelList.find(m=>m.id===chatModel)?.name||'DeepSeek').split('(')[0].trim()}</span>`:'';
 
 $('#app').innerHTML=`<div class="chat-page" style="display:flex;flex-direction:column;height:calc(100vh - var(--tabbar-height,76px));max-height:calc(100vh - 76px);padding:0;padding-top:calc(env(safe-area-inset-top,8px) + 8px)">
 
@@ -40,17 +87,28 @@ $('#app').innerHTML=`<div class="chat-page" style="display:flex;flex-direction:c
       <div class="mb-avatar mb-avatar--sm mb-avatar--ai">🤖</div>
       <div>
         <b style="font-size:14px">AI 分析师</b>
-        <div style="display:flex;align-items:center;gap:4px;margin-top:1px"><span class="mb-live-dot"></span><span style="font-size:10px;color:var(--color-bull,#00E5A0)">在线</span><span style="font-size:10px;color:var(--text-tertiary,#7A8499);margin-left:4px">投资决策自动多视角会诊</span></div>
+        <div style="display:flex;align-items:center;gap:4px;margin-top:1px"><span class="mb-live-dot"></span><span style="font-size:10px;color:var(--color-bull,#00E5A0)">在线</span></div>
       </div>
     </div>
-    <div class="mb-flex mb-gap-2">${modelPill}</div>
+    <div class="mb-flex mb-gap-2">${modelPill}<button onclick="showChatHistoryPanel()" title="历史对话与新建" style="background:transparent;border:1px solid rgba(148,163,184,.15);border-radius:999px;color:var(--text-secondary,#9AA1AC);font-size:11px;cursor:pointer;padding:4px 10px;display:flex;align-items:center;gap:4px">📜 历史</button></div>
   </div>
 </div>
 
 <!-- 对话区域 -->
 <div class="chat-messages" id="chatMsgs" style="flex:1;overflow-y:auto;padding:0 16px 16px;scroll-behavior:smooth">
+  <style>
+    /* AI 对话气泡内排版收紧 */
+    #chatMsgs .mb-bubble{padding:12px 14px !important;margin-bottom:10px !important;line-height:1.55 !important}
+    #chatMsgs .mb-bubble p{margin:6px 0 !important}
+    #chatMsgs .mb-bubble p:first-child{margin-top:0 !important}
+    #chatMsgs .mb-bubble p:last-child{margin-bottom:0 !important}
+    #chatMsgs .mb-bubble ul,#chatMsgs .mb-bubble ol{margin:6px 0 !important;padding-left:20px !important}
+    #chatMsgs .mb-bubble li{margin:3px 0 !important;line-height:1.55 !important}
+    #chatMsgs .mb-bubble h1,#chatMsgs .mb-bubble h2,#chatMsgs .mb-bubble h3,#chatMsgs .mb-bubble h4{margin:10px 0 6px !important;font-size:14px !important}
+    #chatMsgs .mb-bubble h1:first-child,#chatMsgs .mb-bubble h2:first-child,#chatMsgs .mb-bubble h3:first-child{margin-top:0 !important}
+  </style>
   <div class="mb-bubble mb-bubble--ai">你好！我是钱袋子 AI 分析师 🧠\n\n问投资决策问题（如"现在能入场吗"）我会自动多视角会诊；普通问题直接回答。所有建议仅供参考 😊</div>
-  ${chatMessages.map(m=>m.role==='user'?`<div class="mb-bubble mb-bubble--user">${m.text}</div>`:`<div class="mb-bubble mb-bubble--ai">${_md(m.text)}${m.src?`<div style="margin-top:6px;font-size:10px;color:var(--text-tertiary,#7A8499)">${m.src==='ai'?'🤖 AI · DeepSeek':'📐 规则引擎'}</div>`:''}</div>`).join('')}
+  ${chatMessages.map(m=>m.role==='user'?`<div class="mb-bubble mb-bubble--user">${m.text}</div>`:`<div class="mb-bubble mb-bubble--ai">${_md(m.text)}${m.src?`<div style="margin-top:6px;font-size:10px;color:var(--text-tertiary,#7A8499)">${m.src==='ai'?'🤖 '+_formatModelName(m.model, m.fallback_used):'📐 规则引擎'}</div>`:''}</div>`).join('')}
 </div>
 
 <!-- 常见问题 -->
@@ -65,7 +123,21 @@ $('#app').innerHTML=`<div class="chat-page" style="display:flex;flex-direction:c
     <button class="chat-send" onclick="sendChat()" style="width:32px;height:32px;border-radius:50%;background:var(--color-brand-gradient,linear-gradient(135deg,#FFB755,#FF7A4D));border:none;color:var(--text-on-brand,#0a0a0a);font-size:14px;cursor:pointer;display:grid;place-items:center;flex-shrink:0">→</button>
   </div>
 </div>
-</div>`;scrollChat()}
+</div>`;
+// 滚动逻辑（v9.5.7 简化）：
+// - 跨天归档 → 每天的对话不会很长
+// - 进入 AI 对话页：永远滚到底部看最新（包括首次和切回）
+// - 用户在页内手动往上翻看历史 → 在当前会话内有效，切走再切回会重新到底部
+if(!_chatRendered){
+  _chatRendered=true;
+}
+// 无论首次还是切回，都滚到底
+setTimeout(()=>{
+  const el=document.getElementById('chatMsgs');
+  if(el){
+    el.scrollTop=el.scrollHeight;
+  }
+},80);}
 
 // 模型选择弹窗
 function showModelPicker(){
@@ -92,23 +164,33 @@ chatMessages.push({role:'user',text:msg});appendMsg('user',msg);appendTyping();
 const msgToSend=msg;
 // 思考进度计时
 const isR1=chatModel.includes('reasoner');
-let _thinkSec=0;_thinkTimer=setInterval(()=>{_thinkSec++;const el=document.getElementById('chatTyp');if(!el)return;const tips=isR1?['🧠 深度推理模型思考中...','💭 正在多角度分析...','📊 综合大师观点中...','⏳ R1 深度思考需要 15-30 秒，请耐心等待']:['🤖 AI 分析中...','📊 查询实时数据...','💭 综合分析中...'];const tip=tips[Math.min(Math.floor(_thinkSec/5),tips.length-1)];el.innerHTML=`<span></span><span></span><span></span><div style="font-size:11px;color:var(--text2);margin-top:4px">${tip}（${_thinkSec}s）</div>`},1000);
-if(API_AVAILABLE){try{const p=loadPortfolio();
-// 取最近 5 轮（user+bot 各算1条，共10条），去掉 src 字段只保留 role+text
-const _history=chatMessages.slice(-11,-1).filter(m=>m.role==='user'||m.role==='bot').map(m=>({role:m.role==='bot'?'assistant':'user',content:m.text||''}));
-const r=await fetch(API_BASE+'/chat/stream',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({message:msgToSend,model:chatModel,portfolio:p.holdings.length?p:null,userId:getProfileId(),history:_history.length?_history:undefined})});
+let _thinkSec=0;_thinkTimer=setInterval(()=>{_thinkSec++;const el=document.getElementById('chatTyp');if(!el){clearInterval(_thinkTimer);_thinkTimer=null;return;}const tips=isR1?['🧠 深度推理模型思考中...','💭 正在多角度分析...','📊 综合大师观点中...','⏳ R1 深度思考需要 15-30 秒，请耐心等待']:['🤖 AI 分析中...','📊 查询实时数据...','💭 综合分析中...'];const tip=tips[Math.min(Math.floor(_thinkSec/5),tips.length-1)];el.innerHTML=`<span></span><span></span><span></span><div style="font-size:11px;color:var(--text2);margin-top:4px">${tip}（${_thinkSec}s）</div>`},1000);
+// v9.5.63: 不管 API_AVAILABLE 状态，直接尝试一次真实请求（health 假阴性兜底）
+// 真实失败由 try/catch 处理，离线兜底只在真的网络错误时触发
+let _streamSuccess = false;
+try{
+// D2 v9.5.45: 持仓上下文快照
+const p=_buildChatPortfolioSnapshot();
+const _history=chatMessages.slice(-21,-1).filter(m=>m.role==='user'||m.role==='bot').map(m=>({role:m.role==='bot'?'assistant':'user',content:m.text||''}));
+const r=await fetch(API_BASE+'/chat/stream',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({message:msgToSend,model:chatModel,portfolio:p,userId:getProfileId(),history:_history.length?_history:undefined})});
+// v9.5.63: 请求成功 → 标记 API 在线（修复假阴性）
+if(r.ok){ API_AVAILABLE = true; }
 rmTyping();
+if(_thinkTimer){clearInterval(_thinkTimer);_thinkTimer=null;}
 if(r.ok&&r.body){
 // SSE 流式逐字渲染
-const el=document.getElementById('chatMsgs');if(!el)return;
+const el=document.getElementById('chatMsgs');if(!el){_setChatLock(false);return;}
 const botDiv=document.createElement('div');botDiv.className='mb-bubble mb-bubble--ai';botDiv.innerHTML='<span class="stream-cursor">▊</span>';el.appendChild(botDiv);scrollChat();
-let fullText='',source='ai',thinkText='',_r1Thinking=false,panelHtml='';
+let fullText='',source='ai',thinkText='',_r1Thinking=false,panelHtml='',_doneModel='',_doneFallback=false;
 const reader=r.body.getReader();const dec=new TextDecoder();let buf='';
 while(true){const{done,value}=await reader.read();if(done)break;
 buf+=dec.decode(value,{stream:true});
 const lines=buf.split('\n');buf=lines.pop()||'';
 for(const line of lines){if(!line.startsWith('data: '))continue;
 try{const d=JSON.parse(line.slice(6));if(d.source)source=d.source;
+// v9.5.65: 捕获 model 信息（done 事件里）
+if(d.model)_doneModel=d.model;
+if(d.fallback_used!==undefined)_doneFallback=!!d.fallback_used;
 // ★ Function Calling 工具调用事件
 if(d.type==='tool_call'&&d.label){
   const tcDiv=document.createElement('div');
@@ -138,7 +220,7 @@ if(d.done){
     botDiv.innerHTML=panelHtml+'<div class="panel-synthesis" style="margin-top:12px;padding:12px;background:rgba(255,183,85,.06);border:1px solid rgba(255,183,85,.15);border-radius:12px"><div style="font-size:11px;font-weight:700;color:var(--color-brand-500,#FFB755);margin-bottom:6px">🤖 综合判断</div><div style="font-size:13px;line-height:1.8;color:var(--text-primary,#F0F2F7)">'+_md(fullText)+'</div></div><div class="src-tag">🎯 投资会诊 · 多视角分析</div>';
   }else{
     const thinkBlock=thinkText?`<details style="font-size:11px;color:var(--text2);margin-bottom:8px;border:1px solid var(--bg3);border-radius:8px;padding:6px 8px"><summary style="cursor:pointer;opacity:0.7">🧠 查看思考过程</summary><div style="margin-top:4px;white-space:pre-wrap;opacity:0.6">${thinkText}</div></details>`:'';
-    botDiv.innerHTML=thinkBlock+_md(fullText)+`<div class="src-tag">${source==='ai'&&d.served_by==='fc_agent'?'🔧 AI Agent · 工具调用':source==='ai'?'🤖 AI · DeepSeek':source==='panel'?'🎯 投资会诊':'📐 规则引擎 · 实时数据'}</div>`;
+    botDiv.innerHTML=thinkBlock+_md(fullText)+`<div class="src-tag">${source==='ai'&&d.served_by==='fc_agent'?'🔧 AI Agent · 工具调用':source==='ai'?'🤖 '+_formatModelName(_doneModel||d.model, _doneFallback||!!d.fallback_used):source==='panel'?'🎯 投资会诊':'📐 规则引擎 · 实时数据'}</div>`;
   }
   scrollChat();
 }
@@ -158,21 +240,117 @@ botDiv.innerHTML=thinkBlock+_md(fullText)+'<span class="stream-cursor">▊</span
 }}
 if(d.done){
 const thinkBlock=thinkText?`<details style="font-size:11px;color:var(--text2);margin-bottom:8px;border:1px solid var(--bg3);border-radius:8px;padding:6px 8px"><summary style="cursor:pointer;opacity:0.7">🧠 查看思考过程</summary><div style="margin-top:4px;white-space:pre-wrap;opacity:0.6">${thinkText}</div></details>`:'';
-botDiv.innerHTML=thinkBlock+_md(fullText)+`<div class="src-tag">${source==='ai'?'🤖 AI · DeepSeek':'📐 规则引擎 · 实时数据'}</div>`;scrollChat()}}catch{}}}
+botDiv.innerHTML=thinkBlock+_md(fullText)+`<div class="src-tag">${source==='ai'?'🤖 '+_formatModelName(_doneModel||d.model, _doneFallback||!!d.fallback_used):'📐 规则引擎 · 实时数据'}</div>`;scrollChat()}}catch(parseErr){console.warn('[chat] SSE JSON parse error (ignored):', parseErr.message);}}}
 // 处理剩余 buffer
 if(buf.startsWith('data: ')){try{const d=JSON.parse(buf.slice(6));if(d.delta){if(d.phase==='thinking')thinkText+=d.delta;else fullText+=d.delta}if(d.source)source=d.source}catch{}}
-botDiv.innerHTML=_md(fullText)+`<div class="src-tag">${source==='ai'?'🤖 AI · DeepSeek':'📐 规则引擎 · 实时数据'}</div>`;scrollChat();
-chatMessages.push({role:'bot',text:fullText,src:source});_saveChatHistory();_setChatLock(false);return}
+// v9.5.63: 只有 fullText 为空时才算失败
+if(fullText){
+  chatMessages.push({role:'bot',text:fullText,src:source,model:_doneModel,fallback_used:_doneFallback});_saveChatHistory();_setChatLock(false);
+  _streamSuccess = true;
+}
+} else if(r.ok){
 // 非流式降级（旧接口兼容）
-if(r.ok){const d=await r.json();chatMessages.push({role:'bot',text:d.reply,src:d.source});_saveChatHistory();appendMsg('bot',d.reply,d.source);_setChatLock(false);return}
-}catch(e){console.warn('Chat stream error:',e)}}
-rmTyping();const fb='后端未连接，无法获取实时数据。请确保后端运行中。';chatMessages.push({role:'bot',text:fb,src:'offline'});_saveChatHistory();appendMsg('bot',fb,'offline');_setChatLock(false)}
+const d=await r.json();
+if(d&&d.reply){
+  chatMessages.push({role:'bot',text:d.reply,src:d.source});_saveChatHistory();appendMsg('bot',d.reply,d.source);
+  // v9.5.123: 数据来源标注
+  if(d.data_meta){_appendDataMeta(d.data_meta)}
+  // v9.5.123: 追问建议按钮
+  if(d.follow_ups&&d.follow_ups.length){_appendFollowUps(d.follow_ups)}
+  _setChatLock(false);
+  _streamSuccess = true;
+}
+} else {
+  // HTTP 非 2xx，记录错误（可能是 schema 不合规 422 等）
+  console.warn('[chat] HTTP error:', r.status, r.statusText);
+  try {
+    const errBody = await r.text();
+    console.warn('[chat] error body:', errBody.slice(0, 500));
+  } catch {}
+}
+}catch(e){
+  // 真实网络异常
+  console.error('[chat] network error:', e);
+  rmTyping();
+  if(_thinkTimer){clearInterval(_thinkTimer);_thinkTimer=null;}
+  // 真实网络错误才置 false
+  if(e.name==='TypeError' || e.name==='AbortError'){
+    API_AVAILABLE = false;
+  }
+}
+// v9.5.63: 只有真的没拿到任何回复才显示兜底
+if(!_streamSuccess){
+  rmTyping();
+  if(_thinkTimer){clearInterval(_thinkTimer);_thinkTimer=null;}
+  const fb = API_AVAILABLE ? '抱歉，AI 回复异常，请稍后重试。' : '后端未连接，无法获取实时数据。请确保后端运行中。';
+  chatMessages.push({role:'bot',text:fb,src: API_AVAILABLE?'error':'offline'});_saveChatHistory();
+  appendMsg('bot',fb, API_AVAILABLE?'error':'offline');
+  // v9.5.82: 重试按钮 — 自动用上一条用户消息重发
+  const retryLastUserMsg = chatMessages.slice().reverse().find(m=>m.role==='user')?.text;
+  if(retryLastUserMsg){
+    const retryEl=document.createElement('div');retryEl.style.cssText='text-align:right;padding:0 4px 8px';
+    retryEl.innerHTML=`<button style="font-size:11px;padding:4px 10px;border-radius:999px;border:1px solid rgba(255,183,85,.3);background:rgba(255,183,85,.06);color:#FFB755;cursor:pointer" onclick="this.parentElement.remove();sendChat('${retryLastUserMsg.replace(/'/g,'\\x27')}')">🔄 重试</button>`;
+    document.getElementById('chatMsgs')?.appendChild(retryEl);scrollChat();
+  }
+  _setChatLock(false);
+}}
 
-function appendMsg(r,t,src){const el=document.getElementById('chatMsgs');if(!el)return;const d=document.createElement('div');d.className=r==='user'?'mb-bubble mb-bubble--user':'mb-bubble mb-bubble--ai';d.innerHTML=(r==='user'?t:_md(t))+(src?`<div style="margin-top:6px;font-size:10px;color:var(--text-tertiary,#7A8499)">${src==='ai'?'🤖 AI · DeepSeek':src==='rules'?'📐 规则引擎':'离线'}</div>`:'');el.appendChild(d);scrollChat()}
+function appendMsg(r,t,src,model,fallback){const el=document.getElementById('chatMsgs');if(!el)return;const d=document.createElement('div');d.className=r==='user'?'mb-bubble mb-bubble--user':'mb-bubble mb-bubble--ai';
+// v9.5.82: appendMsg 修正 — 用 _formatModelName 而非硬编码 "AI · DeepSeek"
+const srcLabel=src==='ai'?'🤖 '+_formatModelName(model||'',fallback||false):src==='rules'?'📐 规则引擎':src==='offline'?'离线':'';
+d.innerHTML=(r==='user'?t:_md(t))+(srcLabel?`<div style="margin-top:6px;font-size:10px;color:var(--text-tertiary,#7A8499)">${srcLabel}</div>`:'');el.appendChild(d);scrollChat()}
+// v9.5.123: 追问建议按钮（AI回答后展示2-3个追问快捷按钮）
+function _appendFollowUps(items){
+  if(!items||!items.length)return;
+  const el=document.getElementById('chatMsgs');if(!el)return;
+  const d=document.createElement('div');
+  d.style.cssText='margin:4px 0 12px 44px;display:flex;flex-wrap:wrap;gap:6px';
+  d.innerHTML=items.map(q=>`<button onclick="_sendFollowUp(this)" data-q="${q.replace(/"/g,'&quot;')}" style="padding:5px 12px;border-radius:16px;border:1px solid rgba(99,102,241,.25);background:rgba(99,102,241,.06);color:#A5B4FC;font-size:11px;cursor:pointer;transition:all .2s">${q}</button>`).join('');
+  el.appendChild(d);scrollChat();
+}
+function _sendFollowUp(btn){
+  const q=btn.getAttribute('data-q');if(!q)return;
+  // 移除按钮组
+  btn.parentElement?.remove();
+  // 填入输入框并发送
+  const inp=document.getElementById('chatIn');
+  if(inp){inp.value=q;sendChat()}
+}
+window._sendFollowUp=_sendFollowUp;
+
+// v9.5.123: 数据来源标注（在AI回答下方展示数据来源+截止时间）
+function _appendDataMeta(meta){
+  if(!meta)return;
+  const el=document.getElementById('chatMsgs');if(!el)return;
+  const sources=(meta.sources||[]).join(' · ');
+  const cutoff=meta.cutoff||'';
+  const note=meta.note||'';
+  if(!sources&&!cutoff)return;
+  const d=document.createElement('div');
+  d.style.cssText='margin:-4px 0 8px 44px;padding:4px 10px;border-radius:6px;background:rgba(148,163,184,.06);font-size:10px;color:var(--text-tertiary,#7A8499);line-height:1.6';
+  d.innerHTML=`📋 ${sources}${cutoff?' · 截至'+cutoff:''}${note?'<br>'+note:''}`;
+  el.appendChild(d);scrollChat();
+}
 let _thinkTimer=null;
 function appendTyping(){const el=document.getElementById('chatMsgs');if(!el)return;const d=document.createElement('div');d.className='chat-typing';d.id='chatTyp';d.innerHTML='<span></span><span></span><span></span>';el.appendChild(d);scrollChat()}
 function rmTyping(){if(_thinkTimer){clearInterval(_thinkTimer);_thinkTimer=null}const el=document.getElementById('chatTyp');if(el)el.remove()}
-function scrollChat(){const el=document.getElementById('chatMsgs');if(el)setTimeout(()=>el.scrollTop=el.scrollHeight,50)}
+function scrollChat(){const el=document.getElementById('chatMsgs');if(el)setTimeout(()=>{el.scrollTop=el.scrollHeight;_chatScrollPos=el.scrollTop;},50)}
+
+// 清除聊天记录
+function clearChatHistory(){
+  if(!chatMessages||chatMessages.length===0){alert('当前没有聊天记录');return;}
+  if(!confirm(`确定清除全部 ${chatMessages.length} 条聊天记录？此操作不可撤销。`))return;
+  chatMessages=[];
+  try{localStorage.removeItem(_uk('moneybag_chat_history'));}catch{}
+  _chatScrollPos=0;
+  _chatLastMsgCount=0;
+  renderChat();
+}
+window.clearChatHistory=clearChatHistory;
+let _chatRendered=false; // 是否已经渲染过（首次=false，之后切回来=true）
+let _chatScrollPos=0;    // 用户当前/最后的滚动绝对位置
+let _chatLastMsgCount=0; // 上次离开时的消息数（用于检测新消息）
+let _chatScrollInited=false; // 滚动监听是否就绪（避免初始 auto-scroll 触发误记录）
 
 // ---- 投资会诊面板卡片渲染 ----
 function _renderPanelCards(perspectives){
@@ -549,3 +727,92 @@ return `<div style="margin-bottom:12px"><div style="font-size:12px;font-weight:7
   console.log('[V6-7] token-budget badge patch installed');
 })();
 
+// D2 v9.5.45 + v9.5.63 修复：持仓上下文快照构建器
+// 从 txns 实时计算当前持仓快照，注入 AI 对话
+// ⚠️ 后端 Holding schema 必需字段：code/name/category/amount（不是 cost！）
+function _buildChatPortfolioSnapshot(){
+  try{
+    const txns = typeof loadTxns==='function' ? loadTxns() : [];
+    const holdingsMap = {};
+    txns.forEach(t=>{
+      const c = t.code||t.fundCode||'';
+      if(!c) return;
+      if(!holdingsMap[c]) holdingsMap[c]={code:c,name:t.name||t.fundName||c,shares:0,cost:0,category:t.category||t.assetType||'fund'};
+      const shares = parseFloat(t.shares||t.amount||0);
+      const price = parseFloat(t.price||t.nav||1);
+      if(t.type==='buy'||t.type==='BUY'||!t.type){
+        holdingsMap[c].shares += shares;
+        holdingsMap[c].cost += shares*price;
+      } else if(t.type==='sell'||t.type==='SELL'){
+        holdingsMap[c].shares -= shares;
+        holdingsMap[c].cost -= shares*price;
+      }
+    });
+    // 过滤清仓项
+    const pnlCache = window._holdingsPnl||{};
+    let totalCost=0, totalMv=0;
+    const holdings = Object.values(holdingsMap).filter(h=>h.shares>0.001).map(h=>{
+      const pnl = pnlCache[h.code];
+      const marketValue = pnl && pnl.marketValue ? Math.round(pnl.marketValue) : Math.round(h.cost);
+      totalCost += h.cost||0;
+      totalMv += marketValue||h.cost||0;
+      // ✅ 严格符合后端 Holding schema：必需字段 code/name/category/amount + 可选 shares/targetPct/buyDate
+      return {
+        code: h.code,
+        name: h.name,
+        category: h.category || 'fund',
+        amount: Math.round(h.cost),    // ⚠️ 后端必需 amount 字段
+        targetPct: 0,
+        buyDate: '',
+        shares: parseFloat(h.shares.toFixed(4)),
+        // 扩展字段（schema 用 extra='ignore' 会忽略未知字段，安全）
+        marketValue: marketValue,
+        pnlPct: pnl && typeof pnl.pnlPct==='number' ? +(pnl.pnlPct.toFixed(2)) : null,
+      };
+    });
+    if(!holdings.length) return null; // 无持仓不注入
+
+    // v9.5.88: 附加再平衡缺口数据，让 AI 能给出具体金额建议
+    let rebalanceGap = null;
+    try{
+      if(typeof _loadRebalanceTargets==='function' && typeof computeRebalance==='function'){
+        // 同步调用（computeRebalance 返回 Promise，用 .then 异步更新不阻塞快照构建）
+        const rb = typeof computeRebalance==='function' ? (() => { try { const r=computeRebalance(); return r && typeof r.then==='function' ? null : r; } catch(e){ return null; } })() : null;
+        if(rb && rb.rows && rb.rows.length){
+          const gaps = rb.rows.filter(r=>r.diffValue>100).map(r=>({label:r.label,need:Math.round(r.diffValue),deviationPct:parseFloat(r.deviation.toFixed(1))}));
+          const surplus = rb.rows.filter(r=>r.diffValue<-100).map(r=>({label:r.label,excess:Math.round(-r.diffValue),deviationPct:parseFloat(r.deviation.toFixed(1))}));
+          rebalanceGap = {totalInvest:Math.round(rb.totalInvest),gaps,surplus,threshold:rb.threshold};
+        }
+      }
+    }catch(e){ /* 再平衡数据获取失败不影响主流程 */ }
+
+    // ✅ Portfolio schema 必需字段：holdings/history/profile/amount
+    return {
+      holdings,
+      history: [],
+      amount: Math.round(totalCost),
+      profile: null,
+      rebalanceGap,  // 额外字段：再平衡缺口，供 AI 给出买入金额建议
+    };
+  }catch(e){
+    console.warn('[chat] portfolio snapshot build failed:', e);
+    // 降级：尝试用 loadPortfolio() 旧格式
+    try {
+      const p = typeof loadPortfolio==='function' ? loadPortfolio() : null;
+      if(p && p.holdings && p.holdings.length){
+        // 确保 holdings 合规
+        p.holdings = p.holdings.map(h => ({
+          code: h.code || '',
+          name: h.name || '',
+          category: h.category || 'fund',
+          amount: parseFloat(h.amount || h.cost || 0),
+          targetPct: parseFloat(h.targetPct || 0),
+          buyDate: h.buyDate || '',
+          shares: h.shares != null ? parseFloat(h.shares) : null,
+        }));
+        return p;
+      }
+    } catch {}
+    return null;
+  }
+}

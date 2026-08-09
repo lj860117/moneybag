@@ -422,6 +422,13 @@ def get_northbound_flow(days: int = 30) -> dict:
     result["net_flow_5d"] = million_to_yi(sum(d["net_flow_million"] for d in daily_flows[-5:]))
     result["net_flow_20d"] = million_to_yi(sum(d["net_flow_million"] for d in daily_flows[-20:]))
     result["data_date"] = daily_flows[-1]["date"]
+    # v9.5.130: 记录5日区间起止日期，供展示时标注（如"5/28-6/3"），避免用户误以为是连续5个日历日
+    if len(daily_flows) >= 5:
+        d5_start = daily_flows[-5]["date"]  # 格式 20260528
+        d5_end = daily_flows[-1]["date"]    # 格式 20260603
+        def _short(d):
+            return f"{int(d[4:6])}/{int(d[6:8])}" if d and len(d) == 8 else d
+        result["flow_5d_range"] = f"{_short(d5_start)}-{_short(d5_end)}"
     result["available"] = True
 
     # 趋势判断（基于5日累计）
@@ -436,6 +443,16 @@ def get_northbound_flow(days: int = 30) -> dict:
         result["trend"] = "净流出"
     else:
         result["trend"] = "中性"
+
+    # v9.6: 返回日级别明细（供 alt_data.py 使用）
+    # 单位转换：百万元 → 亿元
+    daily_flows_yi = []
+    for item in daily_flows:
+        daily_flows_yi.append({
+            "date": item["date"],
+            "net_flow": round(item["net_flow_million"] / 100, 2),  # 百万元 → 亿元
+        })
+    result["daily_flows"] = daily_flows_yi[-30:]  # 最多返回30天
 
     print(f"[TUSHARE-NORTH] date={result['data_date']}, "
           f"today={result['net_flow_today']}亿, 5d={result['net_flow_5d']}亿, "
@@ -514,6 +531,128 @@ def get_shibor_rate(days: int = 30) -> dict:
           f"trend={result['trend']}")
 
     return result
+
+
+# ============================================================
+# 15. 财经日历（eco_cal — 5000积分免费调用）
+# ============================================================
+
+def get_economic_calendar(start_date: str = "", end_date: str = "", 
+                          country: str = "", event: str = "") -> list:
+    """
+    获取财经日历（Tushare eco_cal 接口）
+    
+    参数：
+        start_date: 开始日期 YYYYMMDD
+        end_date: 结束日期 YYYYMMDD
+        country: 国家筛选（"中国"、"美国"）
+        event: 事件关键词（支持模糊匹配，如 "非农"、"CPI"）
+    
+    返回：
+        list of dict: [
+            {
+                "date": "20260609",
+                "time": "10:00:00",
+                "country": "中国",
+                "event": "CPI同比(%)",
+                "value": "0.5%",
+                "pre_value": "0.3%",
+                "fore_value": "0.5%",
+            },
+            ...
+        ]
+    """
+    from datetime import datetime, timedelta
+    
+    # 默认：未来7天
+    if not end_date:
+        end_dt = datetime.now() + timedelta(days=7)
+        end_date = end_dt.strftime("%Y%m%d")
+    if not start_date:
+        start_dt = datetime.now() - timedelta(days=1)
+        start_date = start_dt.strftime("%Y%m%d")
+    
+    params = {
+        "start_date": start_date,
+        "end_date": end_date,
+    }
+    if country:
+        params["country"] = country
+    if event:
+        params["event"] = event
+    
+    rows = _call_tushare(
+        "eco_cal", params,
+        "date,time,country,event,value,pre_value,fore_value"
+    )
+    
+    if not rows:
+        print(f"[TUSHARE-CAL] eco_cal 返回空 ({start_date}~{end_date})")
+        return []
+    
+    # 标准化输出
+    events = []
+    for row in rows:
+        # 处理时间字段（可能为None）
+        event_time = row.get("time", "") or ""
+        
+        events.append({
+            "date": row.get("date", ""),
+            "time": event_time,
+            "country": row.get("country", ""),
+            "event": row.get("event", ""),
+            "value": row.get("value", ""),
+            "previous": row.get("pre_value", ""),
+            "forecast": row.get("fore_value", ""),
+        })
+    
+    print(f"[TUSHARE-CAL] 获取 {len(events)} 个事件 ({start_date}~{end_date})")
+    return events
+
+
+def get_upcoming_events(days: int = 7, countries: list = None) -> list:
+    """
+    获取未来N天的重要事件（包装函数，供 financial_calendar.py 调用）
+    
+    参数：
+        days: 未来天数
+        countries: 国家列表（["中国", "美国"]），None=全部
+    
+    返回：
+        list of event dicts（已标准化）
+    """
+    from datetime import datetime, timedelta
+    
+    start_dt = datetime.now() - timedelta(days=1)
+    end_dt = datetime.now() + timedelta(days=days)
+    
+    start_date = start_dt.strftime("%Y%m%d")
+    end_date = end_dt.strftime("%Y%m%d")
+    
+    all_events = []
+    
+    if countries:
+        # 按国家分别查询
+        for country in countries:
+            events = get_economic_calendar(start_date, end_date, country=country)
+            all_events.extend(events)
+    else:
+        # 查询全部
+        all_events = get_economic_calendar(start_date, end_date)
+    
+    # 去重
+    seen = set()
+    unique_events = []
+    for event in all_events:
+        key = f"{event.get('date')}_{event.get('event')}"
+        if key not in seen:
+            seen.add(key)
+            unique_events.append(event)
+    
+    # 按日期排序
+    unique_events.sort(key=lambda x: x.get("date", "99999999"))
+    
+    return unique_events
 
 
 # ============================================================
@@ -774,7 +913,7 @@ def get_fund_nav(code: str, days: int = 60) -> dict:
 
 
 def get_fund_manager(code: str) -> dict:
-    """基金经理信息"""
+    """基金经理信息 — Tushare 为主，AKShare 为降级"""
     ts_code = code if "." in code else f"{code}.OF"
     rows = _call_tushare(
         "fund_manager",
@@ -782,15 +921,60 @@ def get_fund_manager(code: str) -> dict:
         "ts_code,ann_date,name,gender,birth_year,edu,nationality,begin_date,end_date,resume",
     )
     if not rows:
+        # Tushare 无数据 → AKShare fund_manager_info 降级
+        try:
+            import akshare as ak
+            # 先获取基金经理名字
+            basic_df = ak.fund_open_fund_info_em(symbol=code, indicator="基金经理")
+            if basic_df is not None and len(basic_df) > 0:
+                manager_name = str(basic_df.iloc[-1].get("基金经理", "")).strip()
+                if manager_name:
+                    mgr_df = ak.fund_manager_info(manager=manager_name)
+                    if mgr_df is not None and len(mgr_df) > 0:
+                        from datetime import datetime
+                        row = mgr_df.iloc[0]
+                        begin_str = str(row.get("起始日期", "")).replace("-", "")
+                        tenure_years = 0
+                        if begin_str and len(begin_str) == 8:
+                            try:
+                                begin_dt = datetime.strptime(begin_str, "%Y%m%d")
+                                tenure_years = round((datetime.now() - begin_dt).days / 365, 1)
+                            except Exception:
+                                pass
+                        return {
+                            "available": True,
+                            "source": "akshare",
+                            "managers": [{
+                                "name": manager_name,
+                                "begin_date": begin_str,
+                                "end_date": "",
+                                "resume": str(row.get("基金经理简介", "")),
+                                "tenure_years": tenure_years,
+                            }]
+                        }
+        except Exception:
+            pass
         return {"available": False, "source": "tushare"}
     # 取当前在任的（end_date 为空的）
     active = [r for r in rows if not r.get("end_date")]
     if not active:
         active = sorted(rows, key=lambda r: r.get("begin_date", ""))[-1:]
+    # 计算任期年数
+    from datetime import datetime
+    for mgr in active:
+        begin_str = (mgr.get("begin_date") or "").replace("-", "")
+        if begin_str and len(begin_str) == 8:
+            try:
+                begin_dt = datetime.strptime(begin_str, "%Y%m%d")
+                mgr["tenure_years"] = round((datetime.now() - begin_dt).days / 365, 1)
+            except Exception:
+                mgr["tenure_years"] = 0
+        else:
+            mgr["tenure_years"] = 0
     return {
         "available": True,
         "source": "tushare",
-        "managers": active[:5],  # 最多 5 位
+        "managers": active[:5],
     }
 
 
@@ -1139,3 +1323,469 @@ def get_fund_extra_info_ak(code: str) -> dict:
     except Exception:
         pass
     return {}
+
+
+# ============================================================
+# v9.5.98: 5000 积分新增高价值接口接入
+# ============================================================
+
+def get_earning_forecast(code: str = "", end_date: str = "") -> list:
+    """业绩预告 forecast — 提前1-3个月知道盈利情况"""
+    from datetime import datetime
+    if not end_date:
+        end_date = datetime.now().strftime("%Y%m%d")
+    params = {"end_date": end_date}
+    if code:
+        params["ts_code"] = _code_to_ts(code) if "." not in code else code
+    rows = _call_tushare("forecast", params,
+                        "ts_code,ann_date,end_date,type,p_change_min,p_change_max,net_profit_min,net_profit_max,summary")
+    return rows or []
+
+
+def get_top_list(trade_date: str = "", code: str = "") -> list:
+    """龙虎榜 top_list — 当日上榜个股（游资/机构席位识别）"""
+    from datetime import datetime
+    if not trade_date:
+        trade_date = datetime.now().strftime("%Y%m%d")
+    params = {"trade_date": trade_date}
+    if code:
+        params["ts_code"] = _code_to_ts(code) if "." not in code else code
+    rows = _call_tushare("top_list", params,
+                        "ts_code,trade_date,name,close,pct_change,turnover_rate,amount,reason,net_amount")
+    return rows or []
+
+
+def get_block_trade(trade_date: str = "", code: str = "") -> list:
+    """大宗交易 block_trade — 折价/溢价交易"""
+    from datetime import datetime
+    if not trade_date:
+        trade_date = datetime.now().strftime("%Y%m%d")
+    params = {"trade_date": trade_date}
+    if code:
+        params["ts_code"] = _code_to_ts(code) if "." not in code else code
+    rows = _call_tushare("block_trade", params,
+                        "ts_code,trade_date,price,vol,amount,buyer,seller")
+    return rows or []
+
+
+def get_cb_basic_list() -> list:
+    """可转债基础信息 cb_basic — 在转 + 待转清单"""
+    rows = _call_tushare("cb_basic", {},
+                        "ts_code,bond_short_name,stk_code,stk_short_name,maturity_date,issue_size,remain_size,coupon_rate,bond_type")
+    return rows or []
+
+
+def get_cb_daily_quote(ts_code: str, days: int = 30) -> list:
+    """可转债日线 cb_daily"""
+    from datetime import datetime, timedelta
+    end_date = datetime.now().strftime("%Y%m%d")
+    start_date = (datetime.now() - timedelta(days=days + 10)).strftime("%Y%m%d")
+    rows = _call_tushare("cb_daily", {"ts_code": ts_code, "start_date": start_date, "end_date": end_date},
+                        "ts_code,trade_date,close,pct_chg,vol,amount")
+    return rows or []
+
+
+def get_fund_company_list() -> list:
+    """基金公司信息 fund_company — 用于识别大厂出品"""
+    rows = _call_tushare("fund_company", {},
+                        "name,shortname,setup_date,employees,main_business")
+    return rows or []
+
+
+def get_stk_limit(trade_date: str = "") -> list:
+    """每日涨跌停价 stk_limit"""
+    from datetime import datetime
+    if not trade_date:
+        trade_date = datetime.now().strftime("%Y%m%d")
+    rows = _call_tushare("stk_limit", {"trade_date": trade_date},
+                        "ts_code,trade_date,pre_close,up_limit,down_limit")
+    return rows or []
+
+
+# ============================================================
+# v9.5.99: 中ROI 8 个 Tushare 接口
+# ============================================================
+
+def get_express_report(code: str = "", end_date: str = "") -> list:
+    """业绩快报 express — 比正式财报早披露1-2个月"""
+    from datetime import datetime
+    if not end_date:
+        end_date = datetime.now().strftime("%Y%m%d")
+    params = {"end_date": end_date}
+    if code:
+        params["ts_code"] = _code_to_ts(code) if "." not in code else code
+    rows = _call_tushare("express", params,
+                        "ts_code,ann_date,end_date,revenue,operate_profit,total_profit,n_income,total_assets,yoy_net_profit,yoy_sales,bps,perf_summary")
+    return rows or []
+
+
+def get_share_repurchase(code: str = "", days: int = 90) -> list:
+    """股票回购 repurchase — 公司回购自家股票（看好信号）"""
+    from datetime import datetime, timedelta
+    end_date = datetime.now().strftime("%Y%m%d")
+    start_date = (datetime.now() - timedelta(days=days)).strftime("%Y%m%d")
+    params = {"start_date": start_date, "end_date": end_date}
+    if code:
+        params["ts_code"] = _code_to_ts(code) if "." not in code else code
+    rows = _call_tushare("repurchase", params,
+                        "ts_code,ann_date,end_date,proc,exp_date,vol,amount,high_limit,low_limit")
+    return rows or []
+
+
+def get_suspend_d(trade_date: str = "") -> list:
+    """每日停复牌 suspend_d"""
+    from datetime import datetime
+    if not trade_date:
+        trade_date = datetime.now().strftime("%Y%m%d")
+    rows = _call_tushare("suspend_d", {"trade_date": trade_date, "suspend_type": "S"},
+                        "ts_code,trade_date,suspend_timing,suspend_type")
+    return rows or []
+
+
+def get_hsgt_top10(trade_date: str = "", market_type: str = "1") -> list:
+    """沪深股通十大成交股 hsgt_top10
+    market_type: 1=沪股通, 3=深股通"""
+    from datetime import datetime
+    if not trade_date:
+        trade_date = datetime.now().strftime("%Y%m%d")
+    rows = _call_tushare("hsgt_top10", {"trade_date": trade_date, "market_type": market_type},
+                        "ts_code,name,trade_date,close,change,rank,market_type,amount,net_amount,buy,sell")
+    return rows or []
+
+
+_top_inst_cache: dict = {}  # v9.5.101 进程内缓存（key=code|date, ttl=4h）
+
+def get_top_inst(trade_date: str = "", code: str = "") -> list:
+    """龙虎榜机构席位明细 top_inst — 区分游资/机构"""
+    from datetime import datetime
+    import time as _t
+    if not trade_date:
+        trade_date = datetime.now().strftime("%Y%m%d")
+    cache_key = f"{code or 'all'}|{trade_date}"
+    cached = _top_inst_cache.get(cache_key)
+    if cached and (_t.time() - cached[1]) < 14400:
+        return cached[0]
+    params = {"trade_date": trade_date}
+    if code:
+        params["ts_code"] = _code_to_ts(code) if "." not in code else code
+    rows = _call_tushare("top_inst", params,
+                        "ts_code,trade_date,exalter,buy,buy_rate,sell,sell_rate,net_buy,reason")
+    result = rows or []
+    _top_inst_cache[cache_key] = (result, _t.time())
+    return result
+
+
+def get_holder_number(code: str) -> list:
+    """股东户数 stk_holdernumber — 户数减少=筹码集中（看涨）"""
+    ts_code = _code_to_ts(code) if "." not in code else code
+    rows = _call_tushare("stk_holdernumber", {"ts_code": ts_code},
+                        "ts_code,ann_date,end_date,holder_num")
+    return rows or []
+
+
+def get_index_dailybasic(ts_code: str = "000300.SH", days: int = 30) -> list:
+    """指数每日指标 index_dailybasic — PE/PB/股息率"""
+    from datetime import datetime, timedelta
+    end_date = datetime.now().strftime("%Y%m%d")
+    start_date = (datetime.now() - timedelta(days=days + 10)).strftime("%Y%m%d")
+    rows = _call_tushare("index_dailybasic",
+                        {"ts_code": ts_code, "start_date": start_date, "end_date": end_date},
+                        "ts_code,trade_date,total_mv,float_mv,total_share,float_share,pe,pe_ttm,pb,turnover_rate,dv_ratio,dv_ttm")
+    return rows or []
+
+
+def get_macro_cpi(months: int = 12) -> list:
+    """中国 CPI cn_cpi — 通胀指标"""
+    from datetime import datetime
+    cur_year = datetime.now().year
+    rows = _call_tushare("cn_cpi", {"start_m": f"{cur_year-1}01", "end_m": datetime.now().strftime("%Y%m")},
+                        "month,nt_val,nt_yoy,nt_mom,nt_accu,town_val,town_yoy,town_mom,cnt_val,cnt_yoy,cnt_mom")
+    return (rows or [])[:months]
+
+
+def get_macro_pmi(months: int = 12) -> list:
+    """中国 PMI cn_pmi — 制造业景气度"""
+    from datetime import datetime
+    cur_year = datetime.now().year
+    rows = _call_tushare("cn_pmi", {"start_m": f"{cur_year-1}01", "end_m": datetime.now().strftime("%Y%m")},
+                        "month,pmi010000,pmi010100,pmi010200,pmi010300,pmi010400,pmi010500,pmi010600,pmi010700,pmi010800,pmi010900,pmi011000")
+    return (rows or [])[:months]
+
+
+def get_macro_gdp(quarters: int = 8) -> list:
+    """中国 GDP cn_gdp — 季度经济数据"""
+    rows = _call_tushare("cn_gdp", {},
+                        "quarter,gdp,gdp_yoy,pi,pi_yoy,si,si_yoy,ti,ti_yoy")
+    return (rows or [])[:quarters]
+
+
+# ============================================================
+# v9.5.99: 低ROI 4 个接口（港股/美股/行业分类）
+# ============================================================
+
+def get_hk_basic_list() -> list:
+    """港股基础信息 hk_basic"""
+    rows = _call_tushare("hk_basic", {"list_status": "L"},
+                        "ts_code,name,fullname,enname,cn_spell,market,list_status,list_date,delist_date,trade_unit,isin,curr_type")
+    return rows or []
+
+
+def get_hk_daily(ts_code: str, days: int = 30) -> list:
+    """港股日线 hk_daily"""
+    from datetime import datetime, timedelta
+    end_date = datetime.now().strftime("%Y%m%d")
+    start_date = (datetime.now() - timedelta(days=days + 10)).strftime("%Y%m%d")
+    rows = _call_tushare("hk_daily",
+                        {"ts_code": ts_code, "start_date": start_date, "end_date": end_date},
+                        "ts_code,trade_date,open,high,low,close,pre_close,change,pct_chg,vol,amount")
+    return rows or []
+
+
+def get_us_basic_list() -> list:
+    """美股基础信息 us_basic"""
+    rows = _call_tushare("us_basic", {},
+                        "ts_code,name,classify,list_date,delist_date")
+    return rows or []
+
+
+def get_us_daily(ts_code: str, days: int = 30) -> list:
+    """美股日线 us_daily"""
+    from datetime import datetime, timedelta
+    end_date = datetime.now().strftime("%Y%m%d")
+    start_date = (datetime.now() - timedelta(days=days + 10)).strftime("%Y%m%d")
+    rows = _call_tushare("us_daily",
+                        {"ts_code": ts_code, "start_date": start_date, "end_date": end_date},
+                        "ts_code,trade_date,close,open,high,low,pre_close,change,pct_change,vol,amount")
+    return rows or []
+
+
+def get_index_classify(level: str = "L1") -> list:
+    """申万行业分类 index_classify
+    level: L1=一级, L2=二级, L3=三级"""
+    rows = _call_tushare("index_classify", {"level": level, "src": "SW2021"},
+                        "index_code,industry_name,level,industry_code,is_pub,parent_code")
+    return rows or []
+
+
+
+def _to_float(value, default=0.0):
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return default
+
+
+
+def _get_sw_sector_constituents(level: str = "L1", classifications: list | None = None) -> dict:
+    """获取申万行业成分映射。"""
+    classifications = classifications or get_index_classify(level) or []
+    if not classifications:
+        return {}
+
+    level_code_field = {"L1": "l1_code", "L2": "l2_code", "L3": "l3_code"}.get(level, "l1_code")
+    result = {}
+    for row in classifications:
+        sector_code = str(row.get("index_code") or row.get("industry_code") or "").strip()
+        sector_name = str(row.get("industry_name") or "").strip()
+        if not sector_code or not sector_name:
+            continue
+        member_rows = _call_tushare(
+            "index_member_all",
+            {level_code_field: sector_code, "is_new": "Y"},
+            "ts_code,name",
+        )
+        members = []
+        for member in member_rows or []:
+            ts_code = str(member.get("ts_code") or "").strip()
+            name = str(member.get("name") or "").strip()
+            if ts_code:
+                members.append({"ts_code": ts_code, "name": name})
+        result[sector_code] = {"name": sector_name, "members": members}
+    return result
+
+
+
+def _get_stock_snapshot_for_sector_enrichment(trade_date: str) -> dict:
+    """获取用于行业聚合的个股快照。
+
+    优先：moneyflow_dc（同时带 pct_change + net_amount）
+    降级：daily + moneyflow
+    """
+    snapshot = {}
+
+    moneyflow_dc_rows = _call_tushare(
+        "moneyflow_dc",
+        {"trade_date": trade_date},
+        "ts_code,name,pct_change,net_amount",
+    )
+    for row in moneyflow_dc_rows or []:
+        ts_code = str(row.get("ts_code") or "").strip()
+        if not ts_code:
+            continue
+        snapshot[ts_code] = {
+            "name": str(row.get("name") or "").strip(),
+            "pct_change": _to_float(row.get("pct_change")),
+            "net_inflow": _to_float(row.get("net_amount")),
+        }
+    if snapshot:
+        return snapshot
+
+    daily_rows = _call_tushare(
+        "daily",
+        {"trade_date": trade_date},
+        "ts_code,pct_chg",
+    )
+    moneyflow_rows = _call_tushare(
+        "moneyflow",
+        {"trade_date": trade_date},
+        "ts_code,net_mf_amount",
+    )
+    flow_map = {
+        str(row.get("ts_code") or "").strip(): _to_float(row.get("net_mf_amount"))
+        for row in (moneyflow_rows or [])
+        if str(row.get("ts_code") or "").strip()
+    }
+    for row in daily_rows or []:
+        ts_code = str(row.get("ts_code") or "").strip()
+        if not ts_code:
+            continue
+        snapshot[ts_code] = {
+            "name": "",
+            "pct_change": _to_float(row.get("pct_chg")),
+            "net_inflow": flow_map.get(ts_code, 0.0),
+        }
+    return snapshot
+
+
+
+def _enrich_sw_sector_rows(rows: list, level: str = "L1", classifications: list | None = None) -> list:
+    """给 sw_daily 行业行补齐行业资金流与上涨/下跌家数。"""
+    if not rows:
+        return rows
+
+    trade_date = str(rows[0].get("trade_date") or "").strip()
+    if not trade_date:
+        return rows
+
+    sector_members = _get_sw_sector_constituents(level=level, classifications=classifications)
+    if not sector_members:
+        return rows
+
+    stock_snapshot = _get_stock_snapshot_for_sector_enrichment(trade_date)
+    if not stock_snapshot:
+        return rows
+
+    enriched_rows = []
+    for row in rows:
+        sector_code = str(row.get("代码") or row.get("ts_code") or "").strip()
+        members = (sector_members.get(sector_code) or {}).get("members") or []
+        if not members:
+            enriched_rows.append(row)
+            continue
+
+        up_count = 0
+        down_count = 0
+        net_inflow = 0.0
+        matched = 0
+        leader_name = str(row.get("领涨股") or "").strip()
+        leader_change = None
+
+        for member in members:
+            ts_code = str(member.get("ts_code") or "").strip()
+            if not ts_code:
+                continue
+            snap = stock_snapshot.get(ts_code)
+            if not snap:
+                continue
+            matched += 1
+            pct_change = _to_float(snap.get("pct_change"))
+            net_inflow += _to_float(snap.get("net_inflow"))
+            if pct_change > 0:
+                up_count += 1
+            elif pct_change < 0:
+                down_count += 1
+            if leader_change is None or pct_change > leader_change:
+                leader_change = pct_change
+                leader_name = str(snap.get("name") or member.get("name") or leader_name).strip()
+
+        if not matched:
+            enriched_rows.append(row)
+            continue
+
+        new_row = dict(row)
+        new_row["净流入"] = round(net_inflow, 2)
+        new_row["上涨家数"] = up_count
+        new_row["下跌家数"] = down_count
+        if leader_name and not new_row.get("领涨股"):
+            new_row["领涨股"] = leader_name
+        if leader_change is not None and not new_row.get("领涨股-涨跌幅"):
+            new_row["领涨股-涨跌幅"] = round(leader_change, 2)
+        enriched_rows.append(new_row)
+
+    return enriched_rows
+
+
+
+def get_sw_sector_daily(trade_date: str = "", level: str = "L1", lookback_days: int = 5) -> list:
+    """统一获取申万行业日行情。
+
+    统一走项目封装的 Tushare 入口：
+    1. `index_classify` 获取申万行业列表
+    2. `sw_daily` 获取最近可用交易日行情
+    3. `index_member_all + moneyflow_dc` 聚合补齐行业资金流/上涨下跌家数
+    4. `daily + moneyflow` 作为个股级聚合降级
+
+    返回统一兼容 `sector_rotation.get_sector_ranking()` 的字段格式。
+    """
+    from datetime import datetime, timedelta
+
+    if not is_configured():
+        return []
+
+    classifications = get_index_classify(level) or []
+    code_name_map = {}
+    for row in classifications:
+        code = str(row.get("index_code") or row.get("industry_code") or "").strip()
+        name = str(row.get("industry_name") or "").strip()
+        if code and name:
+            code_name_map[code] = name
+
+    candidate_dates = []
+    if trade_date:
+        candidate_dates.append(trade_date)
+    for i in range(max(lookback_days, 1)):
+        td = (datetime.now() - timedelta(days=i)).strftime("%Y%m%d")
+        if td not in candidate_dates:
+            candidate_dates.append(td)
+
+    for td in candidate_dates:
+        rows = _call_tushare(
+            "sw_daily",
+            {"trade_date": td},
+            "ts_code,trade_date,name,close,pct_change,amount",
+        )
+        if not rows:
+            continue
+
+        result = []
+        for row in rows:
+            ts_code = str(row.get("ts_code") or "").strip()
+            if code_name_map and ts_code not in code_name_map:
+                continue
+            name = code_name_map.get(ts_code) or str(row.get("name") or "").strip()
+            if not ts_code or not name:
+                continue
+            result.append({
+                "代码": ts_code,
+                "板块": name,
+                "涨跌幅": _to_float(row.get("pct_change")),
+                "总成交额": _to_float(row.get("amount")),
+                "收盘价": _to_float(row.get("close")),
+                "trade_date": str(row.get("trade_date") or td),
+                "source": "tushare",
+            })
+
+        if len(result) >= 10:
+            return _enrich_sw_sector_rows(result, level=level, classifications=classifications)
+
+    return []

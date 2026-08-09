@@ -27,9 +27,13 @@ def get_ml_stock_screen(top_n: int = 30):
 # ---- 因子 IC 检验 ----
 
 @router.get("/api/factor-ic")
-def api_factor_ic(forward_days: int = 20, pool_size: int = 200):
-    """因子 IC 检验：验证30因子中哪些真正预测未来收益"""
-    return compute_factor_ic(forward_days=forward_days, pool_size=pool_size)
+def api_factor_ic(forward_days: int = 20, pool_size: int = 200, force: bool = False):
+    """因子 IC 检验：验证30因子中哪些真正预测未来收益
+    
+    Args:
+        force: 传 true 强制跳过缓存重新计算
+    """
+    return compute_factor_ic(forward_days=forward_days, pool_size=pool_size, force=force)
 
 
 @router.get("/api/factor-ic/decay")

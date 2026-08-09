@@ -88,13 +88,46 @@ def health():
     # Phase 0: API Key 状态检查
     keys_status = {}
     keys_status["deepseek"] = "ok" if os.environ.get("LLM_API_KEY") else "missing"
+    keys_status["doubao"] = "ok" if os.environ.get("DOUBAO_API_KEY") else "missing"
+    keys_status["qwen"] = "ok" if os.environ.get("DASHSCOPE_API_KEY") else "missing"
     keys_status["tushare"] = "ok" if os.environ.get("TUSHARE_TOKEN") else "missing"
+    
+    # v9.5.123: 数据源健康检测（前端据此显示降级提示）
+    data_health = {"overall": "ok", "degraded": [], "last_success": {}}
+    try:
+        from pathlib import Path
+        import time as _t
+        cache_dir = Path(os.environ.get("DATA_DIR", "data")) / "_cache"
+        # 检查关键缓存文件的新鲜度
+        _checks = [
+            ("市场行情", "market_context.txt", 86400),   # 24h (周末可能不更新)
+            ("CFO摘要", "cfo_summary_LeiJiang.json", 43200),  # 12h
+            # 基金筛选不检测(按需生成,不影响首页展示)
+        ]
+        for name, fn, max_age in _checks:
+            fp = cache_dir / fn
+            if fp.exists():
+                age = _t.time() - fp.stat().st_mtime
+                data_health["last_success"][name] = {
+                    "age_hours": round(age / 3600, 1),
+                    "fresh": age < max_age,
+                }
+                if age > max_age * 2:  # 超过2倍最大年龄 = 降级
+                    data_health["degraded"].append(f"{name}(已{round(age/3600)}h未更新)")
+            elif name != "CFO摘要":
+                data_health["degraded"].append(f"{name}(无缓存)")
+        if data_health["degraded"]:
+            data_health["overall"] = "degraded"
+    except Exception:
+        pass
+    
     return {
         "status": "ok",
         "time": datetime.now().isoformat(),
         "version": APP_VERSION,
         "llm_usage": budget,
         "keys_status": keys_status,
+        "data_health": data_health,
     }
 
 

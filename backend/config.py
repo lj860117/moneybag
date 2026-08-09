@@ -6,12 +6,17 @@ import os
 from pathlib import Path
 
 # ---- 持久化目录 ----
-DATA_DIR = Path(os.environ.get("DATA_DIR", "./data"))
+BACKEND_DIR = Path(__file__).resolve().parent
+DEFAULT_DATA_DIR = BACKEND_DIR.parent / "data"
+DATA_DIR = Path(os.environ.get("DATA_DIR", str(DEFAULT_DATA_DIR))).expanduser()
 DATA_DIR.mkdir(parents=True, exist_ok=True)
 USERS_DIR = DATA_DIR / "users"
 USERS_DIR.mkdir(exist_ok=True)
 RECEIPTS_DIR = DATA_DIR / "receipts"
 RECEIPTS_DIR.mkdir(exist_ok=True)
+# 推送存档目录（用于质量评估）
+PUSH_ARCHIVE_DIR = DATA_DIR / "logs" / "pushes"
+PUSH_ARCHIVE_DIR.mkdir(parents=True, exist_ok=True)
 
 # ---- 缓存 TTL（秒）----
 NAV_CACHE_TTL = 3600        # 基金净值 1小时
@@ -111,8 +116,11 @@ LLM_API_URL = os.environ.get("LLM_API_URL", "https://api.deepseek.com/v1/chat/co
 LLM_API_KEY = os.environ.get("LLM_API_KEY", "")
 LLM_MODEL = os.environ.get("LLM_MODEL", "deepseek-v4-flash")
 
+# ---- Tushare Token ----
+TUSHARE_TOKEN = os.environ.get("TUSHARE_TOKEN", "")
+
 # ---- 版本号（Phase 1 更新）----
-APP_VERSION = "9.7.0"
+APP_VERSION = "9.9.4"
 
 # ---- v9.5.123: API 鉴权 ----
 # 每个用户一个token，格式: userId:token（环境变量或data/auth_tokens.json）
@@ -261,4 +269,29 @@ CASH_MGMT_DEFAULTS = {
     "emergency_ratio":    0.3,    # 无支出数据时，应急金占现金 30%
     "bank_rate_current":  0.002,  # 银行活期 0.2%
     "inflation_rate":     0.01,   # 通胀假设 1%
+}
+
+# ---- P1-3: 推荐基金列表（单一数据源）----
+RECOMMENDED_FUNDS = [
+    {"name": "沪深300", "code": "110020", "fullName": "易方达沪深300ETF联接A", "color": "#3B82F6",
+     "returns": {"good": 0.15, "mid": 0.08, "bad": -0.10}, "category": "stock", "assetType": "fund", "etfCode": "510300"},
+    {"name": "标普500", "code": "050025", "fullName": "博时标普500ETF联接A", "color": "#10B981",
+     "returns": {"good": 0.18, "mid": 0.10, "bad": -0.12}, "category": "stock", "assetType": "fund"},
+    {"name": "债券", "code": "217022", "fullName": "招商产业债A", "color": "#F59E0B",
+     "returns": {"good": 0.06, "mid": 0.04, "bad": 0.01}, "category": "bond", "assetType": "fund"},
+    {"name": "黄金", "code": "000216", "fullName": "华安黄金ETF联接A", "color": "#F97316",
+     "returns": {"good": 0.15, "mid": 0.08, "bad": -0.05}, "category": "other", "assetType": "fund", "etfCode": "518880"},
+    {"name": "红利低波", "code": "008114", "fullName": "天弘红利低波100联接A", "color": "#EF4444",
+     "returns": {"good": 0.12, "mid": 0.07, "bad": -0.05}, "category": "stock", "assetType": "fund", "etfCode": "515100"},
+    {"name": "货币(应急)", "code": "余额宝", "fullName": "余额宝", "color": "#E5E7EB",
+     "returns": {"good": 0.02, "mid": 0.018, "bad": 0.015}, "category": "cash", "assetType": "fund"},
+]
+
+# ---- P1-3: 风险资产配置比例（单一数据源）----
+RISK_ALLOC_PCTS = {
+    "保守型":  [10, 5, 50, 15, 10, 10],
+    "稳健型":  [20, 10, 35, 15, 10, 10],
+    "平衡型":  [30, 20, 20, 15, 10, 5],
+    "进取型":  [35, 25, 10, 10, 15, 5],
+    "激进型":  [40, 30, 5, 5, 15, 5],
 }

@@ -45,6 +45,12 @@ _TOKEN_CACHE_TTL = 7200
 # access_token 缓存（2 小时有效）
 _token_cache = MemoryCache(default_ttl=_TOKEN_CACHE_TTL)  # {"wxwork_token": {"data": {"token": str, "expires": int}, "ts": float}}
 
+# FIX: 全局 HTTP 连接池复用（避免每次 send 都新建 TCP 连接）
+_http_client = httpx.Client(timeout=15, limits=httpx.Limits(max_connections=10, max_keepalive_connections=5))
+
+# FIX: 81013 无效用户缓存（同一用户 81013 只打一次日志，避免刷屏）
+_81013_warned = set()
+
 
 def is_configured() -> bool:
     """检查企业微信是否已配置"""
@@ -62,48 +68,85 @@ def _get_token() -> str:
 
     try:
         url = f"https://qyapi.weixin.qq.com/cgi-bin/gettoken?corpid={_CORP_ID}&corpsecret={_SECRET}"
-        with httpx.Client(timeout=10) as client:
-            resp = client.get(url)
-            data = resp.json()
-            if data.get("errcode") == 0:
-                token = data["access_token"]
-                _token_cache.set("token", token, ttl=7000)  # 提前 200 秒刷新
-                return token
-            else:
-                print(f"[WXWORK] Token error: {data}")
+        resp = _http_client.get(url)
+        data = resp.json()
+        if data.get("errcode") == 0:
+            token = data["access_token"]
+            _token_cache.set("token", token, ttl=7000)  # 提前 200 秒刷新
+            return token
+        else:
+            print(f"[WXWORK] Token error: {data}")
     except Exception as e:
         print(f"[WXWORK] Token failed: {e}")
     return ""
 
 
 def send_text(content: str, user_id: str = "") -> dict:
-    """发送文本消息"""
+    """发送文本消息（含统一 81013 处理 + 失败自动重试 1 次）
+    
+    返回: {"ok": bool, "data": dict, "skipped_81013": bool}
+    """
     token = _get_token()
     if not token:
         return {"ok": False, "error": "未配置或获取 token 失败"}
 
-    try:
+    target = user_id or _USER_ID
+    payload = {
+        "touser": target,
+        "msgtype": "text",
+        "agentid": int(_AGENT_ID),
+        "text": {"content": content},
+    }
+
+    def _do_send():
         url = f"https://qyapi.weixin.qq.com/cgi-bin/message/send?access_token={token}"
-        payload = {
-            "touser": user_id or _USER_ID,
-            "msgtype": "text",
-            "agentid": int(_AGENT_ID),
-            "text": {"content": content},
-        }
-        with httpx.Client(timeout=10) as client:
-            resp = client.post(url, json=payload)
-            data = resp.json()
-            ok = data.get("errcode") == 0
+        resp = _http_client.post(url, json=payload)
+        return resp.json()
+
+    for attempt in range(2):  # FIX: 失败自动重试 1 次
+        try:
+            data = _do_send()
+            errcode = data.get("errcode", -1)
+
+            # FIX: 统一 81013 处理 — 无效用户标记跳过，不再每次报错
+            if errcode == 81013:
+                if target not in _81013_warned:
+                    _81013_warned.add(target)
+                    print(f"[WXWORK] ⏭️ 用户 {target} 无效(81013)，后续静默跳过")
+                return {"ok": False, "error": "81013_invalid_user", "skipped_81013": True, "data": data}
+
+            # token 过期自动刷新重试
+            if errcode == 42001 or errcode == 40014:
+                _token_cache.delete("token")
+                token = _get_token()
+                if token and attempt == 0:
+                    payload["agentid"] = int(_AGENT_ID)  # refresh payload
+                    continue
+                return {"ok": False, "error": "token_expired", "data": data}
+
+            ok = errcode == 0
             if not ok:
                 print(f"[WXWORK] Send error: {data}")
             return {"ok": ok, "data": data}
-    except Exception as e:
-        print(f"[WXWORK] Send failed: {e}")
-        return {"ok": False, "error": str(e)}
+        except (httpx.ConnectTimeout, httpx.ReadTimeout, httpx.ConnectError) as e:
+            if attempt == 0:
+                print(f"[WXWORK] 网络错误，2s后重试: {e}")
+                time.sleep(2)
+                continue
+            print(f"[WXWORK] Send failed (重试后): {e}")
+            return {"ok": False, "error": str(e)}
+        except Exception as e:
+            print(f"[WXWORK] Send failed: {e}")
+            return {"ok": False, "error": str(e)}
+
+    return {"ok": False, "error": "max_retries_exceeded"}
 
 
 def send_markdown(content: str, user_id: str = "") -> dict:
-    """发送消息（统一用纯文本，微信不支持 Markdown，完整清理格式符号）"""
+    """发送消息（统一用纯文本，微信不支持 Markdown，完整清理格式符号）
+    
+    v9.5.123: 超过1800字自动分段推送（不再截断），每段间隔0.5秒
+    """
     import re
     plain = content
     # 去粗体/代码/斜体/转义
@@ -120,10 +163,56 @@ def send_markdown(content: str, user_id: str = "") -> dict:
     plain = re.sub(r'^[-*]{3,}\s*$', '', plain, flags=re.MULTILINE)
     # 多余空行压缩
     plain = re.sub(r'\n{3,}', '\n\n', plain)
-    # 企业微信文本消息最大约 2048 字符，超出截断
-    if len(plain) > 2000:
-        plain = plain[:1950] + "\n...(内容过长已截断)"
-    return send_text(plain.strip(), user_id=user_id)
+    plain = plain.strip()
+    
+    # v9.5.123: 超过1800字分段推送(不截断)
+    MAX_CHUNK = 1800
+    if len(plain) <= MAX_CHUNK:
+        return send_text(plain, user_id=user_id)
+    
+    # 按段落分割(优先在\n\n处切分,其次\n)
+    chunks = _split_message(plain, MAX_CHUNK)
+    last_result = {}
+    for i, chunk in enumerate(chunks):
+        if i > 0:
+            time.sleep(0.5)  # 防限流
+        tag = f"({i+1}/{len(chunks)})" if len(chunks) > 1 else ""
+        last_result = send_text(f"{chunk}\n{tag}" if tag else chunk, user_id=user_id)
+    return last_result
+
+
+def _split_message(text: str, max_len: int = 1800) -> list:
+    """智能分割长消息: 优先在段落分隔处切分,保证每段不超max_len"""
+    if len(text) <= max_len:
+        return [text]
+    
+    chunks = []
+    remaining = text
+    
+    # 尝试找到好的分割点(优先级: 持仓明细标题 > 双换行 > 单换行)
+    SPLIT_MARKERS = ["持仓明细", "📊 组合温度计", "📈 【股票推荐", "💰 【基金推荐", "\n\n"]
+    
+    while len(remaining) > max_len:
+        # 在max_len范围内找最佳切分点
+        best_pos = -1
+        for marker in SPLIT_MARKERS:
+            pos = remaining.rfind(marker, 0, max_len)
+            if pos > max_len * 0.3:  # 至少要包含30%内容
+                best_pos = pos
+                break
+        
+        if best_pos <= 0:
+            # 没找到好的分割点,在最近的换行处切
+            pos = remaining.rfind("\n", 0, max_len)
+            best_pos = pos if pos > max_len * 0.3 else max_len
+        
+        chunks.append(remaining[:best_pos].rstrip())
+        remaining = remaining[best_pos:].lstrip()
+    
+    if remaining.strip():
+        chunks.append(remaining.strip())
+    
+    return chunks
 
 
 def send_stock_alert(signals: list) -> dict:
@@ -142,9 +231,9 @@ def send_stock_alert(signals: list) -> dict:
     return send_markdown(content)
 
 
-def send_daily_report(report: str) -> dict:
+def send_daily_report(report: str, title: str = "📊 钱袋子每日复盘") -> dict:
     """发送每日复盘报告"""
-    content = f"**📊 钱袋子每日复盘**\n\n{report}\n\n⏰ {time.strftime('%Y-%m-%d %H:%M')}"
+    content = f"**{title}**\n\n{report}\n\n⏰ {time.strftime('%Y-%m-%d %H:%M')}"
     return send_markdown(content)
 
 
@@ -155,19 +244,45 @@ def send_stock_alert_to(wxwork_userid: str, signals: list) -> dict:
     if not signals:
         return {"ok": True, "msg": "无异动"}
 
+    # 补全基金/股票名称（alert 里 name 可能为空）
+    def _get_display_name(sig):
+        name = sig.get('name', '')
+        code = sig.get('code', '')
+        if name:
+            return name
+        # 尝试从基金名称表补全
+        try:
+            from services.fund_monitor import _get_fund_name
+            n = _get_fund_name(code)
+            if n and n != code:
+                return n
+        except Exception:
+            pass
+        return code  # 最终降级用代码
+
     lines = ["**🚨 钱袋子盯盘预警**\n"]
     for sig in signals[:10]:
         emoji = "🔴" if sig.get("level") == "warning" else "🟡"
-        lines.append(f"{emoji} **{sig.get('name', '')}**({sig.get('code', '')})")
+        display_name = _get_display_name(sig)
+        code = sig.get('code', '')
+        lines.append(f"{emoji} **{display_name}**（{code}）")
         lines.append(f"> {sig.get('message', sig.get('msg', ''))}\n")
     lines.append(f"⏰ {time.strftime('%H:%M:%S')}")
     content = "\n".join(lines)
     return send_markdown(content, user_id=wxwork_userid)
 
 
-def send_daily_report_to(wxwork_userid: str, report: str) -> dict:
-    """发送每日复盘给指定用户"""
-    content = f"**📊 钱袋子每日复盘**\n\n{report}\n\n⏰ {time.strftime('%Y-%m-%d %H:%M')}"
+def send_daily_report_to(wxwork_userid: str, report: str, title: str = "📊 钱袋子每日复盘") -> dict:
+    """发送报告给指定用户（title 可自定义，默认每日复盘）
+    
+    v9.5.123: 不再截断，send_markdown 会自动分段推送长消息
+    v9.7.0: 移除多余的 ** 清理（send_markdown 内部已统一处理）
+    """
+    if title:
+        content = f"{title}\n\n{report}\n\n⏰ {time.strftime('%Y-%m-%d %H:%M')}"
+    else:
+        content = f"{report}\n\n⏰ {time.strftime('%Y-%m-%d %H:%M')}"
+    # v9.5.123: 不再硬截断,send_markdown会自动分段推送
     return send_markdown(content, user_id=wxwork_userid)
 
 
@@ -181,7 +296,11 @@ import struct
 import socket
 from Crypto.Cipher import AES
 
-_CALLBACK_TOKEN = os.getenv("WXWORK_CALLBACK_TOKEN", "moneybag2026")
+_CALLBACK_TOKEN = os.getenv("WXWORK_CALLBACK_TOKEN", "")
+if not _CALLBACK_TOKEN:
+    # 安全提醒：回调 Token 未配置，消息验证将失败
+    # 生产环境务必设置 WXWORK_CALLBACK_TOKEN 环境变量
+    print("[WXWORK] ⚠️ WXWORK_CALLBACK_TOKEN 未配置，回调验证不可用")
 _CALLBACK_AES_KEY = os.getenv("WXWORK_CALLBACK_AES_KEY", "")
 
 
@@ -308,3 +427,37 @@ def encrypt_reply(reply_text: str, to_user: str, nonce: str) -> str:
     except Exception as e:
         print(f"[WXWORK] Encrypt reply error: {e}")
         return ""
+
+
+def archive_push(user_id: str, push_type: str, content: str, timestamp: str = None):
+    """
+    存档推送内容到本地文件（用于后续质量评估）
+    
+    Args:
+        user_id: 用户ID（如 "LeiJiang"）
+        push_type: 推送类型（"briefing"/"closing_review"/"alert"）
+        content: 完整推送内容
+        timestamp: 时间戳（可选，默认当前时间）
+    """
+    try:
+        from config import PUSH_ARCHIVE_DIR
+        import datetime
+        
+        # 生成文件名：YYYY-MM-DD_type_user.txt
+        if timestamp is None:
+            timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        
+        date_str = datetime.datetime.now().strftime("%Y-%m-%d")
+        filename = f"{date_str}_{push_type}_{user_id}.txt"
+        filepath = PUSH_ARCHIVE_DIR / filename
+        
+        # 写入文件（追加模式，同类型多条推送都保存）
+        with open(filepath, "a", encoding="utf-8") as f:
+            f.write(f"=== {timestamp} ===\n")
+            f.write(content)
+            f.write("\n\n")
+        
+        print(f"  [存档] {push_type} 已存档到 {filename}")
+        
+    except Exception as e:
+        print(f"  [存档] 失败：{e}")

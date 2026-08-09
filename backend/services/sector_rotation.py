@@ -30,6 +30,9 @@ MODULE_META = {
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 _sector_cache = MemoryCache(default_ttl=3600)
 _CACHE_TTL = 1800  # 30 分钟
+MAX_REASONABLE_SECTOR_CHANGE_PCT = 15.0
+MIN_VALID_SECTOR_COUNT = 3
+SECTOR_ANOMALY_FALLBACK_TEXT = "暂无明显热点板块（行业数据异常已过滤）"
 
 
 def _get_cached(key, ttl=_CACHE_TTL):
@@ -51,45 +54,16 @@ def _set_cached(key, data):
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 def _tushare_sw_daily_fallback():
-    """Tushare sw_daily 降级：获取申万行业涨跌排名
-
-    当 AKShare 东方财富/同花顺接口不可用时，用 Tushare 申万行业日行情替代。
-    返回与 get_industry_board_summary 兼容的 DataFrame 格式。
-    """
+    """Tushare sw_daily 降级：统一复用项目封装的申万行业入口。"""
     try:
-        import os
         import pandas as pd
-        token = os.environ.get("TUSHARE_TOKEN", "")
-        if not token:
-            return None
-        import tushare as ts
-        ts.set_token(token)
-        pro = ts.pro_api()
+        from services.tushare_data import get_sw_sector_daily
 
-        from datetime import datetime
-        trade_date = datetime.now().strftime("%Y%m%d")
-        df = pro.sw_daily(trade_date=trade_date)
-
-        if df is None or len(df) < 10:
-            # 试前一天
-            from datetime import timedelta
-            prev_date = (datetime.now() - timedelta(days=1)).strftime("%Y%m%d")
-            df = pro.sw_daily(trade_date=prev_date)
-
-        if df is None or len(df) < 10:
+        rows = get_sw_sector_daily(level="L1")
+        if not rows:
             return None
 
-        # 只取一级行业（801xxx.SI）
-        l1 = df[df["ts_code"].str.startswith("801")].copy()
-        if len(l1) < 10:
-            l1 = df.copy()
-
-        # 转换为兼容格式
-        result = pd.DataFrame({
-            "板块": l1["name"].values,
-            "涨跌幅": l1["pct_change"].values,
-            "总成交额": l1["amount"].values if "amount" in l1.columns else 0,
-        })
+        result = pd.DataFrame(rows)
         print(f"[SECTOR] Tushare sw_daily 降级成功: {len(result)} 行业")
         return result
 
@@ -124,14 +98,39 @@ def get_sector_ranking() -> dict:
         return cached
 
     try:
-        from infra.data_source.alt.flows import get_industry_board_summary
-        df = get_industry_board_summary()
+        # 策略：Tushare 主 + AKShare 降级
+        df = None
+        source = "unknown"
+
+        # Tushare 主
+        try:
+            from services.tushare_fallback import TusharePrimary
+            tp = TusharePrimary.instance()
+            sector_data = tp.get_sector_daily()
+            if sector_data and len(sector_data) >= 10:
+                import pandas as pd
+                df = pd.DataFrame(sector_data)
+                source = "tushare"
+                print(f"[SECTOR] Tushare 主数据: {len(df)} 板块")
+        except Exception as e:
+            print(f"[SECTOR] Tushare 主数据失败: {e}")
+
+        # AKShare 降级
+        if df is None or len(df) < 10:
+            from infra.data_source.alt.flows import get_industry_board_summary
+            df = get_industry_board_summary()
+            if df is not None and len(df) >= 10:
+                source = "akshare"
+                print(f"[SECTOR] AKShare 降级数据: {len(df)} 板块")
+            else:
+                # 最终降级：Tushare sw_daily（原函数）
+                df = _tushare_sw_daily_fallback()
+                if df is not None and len(df) >= 10:
+                    source = "tushare_fallback"
+                    print(f"[SECTOR] Tushare 降级数据: {len(df)} 板块")
 
         if df is None or len(df) < 10:
-            # 降级方案: Tushare sw_daily（申万行业日行情，稳定可靠）
-            df = _tushare_sw_daily_fallback()
-            if df is None or len(df) < 10:
-                return {"available": False, "error": "行业数据不足", "source": "all_failed"}
+            return {"available": False, "error": "行业数据不足", "source": "all_failed"}
 
         # 标准化列名
         col_map = {}
@@ -164,8 +163,10 @@ def get_sector_ranking() -> dict:
             if field in col_map:
                 df[col_map[field]] = _safe_float_series(df[col_map[field]])
 
-        # 排序
-        df_sorted = df.sort_values(col_map["change_pct"], ascending=False)
+        anomaly_mask = df[col_map["change_pct"]].apply(_is_reasonable_sector_change)
+        filtered_anomaly_count = int((~anomaly_mask).sum())
+        anomaly_guard_triggered = filtered_anomaly_count > 0
+        df_reasonable = df[anomaly_mask].copy()
 
         def _row_to_dict(row):
             d = {"name": str(row.get(col_map.get("name", ""), ""))}
@@ -185,12 +186,34 @@ def get_sector_ranking() -> dict:
                 d["leader_chg"] = round(float(row.get(col_map["leader_chg"], 0)), 2)
             return d
 
+        if len(df_reasonable) < MIN_VALID_SECTOR_COUNT:
+            result = {
+                "available": False,
+                "source": source,
+                "total_sectors": len(df),
+                "valid_sectors": len(df_reasonable),
+                "top_gainers": [],
+                "top_losers": [],
+                "top_inflow": [],
+                "top_outflow": [],
+                "market_breadth": {},
+                "rotation_signal": {"style": "均衡", "description": "行业异常值已过滤，今日热点不足", "offensive_strength": 0, "defensive_strength": 0},
+                "timestamp": datetime.now().isoformat(),
+                "error": SECTOR_ANOMALY_FALLBACK_TEXT,
+                "anomaly_guard_triggered": anomaly_guard_triggered,
+                "filtered_anomaly_count": filtered_anomaly_count,
+            }
+            _set_cached("sector_ranking", result)
+            return result
+
+        # 排序（基于过滤后的合理行业数据）
+        df_sorted = df_reasonable.sort_values(col_map["change_pct"], ascending=False)
         top_gainers = [_row_to_dict(r) for _, r in df_sorted.head(10).iterrows()]
         top_losers = [_row_to_dict(r) for _, r in df_sorted.tail(10).iloc[::-1].iterrows()]
 
         # 资金流排名
         if "net_inflow" in col_map:
-            df_flow = df.sort_values(col_map["net_inflow"], ascending=False)
+            df_flow = df_reasonable.sort_values(col_map["net_inflow"], ascending=False)
             top_inflow = [_row_to_dict(r) for _, r in df_flow.head(10).iterrows()]
             top_outflow = [_row_to_dict(r) for _, r in df_flow.tail(10).iloc[::-1].iterrows()]
         else:
@@ -198,13 +221,18 @@ def get_sector_ranking() -> dict:
             top_outflow = []
 
         # 市场广度
-        total_up = 0
-        total_down = 0
-        for _, row in df.iterrows():
-            up = int(row.get(col_map.get("up_count", ""), 0) or 0)
-            dn = int(row.get(col_map.get("down_count", ""), 0) or 0)
-            total_up += up
-            total_down += dn
+        if "up_count" in col_map and "down_count" in col_map:
+            total_up = 0
+            total_down = 0
+            for _, row in df_reasonable.iterrows():
+                up = int(row.get(col_map.get("up_count", ""), 0) or 0)
+                dn = int(row.get(col_map.get("down_count", ""), 0) or 0)
+                total_up += up
+                total_down += dn
+        else:
+            change_series = df_reasonable[col_map["change_pct"]]
+            total_up = int((change_series > 0).sum())
+            total_down = int((change_series < 0).sum())
         total_stocks = total_up + total_down
         breadth = {
             "up": total_up,
@@ -218,8 +246,9 @@ def get_sector_ranking() -> dict:
 
         result = {
             "available": True,
-            "source": "ths",
+            "source": source,  # 动态来源：tushare/akshare/tushare_fallback
             "total_sectors": len(df),
+            "valid_sectors": len(df_reasonable),
             "top_gainers": top_gainers[:5],
             "top_losers": top_losers[:5],
             "top_inflow": top_inflow[:5],
@@ -227,6 +256,8 @@ def get_sector_ranking() -> dict:
             "market_breadth": breadth,
             "rotation_signal": rotation_signal,
             "timestamp": datetime.now().isoformat(),
+            "anomaly_guard_triggered": anomaly_guard_triggered,
+            "filtered_anomaly_count": filtered_anomaly_count,
         }
 
         _set_cached("sector_ranking", result)
@@ -253,6 +284,19 @@ def _safe_float_series(series):
     """安全转浮点数"""
     import pandas as pd
     return pd.to_numeric(series, errors="coerce").fillna(0)
+
+
+def _is_reasonable_sector_change(change_pct) -> bool:
+    """行业涨跌幅合理性兜底。
+
+    THS/AKShare 偶发把 "领涨股-涨跌幅" 一类高波动字段串进来，
+    这里统一过滤掉超出合理范围的行业涨跌幅，避免晨报展示离谱数值。
+    """
+    try:
+        value = float(change_pct)
+    except (TypeError, ValueError):
+        return False
+    return abs(value) <= MAX_REASONABLE_SECTOR_CHANGE_PCT
 
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━

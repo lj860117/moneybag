@@ -152,11 +152,50 @@ def market_panorama():
 
 
 @router.get("/api/cfo-summary")
-def cfo_summary(userId: str = ""):
+def cfo_summary(userId: str = "", force: bool = False):
     """家庭 CFO 今日面板 — 一次请求返回首页全部数据
 
     聚合：净资产 + 今日提醒 + 配置 + 情绪提醒 + 本周待办
-    全部纯规则计算，不调 LLM，保证 <2s 响应。
+    v9.5.122: per-user 文件缓存（10h + stale 24h），cache_warmer 预热
+    v9.9.1: `force=1` 时跳过文件缓存，确保定时预热真的刷新磁盘时间戳
     """
+    import json as _json, time as _time, os as _os
+    from pathlib import Path
+    uid = userId or "default"
+    cache_dir = Path(_os.environ.get("DATA_DIR", "data")) / "_cache"
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    cache_fp = cache_dir / f"cfo_summary_{uid}.json"
+    # 读缓存（force 模式跳过，确保预热一定回写文件）
+    if not force:
+        try:
+            if cache_fp.exists():
+                payload = _json.loads(cache_fp.read_text(encoding="utf-8"))
+                age = _time.time() - payload.get("created_at", 0)
+                if age < 36000:  # 10h
+                    return payload.get("data", {})
+                # stale 24h
+                if age < 86400 and payload.get("data"):
+                    import threading
+                    threading.Thread(target=_bg_refresh_cfo, args=(uid, str(cache_fp)), daemon=True).start()
+                    return payload.get("data", {})
+        except Exception:
+            pass
     from services.cfo_dashboard import generate_cfo_summary
-    return generate_cfo_summary(userId or "default")
+    result = generate_cfo_summary(uid)
+    # 写缓存
+    try:
+        cache_fp.write_text(_json.dumps({"data": result, "created_at": _time.time()}, ensure_ascii=False, default=str), encoding="utf-8")
+    except Exception:
+        pass
+    return result
+
+
+def _bg_refresh_cfo(uid: str, cache_fp_str: str):
+    try:
+        import json as _json, time as _time
+        from services.cfo_dashboard import generate_cfo_summary
+        result = generate_cfo_summary(uid)
+        with open(cache_fp_str, "w", encoding="utf-8") as f:
+            _json.dump({"data": result, "created_at": _time.time()}, f, ensure_ascii=False, default=str)
+    except Exception:
+        pass
