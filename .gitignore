@@ -83,3 +83,28 @@ backend/data/users/*.tmp
 # 和带日期的归档）都匹配不到它，这是有意设计，别加规则去清它。
 *.json.lock
 data/users/*.lock
+
+# ---- 2026-08-30 事故修复：三方对账时误用「GitHub 版整体替换服务器版」，
+# 丢掉了服务器侧 18 条必需规则。其中 `venv/` 缺失直接导致事故：
+# force-push 后 venv/ 变成「未跟踪且未忽略」，被一条 `git stash -u` 吞掉，
+# /opt/moneybag/venv/bin 下的 python/uvicorn 全部消失（运行中进程靠内存里
+# 已删除的解释器继续服务，health 仍返回 200，但一重启就起不来）。
+# 教训：.gitignore 这类「规则集合」文件必须取【并集】，不能按行数/日期挑一方替换。
+# 注意 `.venv/`（带点）与 `venv/`（不带点）是两个不同目录，本项目两者都存在。 ----
+venv/
+*.bak
+*.bak.*
+*.bak-*
+*.bak_*
+backend.bak*/
+backend_bak*/
+backend/data-backup-pre-m1/
+data/consistency_runs/
+data/ab_test_runs/
+logs/
+*.log
+*.pid
+node_modules/
+.pytest_cache/
+.mypy_cache/
+*.egg-info/
