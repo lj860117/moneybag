@@ -204,7 +204,24 @@ DRY-RUN 发现它会删 `data/decision_logs/*.jsonl` 和 `data/audit/*.jsonl`
 
 ⚠️ 一个反直觉点（差点导致误判）：`cache_warmer` 用
 `tempfile.mkstemp(prefix=f".{name}.")`，孤儿文件名是**点开头**的
-`.market_context.a1b2c3.tmp`。**shell glob 的 `*` 不匹配点开头文件**，
-但 **pathlib 的 `rglob("*.tmp")` 会匹配** —— 已用 SIGKILL 孤儿的真实形状端到端实测确认
-（3 个超龄孤儿全部命中、新鲜 `.tmp` 未命中、正式 `.json` 未命中）。
-**这条覆盖是运气好而非当初设计时想到的**，将来若改用 shell 脚本清理必须显式加 `.*` 模式。
+`.market_context.a1b2c3.tmp`。实测三者行为**不同**：
+```
+pathlib  rglob("*.tmp")                 → 匹配点开头  ✅
+glob.glob("**/*.tmp", recursive=True)   → 不匹配      ❌
+shell    ls *.tmp / find -name "*.tmp"  → 不匹配      ❌
+```
+而 `cache_warmer` 产的孤儿 **100% 都是点开头**（由 `mkstemp(prefix=f".{name}.")` 决定，无例外）。
+
+### 🔒 硬约束（必须写进代码注释 + 加测试守住）
+> **`housekeeping_cron.py` 的孤儿扫描必须使用 `pathlib.rglob`，
+> 不得替换为 `glob` 模块或 shell glob / `find`。**
+
+后果的严重性在于**静默**：只要有人做一次"看起来完全等价"的重构，
+**缓存孤儿收集率从 100% 直接归零 —— 而脚本照跑、报「0 个孤儿」、看起来一切健康。**
+
+**因此必须加测试断言守住**：构造嵌套目录下的点开头超龄 `.tmp`，断言被命中。
+理由与给北向口径加 CI 完全相同 ——
+> **当前靠运气成立、又没有任何东西守着的不变式，迟早会静默退化。**
+
+（本次这条覆盖成立是运气好而非设计时想到的，所以尤其需要外部约束。）
+

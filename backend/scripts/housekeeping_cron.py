@@ -131,12 +131,30 @@ def collect_orphan_tmp(data_dir: Path, min_age_days: float, now: float) -> list:
     只认 mtime 超过 min_age_days 的 *.tmp —— atomic_write_json() 正常写入
     在毫秒级完成，超过 1 天还在的一定是进程被 KILL 留下的死文件。
 
+    ⚠️⚠️ 下面那行**必须**用 `pathlib.Path.rglob`，不可换成 `glob.glob()`
+        或 shell 的 `find`/`ls *.tmp`：
+
+            pathlib rglob("*.tmp")             → 匹配点开头文件 ✅
+            glob.glob("**/*.tmp", recursive=1) → **不**匹配点开头文件 ❌
+            shell   ls *.tmp                   → **不**匹配点开头文件 ❌
+
+        这不是风格偏好，是功能正确性问题：`scripts/cache_warmer.py` 用
+        `tempfile.mkstemp(prefix=f".{name}.", suffix=".tmp")` 落盘，它产生的
+        孤儿文件名 **100% 都是点开头**（如 `.market_context.a1b2c3.tmp`）。
+        一旦换成 `glob` 或 shell 写法，缓存孤儿的收集率会从 100% 直接掉到 0%，
+        而且是**静默失效** —— 脚本照样跑、照样打印"命中 0 个孤儿"、看起来一切健康。
+
+        守门：`backend/tests/test_housekeeping_orphan_tmp.py` 有一条断言专门
+        锁定这个行为（构造点开头 + 嵌套子目录 + 超龄的孤儿并断言被命中）。
+        改这行前请先看那个测试。
+
     Returns:
         [(路径, 体积, 年龄天数), ...]
     """
     targets = []
     if not data_dir.exists():
         return targets
+    # 必须是 pathlib.rglob —— 见上方 docstring，glob/shell 不匹配点开头文件
     for fp in data_dir.rglob("*.tmp"):
         if not fp.is_file():
             continue
