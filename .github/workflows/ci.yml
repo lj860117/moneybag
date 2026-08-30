@@ -86,3 +86,23 @@ jobs:
       - name: Run red team static audit
         run: |
           python scripts/red_team_audit_ci.py
+
+  north-caliber:
+    # 2026-08-30 新增。防止「北向资金口径」这类修复将来退化。
+    # 背景：2024-08-19 起沪深交易所停止披露北向日频净买入（改按季度公布），
+    # Tushare moneyflow_hsgt 的 north_money/hgt/sgt 此后是【当日成交额】。
+    # 本次排查在全仓库找到 19 个消费点、6 个 LLM prompt 注入点，全靠人肉 grep ——
+    # 而人肉扫描的完备性已被反复证伪。这条检查用机器守住不变量：
+    # 禁止把 north_money / ggt_ss_flow / ggt_sz_flow 当作「净流入」命名。
+    # 纯静态扫描，无需安装依赖，所以独立成 job 跑得快、失败归因也清楚。
+    name: North Caliber Guard (禁止把成交额当净流入)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Run north caliber static check
+        run: |
+          python scripts/north_caliber_ci.py
+

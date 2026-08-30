@@ -197,11 +197,18 @@ def _perspective_graham(modules: dict, regime: str, data: dict) -> str:
     parts = []
 
     # 直接调 Tushare 北向数据（模块 detail 是字符串摘要，不够用）
+    # ⚠️ 口径：北向净买入自 2024-08-19 起交易所改为按季度披露，日频不可得。
+    #    原写法 `if north.get("available") and north.get("net_flow_5d")` 有两个问题：
+    #    ① net_flow_5d 现为 None，是 falsy → 整个分支被短路，北向那句建议
+    #       **静默消失**，用户不知道少了一个维度（静默降级）；
+    #    ② 即使有值，0 也是 falsy，会被误判成"无数据"。
+    #    改为显式判空 + 不可得时明确说明原因，并给出成交额活跃度替代信息。
     try:
         from services.factor_data import get_northbound_flow, get_shibor, get_margin_trading
         north = get_northbound_flow() or {}
-        if north.get("available") and north.get("net_flow_5d"):
-            flow_5d = north["net_flow_5d"]
+        net_flow_5d = north.get("net_flow_5d")
+        if north.get("net_flow_available") and isinstance(net_flow_5d, (int, float)):
+            flow_5d = net_flow_5d
             if flow_5d < -200:
                 parts.append(f"北向5日净流出{abs(flow_5d):.0f}亿，外资大幅撤退，防守为主")
             elif flow_5d < -50:
@@ -210,8 +217,17 @@ def _perspective_graham(modules: dict, regime: str, data: dict) -> str:
                 parts.append(f"北向5日净流入{flow_5d:.0f}亿，资金面偏暖")
             else:
                 parts.append("北向资金小幅波动，无明显方向")
-        elif north.get("stale") or not north.get("available"):
-            parts.append("北向数据暂不可用（数据源更新滞后）")
+        else:
+            # 净流入不可得：说明原因 + 给成交额活跃度，但不做方向性判断
+            turnover_today = north.get("turnover_today")
+            if north.get("available") and isinstance(turnover_today, (int, float)):
+                parts.append(
+                    f"北向净买入数据不可得（交易所2024-08-19起改为季度披露），"
+                    f"仅能看到成交额今日{turnover_today:.0f}亿"
+                    f"（{north.get('turnover_trend', '平稳')}），无法据此判断外资方向"
+                )
+            else:
+                parts.append("北向数据暂不可用（净买入已改季度披露，本次亦未取到成交额）")
 
         margin = get_margin_trading() or {}
         if margin.get("change_5d_pct"):

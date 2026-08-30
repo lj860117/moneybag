@@ -1,0 +1,29 @@
+<!DOCTYPE html>
+<html><head><meta charset="UTF-8"><title>清除缓存</title></head>
+<body style="font-family:sans-serif;padding:20px;text-align:center">
+<h2>🧹 钱袋子缓存清除工具</h2>
+<div id="log" style="text-align:left;background:#f5f5f5;padding:10px;margin:10px 0;font-family:monospace;font-size:13px"></div>
+<button id="goBtn" style="padding:12px 24px;font-size:16px;background:#3266ad;color:#fff;border:none;border-radius:6px;cursor:pointer">点击清除并重新打开</button>
+<script>
+const log=document.getElementById('log');
+const w=s=>log.innerHTML+='<div>'+s+'</div>';
+document.getElementById('goBtn').onclick=async()=>{
+  w('1️⃣ 注销 Service Worker...');
+  if('serviceWorker' in navigator){
+    const regs=await navigator.serviceWorker.getRegistrations();
+    for(const r of regs){await r.unregister();w('   ✅ 已注销 '+r.scope);}
+    if(!regs.length)w('   (没有 SW)');
+  }
+  w('2️⃣ 清除所有 Cache...');
+  if('caches' in window){
+    const ks=await caches.keys();
+    for(const k of ks){await caches.delete(k);w('   ✅ 删除 '+k);}
+    if(!ks.length)w('   (没有缓存)');
+  }
+  w('3️⃣ 清除 localStorage / sessionStorage...');
+  try{localStorage.clear();sessionStorage.clear();w('   ✅ 完成')}catch(e){w('   ⚠️ '+e.message)}
+  w('4️⃣ 跳转到主页...');
+  setTimeout(()=>{location.href='http://150.158.47.189:8000/?_force='+Date.now()},1500);
+};
+</script>
+</body></html>

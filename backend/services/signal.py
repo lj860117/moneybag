@@ -270,6 +270,9 @@ def generate_daily_signal() -> dict:
     }
 
     scores = []  # (score, weight, name, detail, category)
+    # 被跳过、不参与加权的因子（数据不可得）。不进 scores 意味着其权重自动从
+    # 分母中剔除；但仍在返回里列出来，避免因子"静默消失"让用户以为没这回事。
+    skipped_factors = []  # [{"name","category","reason","note"}]
 
     # P0.3: 权重从 config.SIGNAL_WEIGHTS_V5 读取（Single Source of Truth）
     _w = SIGNAL_WEIGHTS_V5
@@ -393,25 +396,60 @@ def generate_daily_signal() -> dict:
     # ===== 资金面因子 (权重合计 20%) =====
 
     # --- 7. 北向资金 (10%) --- NEW 聪明钱风向标
+    # ⚠️ 口径关键事实（2026-08 修正）：北向【净买入】自 2024-08-19 起沪深交易所
+    #    停止日频披露、改为按季度公布，Tushare moneyflow_hsgt 的 north_money
+    #    现为「当日成交额」（恒正，2500~3300亿量级），**不含方向信息**。
+    #    因此净流入不可得时该因子【不参与加权】—— 不 append 进 scores，
+    #    其权重就自动从 total_weight 分母中剔除。
+    #    注意不能给 0 分：0 分会以满权重参与加权平均，把其他因子的信号稀释掉，
+    #    与"没有这个因子"语义完全不同。
+    #    也不能用成交额去推多空 —— 成交额恒正，放量既可能是买也可能是卖。
     north = get_northbound_flow()
-    if north.get("available"):
-        flow_5d = north.get("net_flow_5d", 0)
-        flow_today = north.get("net_flow_today", 0)
-        if flow_5d > 100:
-            north_score, north_detail = 70, f"北向资金5日净流入{flow_5d:.0f}亿，今日{flow_today:.0f}亿，外资大举买入"
-        elif flow_5d > 30:
-            north_score, north_detail = 40, f"北向资金5日净流入{flow_5d:.0f}亿，外资持续流入"
-        elif flow_5d > 0:
-            north_score, north_detail = 15, f"北向资金5日净流入{flow_5d:.0f}亿，小幅流入"
-        elif flow_5d > -30:
-            north_score, north_detail = -15, f"北向资金5日净流出{abs(flow_5d):.0f}亿，小幅流出"
-        elif flow_5d > -100:
-            north_score, north_detail = -40, f"北向资金5日净流出{abs(flow_5d):.0f}亿，外资持续撤退"
+    if north.get("net_flow_available"):
+        # 数据源恢复日频净买入披露后自动走回这里
+        flow_5d = north.get("net_flow_5d")
+        flow_today = north.get("net_flow_today")
+        if isinstance(flow_5d, (int, float)):
+            today_txt = (f"，今日{flow_today:.0f}亿"
+                         if isinstance(flow_today, (int, float)) else "")
+            if flow_5d > 100:
+                north_score, north_detail = 70, f"北向资金5日净流入{flow_5d:.0f}亿{today_txt}，外资大举买入"
+            elif flow_5d > 30:
+                north_score, north_detail = 40, f"北向资金5日净流入{flow_5d:.0f}亿，外资持续流入"
+            elif flow_5d > 0:
+                north_score, north_detail = 15, f"北向资金5日净流入{flow_5d:.0f}亿，小幅流入"
+            elif flow_5d > -30:
+                north_score, north_detail = -15, f"北向资金5日净流出{abs(flow_5d):.0f}亿，小幅流出"
+            elif flow_5d > -100:
+                north_score, north_detail = -40, f"北向资金5日净流出{abs(flow_5d):.0f}亿，外资持续撤退"
+            else:
+                north_score, north_detail = -70, f"北向资金5日净流出{abs(flow_5d):.0f}亿，外资大幅撤退"
+            scores.append((north_score, _w["北向资金"], "北向资金", north_detail, "资金面"))
         else:
-            north_score, north_detail = -70, f"北向资金5日净流出{abs(flow_5d):.0f}亿，外资大幅撤退"
+            skipped_factors.append({
+                "name": "北向资金",
+                "category": "资金面",
+                "weight": f"{_w['北向资金'] * 100:.0f}%",
+                "reason": f"net_flow_available=True 但 net_flow_5d={flow_5d!r} 非数值",
+                "note": "该因子未参与打分（权重已从分母剔除）",
+            })
     else:
-        north_score, north_detail = 0, "北向资金数据暂不可用"
-    scores.append((north_score, _w["北向资金"], "北向资金", north_detail, "资金面"))
+        # 净流入不可得 → 跳过打分，但把成交额活跃度作为纯展示信息带出去
+        turnover_note = ""
+        t_today = north.get("turnover_today")
+        if north.get("available") and isinstance(t_today, (int, float)):
+            turnover_note = (f"北向成交额今日{t_today:.0f}亿"
+                             f"（活跃度={north.get('turnover_trend', '平稳')}）；"
+                             f"成交额=买入额+卖出额，恒为正，不含方向信息，不用于打分")
+        else:
+            turnover_note = "北向成交额亦未取到"
+        skipped_factors.append({
+            "name": "北向资金",
+            "category": "资金面",
+            "weight": f"{_w['北向资金'] * 100:.0f}%",
+            "reason": north.get("unavailable_reason") or "北向净流入数据不可得",
+            "note": f"该因子未参与打分（权重已从分母剔除）。{turnover_note}",
+        })
 
     # --- 8. 融资融券 (5%) --- NEW 市场杠杆情绪
     margin = get_margin_trading()
@@ -637,6 +675,9 @@ def generate_daily_signal() -> dict:
         {"name": name, "score": round(s, 1), "weight": f"{w*100:.0f}%", "detail": detail, "category": cat}
         for s, w, name, detail, cat in scores
     ]
+    # 因子不可得时不参与加权，但显式列出来（而不是静默消失），
+    # 下游据此展示"该因子数据不可得、未参与打分"。
+    signal["skippedFactors"] = skipped_factors
 
     # 按类别分组
     signal["factorGroups"] = {}

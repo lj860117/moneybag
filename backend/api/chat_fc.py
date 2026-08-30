@@ -314,9 +314,23 @@ def _tool_get_market_status() -> str:
         vp = get_valuation_percentile()
         if vp.get("available"):
             lines.append(f"  A股估值分位：{vp.get('percentile',0):.0f}%")
-        nb = get_northbound_flow()
-        if nb.get("available"):
-            lines.append(f"  北向资金今日：{nb.get('net_flow_today',0):+.1f}亿")
+        # 北向：净流入自 2024-08-19 起交易所停止披露（改按季度公布），只报成交额。
+        # 注意旧代码 `nb.get('net_flow_today',0):+.1f` 在新契约下抛 TypeError，而该异常
+        # 会被本函数最外层的 except 捕获 → 连带把上面的恐贪、估值一起丢掉（一个 None
+        # 打掉三个指标）。所以这里单独包一层，北向出问题不影响其他市场指标。
+        try:
+            nb = get_northbound_flow() or {}
+            _t = nb.get("turnover_today")
+            if nb.get("available") and _t is not None:
+                lines.append(f"  北向成交额：{float(_t):.0f}亿元"
+                             f"（{nb.get('turnover_trend') or '平稳'}）"
+                             f"；净买入方向数据交易所已停止披露，不可推断外资流入/流出")
+            else:
+                lines.append("  北向资金：净买入数据交易所已停止披露（2024-08-19起改按季度公布），"
+                             "本次无可用北向数据，请勿推断外资流向")
+        except Exception as _e_nb:
+            print(f"[CHAT_FC] northbound in market_status failed: "
+                  f"{type(_e_nb).__name__}: {_e_nb}")
         return "\n".join(lines)
     except Exception as e:
         return f"查询市场状态失败: {e}"
@@ -353,15 +367,58 @@ def _tool_search_web(query: str) -> str:
 
 
 def _tool_get_northbound() -> str:
+    """北向资金查询工具（function calling）。
+
+    2024-08-19 起沪深交易所停止披露北向「日频净买入」（改为按季度公布），
+    Tushare moneyflow_hsgt 的 north_money/hgt/sgt 此后填的是【当日成交额】。
+    因此本工具只返回成交额活跃度，并显式声明数据边界。
+
+    ⚠️ 旧实现的两个问题（本次修复的原因）：
+      1) `nb.get('net_flow_today', 0)` —— 新契约下该键存在但值为 None，
+         .get 的默认值【不会生效】，`f"{None:+.1f}"` 直接抛 TypeError；
+      2) 异常被 `return f"查询北向资金失败: {e}"` 兜住，于是把原始 Python 异常
+         （unsupported format string passed to NoneType.__format__）塞进模型
+         上下文 —— 模型会把"交易所口径变更"误判为"系统故障"并这样告诉用户。
+    所以这里把「数据不可得」和「系统异常」两种情况明确分开表述。
+    """
     try:
         from services.factor_data import get_northbound_flow
-        nb = get_northbound_flow()
-        if not nb.get("available"):
-            return "北向资金数据暂不可用。"
-        return (f"北向资金：今日净流入 {nb.get('net_flow_today',0):+.1f}亿，"
-                f"5日合计 {nb.get('net_flow_5d',0):+.1f}亿，趋势 {nb.get('trend','')}")
+        nb = get_northbound_flow() or {}
+        reason = (nb.get("unavailable_reason")
+                  or "2024-08-19 起沪深交易所停止披露北向日频净买入，改为按季度公布")
+        turnover = nb.get("turnover_today")
+        if not nb.get("available") or turnover is None:
+            return (f"北向资金：日频净流入已不可得（{reason}），本次成交额也未取到。"
+                    f"这不是系统故障，而是交易所口径变更导致的永久性数据缺失。"
+                    f"请如实告知用户此情况，不要推断外资流入/流出方向，"
+                    f"也不要编造净买入金额（该数据已停止披露）。")
+
+        parts = []
+        try:
+            parts.append(f"当日成交额{float(turnover):.0f}亿元")
+        except (TypeError, ValueError):
+            pass
+        for key, label in (("turnover_avg_5d", "近5日日均"), ("turnover_avg_20d", "近20日日均")):
+            val = nb.get(key)
+            if val is None:
+                continue
+            try:
+                parts.append(f"{label}{float(val):.0f}亿元")
+            except (TypeError, ValueError):
+                continue
+        parts.append(f"交投活跃度「{nb.get('turnover_trend') or '平稳'}」")
+
+        return (f"北向资金：日频净流入已不可得（{reason}），因此没有任何净买入/净卖出数字。"
+                f"仅有成交额：{'，'.join(parts)}。"
+                f"注意：成交额是买入+卖出的双边合计，不含方向，不可据此推断外资流入/流出；"
+                f"用户问外资流向时，如实说明交易所已停止披露日频净买入、改为按季度公布。")
     except Exception as e:
-        return f"查询北向资金失败: {e}"
+        # 这里是真正的系统异常，与"数据口径变更"区分开表述；同时仍然禁止编造。
+        # 末尾「该数据已停止披露」是为了通过 red_team_audit 的北向拦截规则
+        # （其放行条件只向后看 25 字，禁止式表述若不带这类词会被误判为幻觉断言）。
+        return (f"北向资金查询出现系统异常（{type(e).__name__}: {e}）。"
+                f"请告知用户查询失败，不要据此推断外资流向，"
+                f"也不要编造净买入金额（该数据已停止披露）。")
 
 
 def _tool_get_macro(indicators: list) -> str:

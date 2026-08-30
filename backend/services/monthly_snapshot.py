@@ -15,7 +15,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Optional, Any
 from config import DATA_DIR
-from services.persistence import load_user, save_user
+from services.persistence import load_user, save_user, user_write_lock
 
 # ---- MODULE_META ----
 MODULE_META = {
@@ -46,7 +46,8 @@ def save_monthly_snapshot(user_id: str) -> Optional[dict]:
     user_data = load_user(user_id)
     month_key = datetime.now().strftime("%Y-%m")
     
-    # 幂等：已存在则跳过
+    # 幂等：已存在则跳过（锁外快速预检，避免白算一遍昂贵的净资产）
+    # 真正的幂等判定在下面的锁内重做一次，防止并发下两个线程都通过预检
     snapshots = user_data.get("monthly_snapshots", {})
     if month_key in snapshots:
         return snapshots[month_key]
@@ -84,12 +85,29 @@ def save_monthly_snapshot(user_id: str) -> Optional[dict]:
     except Exception:
         pass
     
-    # 存储快照
-    if "monthly_snapshots" not in user_data:
-        user_data["monthly_snapshots"] = {}
-    
-    user_data["monthly_snapshots"][month_key] = snapshot
-    save_user(user_data)
+    # ── 存储快照：RMW 临界区 ──
+    # FIX 2026-08-30（并发丢更新）：
+    # 上面的 get_unified_networth / get_allocation_advice 都是**昂贵计算**
+    # （可能走网络取净值），刻意留在锁外，锁内只做 load → 写 → save。
+    # 注意锁内**必须重新 load 并重做幂等判定**：锁外那次 load 到现在可能已经
+    # 过了几秒，期间别的进程（如 cron）可能已经写入了本月快照，
+    # 直接用锁外的 user_data 会把它覆盖掉。
+    with user_write_lock(user_id) as acquired:
+        if not acquired:
+            print(f"[SNAPSHOT] ⚠️ 抢锁超时，放弃保存快照: user={user_id}")
+            return None
+
+        user_data = load_user(user_id)
+        existing = user_data.get("monthly_snapshots", {})
+        if month_key in existing:
+            # 并发下别人已经写好了 → 直接返回他写的那份，保持幂等
+            return existing[month_key]
+
+        if "monthly_snapshots" not in user_data:
+            user_data["monthly_snapshots"] = {}
+
+        user_data["monthly_snapshots"][month_key] = snapshot
+        save_user(user_data)
     
     print(f"[SNAPSHOT] 保存 {user_id} {month_key} 快照: ¥{snapshot['net_worth']:,.0f}")
     return snapshot

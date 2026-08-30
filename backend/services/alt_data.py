@@ -53,22 +53,68 @@ def _clean_nan(obj):
     return obj
 
 
+def _num_or_none(val):
+    """严格数值解析：拿不到就返回 None，**绝不退化成 0**。
+
+    为什么要单独写这个 —— `float(x.get("k", 0) or 0)` 这种写法有两个隐藏危害：
+      1. 字段缺失 / 为 None / 为空串时凭空产出 `0`，而这个 0 会被当作
+         "真实测得的 0" 对外展示（例如"净买入额 0.0 亿"），属于编造数据；
+      2. 拿它做排序 key 时，若整批数据都缺该字段，所有 key 都是 0，
+         排序退化成原始顺序，却仍被当作"按金额降序的 Top 榜"展示 ——
+         等于把任意顺序伪装成排名。
+    正确做法：让"没有"保持 None，由调用方显式处理缺失。
+    """
+    try:
+        if val is None or val == "":
+            return None
+        f = float(val)
+        if f != f:  # NaN
+            return None
+        return f
+    except (TypeError, ValueError):
+        return None
+
+
 # ============================================================
 # 1. 北向资金
 # ============================================================
 
 def get_northbound_flow_detail() -> dict:
-    """北向资金实时流向 + 近期趋势
+    """北向资金【成交额】明细 + 活跃度信号（净流入维度已不可得）
 
-    策略：Tushare 主（moneyflow_hsgt 日级别明细） + AKShare 降级（top 持股）
+    策略：Tushare 主（moneyflow_hsgt 日级别成交额） + AKShare 降级（top 持股）
+
+    ⚠️ 口径关键事实（2026-08 修正）：
+    自 2024-08-19 起沪深交易所停止披露北向日频净买入（改按季度公布），
+    Tushare moneyflow_hsgt 的 north_money/hgt/sgt 现为「当日成交额」。
+    因此 net_flow_* 一律为 None，signal 只描述成交额活跃度，不再给流入/流出判断。
+
+    Returns:
+        dict: 对齐 tushare_data.get_northbound_flow 的返回契约，并附加
+              alt 层专有字段 today / top_stocks / signal / source。
+              日级别成交额明细统一在 `daily_turnover`（列表项 key 为 date/turnover）。
+              ⚠️ 历史上的 `trend` 列表字段已删除 —— 它与契约里字符串型的 `trend`
+              同名不同类型，是二义性地雷；日级别数据请改读 `daily_turnover`。
+
+    Note:
+        `available` 与 `net_flow_available` 语义不同：
+        - `available=True`  表示数据源整体拿到了数据（成交额可用）；
+        - `net_flow_available=False` 单独表示「净流入」这一个维度不可得。
+        下游据此决定是跳过净流入因子（正常）还是上报数据源故障（异常）。
     """
+    from services.tushare_data import _north_unavailable_result
+
     cache_key = "nb_flow_detail"
     now = time.time()
     cached = _alt_cache.get(cache_key)
     if cached is not None:
         return cached
 
-    result = {"today": {}, "trend": [], "top_stocks": [], "signal": "", "source": "unknown"}
+    # 契约骨架 + alt 层专有字段
+    # 注意：不再提供历史上的 `trend` 列表字段 —— 它与契约里字符串型的 `trend`
+    # 同名不同类型（三个同域函数类型不一致 = 地雷），日级别数据统一走 daily_turnover。
+    result = _north_unavailable_result("unknown")
+    result.update({"today": {}, "top_stocks": [], "signal": ""})
 
     # 策略：Tushare 主（使用 tushare_data.py 的 get_northbound_flow）
     try:
@@ -76,16 +122,19 @@ def get_northbound_flow_detail() -> dict:
         if is_configured():
             nb_data = get_northbound_flow(days=30)
             if nb_data and nb_data.get("available"):
-                # Tushare 返回日级别明细（daily_flows）
-                if nb_data.get("daily_flows"):
-                    result["trend"] = nb_data["daily_flows"]
+                # Tushare 返回日级别成交额明细（daily_turnover）
+                if nb_data.get("daily_turnover"):
+                    result.update(nb_data)
                     result["source"] = "tushare"
-                    result["data_date"] = nb_data.get("data_date", "")
-                    result["flow_5d_range"] = nb_data.get("flow_5d_range", "")
-                    print(f"[ALT] 北向资金 from Tushare: {len(result['trend'])}天明细, "
-                          f"today={nb_data['net_flow_today']}亿, 5d={nb_data['net_flow_5d']}亿")
+                    result["today"] = {
+                        "date": nb_data.get("data_date", ""),
+                        "turnover": nb_data.get("turnover_today"),
+                    }
+                    print(f"[ALT] 北向成交额 from Tushare: {len(result['daily_turnover'])}天明细, "
+                          f"today={nb_data.get('turnover_today')}亿, "
+                          f"avg5d={nb_data.get('turnover_avg_5d')}亿（净流入维度不可得）")
                 else:
-                    print(f"[ALT] 北向资金 Tushare 无 daily_flows，降级")
+                    print(f"[ALT] 北向资金 Tushare 无 daily_turnover，降级")
     except Exception as e:
         print(f"[ALT] 北向资金 Tushare failed: {e}")
 
@@ -95,32 +144,94 @@ def get_northbound_flow_detail() -> dict:
             # 尝试 Tushare hsgt_top10（沪股通+深股通 Top10）
             from services.tushare_data import is_configured, _call_tushare
             if is_configured():
+                # 字段说明：
+                #   net_amount 净买入额（万元）—— 口径变更后可能缺失
+                #   amount     成交金额（元）  —— 成交额维度，通常仍可得
+                #   rank       接口自带排名
+                #   close/change 收盘价/涨跌（change 语义与单位未经核实，见下）
+                _TOP10_FIELDS = "ts_code,name,close,change,amount,net_amount,rank"
                 # 沪股通 Top10
                 rows_h = _call_tushare(
                     "hsgt_top10",
                     {"trade_date": result.get("data_date", ""), "market_type": "1"},
-                    "ts_code,name,net_amount,rank"
+                    _TOP10_FIELDS
                 )
                 # 深股通 Top10
                 rows_s = _call_tushare(
                     "hsgt_top10",
                     {"trade_date": result.get("data_date", ""), "market_type": "3"},
-                    "ts_code,name,net_amount,rank"
+                    _TOP10_FIELDS
                 )
                 all_rows = (rows_h or []) + (rows_s or [])
                 if all_rows:
-                    # 按 net_amount 降序
-                    all_rows.sort(key=lambda x: float(x.get("net_amount", 0) or 0), reverse=True)
-                    for r in all_rows[:15]:
+                    # 严格解析，缺失一律 None，绝不退化成 0（详见 _num_or_none）。
+                    # net_amount 单位万元；amount 单位元。
+                    parsed = []
+                    for r in all_rows:
+                        parsed.append({
+                            "row": r,
+                            "net_amount_wan": _num_or_none(r.get("net_amount")),
+                            "amount_yuan": _num_or_none(r.get("amount")),
+                            "rank": _num_or_none(r.get("rank")),
+                        })
+
+                    n_valid_net = sum(1 for p in parsed if p["net_amount_wan"] is not None)
+                    n_valid_amt = sum(1 for p in parsed if p["amount_yuan"] is not None)
+                    n_valid_rank = sum(1 for p in parsed if p["rank"] is not None)
+
+                    # 排序依据按可信度降级：净买入额 → 成交额 → 接口自带 rank → 不排序。
+                    # 每一级都要求该字段**真的有值**，否则继续降级 ——
+                    # 绝不用全 None/全 0 的 key 排出一个假榜单。
+                    if n_valid_net:
+                        parsed.sort(key=lambda p: (p["net_amount_wan"] is None,
+                                                   -(p["net_amount_wan"] or 0)))
+                        ranked_by = "net_amount"
+                    elif n_valid_amt:
+                        parsed.sort(key=lambda p: (p["amount_yuan"] is None,
+                                                   -(p["amount_yuan"] or 0)))
+                        ranked_by = "amount"
+                    elif n_valid_rank:
+                        parsed.sort(key=lambda p: (p["rank"] is None, p["rank"] or 0))
+                        ranked_by = "api_rank"
+                    else:
+                        ranked_by = "unranked"
+                        print("[ALT] hsgt_top10 无任何可排序字段（net_amount/amount/rank 全缺），"
+                              "保持原始顺序，不作为排名对外展示")
+
+                    for p in parsed[:15]:
+                        r = p["row"]
                         code = r.get("ts_code", "")
+                        net_amount_wan = p["net_amount_wan"]
+                        amount_yuan = p["amount_yuan"]
+                        # 字段名修正（原名 change_pct 完全错误：存的是亿元金额，
+                        # 不是百分比）。hsgt_top10 的 net_amount 单位为万元。
                         result["top_stocks"].append({
                             "code": code.split(".")[0] if "." in code else code,
                             "name": str(r.get("name", "")),
-                            "holding_value": 0,  # Tushare 不提供持股市值，用 0 占位
-                            "change_pct": round(float(r.get("net_amount", 0) or 0) / 10000, 2),  # 万元→亿元（粗略）
+                            # Tushare 该接口不提供持股市值 → None（不是 0，0 会被
+                            # 当成"持股市值真的为零"展示，同样是编造数据）
+                            "holding_value": None,
+                            "net_amount_yi": (round(net_amount_wan / 10000, 2)
+                                              if net_amount_wan is not None else None),
+                            # 个股北向成交额（元 → 亿元）。这是口径变更后仍可得的维度。
+                            "turnover_yi": (round(amount_yuan / 1e8, 2)
+                                            if amount_yuan is not None else None),
+                            "close": _num_or_none(r.get("close")),
+                            # ⚠️ Tushare `change` 字段的语义（涨跌额 vs 涨跌幅）与单位
+                            #    我没有实盘核实过，因此**不改名成 pct/涨跌幅**，
+                            #    原样保留并标注 —— 猜一个名字就是重犯 change_pct 的错。
+                            "change_raw": _num_or_none(r.get("change")),
+                            "change_semantic": "Tushare hsgt_top10 的 change 字段（语义/单位未核实）",
+                            "rank": (int(p["rank"]) if p["rank"] is not None else None),
+                            "amount_semantic": "十大成交股净买入额",
+                            "amount_unit": "亿元",
                         })
                     result["top_stocks_source"] = "tushare_hsgt_top10"
-                    print(f"[ALT] 北向 Top10 from Tushare: {len(result['top_stocks'])} 只")
+                    result["top_stocks_ranked_by"] = ranked_by
+                    print(f"[ALT] 北向 Top10 from Tushare: {len(result['top_stocks'])} 只"
+                          f"（净买入额有效 {n_valid_net}/{len(all_rows)}, "
+                          f"成交额有效 {n_valid_amt}/{len(all_rows)}, "
+                          f"排序依据={ranked_by}）")
         except Exception as e:
             print(f"[ALT] Tushare hsgt_top10 failed: {e}")
 
@@ -134,31 +245,50 @@ def get_northbound_flow_detail() -> dict:
                 df = get_hsgt_hold_stock(market="北向", indicator="今日排行")
                 if df is not None and len(df) > 0:
                     for _, row in df.head(15).iterrows():
+                        # 注意：本分支与 Tushare 分支语义不同 —— 这里是「持股排行 +
+                        # 今日增持估计金额」，且 AKShare 该列单位未经核实，
+                        # 因此不做亿元换算（避免像原 change_pct 那样造出假语义），
+                        # 只保留原始值并显式标注。消费方用 top_stocks_source 区分。
+                        # 缺失一律 None，不用 0 兜底（0 会被当成真实测得的零）。
                         result["top_stocks"].append({
                             "code": str(row.get("代码", "")),
                             "name": str(row.get("名称", "")),
-                            "holding_value": float(row.get("持股市值", 0)) if not _is_nan(row.get("持股市值", 0)) else 0,
-                            "change_pct": float(row.get("今日增持估计金额", 0)) if not _is_nan(row.get("今日增持估计金额", 0)) else 0,
+                            "holding_value": _num_or_none(row.get("持股市值")),
+                            "net_amount_yi": None,  # 单位未核实，不换算
+                            "hold_change_est_raw": _num_or_none(row.get("今日增持估计金额")),
+                            "amount_semantic": "今日增持估计金额（AKShare 原始值，单位未核实）",
+                            "amount_unit": "",
                         })
                     result["top_stocks_source"] = "akshare"
+                    # AKShare「今日排行」本身是按持股/增持排的，但我们未核实排序依据，
+                    # 标为 unverified，避免下游当成"按净买入额排名"。
+                    result["top_stocks_ranked_by"] = "akshare_today_rank_unverified"
                     print(f"[ALT] 北向 Top 持股 from AKShare (Tushare hsgt_top10 unavailable)")
             except Exception:
                 pass
         except Exception as e:
             result["error"] = str(e)
 
-    # 信号判断（基于趋势数据）
-    if result["trend"] and len(result["trend"]) >= 5:
-        recent_5d = sum(d["net_flow"] for d in result["trend"][-5:])
-        # 单位：亿元
-        if recent_5d > 50:
-            result["signal"] = "🟢 强势流入（5日 > 50亿），外资看多"
-        elif recent_5d > 10:
-            result["signal"] = "🟡 温和流入，外资偏乐观"
-        elif recent_5d > -30:
-            result["signal"] = "🟡 小幅流出，外资观望"
-        else:
-            result["signal"] = "🔴 大幅流出（5日 < -30亿），外资避险"
+    # 信号判断：净流入不可得，只描述成交额活跃度（禁止出现流入/流出措辞）
+    if result.get("net_flow_available"):
+        # 数据源恢复日频净买入披露后才会走到这里
+        nf5 = result.get("net_flow_5d")
+        if isinstance(nf5, (int, float)):
+            result["signal"] = f"5日净流入 {nf5:+.1f} 亿"
+    elif result.get("available") and result.get("turnover_today") is not None:
+        t_trend = result.get("turnover_trend", "平稳")
+        icon = {"显著放量": "🔵", "温和放量": "🔵", "平稳": "⚪",
+                "温和缩量": "⚪", "显著缩量": "⚪"}.get(t_trend, "⚪")
+        rng = result.get("turnover_5d_range", "")
+        rng_txt = f"，{rng}" if rng else ""
+        result["signal"] = (
+            f"{icon} 北向成交额 {result['turnover_today']:.0f} 亿（{t_trend}"
+            f"，5日均 {result.get('turnover_avg_5d')} 亿 vs 20日均 "
+            f"{result.get('turnover_avg_20d')} 亿{rng_txt}）；"
+            f"净买入方向数据不可得：2024-08-19 起交易所改为按季度披露"
+        )
+    else:
+        result["signal"] = "⚪ 北向数据暂不可得（成交额与净买入均未取到）"
 
     result = _clean_nan(result)
     _alt_cache.set(cache_key, result)

@@ -47,6 +47,89 @@ CACHE_DIR = Path(os.environ.get("DATA_DIR",
 CACHE_DIR.mkdir(parents=True, exist_ok=True)
 
 
+# ============================================================
+# 北向资金：写入缓存前的诚实降级过滤
+#
+# 背景：2024-08-19 起沪深交易所停止披露北向「日频净买入」（改为按季度
+# 公布），Tushare moneyflow_hsgt 的 north_money/hgt/sgt 自此填的是
+# 【当日成交额】。历史代码把它当"累计值"做相邻日差分求净流入，产出的
+# 今日/5日/20日净流入全是噪声（20日 -759.8 亿 vs 5日 +100.3 亿符号
+# 相反），并且被写进 precomputed 缓存、进而喂给了 LLM 做投资分析。
+#
+# cache_warmer 是 precomputed("factors") 的唯一写入方，所以在这里设一道
+# 闸门：只要 net_flow_available 不为 True，就把 net_flow_* 全部抹成
+# None、trend 固定为「数据不可得」，保证下游任何读缓存的 prompt 构造
+# 都拿不到假净流入数字。
+#
+# 注意：available=True 只代表成交额可得，判断净流入必须看
+# net_flow_available。
+# ============================================================
+
+NORTH_NET_FLOW_NOTE: str = (
+    "日频净流入自2024-08-19起沪深交易所已停止披露（改为按季度公布），本次分析无此数据"
+)
+
+
+def _safe_num(value, digits: int = 0, default: str = "?") -> str:
+    """安全格式化数字为字符串，None/非数字返回 default（防 TypeError）。"""
+    if value is None or isinstance(value, bool):
+        return default
+    try:
+        return f"{float(value):.{digits}f}"
+    except (TypeError, ValueError):
+        return default
+
+
+def _sanitize_north(nb) -> dict:
+    """把北向数据规整为"诚实降级"结构后再入缓存。
+
+    净流入不可得时（net_flow_available 非 True），强制清空 net_flow_*
+    并把 trend 置为「数据不可得」，避免任何残留的假数字流向 LLM。
+
+    Args:
+        nb: get_northbound_flow() 的返回值，可能是 None / 旧结构 / 新结构。
+
+    Returns:
+        规整后的字典；输入非 dict 时返回一个明确标记不可用的空结构。
+    """
+    if not isinstance(nb, dict):
+        return {
+            "available": False,
+            "net_flow_today": None,
+            "net_flow_5d": None,
+            "net_flow_20d": None,
+            "net_flow_available": False,
+            "unavailable_reason": NORTH_NET_FLOW_NOTE,
+            "trend": "数据不可得",
+        }
+
+    out = dict(nb)
+    if out.get("net_flow_available") is not True:
+        out["net_flow_today"] = None
+        out["net_flow_5d"] = None
+        out["net_flow_20d"] = None
+        out["net_flow_available"] = False
+        out["unavailable_reason"] = out.get("unavailable_reason") or NORTH_NET_FLOW_NOTE
+        # trend 一旦出现「流入」「流出」就是在用噪声编方向，直接压平
+        trend = str(out.get("trend") or "")
+        if ("流入" in trend) or ("流出" in trend) or not trend:
+            out["trend"] = "数据不可得"
+    return out
+
+
+def _north_summary_line(nb) -> str:
+    """构造北向数据的一行日志摘要（只报成交额，不报净流入数字）。"""
+    nb = nb if isinstance(nb, dict) else {}
+    if nb.get("turnover_today") is None:
+        return "北向: 成交额不可得, 净流入不可得（交易所已停止披露日频净买入）"
+    return (
+        f"北向成交额: {_safe_num(nb.get('turnover_today'), 0)}亿"
+        f"({nb.get('turnover_trend') or '—'}), "
+        f"近5日日均{_safe_num(nb.get('turnover_avg_5d'), 0)}亿, "
+        f"净流入不可得（交易所已停止披露日频净买入）"
+    )
+
+
 def _save_cache(name: str, data, ttl_hours: float = 12):
     """保存缓存文件。
 
@@ -959,11 +1042,11 @@ def _write_precomputed_fast():
         except Exception:
             pass
 
-        # 北向+融资+SHIBOR
+        # 北向+融资+SHIBOR（北向净流入不可得，入缓存前先做诚实降级过滤）
         try:
             from services.factor_data import get_northbound_flow, get_shibor, get_margin_trading
             save_precomputed("factors", {
-                "northbound": get_northbound_flow(),
+                "northbound": _sanitize_north(get_northbound_flow()),
                 "shibor": get_shibor(),
                 "margin": get_margin_trading(),
             })
@@ -1064,9 +1147,10 @@ def warm_weekend():
         val = get_valuation_percentile()
         if val:
             save_precomputed("valuation", val)
-        nb = get_northbound_flow() or {}
+        nb = _sanitize_north(get_northbound_flow())
         margin = get_margin_trading() or {}
         save_precomputed("factors", {"northbound": nb, "margin": margin})
+        print(f"    {_north_summary_line(nb)}")
         # ★ 新增 technical 指标（RSI/MACD/布林线）
         tech = get_technical_indicators()
         if tech:
@@ -1332,15 +1416,16 @@ def warm_harvest():
     try:
         from services.factor_data import get_northbound_flow, get_shibor, get_margin_trading
         factors = {
-            "northbound": get_northbound_flow(),
+            # 北向净流入自 2024-08-19 起不可得，入缓存前先过滤掉假数字
+            "northbound": _sanitize_north(get_northbound_flow()),
             "shibor": get_shibor(),
             "margin": get_margin_trading(),
         }
         save_precomputed("factors", factors)
         harvested.append("因子")
         north = factors.get("northbound", {})
-        print(f"    北向: {north.get('net_flow_today', '?')}亿, "
-              f"SHIBOR: {factors.get('shibor', {}).get('overnight', '?')}%")
+        print(f"    {_north_summary_line(north)}")
+        print(f"    SHIBOR: {factors.get('shibor', {}).get('overnight', '?')}%")
     except Exception as e:
         print(f"  ❌ 因子: {e}")
 

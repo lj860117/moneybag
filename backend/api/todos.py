@@ -57,7 +57,13 @@ async def list_todos(
 
 @router.post("/api/todos")
 async def create_new_todo(body: TodoCreateRequest, userId: str = "default"):
-    """创建新待办项"""
+    """创建新待办项
+
+    FIX 2026-08-30: 传 force=True 跳过 todo_manager 的幂等窗口。
+    这条路径是**用户显式点击创建**，同一规则连续建两条是合法意图，
+    不能被去重吞掉。自动规则生成（cfo_dashboard）才需要幂等约束。
+    总量上限 TODO_MAX_ENTRIES 对这条路径仍然生效。
+    """
     try:
         todo = create_todo(
             userId,
@@ -65,12 +71,21 @@ async def create_new_todo(body: TodoCreateRequest, userId: str = "default"):
             body.rule_triggered,
             due_by_days=body.due_by_days,
             metadata=body.metadata,
+            force=True,
         )
+        # FIX 2026-08-30: create_todo 在抢锁超时时会返回 None（明确放弃写入，
+        # 而不是硬等把请求卡死）。此时如实告诉前端"暂时不可用"，
+        # 不要回 ok=True 假装成功。
+        if todo is None:
+            raise HTTPException(503, "系统繁忙（用户数据写锁超时），请稍后重试")
         return {
             "ok": True,
             "todo": todo,
             "message": f"待办 '{body.title}' 创建成功",
         }
+    except HTTPException:
+        # 上面那个 503 必须原样抛出，不能被下面的 except 降级成 400
+        raise
     except Exception as e:
         raise HTTPException(400, f"创建失败: {str(e)}")
 

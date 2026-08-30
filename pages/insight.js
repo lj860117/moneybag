@@ -45,12 +45,18 @@ function renderV45FactorCards(d){
 const nb=d.northbound||{};const mg=d.margin||{};const tr=d.treasury||{};const sh=d.shibor||{};const dv=d.dividend||{};
 const cards=[];
 if(nb.available){
-const nbColor=nb.net_flow_5d>30?'var(--green)':nb.net_flow_5d<-30?'var(--red)':'var(--accent)';
-setExplain('northbound','北向资金','北向资金 = 外资通过沪股通/深股通买入A股的钱，被称为"聪明钱"。\n\n📊 今日净流入：'+(nb.net_flow_today||0)+'亿\n📊 5日累计：'+(nb.net_flow_5d||0)+'亿\n📊 20日累计：'+(nb.net_flow_20d||0)+'亿\n📊 趋势：'+nb.trend+'\n\n🔍 怎么看：\n• 连续大幅流入（>100亿/5日）→ 外资看好A股\n• 连续大幅流出（<-100亿/5日）→ 外资避险\n• 短期波动不用太在意，看5日/20日趋势更有意义\n\n💡 北向资金占A股成交额约5-8%，影响力不小。');
+const nbTo=(nb.turnover_today!=null)?nb.turnover_today:null;
+const nbTrend=nb.turnover_trend||'平稳';
+const nbAvg5=(nb.turnover_avg_5d!=null)?nb.turnover_avg_5d:null;
+const nbAvg20=(nb.turnover_avg_20d!=null)?nb.turnover_avg_20d:null;
+const nbRange=nb.turnover_5d_range?'（'+nb.turnover_5d_range+'）':'';
+const nbColor=nbTrend.indexOf('放量')>=0?'var(--accent)':nbTrend.indexOf('缩量')>=0?'var(--text2)':'var(--accent)';
+const nbReason=nb.unavailable_reason||'2024-08-19 起沪深交易所停止披露北向日频净买入，改为按季度公布';
+setExplain('northbound','北向资金（成交额）','北向资金 = 外资通过沪股通/深股通交易A股的钱。\n\n⚠️ 先说清楚一件事：净流入数据已经看不到了\n'+nbReason+'。\n所以这里不再显示"今日净流入X亿""5日累计Y亿"——现在的数据源算不出这些数字，硬算出来的是噪声，会把人往反方向带。想看外资净买入，只能等交易所的季度披露。\n\n📊 现在能看的是成交额（买入金额+卖出金额的合计）：\n• 今日成交额：'+(nbTo!=null?nbTo+'亿':'暂无')+'\n• 近5日日均：'+(nbAvg5!=null?nbAvg5+'亿'+nbRange:'暂无')+'\n• 近20日日均：'+(nbAvg20!=null?nbAvg20+'亿':'暂无')+'\n• 活跃度：'+nbTrend+'（近5日相对近20日）\n\n🔍 怎么看：\n• 放量 = 外资交投变活跃，分歧和调仓都在变多\n• 缩量 = 外资参与度下降，观望情绪重\n• 成交额是买卖双边合计，不含方向，所以放量既不代表在买、也不代表在卖\n\n💡 一句话：这个指标只能告诉你"外资今天忙不忙"，不能告诉你"外资在进还是在出"。别拿它当风向标。');
 cards.push(`<div style="background:var(--card);border-radius:12px;padding:12px;cursor:pointer" onclick="showExplain('northbound')">
-<div style="font-size:12px;font-weight:700">💰 北向资金</div>
-<div style="font-size:18px;font-weight:900;color:${nbColor};margin-top:4px">${nb.net_flow_today>0?'+':''}${nb.net_flow_today}亿</div>
-<div style="font-size:11px;color:var(--text2);margin-top:2px">5日 ${nb.net_flow_5d>0?'+':''}${nb.net_flow_5d}亿 · ${nb.trend}</div></div>`)}
+<div style="font-size:12px;font-weight:700">💰 北向成交额</div>
+<div style="font-size:18px;font-weight:900;color:${nbColor};margin-top:4px">${nbTo!=null?nbTo+'亿':'暂无'}</div>
+<div style="font-size:11px;color:var(--text2);margin-top:2px">${nbTrend} · 净流入已停披露</div></div>`)}
 if(mg.available){
 const mgColor=mg.trend.includes('上升')?'var(--red)':mg.trend.includes('下降')?'var(--green)':'var(--accent)';
 setExplain('margin_factor','融资融券','融资融券 = 借钱/借股票来炒股，反映市场的杠杆情绪。\n\n📊 融资余额：'+mg.margin_balance+'亿\n📊 5日变化：'+(mg.margin_change_5d>0?'+':'')+mg.margin_change_5d+'%\n📊 趋势：'+mg.trend+'\n\n🔍 怎么看：\n• 融资余额快速上升（>3%/5日）→ 散户加杠杆，市场过热\n• 融资余额快速下降（<-3%/5日）→ 去杠杆，可能恐慌\n• 温和变化属于正常市场波动\n\n⚠️ 杠杆是双刃剑：放大收益也放大亏损。');

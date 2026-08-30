@@ -181,7 +181,10 @@ def cfo_summary(userId: str = "", force: bool = False):
         except Exception:
             pass
     from services.cfo_dashboard import generate_cfo_summary
-    result = generate_cfo_summary(uid)
+    # FIX 2026-08-30: force=1 只有 cache_warmer 这类机器预热在用（见 scripts/cache_warmer.py），
+    # 机器读不应写用户 JSON —— 否则每次预热都往 todos 追加一条（曾堆到 153k 条 / 33.9MB）。
+    # 真人请求（force 缺省 False）保持原有落库行为。
+    result = generate_cfo_summary(uid, generate_todos=not force)
     # 写缓存
     try:
         cache_fp.write_text(_json.dumps({"data": result, "created_at": _time.time()}, ensure_ascii=False, default=str), encoding="utf-8")
@@ -194,7 +197,8 @@ def _bg_refresh_cfo(uid: str, cache_fp_str: str):
     try:
         import json as _json, time as _time
         from services.cfo_dashboard import generate_cfo_summary
-        result = generate_cfo_summary(uid)
+        # FIX 2026-08-30: 后台 stale 刷新是机器读，不落库待办（避免读路径写副作用）
+        result = generate_cfo_summary(uid, generate_todos=False)
         with open(cache_fp_str, "w", encoding="utf-8") as f:
             _json.dump({"data": result, "created_at": _time.time()}, f, ensure_ascii=False, default=str)
     except Exception:

@@ -45,3 +45,41 @@ backend/scripts/seed_qa_*.py
 #---- 运行时日志/本地环境标记（不入库）----
 backend/logs/
 .python-version
+
+# ============================================================
+# 部署漂移防御（2026-08-30 排查新增）
+# ============================================================
+# 来源：服务器上长出了 320 个 X/X/ 嵌套重复目录（backend/api/api/、
+# backend/services/services/、backend/infra/infra/ ...），是旧版 deploy.sh
+# 平铺上传（把 backend/api/*.py 又传进 backend/api/api/）造成的。
+# deploy.sh 已在本仓修好，这里加一层 git 侧的防御，确保这类目录
+# 即使再次出现也绝不会被误提交进版本库。
+backend/api/api/
+backend/services/services/
+backend/infra/infra/
+backend/scripts/scripts/
+backend/domain/domain/
+backend/use_cases/use_cases/
+backend/prompts/prompts/
+backend/routers/routers/
+backend/models/models/
+
+# ---- 临时/中间文件（绝不入库）----
+# data/users/*.tmp：atomic_write_json() 的临时文件。进程被 SIGKILL 时
+# except 分支来不及 unlink，会残留孤儿 .tmp（曾积 10 个共 33MB）。
+# 现由 backend/scripts/housekeeping_cron.py 定时清理，这里防止误提交。
+*.tmp
+data/users/*.tmp
+backend/data/users/*.tmp
+
+# ---- 清理脚本产生的备份（本地留档，不入库）----
+# backend/scripts/prune_todos.py --apply 写入前生成的安全备份
+*.bak-prune-*
+
+# ---- RMW 并发锁文件（不入库，且不可被清理脚本删除）----
+# services/persistence.py 的 user_write_lock() 用 fcntl.flock 防"丢更新"，
+# 锁文件是 data/users/<hash>.json.lock。属于运行时基础设施：
+# prune_todos.py（只 glob *.json）和 housekeeping_cron.py（只清 *.tmp
+# 和带日期的归档）都匹配不到它，这是有意设计，别加规则去清它。
+*.json.lock
+data/users/*.lock

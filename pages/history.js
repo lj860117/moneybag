@@ -25,7 +25,19 @@ async function showAnalysisDetail(id){const uid=getProfileId();
 try{const r=await fetch(`/api/analysis/detail/${id}?userId=${uid}`);const d=await r.json();
 if(d.error){alert(d.error);return}
 const snap=d.market_snapshot||{};
-const snapHtml=Object.keys(snap).length?`<div style="margin-top:12px;padding:8px;background:var(--bg2,rgba(0,0,0,.05));border-radius:8px;font-size:11px;color:var(--text2)">📊 分析时市场: 恐贪=${snap.fear_greed||'-'} | 估值=${snap.valuation_pct||'-'}% | 北向5日=${snap.north_5d||'-'}亿</div>`:'';
+/* 2026-08 北向口径修正：历史快照需同时兼容三种记录
+   老记录：只有 north_5d —— 是"成交额差分求和"望远镜化的假净流入（实测归档9个文件恒为145.6），不再展示
+   新记录：north_turnover_avg_5d / north_turnover_trend / north_turnover_today
+   中间态：两者都没有 → 整段省略
+   不能写 north_5d||'-'：「北向5日=-亿」这个标签本身仍在暗示"存在净流入这个数、只是没取到"，
+   而事实是交易所自 2024-08-19 起停止披露日频净买入，这个数从此不存在。 */
+const snapParts=[];
+if(snap.fear_greed!=null&&snap.fear_greed!=='')snapParts.push('恐贪='+snap.fear_greed);
+if(snap.valuation_pct!=null&&snap.valuation_pct!=='')snapParts.push('估值='+snap.valuation_pct+'%');
+if(snap.north_turnover_avg_5d!=null)snapParts.push('北向5日日均成交额='+snap.north_turnover_avg_5d+'亿'+(snap.north_turnover_trend?'（'+snap.north_turnover_trend+'）':''));
+else if(snap.north_turnover_today!=null)snapParts.push('北向成交额='+snap.north_turnover_today+'亿');
+else if(snap.north_5d!=null)snapParts.push('北向=旧快照的净买入字段已废弃、不予展示（交易所已停止披露日频净买入）');
+const snapHtml=snapParts.length?`<div style="margin-top:12px;padding:8px;background:var(--bg2,rgba(0,0,0,.05));border-radius:8px;font-size:11px;color:var(--text2)">📊 分析时市场: ${snapParts.join(' | ')}</div>`:'';
 const modal=document.createElement('div');modal.className='modal-overlay';modal.onclick=e=>{if(e.target===modal)modal.remove()};
 modal.innerHTML=`<div class="modal-content" style="max-height:80vh;overflow-y:auto">
 <div class="modal-title">${d.source_label||d.source} · ${d.type_display||translateAnalysisType(d.type)||d.type||'分析'} <span style="font-size:12px;font-weight:400;color:var(--text2)">${d.created_at?.slice(0,16)||''}</span></div>

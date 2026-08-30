@@ -48,6 +48,12 @@ AUDIT_LATEST = AUDIT_DIR / "latest.json"
 AUDIT_HISTORY_DIR = AUDIT_DIR / "history"
 AUDIT_HISTORY_DIR.mkdir(exist_ok=True)
 
+# 北向资金净流入不可得的标准说明（数据源口径变更，非故障）
+NORTH_NET_FLOW_UNAVAILABLE_NOTE: str = (
+    "2024-08-19 起沪深交易所停止披露北向日频净买入，改为按季度公布；"
+    "Tushare moneyflow_hsgt 的 north_money/hgt/sgt 现为当日成交额"
+)
+
 
 # ============================================================
 # 工具函数
@@ -73,7 +79,7 @@ def _check(
     返回 {"name", "status", "value_summary", "issue", "elapsed_ms"}
     """
     start = time.time()
-    result: dict[str, Any] = {"name": name, "status": "pass", "value_summary": "", "issue": ""}
+    result: dict[str, Any] = {"name": name, "status": "pass", "value_summary": "", "issue": "", "note": ""}
     try:
         val = fn()
         elapsed = int((time.time() - start) * 1000)
@@ -103,12 +109,17 @@ def _check(
                 break
 
         # 自定义验证器
+        # 2026-08: 验证器返回 (True, msg) 时 msg 不再被丢弃，而是记入 note。
+        # 这样"合法降级"类说明（如北向净流入已停止披露）能出现在审计清单里，
+        # LLM 看到后就不会把数据缺失误报成故障。
         if validators:
             for v in validators:
                 ok, msg = v(val)
                 if not ok:
                     result["status"] = "warn" if result["status"] == "pass" else result["status"]
                     result["issue"] += f" | {msg}"
+                elif msg:
+                    result["note"] = f"{result['note']} | {msg}".strip(" |") if result["note"] else msg
 
         # value_summary：截取关键字段做摘要（供 LLM 阅读）
         # FIX 2026-08-09: 旧逻辑只取字典前8个key，导致 pe_range/sample_bias/note等
@@ -118,6 +129,8 @@ def _check(
             _PRIORITY_KEYS = (
                 "pe_range", "sample_bias", "note", "sample_scope", "metric", "freshness",
                 "window_years", "window_days", "age_days", "reason", "level",
+                # 2026-08: 北向净流入不可得的口径说明必须让 LLM 看到，否则会误报"数据缺失"
+                "unavailable_reason", "net_flow_available",
             )
             priority_present = [k for k in _PRIORITY_KEYS if k in val]
             other_keys = [k for k in val.keys() if k not in priority_present]
@@ -138,6 +151,141 @@ def _check(
         result["elapsed_ms"] = int((time.time() - start) * 1000)
 
     return result
+
+
+# --- 北向资金 ---
+# 2026-08 加固：沪深交易所自 2024-08-19 起停止披露北向「日频净买入」
+# （改为按季度公布），Tushare moneyflow_hsgt 的 north_money/hgt/sgt 此后
+# 填的是【当日成交额】。旧探针有两个致命问题，本次一并修掉：
+#   1) 要求 net_flow_5d 必须存在 —— 新结构下它是 None，会被误报 fail，
+#      而"净流入不可得"是数据源变更导致的【合法降级】，不是故障；
+#   2) 只在 |net_flow_5d| > 5000亿 时才告警 —— 形同虚设。本次 bug 里
+#      20日净流 -759.8亿 却被标成「大幅流入」，方向都反了仍顺利过关，
+#      于是潜伏了三个月。
+# 加固后新增四类硬校验：净流入不可得时 trend 不许出现方向词、不许残留伪数字；
+# 净流入恢复可得时 trend 必须与 net_flow_5d 符号一致、5日与20日方向不许相互
+# 打脸、强措辞必须有对应幅度支撑；成交额必须落在 1000~6000 亿的合理区间。
+NORTH_TURNOVER_MIN = 1000.0   # 亿元，北向单日成交额正常下限
+NORTH_TURNOVER_MAX = 6000.0   # 亿元，北向单日成交额正常上限
+NORTH_NET_5D_MAX = 1500.0     # 亿元，5日净流入绝对值合理上限
+NORTH_NET_20D_MAX = 4000.0    # 亿元，20日净流入绝对值合理上限
+# 跨窗口符号冲突：只要 5日/20日方向相反、且其中【较大】一侧幅度达到这个量级，
+# 就必须人工确认 trend 描述的是哪个窗口。阈值取"较大一侧"而非"两侧都要大"——
+# 本次 bug 正是 5日+100.3亿 / 20日-759.8亿（短窗口幅度很小），若要求两侧都
+# 超阈值就会被漏掉。
+NORTH_SIGN_CONFLICT_MIN = 500.0
+# trend 出现「大幅/显著」等强措辞时，净流入幅度至少要达到这个量级，否则属于
+# "措辞强度与数值不符"（本次 bug 里 +100.3亿 被标成「大幅流入」）。
+NORTH_STRONG_WORD_MIN = 300.0
+NORTH_STRONG_WORDS = ("大幅", "显著", "巨额", "疯狂", "爆买", "狂抛")
+
+
+def _check_north(val: Any) -> tuple[bool, str]:
+    """校验北向资金数据。
+
+    Returns:
+        (ok, msg)。ok=False → 探针告警；ok=True 且 msg 非空 → 附加说明
+        （会作为 note 出现在审计清单里，供 LLM 理解降级原因）。
+    """
+    if not isinstance(val, dict):
+        return False, "非 dict"
+
+    notes: list[str] = []
+    trend = str(val.get("trend") or "")
+    has_direction_word = ("流入" in trend) or ("流出" in trend)
+    net_available = val.get("net_flow_available")
+
+    # ---- 1. 净流入维度 ----
+    if net_available is True:
+        # 净流入恢复可得（例如接入了季度披露或新数据源）→ 做方向一致性校验
+        flow_5d = val.get("net_flow_5d")
+        if flow_5d is None:
+            return False, "net_flow_available=True 但 net_flow_5d 缺失"
+        try:
+            f5 = float(flow_5d)
+        except (TypeError, ValueError):
+            return False, f"net_flow_5d={flow_5d!r} 非数值"
+
+        if abs(f5) > NORTH_NET_5D_MAX:
+            return False, (f"net_flow_5d={f5:+.1f}亿 超出合理区间"
+                           f"（±{NORTH_NET_5D_MAX:.0f}亿），疑似单位错误或算法退化")
+
+        # ★ 本次 bug 特征：数值为负却标注「流入」→ 方向与符号必须一致
+        if f5 > 0 and "流出" in trend:
+            return False, (f"趋势方向矛盾: net_flow_5d={f5:+.1f}亿（净买入）"
+                           f"但 trend='{trend}' 标注为流出")
+        if f5 < 0 and "流入" in trend:
+            return False, (f"趋势方向矛盾: net_flow_5d={f5:+.1f}亿（净卖出）"
+                           f"但 trend='{trend}' 标注为流入")
+
+        # ★ 措辞强度校验：+100.3亿 却标「大幅流入」正是本次 bug 的表征之一
+        if abs(f5) < NORTH_STRONG_WORD_MIN:
+            for word in NORTH_STRONG_WORDS:
+                if word in trend:
+                    return False, (f"趋势措辞与数值不符: net_flow_5d={f5:+.1f}亿 "
+                                   f"（<{NORTH_STRONG_WORD_MIN:.0f}亿）却标注为「{trend}」")
+
+        # ★ 跨窗口一致性：5日与20日方向相反 → 差分求和退化 / 窗口标注错乱的典型症状
+        flow_20d = val.get("net_flow_20d")
+        if flow_20d is not None:
+            try:
+                f20 = float(flow_20d)
+            except (TypeError, ValueError):
+                return False, f"net_flow_20d={flow_20d!r} 非数值"
+            if abs(f20) > NORTH_NET_20D_MAX:
+                return False, (f"net_flow_20d={f20:+.1f}亿 超出合理区间"
+                               f"（±{NORTH_NET_20D_MAX:.0f}亿）")
+            if f5 * f20 < 0 and max(abs(f5), abs(f20)) >= NORTH_SIGN_CONFLICT_MIN:
+                return False, (f"5日/20日净流入方向相反且幅度显著: 5日{f5:+.1f}亿 vs "
+                               f"20日{f20:+.1f}亿，趋势标注为「{trend}」——"
+                               f"疑似把当日成交额当累计值做差分（N日累计退化为首尾两日之差），"
+                               f"或 trend 只反映短窗口却未标注窗口")
+        notes.append(f"净流入可得: 5日{f5:+.1f}亿, trend={trend}")
+    else:
+        # ---- 净流入不可得 = 合法降级状态，判 pass，但要防"假数据换皮" ----
+        if has_direction_word:
+            return False, (f"净流入不可得(net_flow_available={net_available!r})，"
+                           f"但 trend='{trend}' 仍标注了流入/流出方向，"
+                           f"疑似用成交额噪声编造资金流向")
+        for key in ("net_flow_today", "net_flow_5d", "net_flow_20d"):
+            if val.get(key) is not None:
+                return False, (f"净流入不可得但 {key}={val.get(key)!r} 非空，"
+                               f"存在残留的伪净流入数据")
+        reason = str(val.get("unavailable_reason") or "").strip()
+        notes.append("北向净流入=合法降级（非故障）：" + (reason or NORTH_NET_FLOW_UNAVAILABLE_NOTE))
+
+    # ---- 2. 成交额合理性区间校验 ----
+    turnover = val.get("turnover_today")
+    if turnover is None:
+        if val.get("available"):
+            return False, "available=True 但 turnover_today 缺失"
+        notes.append("成交额亦不可得（available=False）")
+    else:
+        try:
+            t_today = float(turnover)
+        except (TypeError, ValueError):
+            return False, f"turnover_today={turnover!r} 非数值"
+        if not (NORTH_TURNOVER_MIN <= t_today <= NORTH_TURNOVER_MAX):
+            return False, (f"turnover_today={t_today:.1f}亿 超出合理区间"
+                           f"（{NORTH_TURNOVER_MIN:.0f}~{NORTH_TURNOVER_MAX:.0f}亿），"
+                           f"疑似单位错误或数据源口径变更")
+        notes.append(f"成交额{t_today:.0f}亿({val.get('turnover_trend') or '—'})")
+
+        # 均值字段同样做单日区间校验：防止把"N日累计"错当"N日均值"
+        for key, label in (("turnover_avg_5d", "5日均值"), ("turnover_avg_20d", "20日均值")):
+            raw_avg = val.get(key)
+            if raw_avg is None:
+                continue
+            try:
+                avg_f = float(raw_avg)
+            except (TypeError, ValueError):
+                return False, f"{key}={raw_avg!r} 非数值"
+            if not (NORTH_TURNOVER_MIN <= avg_f <= NORTH_TURNOVER_MAX):
+                return False, (f"{key}={avg_f:.1f}亿 超出单日成交额合理区间"
+                               f"（{NORTH_TURNOVER_MIN:.0f}~{NORTH_TURNOVER_MAX:.0f}亿），"
+                               f"{label}可能被误算成 N 日累计值")
+
+    return True, "；".join(notes)
 
 
 # ============================================================
@@ -174,16 +322,7 @@ def run_data_probes() -> list[dict[str, Any]]:
         return True, ""
     results.append(_check("估值百分位", lambda: __import__("services.market_data", fromlist=["get_valuation_percentile"]).get_valuation_percentile(), validators=[_check_val]))
 
-    # --- 北向资金 ---
-    def _check_north(val: Any) -> tuple[bool, str]:
-        if not isinstance(val, dict):
-            return False, "非 dict"
-        flow = val.get("net_flow_5d", None)
-        if flow is None:
-            return False, "缺少 net_flow_5d"
-        if abs(float(flow)) > 5000:   # 单日北向超 5000 亿视为异常
-            return False, f"net_flow_5d={flow} 数值异常（>5000亿）"
-        return True, ""
+    # --- 北向资金（探针实现见模块级 _check_north，便于单测直接导入）---
     try:
         from services.factor_data import get_northbound_flow
         results.append(_check("北向资金", get_northbound_flow, validators=[_check_north]))
@@ -411,14 +550,17 @@ def run_llm_audit(probe_results: list[dict[str, Any]], smoke_results: list[dict[
         return {"available": False, "analysis": "", "issues": [], "score": 100}
 
     # 组装摘要给 LLM
+    # 2026-08: 附带 note（合法降级说明），避免 LLM 把口径变更误判为数据故障
     probe_text = "\n".join(
         f"  [{r['status'].upper()}] {r['name']}: {r['value_summary']}"
-        + (f" ⚠️{r['issue']}" if r["issue"] else "")
+        + (f" ⚠️{r['issue']}" if r.get("issue") else "")
+        + (f" 📝{r['note']}" if r.get("note") else "")
         for r in probe_results
     )
     smoke_text = "\n".join(
         f"  [{r['status'].upper()}] {r['name']}: {r['value_summary']}"
-        + (f" ⚠️{r['issue']}" if r["issue"] else "")
+        + (f" ⚠️{r['issue']}" if r.get("issue") else "")
+        + (f" 📝{r['note']}" if r.get("note") else "")
         for r in smoke_results
     )
 
@@ -435,6 +577,7 @@ def run_llm_audit(probe_results: list[dict[str, Any]], smoke_results: list[dict[
 - 新闻情绪 采样的是个股/行业/政策类新闻（如定增、回购、关税退税），地缘风险模块单独抓取"财经"/"A股"关键词新闻并按军事冲突等分类打分——两套新闻池不重叠。"新闻情绪乐观但地缘风险极端"是正常现象，不代表情绪判断遗漏了地缘负面信息。
 - 研报共识 天然存在看多偏差（券商买入/增持覆盖占70%+是行业常态），已在数据里标注 sample_bias 说明，不要重复指出"未做偏差校正"。
 - 13维信号 的置信度反映的是"多空分歧程度+信号强度"，市场震荡胶着期置信度天然偏低（30%-50%区间），只要数据里的 confidence_reason 不是 data_missing，就不是bug，不要重复上报为"功能风险"。
+- 北向资金 的"净流入"维度已【永久不可得】：沪深交易所自 2024-08-19 起停止披露北向日频净买入（改为按季度公布），数据源现在只有"当日成交额"。所以 net_flow_today/net_flow_5d/net_flow_20d 为空、net_flow_available=false、trend="数据不可得" 都是【正常的合法降级】，不要报"北向数据缺失/失效/长期为0"。北向成交额是买卖双边合计的活跃度指标，不含方向，请勿把它解读为资金流入或流出。反过来，如果你看到 net_flow_available=false 却仍出现"流入/流出"字样的趋势标注，那是真 bug，必须上报为 high。
 如果发现的问题属于以上几类，请不要计入 issues，除非数值明显超出正常范围（比如置信度<20%或数据字段缺失）。
 
 请从以下角度分析剩余的真实问题：

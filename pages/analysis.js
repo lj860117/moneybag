@@ -321,7 +321,16 @@ if(d.overall_signal)html+=`<div style="padding:10px;background:rgba(59,130,246,.
 const nb=d.northbound||{};
 html+=`<div style="padding:10px;margin-bottom:8px;background:var(--bg2);border-radius:10px"><div style="font-size:13px;font-weight:700;margin-bottom:6px">🏦 北向资金</div>`;
 if(nb.signal)html+=`<div style="font-size:12px;margin-bottom:6px">${nb.signal}</div>`;
-if(nb.top_stocks?.length>0){html+=`<div style="font-size:11px;color:var(--text2)">Top 持股: `;nb.top_stocks.slice(0,5).forEach(s=>{html+=`<span style="margin-right:6px">${s.name}</span>`});html+=`</div>`}
+/* 2026-08 口径修正：原文案写死「Top 持股」，两处都不成立
+   1. 不是"持股"——这是沪深股通【十大成交活跃股】（按成交额上榜），Tushare 该接口
+      根本不提供持股市值，holding_value 已由数据层显式置为 null
+   2. 不是"Top"——net_amount 实测恒为 None，排序 key 缺失时 Python 稳定排序保持原始
+      顺序，等于把任意顺序伪装成"按金额降序的榜"。现在改为读 top_stocks_ranked_by
+      显式判断能否声称排名 */
+if(nb.top_stocks?.length>0){
+const _rb=nb.top_stocks_ranked_by;
+const _rbLabel=_rb==='net_amount'?'Top 净买入个股':_rb==='akshare_today_rank_unverified'?'北向活跃个股（AKShare今日排行，排序依据未核实）':'北向成交活跃个股（顺序不代表排名）';
+html+=`<div style="font-size:11px;color:var(--text2)">${_rbLabel}: `;nb.top_stocks.slice(0,5).forEach(s=>{html+=`<span style="margin-right:6px">${s.name||'?'}</span>`});html+=`</div>`}
 html+=`</div>`;
 // 融资融券
 const mg=d.margin||{};

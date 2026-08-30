@@ -30,19 +30,35 @@ from infra.cache import MemoryCache
 factor_cache = MemoryCache(default_ttl=FACTOR_CACHE_TTL)
 
 def get_northbound_flow() -> dict:
-    """获取北向资金（沪股通+深股通）净流入数据
+    """获取北向资金【成交额】数据（净流入维度已不可得）
 
     V6 Phase 3b 架构：Tushare moneyflow_hsgt（主） → AKShare（降级）
-    - Tushare: 5000积分，moneyflow_hsgt 数据持续更新到最新交易日
-    - AKShare: stock_hsgt_hist_em 在 2024-08-16 后全 NaN，仅作为历史回看降级
+
+    ⚠️ 口径关键事实（2026-08 修正）：
+    自 2024-08-19 起沪深交易所停止披露北向日频净买入（改为按季度公布），
+    因此**任何数据源都拿不到日频北向净流入**：
+    - Tushare moneyflow_hsgt 的 north_money/hgt/sgt 现为「当日成交额」，
+      不是净买入，也不是累计值（详见 tushare_data.get_northbound_flow 的注释）；
+    - AKShare stock_hsgt_hist_em 在 2024-08-16 后净流入列全为 NaN。
+    所以本函数只提供成交额，net_flow_* 一律为 None，并置 net_flow_available=False。
+
+    Returns:
+        dict: 见 tushare_data.get_northbound_flow 的返回契约。
+
+    Note:
+        `available` 与 `net_flow_available` 语义不同，下游必须区分：
+        - `available=True`  表示这个数据源整体成功拿到了数据（成交额可用）；
+        - `net_flow_available=False` 单独表示「净流入」这一个维度不可得。
+        下游据此决定是**跳过净流入因子**（正常）还是**上报数据源故障**（异常）。
     """
+    from services.tushare_data import _north_unavailable_result
+
     cache_key = "northbound"
     cached = factor_cache.get(cache_key)
     if cached is not None:
         return cached
 
-    result = {"net_flow_today": 0, "net_flow_5d": 0, "net_flow_20d": 0, "trend": "中性", "available": False,
-              "source": "none"}
+    result = _north_unavailable_result("none")
 
     # ── 方案 A（主）：Tushare moneyflow_hsgt ──
     try:
@@ -51,7 +67,9 @@ def get_northbound_flow() -> dict:
             ts_data = ts_north(days=30)
             if ts_data.get("available"):
                 result.update(ts_data)
-                print(f"[NORTH] Tushare OK: today={result['net_flow_today']}亿, 5d={result['net_flow_5d']}亿")
+                print(f"[NORTH] Tushare OK: 成交额 today={result['turnover_today']}亿, "
+                      f"avg5d={result['turnover_avg_5d']}亿, "
+                      f"turnover_trend={result['turnover_trend']}（净流入维度不可得）")
                 factor_cache.set(cache_key, result)
                 return result
             else:
@@ -60,8 +78,15 @@ def get_northbound_flow() -> dict:
         print(f"[NORTH] Tushare failed, fallback AKShare: {e}")
 
     # ── 方案 B（降级）：AKShare stock_hsgt_hist_em ──
-    # 注意：2024-08-16 后数据全 NaN，只能拿到历史趋势
-    result["notice"] = "2024年8月起交易所不再披露每日北向净流入，AKShare 降级数据可能过旧"
+    # ⚠️ 该接口的净流入列自 2024-08-16 起全为 NaN，且它**不提供成交额**。
+    # 旧实现在这里用 sum(vals[-5:]) 算「5日累计净流入」并判定「大幅流入/流出」，
+    # 与 Tushare 的差分逻辑一样是错的（数据本身已失去净买入含义）。
+    # 现在只探测接口是否还有可用历史，用于给出更准确的降级说明，不再产出任何净流入判断。
+    result["notice"] = (
+        "2024-08-19 起交易所不再披露每日北向净流入（改季度公布）；"
+        "AKShare stock_hsgt_hist_em 净流入列已全为 NaN，且不提供成交额，降级后无可用数据"
+    )
+    result["source"] = "akshare_fallback"
     try:
         from infra.data_source.alt.flows import get_hsgt_hist
         df = None
@@ -70,39 +95,23 @@ def get_northbound_flow() -> dict:
         except Exception:
             pass
 
-        if df is not None and len(df) >= 20:
+        if df is not None and len(df) > 0:
             val_col = next((c for c in df.columns if "净流入" in str(c) or "value" in str(c).lower()), None)
             date_col = next((c for c in df.columns if "日期" in str(c) or "date" in str(c).lower()), df.columns[0])
-            if val_col:
-                df = df.sort_values(date_col, ascending=True)
+            if val_col is not None:
                 valid_df = df.dropna(subset=[val_col])
-                if len(valid_df) >= 20:
-                    vals = valid_df[val_col].astype(float).values
-                    result["net_flow_today"] = round(float(vals[-1]), 2)
-                    result["net_flow_5d"] = round(float(sum(vals[-5:])), 2)
-                    result["net_flow_20d"] = round(float(sum(vals[-20:])), 2)
-                    result["available"] = True
-                    result["source"] = "akshare_fallback"
-                    # 检查数据是否过旧
+                # 记录最后一个非 NaN 净流入日期，用于说明断层位置（不参与任何计算/打分）
+                if len(valid_df) > 0:
                     try:
                         import pandas as pd
                         last_date = pd.to_datetime(valid_df[date_col].iloc[-1])
                         days_old = (datetime.now() - last_date).days
-                        if days_old > 7:
-                            result["notice"] = f"数据最后更新于{days_old}天前(AKShare降级)"
-                            result["stale"] = True
+                        result["stale"] = True
+                        result["last_net_flow_date"] = last_date.strftime("%Y%m%d")
+                        result["notice"] += f"（净流入最后一个有效日期在 {days_old} 天前）"
                     except Exception:
                         result["stale"] = True
-
-                    if result["net_flow_5d"] > 50:
-                        result["trend"] = "大幅流入"
-                    elif result["net_flow_5d"] > 10:
-                        result["trend"] = "净流入"
-                    elif result["net_flow_5d"] < -50:
-                        result["trend"] = "大幅流出"
-                    elif result["net_flow_5d"] < -10:
-                        result["trend"] = "净流出"
-                    print(f"[NORTH] AKShare fallback: today={result['net_flow_today']}亿, stale={result.get('stale')}")
+        print("[NORTH] AKShare fallback: 无可用成交额，净流入维度不可得，本因子将被跳过")
     except Exception as e:
         print(f"[NORTH] AKShare also failed: {e}")
 
@@ -771,9 +780,13 @@ def enrich(ctx):
     """Pipeline Layer2 自动调用 — 注入北向资金 + 融资融券 + 国债 + 北向持股行业分布
 
     做 3 件事:
-    1. 拉北向资金净流入（历史趋势，2024-08后可能 stale）
+    1. 拉北向资金成交额（净流入维度自 2024-08-19 起不可得，该因子会被跳过）
     2. 拉北向持股行业分布（V6 新增，用持股市值推算行业偏好）
     3. 拉融资融券 + 国债收益率 + SHIBOR 作为辅助因子
+
+    打分策略（2026-08 修正）：
+    北向净流入因子仅在 net_flow_available=True 时参与加权，否则**从加权分母中剔除**
+    （而不是给 0.5 中性分 —— 中性分会把其他因子的信号稀释掉，含义完全不同）。
     """
     try:
         # 1. 北向资金传统数据
@@ -789,31 +802,65 @@ def enrich(ctx):
         treasury = get_treasury_yield()
         shibor = get_shibor()
 
-        # 方向判断
-        north_trend = north.get("trend", "中性")
-        if north_trend in ("大幅流入", "净流入"):
-            direction = "bullish"
-            score = 0.65
-        elif north_trend in ("大幅流出", "净流出"):
-            direction = "bearish"
-            score = 0.35
+        # ── 加权打分：只有真实可得的因子才进分母 ──
+        # weighted_factors: [(因子名, 分数, 权重)]
+        weighted_factors = []
+        north_trend = north.get("trend", "数据不可得")
+        north_net_available = bool(north.get("net_flow_available", False))
+        north_skipped_reason = ""
+
+        if north_net_available:
+            # 保留原有映射，供数据源恢复日频净买入披露后自动生效
+            if north_trend in ("大幅流入", "净流入"):
+                weighted_factors.append(("north_flow", 0.65, 1.0))
+            elif north_trend in ("大幅流出", "净流出"):
+                weighted_factors.append(("north_flow", 0.35, 1.0))
+            else:
+                weighted_factors.append(("north_flow", 0.5, 1.0))
         else:
-            direction = "neutral"
+            # 关键：不参与打分（不是给中性 0.5 分），权重从分母中剔除
+            north_skipped_reason = north.get("unavailable_reason", "北向净流入数据不可得")
+
+        # 融资情绪辅助因子（权重远低于北向，分数区间对齐旧逻辑的 0.5±0.05）
+        margin_trend = margin.get("trend", "均衡")
+        if margin_trend == "加杠杆":
+            weighted_factors.append(("margin", 0.55, 0.15))
+        elif margin_trend == "去杠杆":
+            weighted_factors.append(("margin", 0.45, 0.15))
+        else:
+            weighted_factors.append(("margin", 0.5, 0.15))
+
+        total_weight = sum(w for _, _, w in weighted_factors)
+        if total_weight > 0:
+            score = round(sum(s * w for _, s, w in weighted_factors) / total_weight, 4)
+        else:
+            # 所有因子都不可得 → 无观点
             score = 0.5
 
-        # 融资情绪辅助
-        margin_trend = margin.get("trend", "均衡")
-        if margin_trend == "加杠杆" and direction != "bearish":
-            score = min(score + 0.05, 0.7)
-        elif margin_trend == "去杠杆" and direction != "bullish":
-            score = max(score - 0.05, 0.3)
+        if score > 0.55:
+            direction = "bullish"
+        elif score < 0.45:
+            direction = "bearish"
+        else:
+            direction = "neutral"
 
         # 构造 detail
-        detail_parts = [f"北向:{north_trend}"]
-        if north.get("available"):
-            detail_parts.append(f"5日净流入{north.get('net_flow_5d', 0):.1f}亿")
-        if north.get("stale"):
-            detail_parts.append("⚠️北向净流入数据过旧")
+        detail_parts = []
+        if north_net_available:
+            detail_parts.append(f"北向:{north_trend}")
+            nf5 = north.get("net_flow_5d")
+            if isinstance(nf5, (int, float)):
+                detail_parts.append(f"5日净流入{nf5:+.1f}亿")
+        else:
+            detail_parts.append("北向净流入:数据不可得(交易所2024-08-19起改季度披露)")
+            # 成交额仍可得时，给出活跃度描述（不含任何流入/流出措辞）
+            if north.get("available"):
+                t_today = north.get("turnover_today")
+                t_trend = north.get("turnover_trend", "")
+                if isinstance(t_today, (int, float)):
+                    detail_parts.append(f"北向成交额{t_today:.0f}亿({t_trend})")
+                elif t_trend:
+                    detail_parts.append(f"北向成交额{t_trend}")
         if north_hold.get("available"):
             top3 = [s["name"] for s in north_hold.get("top_sectors", [])[:3]]
             detail_parts.append(f"外资重仓:{','.join(top3)}")
@@ -821,16 +868,39 @@ def enrich(ctx):
         if treasury.get("available"):
             detail_parts.append(f"10Y国债{treasury.get('yield_10y', 'N/A')}%")
 
+        # 置信度：北向净流入因子缺失时下调（可用因子变少）
+        if not north_net_available:
+            confidence = 45
+        elif north.get("stale"):
+            confidence = 50
+        else:
+            confidence = 65
+
         ctx.modules_results["factor_data"] = {
             "direction": direction,
             "score": score,
-            "confidence": 50 if north.get("stale") else 65,
+            "confidence": confidence,
             "available": True,
             "detail": " | ".join(detail_parts),
             "north_trend": north_trend,
-            "north_flow_5d": north.get("net_flow_5d", 0),
-            "north_flow_20d": north.get("net_flow_20d", 0),
+            # 净流入维度：不可得时为 None，下游禁止直接做算术/格式化
+            "north_net_flow_available": north_net_available,
+            "north_flow_5d": north.get("net_flow_5d"),
+            "north_flow_20d": north.get("net_flow_20d"),
+            "north_unavailable_reason": north.get("unavailable_reason", ""),
+            # 成交额维度：真实可得
+            "north_turnover_today": north.get("turnover_today"),
+            "north_turnover_avg_5d": north.get("turnover_avg_5d"),
+            "north_turnover_avg_20d": north.get("turnover_avg_20d"),
+            "north_turnover_trend": north.get("turnover_trend", ""),
+            "north_data_available": bool(north.get("available", False)),
             "north_stale": north.get("stale", False),
+            # 打分透明化：哪些因子进了分母、哪个被剔除及原因
+            "factors_used": [name for name, _, _ in weighted_factors],
+            "factor_weights_used": {name: w for name, _, w in weighted_factors},
+            "factors_skipped": ([] if north_net_available else ["north_flow"]),
+            "factors_skipped_reason": ({} if north_net_available
+                                       else {"north_flow": north_skipped_reason}),
             "north_holdings_available": north_hold.get("available", False),
             "north_top_sectors": north_hold.get("top_sectors", [])[:10],
             "north_total_stocks": north_hold.get("total_stocks", 0),

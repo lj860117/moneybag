@@ -138,15 +138,32 @@ def _collect_market_snapshot() -> dict:
         snapshot["oil"] = {"price": 0}
 
     # 北向资金
+    # ⚠️ 净流入自 2024-08-19 起交易所改为按季度披露，日频不可得（口径说明见
+    #    tushare_data.get_northbound_flow）。这里只取成交额活跃度维度。
+    #    注意不能写 north.get("net_flow_5d", 0) —— 键存在且值为 None 时
+    #    .get 返回 None 而不是默认值 0，下游格式化会抛 TypeError。
     try:
         from services.factor_data import get_northbound_flow
         north = get_northbound_flow()
         snapshot["northbound"] = {
-            "flow_5d": north.get("net_flow_5d", 0),
-            "trend": north.get("trend", "中性"),
+            "net_flow_available": bool(north.get("net_flow_available", False)),
+            "unavailable_reason": north.get("unavailable_reason", ""),
+            "turnover_today": north.get("turnover_today"),
+            "turnover_avg_5d": north.get("turnover_avg_5d"),
+            "turnover_avg_20d": north.get("turnover_avg_20d"),
+            "turnover_trend": north.get("turnover_trend", "数据不可得"),
+            "available": bool(north.get("available", False)),
         }
     except Exception:
-        snapshot["northbound"] = {"flow_5d": 0, "trend": "中性"}
+        snapshot["northbound"] = {
+            "net_flow_available": False,
+            "unavailable_reason": "北向数据获取失败",
+            "turnover_today": None,
+            "turnover_avg_5d": None,
+            "turnover_avg_20d": None,
+            "turnover_trend": "数据不可得",
+            "available": False,
+        }
 
     # 行业轮动
     try:
@@ -210,8 +227,32 @@ def _build_scenario_prompt(scenario: dict, market_snapshot: dict, user_portfolio
     if oil.get("brent_est"):
         market_lines.append(f"- 布伦特原油估价：~{oil['brent_est']}美元/桶（预警={oil.get('alert_level', 'normal')}）")
 
+    # 北向资金：净流入维度不可得时，只喂成交额活跃度，并显式给 LLM 划边界，
+    # 防止模型把成交额（恒正的换手规模）误读成资金流入方向。
     north = market_snapshot.get("northbound", {})
-    market_lines.append(f"- 北向资金：近5日{north.get('flow_5d', 0):.1f}亿，趋势={north.get('trend', '中性')}")
+    if north.get("net_flow_available"):
+        nf5 = north.get("net_flow_5d")
+        if isinstance(nf5, (int, float)):
+            market_lines.append(f"- 北向资金：近5日净流入{nf5:+.1f}亿，趋势={north.get('trend', '')}")
+    elif north.get("available") and isinstance(north.get("turnover_today"), (int, float)):
+        t_avg5 = north.get("turnover_avg_5d")
+        t_avg20 = north.get("turnover_avg_20d")
+        line = (f"- 北向资金成交额：今日{north['turnover_today']:.0f}亿"
+                f"，活跃度={north.get('turnover_trend', '平稳')}")
+        if isinstance(t_avg5, (int, float)) and isinstance(t_avg20, (int, float)):
+            line += f"（5日均{t_avg5:.0f}亿 vs 20日均{t_avg20:.0f}亿）"
+        market_lines.append(line)
+        market_lines.append(
+            "  ⚠️ 北向【净买入/净流出】数据不可得：自2024-08-19起沪深交易所停止披露日频北向净买入，"
+            "改为按季度公布。上面的成交额是买入额+卖出额的总规模（恒为正），"
+            "**不代表资金流入或流出方向**。请勿据此推断外资在买入还是卖出，"
+            "也不要在结论中出现「北向流入/流出」「外资加仓/减仓」等方向性表述。"
+        )
+    else:
+        market_lines.append(
+            "- 北向资金：数据不可得（净买入自2024-08-19起改为季度披露，且本次未取到成交额）。"
+            "请勿对北向资金方向做任何推断。"
+        )
 
     val = market_snapshot.get("valuation", {})
     if val.get("percentile"):

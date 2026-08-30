@@ -18,7 +18,7 @@ from config import DATA_DIR, RECEIPTS_DIR
 from models.schemas import (
     UserData, LedgerEntry, IncomeSourceCreate, IncomeSourceRecord,
 )
-from services.persistence import load_user, save_user, _user_file
+from services.persistence import load_user, save_user, _user_file, user_write_lock
 from services.portfolio_calc import calc_holdings_from_transactions, ensure_v4_portfolio
 from services.data_layer import (
     get_fund_nav, get_valuation_percentile, get_fear_greed_index,
@@ -35,18 +35,26 @@ from api.shared_helpers import (
 
 @router.post("/api/user/save")
 def save_user_data(data: UserData):
-    """保存用户数据到服务端（兼容V3和V4）"""
-    user = load_user(data.userId)
-    if data.portfolio:
-        if isinstance(data.portfolio, dict):
-            user["portfolio"] = data.portfolio
-        else:
-            user["portfolio"] = data.portfolio
-    if data.ledger:
-        user["ledger"] = data.ledger
-    if not user.get("createdAt"):
-        user["createdAt"] = datetime.now().isoformat()
-    save_user(user)
+    """保存用户数据到服务端（兼容V3和V4）
+
+    FIX 2026-08-30（并发丢更新）：这一处是全项目最危险的 RMW ——
+    它**整体覆写** portfolio / ledger。不加锁的话，两个并发请求里后写的那个
+    会把前一个的整份持仓/账本吃掉，且完全无声无息。
+    """
+    with user_write_lock(data.userId) as acquired:
+        if not acquired:
+            raise HTTPException(503, "系统繁忙（用户数据写锁超时），请稍后重试")
+        user = load_user(data.userId)
+        if data.portfolio:
+            if isinstance(data.portfolio, dict):
+                user["portfolio"] = data.portfolio
+            else:
+                user["portfolio"] = data.portfolio
+        if data.ledger:
+            user["ledger"] = data.ledger
+        if not user.get("createdAt"):
+            user["createdAt"] = datetime.now().isoformat()
+        save_user(user)
     return {"status": "ok", "userId": data.userId}
 
 
@@ -70,18 +78,27 @@ def get_user_preference(userId: str):
 
 @router.put("/api/user/preference")
 def update_user_preference(userId: str, body: dict):
-    """更新用户偏好"""
+    """更新用户偏好
+
+    FIX 2026-08-30: user_write_lock 保护 RMW。
+    """
     from services.audit_log import audit_log
-    user = load_user(userId)
 
-    changed = {}
-    for key in ["display_mode", "risk_profile", "push_preferences", "watchlist_config"]:
-        if key in body:
-            old_val = user.get(key)
-            user[key] = body[key]
-            changed[key] = {"old": old_val, "new": body[key]}
+    with user_write_lock(userId) as acquired:
+        if not acquired:
+            raise HTTPException(503, "系统繁忙（用户数据写锁超时），请稍后重试")
+        user = load_user(userId)
 
-    save_user(user)
+        changed = {}
+        for key in ["display_mode", "risk_profile", "push_preferences", "watchlist_config"]:
+            if key in body:
+                old_val = user.get(key)
+                user[key] = body[key]
+                changed[key] = {"old": old_val, "new": body[key]}
+
+        save_user(user)
+
+    # 锁外：审计日志（写的是另一个文件，不占用户锁）
     audit_log("preference_update", user_id=userId, detail=changed)
     return {"success": True, "changed": list(changed.keys())}
 
@@ -172,72 +189,94 @@ async def ocr_receipt(file: UploadFile = File(...), userId: str = Form("")):
     ocr_result = await _do_ocr(receipt_path, content)
 
     if userId and ocr_result.get("amount", 0) > 0:
-        user = load_user(userId)
-        screenshot_type = ocr_result.get("screenshot_type", "consumption")
+        # FIX 2026-08-30（并发丢更新）：
+        # 原实现是 load_user 一次 + 三个互斥分支各自 save_user 一次。
+        # 三个 save 虽然是 if/elif/else（单次请求只会走一个），但整段
+        # load→改→save 仍是一个 RMW 临界区，必须整体加锁 —— 绝不能给三处
+        # 各包一个锁，那会切成三个独立临界区、中间留窗口（虽然本函数不会连续
+        # 走两个分支，但那种写法一旦被后人改成非互斥就立刻出错）。
+        #
+        # ⚠️ 两个边界处理：
+        # 1. 昂贵操作全在锁外：file.read()、write_bytes()、await _do_ocr()
+        #    （OCR/LLM 调用，可能数秒）都在此行之前完成，锁内只有内存操作 + 一次 save。
+        # 2. 本函数是 async def —— 直接在事件循环里 with 一个可能阻塞 10 秒的
+        #    flock，会把整个 API 的事件循环冻住。所以把临界区放进
+        #    asyncio.to_thread 的工作线程里执行，事件循环不受影响。
+        import asyncio
 
-        if screenshot_type in ("fund_buy", "fund_sell"):
-            user = ensure_v4_portfolio(user)
-            p = user["portfolio"]
-            tx_id = f"tx_ocr_{receipt_id}"
-            tx = {
-                "id": tx_id,
-                "type": "BUY" if screenshot_type == "fund_buy" else "SELL",
-                "code": ocr_result.get("fund_code", ""),
-                "name": ocr_result.get("fund_name", ""),
-                "amount": ocr_result["amount"],
-                "shares": ocr_result.get("shares", 0),
-                "nav": ocr_result.get("nav", 0),
-                "fee": 0,
-                "date": ocr_result.get("date", datetime.now().isoformat()),
-                "source": "ocr",
-                "note": f"OCR识别 - {ocr_result.get('fund_name', '')}",
-            }
-            p["transactions"].append(tx)
-            save_user(user)
-            ocr_result["saved"] = True
-            ocr_result["savedAs"] = "transaction"
-            ocr_result["transaction"] = tx
+        def _persist_ocr_result() -> None:
+            """在工作线程里执行 RMW 临界区（同步代码，可安全阻塞）。"""
+            with user_write_lock(userId) as acquired:
+                if not acquired:
+                    raise HTTPException(503, "系统繁忙（用户数据写锁超时），请稍后重试")
+                user = load_user(userId)
+                screenshot_type = ocr_result.get("screenshot_type", "consumption")
 
-        elif screenshot_type == "bank_tx" and ocr_result.get("bank_balance", 0) > 0:
-            user = ensure_v4_portfolio(user)
-            p = user["portfolio"]
-            bank_name = ocr_result.get("merchant", "银行卡")
-            existing = None
-            for a in p.get("assets", []):
-                if a.get("type") == "cash" and bank_name in a.get("name", ""):
-                    existing = a
-                    break
-            if existing:
-                existing["balance"] = ocr_result["bank_balance"]
-                existing["updated"] = datetime.now().strftime("%Y-%m-%d")
-            else:
-                p.setdefault("assets", []).append({
-                    "id": f"a_ocr_{receipt_id}",
-                    "type": "cash",
-                    "name": bank_name,
-                    "balance": ocr_result["bank_balance"],
-                    "updated": datetime.now().strftime("%Y-%m-%d"),
-                })
-            save_user(user)
-            ocr_result["saved"] = True
-            ocr_result["savedAs"] = "asset"
+                if screenshot_type in ("fund_buy", "fund_sell"):
+                    user = ensure_v4_portfolio(user)
+                    p = user["portfolio"]
+                    tx_id = f"tx_ocr_{receipt_id}"
+                    tx = {
+                        "id": tx_id,
+                        "type": "BUY" if screenshot_type == "fund_buy" else "SELL",
+                        "code": ocr_result.get("fund_code", ""),
+                        "name": ocr_result.get("fund_name", ""),
+                        "amount": ocr_result["amount"],
+                        "shares": ocr_result.get("shares", 0),
+                        "nav": ocr_result.get("nav", 0),
+                        "fee": 0,
+                        "date": ocr_result.get("date", datetime.now().isoformat()),
+                        "source": "ocr",
+                        "note": f"OCR识别 - {ocr_result.get('fund_name', '')}",
+                    }
+                    p["transactions"].append(tx)
+                    save_user(user)
+                    ocr_result["saved"] = True
+                    ocr_result["savedAs"] = "transaction"
+                    ocr_result["transaction"] = tx
 
-        else:
-            # 消费/收入 → 写入记账
-            entry = {
-                "id": receipt_id,
-                "date": ocr_result.get("date", datetime.now().isoformat()),
-                "amount": ocr_result["amount"],
-                "category": ocr_result.get("category", "其他"),
-                "note": ocr_result.get("merchant", "") or ocr_result.get("note", ""),
-                "direction": "income" if screenshot_type == "income" else "expense",
-                "source": "ocr",
-            }
-            user.setdefault("ledger", []).append(entry)
-            save_user(user)
-            ocr_result["saved"] = True
-            ocr_result["savedAs"] = "ledger"
-            ocr_result["entryId"] = receipt_id
+                elif screenshot_type == "bank_tx" and ocr_result.get("bank_balance", 0) > 0:
+                    user = ensure_v4_portfolio(user)
+                    p = user["portfolio"]
+                    bank_name = ocr_result.get("merchant", "银行卡")
+                    existing = None
+                    for a in p.get("assets", []):
+                        if a.get("type") == "cash" and bank_name in a.get("name", ""):
+                            existing = a
+                            break
+                    if existing:
+                        existing["balance"] = ocr_result["bank_balance"]
+                        existing["updated"] = datetime.now().strftime("%Y-%m-%d")
+                    else:
+                        p.setdefault("assets", []).append({
+                            "id": f"a_ocr_{receipt_id}",
+                            "type": "cash",
+                            "name": bank_name,
+                            "balance": ocr_result["bank_balance"],
+                            "updated": datetime.now().strftime("%Y-%m-%d"),
+                        })
+                    save_user(user)
+                    ocr_result["saved"] = True
+                    ocr_result["savedAs"] = "asset"
+
+                else:
+                    # 消费/收入 → 写入记账
+                    entry = {
+                        "id": receipt_id,
+                        "date": ocr_result.get("date", datetime.now().isoformat()),
+                        "amount": ocr_result["amount"],
+                        "category": ocr_result.get("category", "其他"),
+                        "note": ocr_result.get("merchant", "") or ocr_result.get("note", ""),
+                        "direction": "income" if screenshot_type == "income" else "expense",
+                        "source": "ocr",
+                    }
+                    user.setdefault("ledger", []).append(entry)
+                    save_user(user)
+                    ocr_result["saved"] = True
+                    ocr_result["savedAs"] = "ledger"
+                    ocr_result["entryId"] = receipt_id
+
+        await asyncio.to_thread(_persist_ocr_result)
 
     return ocr_result
 
@@ -246,8 +285,10 @@ async def ocr_receipt(file: UploadFile = File(...), userId: str = Form("")):
 
 @router.post("/api/ledger/add")
 def add_ledger_entry(entry: LedgerEntry):
-    """手动添加记账条目（支持收入/支出）"""
-    user = load_user(entry.userId)
+    """手动添加记账条目（支持收入/支出）
+
+    FIX 2026-08-30: user_write_lock 保护 RMW（ledger 是用户真金白银数据）。
+    """
     item = {
         "id": f"{int(time.time())}_{uuid.uuid4().hex[:8]}",
         "date": entry.date or datetime.now().isoformat(),
@@ -257,8 +298,12 @@ def add_ledger_entry(entry: LedgerEntry):
         "direction": entry.direction,
         "source": "manual",
     }
-    user.setdefault("ledger", []).append(item)
-    save_user(user)
+    with user_write_lock(entry.userId) as acquired:
+        if not acquired:
+            raise HTTPException(503, "系统繁忙（用户数据写锁超时），请稍后重试")
+        user = load_user(entry.userId)
+        user.setdefault("ledger", []).append(item)
+        save_user(user)
     return {"status": "ok", "entry": item}
 
 
@@ -310,9 +355,10 @@ def get_ledger_summary(user_id: str, days: int = 30):
 
 @router.post("/api/income-sources/add")
 def add_income_source(src: IncomeSourceCreate):
-    """登记新收入源"""
-    user = load_user(src.userId)
-    sources = user.setdefault("income_sources", [])
+    """登记新收入源
+
+    FIX 2026-08-30: user_write_lock 保护 RMW。
+    """
     new_src = {
         "id": f"src_{int(time.time())}_{uuid.uuid4().hex[:6]}",
         "name": src.name,
@@ -324,8 +370,12 @@ def add_income_source(src: IncomeSourceCreate):
         "totalRecorded": 0,
         "recordCount": 0,
     }
-    sources.append(new_src)
-    save_user(user)
+    with user_write_lock(src.userId) as acquired:
+        if not acquired:
+            raise HTTPException(503, "系统繁忙（用户数据写锁超时），请稍后重试")
+        user = load_user(src.userId)
+        user.setdefault("income_sources", []).append(new_src)
+        save_user(user)
     return {"ok": True, "source": new_src}
 
 
@@ -338,41 +388,55 @@ def get_income_sources(user_id: str):
 
 @router.delete("/api/income-sources/{user_id}/{source_id}")
 def delete_income_source(user_id: str, source_id: str):
-    """删除收入源"""
-    user = load_user(user_id)
-    sources = user.get("income_sources", [])
-    user["income_sources"] = [s for s in sources if s.get("id") != source_id]
-    save_user(user)
+    """删除收入源
+
+    FIX 2026-08-30: user_write_lock 保护 RMW。
+    """
+    with user_write_lock(user_id) as acquired:
+        if not acquired:
+            raise HTTPException(503, "系统繁忙（用户数据写锁超时），请稍后重试")
+        user = load_user(user_id)
+        sources = user.get("income_sources", [])
+        user["income_sources"] = [s for s in sources if s.get("id") != source_id]
+        save_user(user)
     return {"ok": True}
 
 
 @router.post("/api/income-sources/record")
 def record_from_source(req: IncomeSourceRecord):
-    """从收入源快速入账"""
-    user = load_user(req.userId)
-    sources = user.get("income_sources", [])
-    src = next((s for s in sources if s.get("id") == req.sourceId), None)
-    if not src:
-        raise HTTPException(status_code=404, detail="收入源不存在")
+    """从收入源快速入账
 
-    ledger = user.setdefault("ledger", [])
-    entry = {
-        "id": f"{int(time.time())}_{uuid.uuid4().hex[:8]}",
-        "date": datetime.now().isoformat(),
-        "amount": req.amount,
-        "category": src.get("type", "其他"),
-        "note": src.get("name", ""),
-        "direction": "income",
-        "source": "income_source",
-        "sourceId": req.sourceId,
-    }
-    ledger.append(entry)
+    FIX 2026-08-30: user_write_lock 保护 RMW。这一处同时改 ledger 和
+    income_sources 的统计字段（totalRecorded / recordCount 是累加），
+    丢更新会直接导致累计金额算错，必须整段在锁内。
+    """
+    with user_write_lock(req.userId) as acquired:
+        if not acquired:
+            raise HTTPException(503, "系统繁忙（用户数据写锁超时），请稍后重试")
+        user = load_user(req.userId)
+        sources = user.get("income_sources", [])
+        src = next((s for s in sources if s.get("id") == req.sourceId), None)
+        if not src:
+            raise HTTPException(status_code=404, detail="收入源不存在")
 
-    src["lastRecordAt"] = datetime.now().isoformat()
-    src["totalRecorded"] = src.get("totalRecorded", 0) + req.amount
-    src["recordCount"] = src.get("recordCount", 0) + 1
+        ledger = user.setdefault("ledger", [])
+        entry = {
+            "id": f"{int(time.time())}_{uuid.uuid4().hex[:8]}",
+            "date": datetime.now().isoformat(),
+            "amount": req.amount,
+            "category": src.get("type", "其他"),
+            "note": src.get("name", ""),
+            "direction": "income",
+            "source": "income_source",
+            "sourceId": req.sourceId,
+        }
+        ledger.append(entry)
 
-    save_user(user)
+        src["lastRecordAt"] = datetime.now().isoformat()
+        src["totalRecorded"] = src.get("totalRecorded", 0) + req.amount
+        src["recordCount"] = src.get("recordCount", 0) + 1
+
+        save_user(user)
     return {"ok": True, "entry": entry, "source": src}
 
 

@@ -42,12 +42,67 @@ BANNED_PATTERN_STRINGS: List[str] = [
     # Specific stock recommendations
     r"(推荐|建议)(买入?|关注)\s*[一-鿿]{2,6}",
     r"(可以|建议|推荐)\s*(买入?|加仓)\s*[A-Z0-9]{5,6}",
+    # 注：北向净流入的口径检查**不在这个列表里** —— 它无法用单条正则表达，
+    #     改由 _north_caliber_violation() 按句判定，详见该函数注释。
 ]
 
 # Compiled patterns (cached for performance)
 BANNED_PATTERNS: List[re.Pattern[str]] = [
     re.compile(p) for p in BANNED_PATTERN_STRINGS
 ]
+
+
+# ============================================================
+# 北向净流入口径检查（按句判定，不用正则先行断言）
+# ============================================================
+#
+# 背景：自 2024-08-19 起沪深交易所停止披露北向【日频净买入】、改为按季度公布，
+# Tushare moneyflow_hsgt 的 north_money 现为【当日成交额】。因此任何
+# "北向/外资 …净流入|净流出|净买入|净卖出 X 亿" 的**断言**都是凭空编造。
+#
+# ⚠️ 为什么不用负向先行断言正则（曾经用过，被证明会惩罚诚实，勿改回）：
+#   `(北向|外资).{0,15}(净流入…)(?!.{0,25}(不可得|无法|…))` 这种写法
+#   **只能向后看**，而诚实表述里限定语经常出现在触发词**前面**，例如：
+#       "交易所已停止披露北向净买入总额"          ← 限定语在前
+#       "该数据不可得，因此无法给出外资净流入金额"   ← 限定语在前
+#       "不要编造北向净买入金额"                  ← 我们自己写进 prompt 的指令
+#       "我不能告诉你外资净流入了多少，因为交易所不再公布"  ← 模型正确拒答
+#   Python `re` **不支持变长 lookbehind**，所以正则方案在原理上就走不通
+#   （实测 11 条诚实表述里误拦 7 条）。
+#   一个会把"模型正确拒答"和"我们自己的 prompt 指令"判为违规的守卫，
+#   比没有守卫更危险 —— 它在惩罚诚实，而且回归时容易被误读成"守卫生效"。
+#
+# 现在的做法：按句切分，只要**同一句内任意位置**出现合规线索就放行。
+# 按句（而非整段）判定的关键作用：防止在末尾加一句免责声明就把前面的幻觉洗白。
+
+_NORTH_TRIGGER = re.compile(
+    r"(北向|外资|陆股通|沪股通|深股通)[^。；\n]{0,15}(净流入|净流出|净买入|净卖出)"
+)
+
+# 合规线索：出现在同一句的**任意位置**（前/后都算）即视为诚实表述。
+# `不要|勿|别|禁止` 是为了放行我们自己写进 prompt 的禁止指令
+# （如"不要编造北向净买入金额"），必须保留。
+_NORTH_CLUE = re.compile(
+    r"不可得|不可用|未披露|不再披露|停止披露|按季度|季度披露|数据缺失|拿不到|看不到|"
+    r"无法|不能|没有这项|不构成|不可信|禁止|不要|勿|别|抱歉|给不了|无从|不予"
+)
+
+# 句子切分符**不含逗号**：中文一句话里逗号很多，按逗号切会把
+# "该数据不可得，因此无法给出外资净流入金额" 切成两半，后半句失去线索 → 误拦复现。
+_SENTENCE_SPLIT = re.compile(r"[。；\n]")
+
+
+def _north_caliber_violation(text: str) -> Tuple[bool, str]:
+    """按句判定北向净流入断言。返回 (是否违规, 违规句)。"""
+    if not text:
+        return False, ""
+    for sent in _SENTENCE_SPLIT.split(text):
+        if not _NORTH_TRIGGER.search(sent):
+            continue
+        if _NORTH_CLUE.search(sent):
+            continue  # 同句内有合规线索 → 诚实表述，放行
+        return True, sent.strip()
+    return False, ""
 
 
 # ============================================================
@@ -102,6 +157,16 @@ def audit_response(text: str) -> Tuple[bool, List[str]]:
                 f"Pattern[{i}] matched: '{match.group()}' "
                 f"(rule: {BANNED_PATTERN_STRINGS[i][:50]})"
             )
+
+    # 北向净流入口径（按句判定，见 _north_caliber_violation 注释）
+    north_bad, north_sent = _north_caliber_violation(text)
+    if north_bad:
+        violations.append(
+            f"North caliber violation: '{north_sent[:60]}' "
+            f"(rule: 北向净买入自 2024-08-19 起交易所停止日频披露，"
+            f"任何净流入/净流出断言均为编造；如为诚实表述请在同一句内说明"
+            f"数据不可得)"
+        )
 
     passed = len(violations) == 0
     return passed, violations

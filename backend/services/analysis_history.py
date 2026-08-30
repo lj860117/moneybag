@@ -82,7 +82,21 @@ def _take_market_snapshot() -> dict:
     try:
         from services.factor_data import get_northbound_flow
         north = get_northbound_flow()
-        snapshot["north_5d"] = north.get("net_flow_5d", 0)
+        # ⚠️ 不再写 snapshot["north_5d"]（原先取 net_flow_5d）：
+        #    北向净买入自 2024-08-19 起交易所改为按季度披露，日频不可得，
+        #    该字段现在只能拿到 None，写进历史快照等于把 null 持久化埋雷。
+        #    改为记录真实可得的成交额维度，并用语义正确的字段名。
+        snapshot["north_net_flow_available"] = bool(north.get("net_flow_available", False))
+        turnover_avg_5d = north.get("turnover_avg_5d")
+        if isinstance(turnover_avg_5d, (int, float)):
+            snapshot["north_turnover_avg_5d"] = turnover_avg_5d
+        turnover_trend = north.get("turnover_trend")
+        if turnover_trend:
+            snapshot["north_turnover_trend"] = turnover_trend
+        # 净流入恢复日频披露后，才重新记录净流入维度
+        net_flow_5d = north.get("net_flow_5d")
+        if north.get("net_flow_available") and isinstance(net_flow_5d, (int, float)):
+            snapshot["north_net_flow_5d"] = net_flow_5d
     except Exception:
         pass
     return snapshot

@@ -346,31 +346,111 @@ def get_research_reports(code: str = "", limit: int = 10) -> list:
 # 12. 北向资金流向（moneyflow_hsgt — 替代 AKShare 断层数据）
 # ============================================================
 
+NORTH_NET_FLOW_UNAVAILABLE_REASON = (
+    "2024-08-19 起沪深交易所停止披露北向日频净买入，改为按季度公布；"
+    "Tushare moneyflow_hsgt 的 north_money/hgt/sgt 现为当日成交额"
+)
+
+
+def _north_unavailable_result(source: str = "tushare") -> dict:
+    """构造「北向数据完全不可得」的返回骨架（成交额也没拿到）
+
+    净流入维度永久不可得（口径变更），所以 net_flow_available 恒为 False；
+    available=False 表示连成交额都没拿到 → 下游应报「数据源故障」。
+    """
+    return {
+        # ── 净流入：数据源已不提供 ──
+        "net_flow_today": None,
+        "net_flow_5d": None,
+        "net_flow_20d": None,
+        "net_flow_available": False,
+        "unavailable_reason": NORTH_NET_FLOW_UNAVAILABLE_REASON,
+        "trend": "数据不可得",
+        # ── 成交额：本次也没拿到 ──
+        "turnover_today": None,
+        "turnover_avg_5d": None,
+        "turnover_avg_20d": None,
+        "turnover_ratio_5d_vs_20d": None,
+        "turnover_trend": "数据不可得",
+        "daily_turnover": [],
+        # ── 元信息 ──
+        "available": False,
+        "source": source,
+        "data_date": "",
+        "turnover_5d_range": "",
+    }
+
+
+def _turnover_trend_label(ratio) -> str:
+    """依据 5日均量 vs 20日均量 的相对变化给出放量/缩量标签"""
+    if ratio is None:
+        return "数据不可得"
+    if ratio > 0.20:
+        return "显著放量"
+    if ratio > 0.08:
+        return "温和放量"
+    if ratio < -0.20:
+        return "显著缩量"
+    if ratio < -0.08:
+        return "温和缩量"
+    return "平稳"
+
+
 def get_northbound_flow(days: int = 30) -> dict:
-    """获取北向资金净流入（Tushare moneyflow_hsgt）
+    """获取北向资金【成交额】（Tushare moneyflow_hsgt）
 
-    原理：moneyflow_hsgt 返回每日沪股通/深股通的「买入成交额」和「卖出成交额」，
-    净流入 = 买入 - 卖出（单位：万元）。
+    ⚠️ 口径关键事实（2026-08 修正，请勿再改回差分逻辑）：
+    自 **2024-08-19** 起，沪深交易所停止公布北向资金的每日净买入额，只保留
+    每日**成交总额**（买入额+卖出额），净买入改为**按季度**公布。
+    因此 Tushare moneyflow_hsgt 的 `north_money` / `hgt` / `sgt` 三个字段在
+    该日之后填的是**当日成交额**（单位：百万元），而 **不是**历史累计净买入。
 
-    相比 AKShare stock_hsgt_hist_em（2024-08 后全 NaN），Tushare 数据持续更新到最新交易日。
+    实测佐证：north_money == hgt + sgt 精确成立，且数值恒为正、稳定在
+    2500~3300 亿/日量级 —— 这是成交额的量级，净买入不可能长期单边如此。
+
+    历史 Bug：旧实现把成交额当作「累计净买入」，对相邻两日做差分再求和。
+    而「连续差分之和 = 末值 − 首值」，N 日累计会退化成首尾两天成交额之差
+    （望远镜求和 telescoping sum）。5 日与 20 日窗口基准日不同，符号可以
+    任意相反，导出的今日/5日/20日「净流入」以及 ±600 亿的日波动全是噪声。
+
+    因此本函数**只返回成交额**（不做任何差分），净流入三个字段一律为 None，
+    并用 net_flow_available=False 显式告知下游。
 
     Returns:
         dict: {
-            "net_flow_today": float,  # 今日净流入（亿元）
-            "net_flow_5d": float,     # 近5日累计净流入
-            "net_flow_20d": float,    # 近20日累计净流入
-            "trend": str,             # 大幅流入/净流入/中性/净流出/大幅流出
-            "available": bool,
+            # 净流入维度（数据源已不提供，恒为 None）
+            "net_flow_today": None,
+            "net_flow_5d": None,
+            "net_flow_20d": None,
+            "net_flow_available": False,   # 净流入维度是否可得
+            "unavailable_reason": str,     # 净流入不可得的原因
+            "trend": "数据不可得",         # 保留字段，固定值，不再出现「流入/流出」
+
+            # 成交额维度（真实可得，单位：亿元）
+            "turnover_today": float,            # 最新交易日成交额
+            "turnover_avg_5d": float,           # 近5日【平均】成交额（非累计）
+            "turnover_avg_20d": float,          # 近20日【平均】成交额
+            "turnover_ratio_5d_vs_20d": float,  # (avg5d-avg20d)/avg20d
+            "turnover_trend": str,              # 显著放量/温和放量/平稳/温和缩量/显著缩量
+            "daily_turnover": [{"date": str, "turnover": float}],  # 最多30天
+
+            # 元信息
+            "available": bool,            # 整体可用性：成交额拿到即 True
             "source": "tushare",
-            "data_date": str,         # 最新数据日期
+            "data_date": str,
+            "turnover_5d_range": str,     # 如 "8/24-8/28"
         }
+
+    Note:
+        `available` 与 `net_flow_available` 语义不同，下游必须区分：
+        - `available=True`  表示这个数据源整体成功拿到了数据（成交额可用）；
+        - `net_flow_available=False` 单独表示「净流入」这一个维度不可得。
+        下游据此决定是**跳过净流入因子**（net_flow_available=False，属正常）
+        还是**上报数据源故障**（available=False，属异常）。
     """
     from datetime import datetime, timedelta
 
-    result = {
-        "net_flow_today": 0, "net_flow_5d": 0, "net_flow_20d": 0,
-        "trend": "中性", "available": False, "source": "tushare",
-    }
+    result = _north_unavailable_result("tushare")
 
     end_date = datetime.now().strftime("%Y%m%d")
     start_date = (datetime.now() - timedelta(days=days + 10)).strftime("%Y%m%d")  # 多取几天防节假日
@@ -388,78 +468,74 @@ def get_northbound_flow(days: int = 30) -> dict:
     # 按日期升序排列
     rows = sorted(rows, key=lambda x: x.get("trade_date", ""))
 
-    # 关键：moneyflow_hsgt 的 north_money/hgt/sgt 都是【历史累计值】（百万元）
-    # 当日净流入 = 当天累计 - 前一天累计
-    daily_flows = []
-    for i in range(1, len(rows)):
-        trade_date = rows[i].get("trade_date", "")
-        # north_money 是累计北向净买入（百万元）
-        nm_today = float(rows[i].get("north_money") or 0)
-        nm_prev = float(rows[i-1].get("north_money") or 0)
+    # 逐日成交额：north_money 即当日北向成交总额（百万元）→ /100 得亿元
+    # 缺失时降级为 hgt + sgt（两者之和恒等于 north_money，已实测核实）
+    daily_turnover = []
+    for row in rows:
+        trade_date = row.get("trade_date", "")
+        if not trade_date:
+            continue
 
-        if nm_today > 0 and nm_prev > 0:
-            # 当日净流入 = 今天累计 - 昨天累计（百万元）
-            net_flow_million = nm_today - nm_prev
-        else:
-            # 降级：hgt + sgt 差值
-            hgt_today = float(rows[i].get("hgt") or 0)
-            hgt_prev = float(rows[i-1].get("hgt") or 0)
-            sgt_today = float(rows[i].get("sgt") or 0)
-            sgt_prev = float(rows[i-1].get("sgt") or 0)
-            net_flow_million = (hgt_today - hgt_prev) + (sgt_today - sgt_prev)
+        nm = row.get("north_money")
+        try:
+            turnover_million = float(nm) if nm is not None else 0.0
+        except (TypeError, ValueError):
+            turnover_million = 0.0
 
-        daily_flows.append({"date": trade_date, "net_flow_million": net_flow_million})
+        if turnover_million <= 0:
+            # 降级：hgt + sgt
+            try:
+                hgt = float(row.get("hgt") or 0)
+            except (TypeError, ValueError):
+                hgt = 0.0
+            try:
+                sgt = float(row.get("sgt") or 0)
+            except (TypeError, ValueError):
+                sgt = 0.0
+            turnover_million = hgt + sgt
 
-    if len(daily_flows) < 5:
-        print(f"[TUSHARE-NORTH] 数据不足: {len(daily_flows)}天")
+        if turnover_million <= 0:
+            continue  # 该日无有效成交额，跳过（不臆造 0）
+
+        daily_turnover.append({
+            "date": trade_date,
+            "turnover": round(turnover_million / 100, 2),  # 百万元 → 亿元
+        })
+
+    if len(daily_turnover) < 5:
+        # 数据不足：保持原有早退行为，但结构完整（含 net_flow_available/unavailable_reason）
+        print(f"[TUSHARE-NORTH] 数据不足: {len(daily_turnover)}天")
         return result
 
-    # 单位转换：百万元 → 亿元（除以 100）
-    def million_to_yi(v):
-        return round(v / 100, 2)
+    turnovers = [d["turnover"] for d in daily_turnover]
+    avg_5d = round(sum(turnovers[-5:]) / len(turnovers[-5:]), 2)
+    window_20 = turnovers[-20:]
+    avg_20d = round(sum(window_20) / len(window_20), 2)
 
-    result["net_flow_today"] = million_to_yi(daily_flows[-1]["net_flow_million"])
-    result["net_flow_5d"] = million_to_yi(sum(d["net_flow_million"] for d in daily_flows[-5:]))
-    result["net_flow_20d"] = million_to_yi(sum(d["net_flow_million"] for d in daily_flows[-20:]))
-    result["data_date"] = daily_flows[-1]["date"]
-    # v9.5.130: 记录5日区间起止日期，供展示时标注（如"5/28-6/3"），避免用户误以为是连续5个日历日
-    if len(daily_flows) >= 5:
-        d5_start = daily_flows[-5]["date"]  # 格式 20260528
-        d5_end = daily_flows[-1]["date"]    # 格式 20260603
-        def _short(d):
-            return f"{int(d[4:6])}/{int(d[6:8])}" if d and len(d) == 8 else d
-        result["flow_5d_range"] = f"{_short(d5_start)}-{_short(d5_end)}"
-    result["available"] = True
+    result["turnover_today"] = turnovers[-1]
+    result["turnover_avg_5d"] = avg_5d
+    result["turnover_avg_20d"] = avg_20d
+    result["turnover_ratio_5d_vs_20d"] = round((avg_5d - avg_20d) / avg_20d, 4) if avg_20d else None
+    result["turnover_trend"] = _turnover_trend_label(result["turnover_ratio_5d_vs_20d"])
+    result["daily_turnover"] = daily_turnover[-30:]  # 最多返回30天
+    result["data_date"] = daily_turnover[-1]["date"]
+    result["available"] = True  # 成交额真实可得 → 数据源整体可用
 
-    # 趋势判断（基于5日累计）
-    flow_5d = result["net_flow_5d"]
-    if flow_5d > 50:
-        result["trend"] = "大幅流入"
-    elif flow_5d > 10:
-        result["trend"] = "净流入"
-    elif flow_5d < -50:
-        result["trend"] = "大幅流出"
-    elif flow_5d < -10:
-        result["trend"] = "净流出"
-    else:
-        result["trend"] = "中性"
+    # v9.5.130: 记录5日区间起止日期，供展示时标注（如"8/24-8/28"），
+    # 避免用户误以为是连续5个日历日。语义已从净流入改为成交额，故改名 turnover_5d_range。
+    def _short(d):
+        return f"{int(d[4:6])}/{int(d[6:8])}" if d and len(d) == 8 else d
 
-    # v9.6: 返回日级别明细（供 alt_data.py 使用）
-    # 单位转换：百万元 → 亿元
-    daily_flows_yi = []
-    for item in daily_flows:
-        daily_flows_yi.append({
-            "date": item["date"],
-            "net_flow": round(item["net_flow_million"] / 100, 2),  # 百万元 → 亿元
-        })
-    result["daily_flows"] = daily_flows_yi[-30:]  # 最多返回30天
+    result["turnover_5d_range"] = (
+        f"{_short(daily_turnover[-5]['date'])}-{_short(daily_turnover[-1]['date'])}"
+    )
 
     print(f"[TUSHARE-NORTH] date={result['data_date']}, "
-          f"today={result['net_flow_today']}亿, 5d={result['net_flow_5d']}亿, "
-          f"20d={result['net_flow_20d']}亿, trend={result['trend']}")
+          f"成交额 today={result['turnover_today']}亿, "
+          f"avg5d={avg_5d}亿, avg20d={avg_20d}亿, "
+          f"turnover_trend={result['turnover_trend']}（净流入维度不可得）")
 
-    # 口径警告：2024年8月后交易所取消每日北向实时披露，各平台口径有分歧
-    result["note"] = "口径:Tushare累计差值法，与东方财富/同花顺可能有差异"
+    result["note"] = "口径:仅成交额可得；净买入自2024-08-19起交易所改为季度披露"
 
     return result
 

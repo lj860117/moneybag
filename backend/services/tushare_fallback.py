@@ -513,37 +513,20 @@ def get_tushare_primary() -> TusharePrimary:
             print(f"[TUSHARE_PRIMARY] 融资融券获取失败: {e}")
             return None
 
-    def get_northbound_flow(self, start_date: str = "", end_date: str = "") -> Optional[Dict]:
-        """获取北向资金流向（Tushare: moneyflow_hsgt）
-
-        北向资金：外资通过沪深港通买入 A 股的资金的
-        """
-        if not self.is_available():
-            return None
-
-        try:
-            if not end_date:
-                end_date = datetime.now().strftime("%Y%m%d")
-            if not start_date:
-                start_date = (datetime.now() - timedelta(days=30)).strftime("%Y%m%d")
-
-            df = self._pro.moneyflow_hsgt(start_date=start_date, end_date=end_date)
-            if df is None or len(df) == 0:
-                return None
-
-            # 汇总最近 5 个交易日
-            recent = df.tail(5)
-            total_inflow = recent["ggt_ss_flow"].sum() + recent["ggt_sz_flow"].sum()
-
-            result = {
-                "total_inflow_5d": round(total_inflow, 2),
-                "latest_date": str(recent.iloc[-1].get("trade_date", "")),
-                "source": "tushare",
-            }
-
-            print(f"[TUSHARE_PRIMARY] 北向资金: 近5日净流入 {total_inflow:.2f} 万元")
-            return result
-
-        except Exception as e:
-            print(f"[TUSHARE_PRIMARY] 北向资金获取失败: {e}")
-            return None
+    # ------------------------------------------------------------------
+    # 已删除：get_northbound_flow()（2026-08 移除，请勿重新添加）
+    #
+    # 原实现有三个叠加错误，且是死代码（全仓库零调用方），修不如删：
+    #   1. 【方向完全相反】用 `ggt_ss_flow + ggt_sz_flow` 求和当作北向。
+    #      moneyflow_hsgt 里 ggt_ss / ggt_sz 是**港股通（南向，内地资金买港股）**
+    #      字段，北向应看 hgt / sgt / north_money。拿南向当北向不是噪声，
+    #      而是**系统性反向** —— 噪声至少随机，反向会稳定地给出错误结论。
+    #   2. 【单位错误】日志写"万元"，moneyflow_hsgt 实际单位是**百万元**，差 100 倍。
+    #   3. 【前提已不成立】北向日频净买入自 2024-08-19 起沪深交易所停止披露、
+    #      改为按季度公布，任何数据源都拿不到日频净流入，
+    #      `total_inflow_5d` 这个字段本身已无法诚实计算。
+    #
+    # 北向数据的唯一正确入口：`services.tushare_data.get_northbound_flow()`
+    # （只返回成交额，净流入维度显式标记 net_flow_available=False）。
+    # 上层请走 `services.factor_data.get_northbound_flow()`（含 AKShare 降级）。
+    # ------------------------------------------------------------------

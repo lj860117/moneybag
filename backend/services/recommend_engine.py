@@ -711,13 +711,24 @@ def _score_capital(stock: dict) -> int:
             print(f"[RECOMMEND] hk_hold 查询失败 {ts_code}: {e}")
 
     # 2. 兜底：全局北向趋势
+    # ⚠️ 口径（2026-08 修正）：北向【净买入】自 2024-08-19 起沪深交易所停止日频
+    #    披露、改为按季度公布，`trend` 现在恒为 "数据不可得"。
+    #    原写法 `if north.get("trend") in ("大幅流入","净流入")` 两个分支都不匹配，
+    #    score 会**静默退回默认值 50**，调用方无从得知这个维度已经失效。
+    #    现在显式跳过并标记，让"没有这个兜底"可被观测到，而不是伪装成中性分。
+    #    注意：上面第 1 步的 hk_hold（个股北向持股占比）是**季度/日频持股数据**，
+    #    与被停披露的"日频净买入"不是同一个东西，仍然可用，故未改动。
     try:
         from services.factor_data import get_northbound_flow
         north = get_northbound_flow()
-        if north.get("trend") in ("大幅流入", "净流入"):
+        if north.get("net_flow_available") and north.get("trend") in ("大幅流入", "净流入"):
             score = 65
-        elif north.get("trend") in ("大幅流出", "净流出"):
+        elif north.get("net_flow_available") and north.get("trend") in ("大幅流出", "净流出"):
             score = 35
+        elif not north.get("net_flow_available"):
+            # 净流入不可得 → 该兜底维度整体跳过，保持 score 不变（不是"中性"，是"无此因子"）
+            stock["_north_fallback_skipped"] = north.get(
+                "unavailable_reason", "北向净流入数据不可得")
     except Exception:
         pass
     return score

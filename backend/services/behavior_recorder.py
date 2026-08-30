@@ -11,7 +11,7 @@
 """
 from datetime import datetime
 from typing import Optional, Any
-from services.persistence import load_user, save_user
+from services.persistence import load_user, save_user, user_write_lock
 
 # ---- MODULE_META ----
 MODULE_META = {
@@ -45,31 +45,43 @@ def record_behavior_event(
         metadata: 扩展元数据（可选）
     
     Returns:
-        记录的事件数据
+        记录的事件数据；抢锁超时返回 None
     """
-    user_data = load_user(user_id)
-    
-    event = {
-        "timestamp": datetime.now().isoformat(),
-        "event_type": "trade_executed",
-        "trade_details": trade_details or {},
-        "patterns_detected": patterns_detected or [],
-        "market_context": market_context or {},
-        "metadata": metadata or {},
-    }
-    
-    # Phase 3: 添加到事件列表
-    if "behavior_events" not in user_data:
-        user_data["behavior_events"] = []
-    
-    user_data["behavior_events"].append(event)
-    
-    # 清理超过 500 条的旧事件
-    if len(user_data["behavior_events"]) > 500:
-        user_data["behavior_events"] = user_data["behavior_events"][-500:]
-    
-    save_user(user_data)
-    return event
+    # FIX 2026-08-30（并发丢更新）：加锁在 **service 层**而不是 API 层，
+    # 是因为这个字段存在真实的跨进程竞争：
+    #   - API 侧：/api/behavior/record → record_behavior_event()
+    #   - cron 侧：scripts/monthly_close.py → clear_old_events()（独立进程）
+    # 两侧都调进本模块，所以在这里加锁能**一次覆盖两条路径**，
+    # 不需要分别去改 API 和 cron 的调用点（这也是本次能不碰 night_worker /
+    # cache_warmer 就把并发收口的原因）。
+    with user_write_lock(user_id) as acquired:
+        if not acquired:
+            print(f"[BEHAVIOR] ⚠️ 抢锁超时，放弃记录行为事件: user={user_id}")
+            return None
+
+        user_data = load_user(user_id)
+
+        event = {
+            "timestamp": datetime.now().isoformat(),
+            "event_type": "trade_executed",
+            "trade_details": trade_details or {},
+            "patterns_detected": patterns_detected or [],
+            "market_context": market_context or {},
+            "metadata": metadata or {},
+        }
+
+        # Phase 3: 添加到事件列表
+        if "behavior_events" not in user_data:
+            user_data["behavior_events"] = []
+
+        user_data["behavior_events"].append(event)
+
+        # 清理超过 500 条的旧事件
+        if len(user_data["behavior_events"]) > 500:
+            user_data["behavior_events"] = user_data["behavior_events"][-500:]
+
+        save_user(user_data)
+        return event
 
 
 def get_behavior_events(
@@ -176,32 +188,40 @@ def clear_old_events(user_id: str, keep_days: int = 90) -> int:
         keep_days: 保留天数（默认 90）
     
     Returns:
-        删除的事件数
+        删除的事件数（抢锁超时返回 0）
     """
     from datetime import timedelta
-    
-    user_data = load_user(user_id)
-    events = user_data.get("behavior_events", [])
-    
-    cutoff = datetime.now() - timedelta(days=keep_days)
-    
-    new_events = []
-    for event in events:
-        try:
-            event_time = datetime.fromisoformat(event.get("timestamp", ""))
-            if event_time >= cutoff:
+
+    # FIX 2026-08-30: 这是 cron 侧入口（scripts/monthly_close.py 独立进程调用），
+    # 与 API 侧的 record_behavior_event() 争抢同一个 behavior_events 字段，
+    # 必须同样参与 user_write_lock —— 锁只有在所有写方都参与时才有效。
+    with user_write_lock(user_id) as acquired:
+        if not acquired:
+            print(f"[BEHAVIOR] ⚠️ 抢锁超时，放弃清理旧事件: user={user_id}")
+            return 0
+
+        user_data = load_user(user_id)
+        events = user_data.get("behavior_events", [])
+
+        cutoff = datetime.now() - timedelta(days=keep_days)
+
+        new_events = []
+        for event in events:
+            try:
+                event_time = datetime.fromisoformat(event.get("timestamp", ""))
+                if event_time >= cutoff:
+                    new_events.append(event)
+            except (ValueError, TypeError):
+                # 保留解析失败的事件
                 new_events.append(event)
-        except (ValueError, TypeError):
-            # 保留解析失败的事件
-            new_events.append(event)
-    
-    deleted_count = len(events) - len(new_events)
-    user_data["behavior_events"] = new_events
-    
-    if deleted_count > 0:
-        save_user(user_data)
-    
-    return deleted_count
+
+        deleted_count = len(events) - len(new_events)
+        user_data["behavior_events"] = new_events
+
+        if deleted_count > 0:
+            save_user(user_data)
+
+        return deleted_count
 
 
 __all__ = [

@@ -23,7 +23,7 @@ from services.data_layer import (
 from services.portfolio_calc import (
     calc_holdings_from_transactions, ensure_v4_portfolio,
 )
-from services.persistence import load_user, save_user
+from services.persistence import load_user, save_user, user_write_lock
 from services.risk import calc_risk_metrics, generate_risk_actions
 from services.portfolio import generate_allocation_advice, get_recommend_allocations
 from services.portfolio_overview import get_portfolio_overview
@@ -38,17 +38,21 @@ from api.shared_helpers import _build_market_context
 
 @router.post("/api/portfolio/transaction")
 def add_transaction(req: TransactionRequest):
-    """添加交易记录（BUY/SELL/DIVIDEND）"""
-    user = load_user(req.userId)
-    user = ensure_v4_portfolio(user)
-    p = user["portfolio"]
+    """添加交易记录（BUY/SELL/DIVIDEND）
 
+    FIX 2026-08-30（并发丢更新）：用 user_write_lock 保护 RMW 临界区。
+    ⚠️ 注意临界区边界：净值查询（_get_nav_on_date / get_fund_nav）是**网络调用**，
+    可能耗时数秒，且完全不依赖用户数据 —— 所以放在锁**外**先算好。
+    锁内只做 load → append → save 这段纯内存操作，把临界区压到最短，
+    避免一个慢net请求把其他人的写请求全卡在锁上。
+    """
     tx = req.transaction.dict()
     if not tx.get("id"):
         tx["id"] = f"tx_{int(time.time())}_{uuid.uuid4().hex[:6]}"
     if not tx.get("date"):
         tx["date"] = datetime.now().isoformat()
 
+    # ── 锁外：网络取净值（不依赖用户数据）──
     if tx["type"] == "BUY" and tx.get("amount", 0) > 0:
         if tx.get("shares", 0) <= 0 or tx.get("nav", 0) <= 0:
             nav_val = _get_nav_on_date(tx["code"], tx["date"])
@@ -59,16 +63,24 @@ def add_transaction(req: TransactionRequest):
                 tx["nav"] = nav_val
                 tx["shares"] = round(tx["amount"] / nav_val, 2)
 
-    p["transactions"].append(tx)
-    p["history"].append({
-        "date": datetime.now().isoformat(),
-        "action": tx["type"].lower(),
-        "code": tx["code"],
-        "amount": tx.get("amount", 0),
-    })
-    save_user(user)
+    # ── 锁内：RMW 临界区 ──
+    with user_write_lock(req.userId) as acquired:
+        if not acquired:
+            raise HTTPException(503, "系统繁忙（用户数据写锁超时），请稍后重试")
+        user = load_user(req.userId)
+        user = ensure_v4_portfolio(user)
+        p = user["portfolio"]
 
-    # 同步持仓到 fund_holdings 文件（供 cron 盯盘/晨报使用）
+        p["transactions"].append(tx)
+        p["history"].append({
+            "date": datetime.now().isoformat(),
+            "action": tx["type"].lower(),
+            "code": tx["code"],
+            "amount": tx.get("amount", 0),
+        })
+        save_user(user)
+
+    # ── 锁外：同步持仓到 fund_holdings 文件（写的是另一个文件，不占用户锁）──
     try:
         _sync_fund_holdings_file(user)
     except Exception as e:
@@ -114,46 +126,68 @@ def _sync_fund_holdings_file(user: dict):
 
 @router.put("/api/portfolio/transaction/{tx_id}")
 def update_transaction(tx_id: str, req: TransactionRequest):
-    """修改交易记录"""
-    user = load_user(req.userId)
-    user = ensure_v4_portfolio(user)
-    p = user["portfolio"]
+    """修改交易记录
 
-    for i, tx in enumerate(p["transactions"]):
-        if tx.get("id") == tx_id:
-            updated = req.transaction.dict()
-            updated["id"] = tx_id
-            p["transactions"][i] = updated
-            save_user(user)
-            try:
-                _sync_fund_holdings_file(user)
-            except Exception:
-                pass
-            return {"status": "ok", "transaction": updated}
+    FIX 2026-08-30: user_write_lock 保护 RMW（纯内存操作，临界区很小）。
+    """
+    with user_write_lock(req.userId) as acquired:
+        if not acquired:
+            raise HTTPException(503, "系统繁忙（用户数据写锁超时），请稍后重试")
+        user = load_user(req.userId)
+        user = ensure_v4_portfolio(user)
+        p = user["portfolio"]
 
-    raise HTTPException(404, f"Transaction {tx_id} not found")
+        updated = None
+        for i, tx in enumerate(p["transactions"]):
+            if tx.get("id") == tx_id:
+                updated = req.transaction.dict()
+                updated["id"] = tx_id
+                p["transactions"][i] = updated
+                save_user(user)
+                break
+
+    if updated is None:
+        raise HTTPException(404, f"Transaction {tx_id} not found")
+
+    # 锁外：同步另一个文件
+    try:
+        _sync_fund_holdings_file(user)
+    except Exception:
+        pass
+    return {"status": "ok", "transaction": updated}
 
 
 @router.delete("/api/portfolio/transaction/{tx_id}")
 def delete_transaction(tx_id: str, userId: str = ""):
-    """删除交易记录"""
+    """删除交易记录
+
+    FIX 2026-08-30: user_write_lock 保护 RMW。
+    """
     if not userId:
         raise HTTPException(400, "userId required")
-    user = load_user(userId)
-    user = ensure_v4_portfolio(user)
-    p = user["portfolio"]
 
-    original_len = len(p["transactions"])
-    p["transactions"] = [tx for tx in p["transactions"] if tx.get("id") != tx_id]
-    if len(p["transactions"]) == original_len:
-        raise HTTPException(404, f"Transaction {tx_id} not found")
+    with user_write_lock(userId) as acquired:
+        if not acquired:
+            raise HTTPException(503, "系统繁忙（用户数据写锁超时），请稍后重试")
+        user = load_user(userId)
+        user = ensure_v4_portfolio(user)
+        p = user["portfolio"]
 
-    save_user(user)
+        original_len = len(p["transactions"])
+        p["transactions"] = [tx for tx in p["transactions"] if tx.get("id") != tx_id]
+        if len(p["transactions"]) == original_len:
+            raise HTTPException(404, f"Transaction {tx_id} not found")
+
+        save_user(user)
+
+    # 锁外：同步另一个文件
     try:
         _sync_fund_holdings_file(user)
     except Exception:
         pass
     return {"status": "ok"}
+
+
 @router.get("/api/portfolio/history")
 def get_transaction_history(userId: str = ""):
     """获取交易流水历史"""
@@ -241,28 +275,34 @@ def add_or_update_asset(req: AssetRequest):
     if abs(value) > 10_000_000:  # > 1000万
         _large_amount_warning = f"⚠️ 金额较大（¥{abs(value):,.0f}），请确认是否正确。"
 
-    user = load_user(req.userId)
-    user = ensure_v4_portfolio(user)
-    p = user["portfolio"]
-
     asset = asset_data
     if not asset.get("id"):
         asset["id"] = f"a_{int(time.time())}_{uuid.uuid4().hex[:6]}"
     if not asset.get("updated"):
         asset["updated"] = datetime.now().strftime("%Y-%m-%d")
 
-    existing_idx = None
-    for i, a in enumerate(p.get("assets", [])):
-        if a.get("id") == asset["id"]:
-            existing_idx = i
-            break
+    # FIX 2026-08-30: user_write_lock 保护 RMW（纯内存操作）
+    with user_write_lock(req.userId) as acquired:
+        if not acquired:
+            raise HTTPException(503, "系统繁忙（用户数据写锁超时），请稍后重试")
+        user = load_user(req.userId)
+        user = ensure_v4_portfolio(user)
+        p = user["portfolio"]
 
-    if existing_idx is not None:
-        p["assets"][existing_idx] = asset
-    else:
-        p.setdefault("assets", []).append(asset)
+        existing_idx = None
+        for i, a in enumerate(p.get("assets", [])):
+            if a.get("id") == asset["id"]:
+                existing_idx = i
+                break
 
-    save_user(user)
+        if existing_idx is not None:
+            p["assets"][existing_idx] = asset
+        else:
+            p.setdefault("assets", []).append(asset)
+
+        save_user(user)
+
+    # 锁外：失效缓存（不碰用户 JSON）
     try:
         from services.unified_networth import invalidate_networth_cache
         invalidate_networth_cache(req.userId)
@@ -276,19 +316,28 @@ def add_or_update_asset(req: AssetRequest):
 
 @router.delete("/api/assets/{asset_id}")
 def delete_asset(asset_id: str, userId: str = ""):
-    """删除资产"""
+    """删除资产
+
+    FIX 2026-08-30: user_write_lock 保护 RMW。
+    """
     if not userId:
         raise HTTPException(400, "userId required")
-    user = load_user(userId)
-    user = ensure_v4_portfolio(user)
-    p = user["portfolio"]
 
-    original_len = len(p.get("assets", []))
-    p["assets"] = [a for a in p.get("assets", []) if a.get("id") != asset_id]
-    if len(p.get("assets", [])) == original_len:
-        raise HTTPException(404, f"Asset {asset_id} not found")
+    with user_write_lock(userId) as acquired:
+        if not acquired:
+            raise HTTPException(503, "系统繁忙（用户数据写锁超时），请稍后重试")
+        user = load_user(userId)
+        user = ensure_v4_portfolio(user)
+        p = user["portfolio"]
 
-    save_user(user)
+        original_len = len(p.get("assets", []))
+        p["assets"] = [a for a in p.get("assets", []) if a.get("id") != asset_id]
+        if len(p.get("assets", [])) == original_len:
+            raise HTTPException(404, f"Asset {asset_id} not found")
+
+        save_user(user)
+
+    # 锁外：失效缓存
     try:
         from services.unified_networth import invalidate_networth_cache
         invalidate_networth_cache(userId)
@@ -374,11 +423,18 @@ def calc_networth(req: dict):
 
 @router.post("/api/portfolio/topup")
 def topup_portfolio(req: TopupRequest):
-    """加仓 — 批量生成 BUY 交易"""
-    user = load_user(req.userId)
-    user = ensure_v4_portfolio(user)
-    p = user["portfolio"]
+    """加仓 — 批量生成 BUY 交易
 
+    FIX 2026-08-30（并发丢更新）：这是本文件里风险最高的一处 —— 它批量追加多条
+    交易，一旦丢更新，用户加的一整笔钱会凭空消失且完全无声无息。
+
+    ⚠️ 临界区边界很关键：原实现在 load 和 save 之间的循环里逐个调
+    get_fund_nav()（**每只基金一次网络请求**），若把整个函数包进锁，
+    一次加仓 6 只基金就要在持锁状态下等 6 次网络往返，极易把别人顶到超时。
+    因此改为：**锁外**先把全部 tx（含净值/份额）算好，**锁内**只做
+    load → 批量 append → save。临界区从"数秒"压缩到"毫秒级"。
+    """
+    # ── 锁外：批量取净值、构造交易（不依赖用户数据）──
     new_txs = []
     for alloc in req.allocations:
         code = alloc.get("code", "")
@@ -400,7 +456,7 @@ def topup_portfolio(req: TopupRequest):
             nav_val = 1.0
             shares = amount
 
-        tx = {
+        new_txs.append({
             "id": tx_id,
             "type": "BUY",
             "code": code,
@@ -412,17 +468,25 @@ def topup_portfolio(req: TopupRequest):
             "date": datetime.now().isoformat(),
             "source": "topup",
             "note": f"加仓 ¥{amount:,.0f}",
-        }
-        p["transactions"].append(tx)
-        new_txs.append(tx)
+        })
 
-    p["history"].append({
-        "date": datetime.now().isoformat(),
-        "action": "topup",
-        "amount": req.amount,
-        "profile": req.profile,
-    })
-    save_user(user)
+    # ── 锁内：RMW 临界区（纯内存，批量写入）──
+    with user_write_lock(req.userId) as acquired:
+        if not acquired:
+            raise HTTPException(503, "系统繁忙（用户数据写锁超时），请稍后重试")
+        user = load_user(req.userId)
+        user = ensure_v4_portfolio(user)
+        p = user["portfolio"]
+
+        p["transactions"].extend(new_txs)
+        p["history"].append({
+            "date": datetime.now().isoformat(),
+            "action": "topup",
+            "amount": req.amount,
+            "profile": req.profile,
+        })
+        save_user(user)
+
     return {"status": "ok", "transactions": new_txs, "count": len(new_txs)}
 
 
@@ -430,13 +494,19 @@ def topup_portfolio(req: TopupRequest):
 
 @router.post("/api/portfolio/migrate")
 def migrate_portfolio(req: dict):
-    """手动触发 V3→V4 数据迁移"""
+    """手动触发 V3→V4 数据迁移
+
+    FIX 2026-08-30: user_write_lock 保护 RMW。
+    """
     user_id = req.get("userId", "")
     if not user_id:
         raise HTTPException(400, "userId required")
-    user = load_user(user_id)
-    user = ensure_v4_portfolio(user)
-    save_user(user)
+    with user_write_lock(user_id) as acquired:
+        if not acquired:
+            raise HTTPException(503, "系统繁忙（用户数据写锁超时），请稍后重试")
+        user = load_user(user_id)
+        user = ensure_v4_portfolio(user)
+        save_user(user)
     return {"status": "ok", "version": user["portfolio"].get("version", 4)}
 
 

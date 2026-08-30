@@ -217,23 +217,62 @@ def _collect_unlock_signals() -> list:
 
 
 def _collect_fund_flow_signals() -> list:
-    """收集资金异动信号"""
+    """收集北向活跃个股信号
+
+    ⚠️ 口径（2026-08 修正）：
+    1. 北向【净买入】自 2024-08-19 起交易所改为按季度披露，日频不可得，
+       因此本函数**不再声称"买入"**，只报"活跃个股"，方向留白。
+    2. 原代码读的 `net_amount` / `hold_change` 两个 key 在 alt_data 的
+       top_stocks 里**从来不存在**（实际 key 是 code/name/holding_value/change_pct），
+       `.get(..., 0)` 恒返回 0，标题恒为"买入 0万"、正文恒为"持股变化: 0万股"
+       —— 是凭空捏造的数字。已改为只展示真实存在的字段。
+    3. 数据时点用 data_date 显式标注，让陈旧数据暴露出来而不是假装实时。
+    """
     signals = []
     try:
         from services.alt_data import get_northbound_flow_detail
         nb = get_northbound_flow_detail()
-        if nb.get("available") and nb.get("top_stocks"):
-            for s in nb["top_stocks"][:5]:
-                signals.append({
-                    "type": "fund_flow",
-                    "title": f"北向资金买入: {s.get('name', '')} {s.get('net_amount', 0):.0f}万",
-                    "content": f"持股变化: {s.get('hold_change', 0)}万股",
-                    "codes": [s.get("code", "")],
-                    "source": "北向",
-                    "time": datetime.now().strftime("%H:%M"),
-                    "level": "info",
-                    "tags": ["北向", "资金"],
-                })
+        top = nb.get("top_stocks") or []
+        if not nb.get("available") or not top:
+            return signals
+
+        # 口径标注：区分数据来源，避免把两种不同含义的榜单混为一谈
+        src = nb.get("top_stocks_source", "")
+        if src == "tushare_hsgt_top10":
+            src_label = "沪深股通十大成交股"
+        elif src == "akshare":
+            src_label = "北向持股排行"
+        else:
+            src_label = "北向榜单"
+
+        data_date = str(nb.get("data_date", "") or "")
+        if len(data_date) == 8:
+            date_label = f"{data_date[:4]}-{data_date[4:6]}-{data_date[6:8]}"
+        else:
+            date_label = data_date or "时点未知"
+
+        for s in top[:5]:
+            name = str(s.get("name", "") or s.get("code", "") or "").strip()
+            if not name:
+                continue
+
+            # 只展示真实存在且为数值的字段，不做方向性表述
+            detail_parts = [f"来源: {src_label}（数据时点 {date_label}）"]
+            holding_value = s.get("holding_value")
+            if isinstance(holding_value, (int, float)) and holding_value > 0:
+                detail_parts.append(f"持股市值 {holding_value:.0f}")
+            detail_parts.append("净买入方向数据不可得：交易所自2024-08-19起改为按季度披露")
+
+            signals.append({
+                "type": "fund_flow",
+                "title": f"北向活跃个股: {name}",
+                "content": "；".join(detail_parts),
+                "codes": [s.get("code", "")],
+                "source": "北向",
+                "time": datetime.now().strftime("%H:%M"),
+                "level": "info",
+                "tags": ["北向", "资金"],
+            })
     except Exception as e:
         print(f"[SIGNAL_SCOUT] fund_flow failed: {e}")
     return signals

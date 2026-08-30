@@ -32,21 +32,43 @@ def setup_test_env(monkeypatch):
 
 @pytest.fixture
 def clean_user():
-    """为每个测试创建干净的用户数据"""
-    from backend.services.persistence import load_user, save_user
-    
+    """为每个测试创建干净的用户数据
+
+    FIX 2026-08-30: 原实现把干净数据写到 `users_dir / f"{TEST_USER_ID}.json"`，
+    但 persistence.py 实际用的是 **SHA256 哈希文件名**（见 `_user_file()`），
+    两者根本不是同一个文件 —— 所以这个 fixture 从来没有真正清理过任何数据，
+    todos / behavior_events 会跨测试用例不断累积。
+
+    后果：`test_concurrent_todo_operations` 里的 `assert len(todos) >= 5`
+    其实是靠前面几个测试累积出来的额度"蒙"过的，并不是真的验证了并发写入。
+    这属于"测试给了虚假安全感"，和 todos 无限膨胀能潜伏 106 天是同一类问题。
+
+    修法：直接复用 persistence 自己的路径函数定位文件（不复刻哈希逻辑），
+    并走真实的 save_user() 原子写路径。同时清掉 .bak 备份 ——
+    否则 load_user() 会在主文件"看起来干净"时从备份里恢复出脏数据。
+    """
+    from backend.services.persistence import _user_file, save_user
+
     user_data = {
         "userId": TEST_USER_ID,
+        "portfolio": None,
+        "ledger": [],
         "profile": {"name": "Test User"},
         "behavior_events": [],
         "todos": [],
-        "monthly_snapshots": {}
+        "monthly_snapshots": {},
     }
-    
-    users_dir = TEST_DATA_DIR / "users"
-    user_file = users_dir / f"{TEST_USER_ID}.json"
-    user_file.write_text(json.dumps(user_data), encoding="utf-8")
-    
+
+    user_file = _user_file(TEST_USER_ID)
+    user_file.parent.mkdir(parents=True, exist_ok=True)
+
+    # 清掉可能残留的备份，防止 load_user() 从 .bak 恢复出上一个测试的脏数据
+    backup = user_file.with_suffix(".json.bak")
+    if backup.exists():
+        backup.unlink()
+
+    save_user(user_data)  # 走真实哈希路径 + 原子写
+
     yield TEST_USER_ID
     
     # 清理
@@ -263,36 +285,110 @@ class TestPhase3EndToEnd:
         assert "snapshot" in data
     
     def test_concurrent_todo_operations(self, clean_user):
-        """测试: 并发待办操作（确保原子性）"""
+        """测试: 并发待办操作（确保原子性 / 不丢更新）
+
+        FIX 2026-08-30: 原实现让 5 个线程用**同一个** rule_triggered="test"，
+        把两件完全不同的事混在一起测了：
+          - 并发写入不丢更新（本测试的真正意图，见方法名"确保原子性"）
+          - 幂等去重（同规则只留 1 条 —— 这是**正确**行为，不是 bug）
+        结果是 `assert len(todos) >= 5` 永远说不清该期望什么。
+
+        更糟的是：修好 clean_user fixture 之前，这个断言是靠前面几个测试
+        累积下来的脏数据"蒙"过的，而它本该发现的**丢更新**缺陷被完全掩盖 ——
+        实测 5 线程即使用 5 个不同规则也只有 1 条落盘，另外 4 条被静默覆盖。
+
+        现在改成 5 个**不同**规则，纯粹验证"并发写入不丢更新"。
+        幂等语义由下面的 test_concurrent_same_rule_is_idempotent 单独覆盖。
+        """
         from backend.services.todo_manager import create_todo, get_todos
         import threading
-        
+
         results = []
-        
+
         def create_todo_thread():
+            name = threading.current_thread().name
             try:
                 todo = create_todo(
                     TEST_USER_ID,
-                    title=f"并发任务 {threading.current_thread().name}",
-                    rule_triggered="test",
+                    title=f"并发任务 {name}",
+                    # 每个线程用不同规则 → 绕开幂等，只测并发写入
+                    rule_triggered=f"concurrent_test_{name}",
                 )
                 results.append(todo)
-            except Exception as e:
+            except Exception:
                 results.append(None)
-        
+
         # 创建 5 个并发线程
-        threads = [threading.Thread(target=create_todo_thread) for _ in range(5)]
+        threads = [
+            threading.Thread(target=create_todo_thread, name=f"worker{i}")
+            for i in range(5)
+        ]
         for t in threads:
             t.start()
         for t in threads:
             t.join()
-        
+
         # 验证所有待办都创建成功
         assert len([r for r in results if r is not None]) == 5
-        
-        # 验证数据库中有所有待办
+
+        # 验证数据库中有所有待办（不丢更新 —— 靠 user_write_lock 保证）
         todos = get_todos(TEST_USER_ID)
-        assert len(todos) >= 5
+        assert len(todos) >= 5, (
+            f"并发写入丢更新：期望 >= 5 条，实际 {len(todos)} 条。"
+            f"检查 services/persistence.py 的 user_write_lock 是否覆盖了"
+            f"整个 load-modify-save 临界区"
+        )
+        # 5 个规则应该各留一条，互不覆盖
+        rules = {t["rule_triggered"] for t in todos}
+        assert len(rules) >= 5, f"规则种类应 >= 5，实际 {len(rules)}: {rules}"
+
+    def test_concurrent_same_rule_is_idempotent(self, clean_user):
+        """测试: 并发下的幂等去重（同一规则最终恰好 1 条）
+
+        新增 2026-08-30，与 test_concurrent_todo_operations 配对：
+        那个测"并发不丢更新"（5 个不同规则 → 5 条都在），
+        这个测"并发下幂等仍然成立"（同一规则 → 恰好 1 条，不多不少）。
+
+        "恰好 1 条"同时验证了两件事：
+          - 幂等生效（不是 5 条）
+          - 幂等检查在锁内（不是 2~4 条 —— 若判重在锁外，
+            多个线程会同时判定"不存在"然后各建一条）
+        """
+        from backend.services.todo_manager import create_todo, get_todos
+        import threading
+
+        results = []
+
+        def worker():
+            try:
+                results.append(create_todo(
+                    TEST_USER_ID,
+                    title="并发同规则任务",
+                    rule_triggered="weekly_review",
+                    due_by_days=3,
+                ))
+            except Exception:
+                results.append(None)
+
+        threads = [threading.Thread(target=worker) for _ in range(5)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+
+        # 幂等命中也返回 dict（不是 None），调用方 `if todo_obj:` 才不会误判
+        assert all(r is not None for r in results), "幂等命中时不应返回 None"
+
+        todos = [
+            t for t in get_todos(TEST_USER_ID)
+            if t["rule_triggered"] == "weekly_review"
+        ]
+        assert len(todos) == 1, (
+            f"同规则并发应恰好留 1 条，实际 {len(todos)} 条。"
+            f"若 > 1，说明幂等检查没有在 user_write_lock 内执行"
+        )
+        # 所有线程应该拿到同一条
+        assert len({r["id"] for r in results}) == 1, "所有线程应拿到同一条待办"
     
     def test_data_persistence_integrity(self, clean_user):
         """测试: 数据持久化完整性"""

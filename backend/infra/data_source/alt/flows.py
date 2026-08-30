@@ -21,11 +21,21 @@ def get_hsgt_hist(symbol: str = "北向资金") -> Any:
     
     Degradation chain: AKShare stock_hsgt_hist_em() → Tushare hsgt_detail()
 
+    ⚠️ 口径（2026-08 修正）：北向【净买入】自 2024-08-19 起沪深交易所停止日频
+    披露、改为按季度公布。因此：
+      - AKShare stock_hsgt_hist_em 的净买入列自 2024-08-16 起全为 NaN；
+      - Tushare hsgt_detail 的 north_money 是【当日成交额】（买入额+卖出额，
+        恒为正），**不是净买入**。故降级分支的列名为 `北向成交额(亿)`，
+        原名 `北向资金` 会被下游误读成净流入，已改名。
+    调用方务必按列名判断语义，不要假设本函数返回的是净流入。
+
     Args:
         symbol: "北向资金" | "沪股通" | "深股通" | "南向资金"
 
     Returns:
         DataFrame with daily capital flow data.
+        AKShare 路径：原始列（净买入列在 2024-08 后为 NaN）。
+        Tushare 降级路径：['日期', '北向成交额(亿)'] —— 语义是成交额。
         None on failure.
     """
     # Primary: AKShare
@@ -36,7 +46,7 @@ def get_hsgt_hist(symbol: str = "北向资金") -> Any:
             return result
     except Exception as e:
         print(f"[DATA_SOURCE/ALT] get_hsgt_hist({symbol}) - AKShare failed: {e}")
-    
+
     # Fallback: Tushare (for 北向资金 only, as others don't have direct equiv)
     if symbol == "北向资金":
         try:
@@ -51,13 +61,16 @@ def get_hsgt_hist(symbol: str = "北向资金") -> Any:
                     import pandas as pd
                     transformed = pd.DataFrame({
                         '日期': result['trade_date'],
-                        '北向资金': result['north_money'] / 100,  # Convert 1M to 亿
+                        # north_money 是当日成交额（百万元）→ /100 得亿元。
+                        # 列名必须体现"成交额"，不能叫"北向资金"（会被读成净流入）。
+                        '北向成交额(亿)': result['north_money'] / 100,
                     })
-                    print(f"[DATA_SOURCE/ALT] get_hsgt_hist: Fallback to Tushare success ({len(transformed)} rows)")
+                    print(f"[DATA_SOURCE/ALT] get_hsgt_hist: Fallback to Tushare success "
+                          f"({len(transformed)} rows, 语义=成交额非净流入)")
                     return transformed
         except Exception as e:
             print(f"[DATA_SOURCE/ALT] get_hsgt_hist (Tushare fallback failed): {e}")
-    
+
     print(f"[DATA_SOURCE/ALT] get_hsgt_hist({symbol}): All sources failed")
     return None
 
@@ -211,13 +224,29 @@ def get_zt_pool(date: str = "") -> Any:
 
 
 def get_north_net_flow() -> Any:
-    """Get northbound net capital inflow with Tushare fallback.
-    
-    Degradation chain: AKShare stock_hsgt_north_net_flow_in_em() → Tushare hsgt_detail()
-    
+    """Get northbound net capital inflow (AKShare only — Tushare 降级已移除).
+
+    ⚠️ 口径（2026-08 修正，请勿重新添加 Tushare 降级）：
+    北向【净买入】自 2024-08-19 起沪深交易所停止日频披露、改为按季度公布，
+    因此**任何数据源都拿不到日频北向净流入**。
+
+    原实现的 Tushare 降级分支把 `hsgt_detail` 的 `north_money / 100` 塞进列
+    `北向资金(亿)` —— 而 north_money 是【当日成交额】（买入额+卖出额，恒为正、
+    2500~3300 亿量级），**不是净买入**。那等于把成交额伪装成净流入返回给调用方，
+    是凭空造数据，已整段删除。
+
+    现在的行为：AKShare 路径语义正确（读 stock_hsgt_hist_em 的当日净买额），
+    但该列自 2024-08-16 起全为 NaN，实际会被下面的 `!= 0` 过滤掉 → 返回 None。
+    **返回 None 是诚实的结果**，表示"净流入确实拿不到"，调用方应据此跳过该维度，
+    而不是拿一个假数字继续算。
+
+    只看成交额请改用 `services.tushare_data.get_northbound_flow()`
+    （明确区分 available / net_flow_available）。
+
     Returns:
-        DataFrame with daily northbound net flow.
-        None on failure.
+        DataFrame ['日期','北向资金(亿)','沪股通(亿)','深股通(亿)'] —— 仅当交易所
+        恢复日频净买入披露时才会有数据。
+        None：净流入不可得（2024-08-19 起的常态）。
     """
     # Primary: AKShare (v1.18+ 用 stock_hsgt_hist_em，旧接口 stock_hsgt_north_net_flow_in_em 已废弃)
     try:
@@ -250,39 +279,17 @@ def get_north_net_flow() -> Any:
                     "沪股通(亿)": combined[net_col_sh].values,
                     "深股通(亿)": combined["_sz"].values,
                 })
-                # 过滤掉净流入全0的行（可能是最近没有数据的行）
+                # 过滤掉净流入全0的行（2024-08 后净买额为 NaN→fillna(0)，会在此被滤掉）
                 merged = merged[merged["北向资金(亿)"] != 0].tail(30)
                 if len(merged) > 0:
                     return merged
     except Exception as e:
         print(f"[DATA_SOURCE/ALT] get_north_net_flow (AKShare failed): {e}")
-    
-    # Fallback: Tushare hsgt_detail
-    try:
-        import os
-        ts_token = os.environ.get("TUSHARE_TOKEN", "")
-        if ts_token:
-            import tushare as ts
-            ts.set_token(ts_token)
-            pro = ts.pro_api()
-            result = pro.hsgt_detail(start_date="20230101")
-            if result is not None and len(result) > 0:
-                import pandas as pd
-                # Transform Tushare columns to match AKShare format
-                # AKShare: 日期, 北向资金(亿), 沪股通(亿), 深股通(亿)
-                # Tushare: trade_date, north_money, sh_money, sz_money (in units of 1M)
-                transformed = pd.DataFrame({
-                    '日期': result['trade_date'],
-                    '北向资金(亿)': result['north_money'] / 100,  # Convert 1M to 亿
-                    '沪股通(亿)': result['sh_money'] / 100,
-                    '深股通(亿)': result['sz_money'] / 100,
-                })
-                print(f"[DATA_SOURCE/ALT] get_north_net_flow: Fallback to Tushare success ({len(transformed)} rows)")
-                return transformed
-    except Exception as e:
-        print(f"[DATA_SOURCE/ALT] get_north_net_flow (Tushare fallback failed): {e}")
-    
-    print(f"[DATA_SOURCE/ALT] get_north_net_flow: All sources failed")
+
+    # 注意：此处**故意没有** Tushare 降级 —— 详见函数 docstring。
+    # Tushare 的 north_money 是成交额而非净买入，用它降级等于伪造净流入数据。
+    print("[DATA_SOURCE/ALT] get_north_net_flow: 净流入不可得"
+          "（2024-08-19 起交易所改按季度披露），返回 None")
     return None
 
 

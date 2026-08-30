@@ -31,6 +31,10 @@ from services.macro_data import (
     get_macro_calendar, _macro_cache,
 )
 from services.factor_data import (
+    # ⚠️ 勿删：这些名字在本文件内确实未被调用，但 data_layer 是**再导出门面**，
+    #    api/factors.py、api/dashboard.py、api/shared_helpers.py 都是
+    #    `from services.data_layer import get_northbound_flow, ...` 拿到它们的。
+    #    删掉会让这 3 个 api 模块启动即 ImportError。
     get_northbound_flow, get_margin_trading, get_treasury_yield,
     get_shibor, get_dividend_yield, get_news_sentiment_score,
     get_main_money_flow, get_stock_financials, get_fund_holding_detail,

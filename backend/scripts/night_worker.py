@@ -419,6 +419,122 @@ def step_fund_rank_refresh():
 
 
 # ============================================================
+# 北向资金：诚实降级（净流入不可得，只用成交额）
+#
+# 背景：2024-08-19 起沪深交易所停止披露北向「日频净买入」，改为按
+# 季度公布。Tushare moneyflow_hsgt 的 north_money/hgt/sgt 自此填的
+# 是【当日成交额】（百万元），不是历史累计净买入。旧代码误按"累计值"
+# 对其做相邻两日差分求净流入，N 日累计退化成首尾两天之差，得到的
+# 今日/5日/20日净流入全是噪声（20日 -759.8 亿 vs 5日 +100.3 亿，
+# 符号相反），却被当作"外资大幅流入"喂给了 LLM。
+#
+# 因此本文件的处理原则：
+#   1. 净流入维度（net_flow_today/5d/20d）一律不进 prompt、不展示
+#   2. 只使用真实可得的成交额/活跃度维度（turnover_*）
+#   3. 必须向 LLM 显式声明数据边界，并禁止其据成交额推断资金方向
+#
+# 判断"能不能用净流入"看 net_flow_available（净流入维度），
+# 不要看 available（那只代表数据源整体拿到了成交额）。
+# ============================================================
+
+NORTH_NET_FLOW_NOTE: str = (
+    "日频净流入自2024-08-19起沪深交易所已停止披露（改为按季度公布），本次分析无此数据"
+)
+
+
+def _safe_num(value, digits: int = 0, default: str = "?") -> str:
+    """安全格式化数字为字符串。
+
+    net_flow_* 从数字变成 None 后，任何 f"{x:+.1f}" / abs(x) 都会抛
+    TypeError，所有北向相关数值一律走这个函数。
+
+    Args:
+        value: 待格式化的值，可能是 None / str / int / float。
+        digits: 小数位数，默认 0。
+        default: 无法格式化时的占位符，默认 "?"。
+
+    Returns:
+        格式化后的字符串，None 或非数字返回 default。
+    """
+    if value is None or isinstance(value, bool):
+        return default
+    try:
+        return f"{float(value):.{digits}f}"
+    except (TypeError, ValueError):
+        return default
+
+
+def _north_date_label(north: dict) -> str:
+    """把 data_date（YYYYMMDD）转成 M/D 短标签，缺失返回「最新」。"""
+    dd = str(north.get("data_date") or "")
+    if len(dd) == 8 and dd.isdigit():
+        try:
+            return f"{int(dd[4:6])}/{int(dd[6:8])}"
+        except (TypeError, ValueError):
+            return "最新"
+    return "最新"
+
+
+def _north_llm_text(north: dict) -> str:
+    """构造喂给 LLM 的北向资金描述（显式声明数据边界，禁止推断方向）。
+
+    Args:
+        north: get_northbound_flow() 返回的字典（可能为空/旧结构）。
+
+    Returns:
+        一行中文描述，绝不包含伪造的净流入数字与流入/流出方向判断。
+    """
+    north = north if isinstance(north, dict) else {}
+
+    # 成交额维度是否可用（数据源整体可用且拿到了成交额）
+    turnover = north.get("turnover_today")
+    has_turnover = turnover is not None and bool(north.get("available")) and not north.get("stale")
+
+    if not has_turnover:
+        return f"数据不可得（{NORTH_NET_FLOW_NOTE}；本次也未取到北向成交额）。请勿推断外资流入/流出方向。"
+
+    parts = [f"{NORTH_NET_FLOW_NOTE}"]
+    parts.append(
+        f"仅提供北向成交额{_safe_num(turnover, 0)}亿元（{_north_date_label(north)}）"
+    )
+
+    avg5 = north.get("turnover_avg_5d")
+    avg20 = north.get("turnover_avg_20d")
+    t_trend = north.get("turnover_trend") or "平稳"
+    if avg5 is not None:
+        rng = north.get("turnover_5d_range") or ""
+        rng_str = f"，{rng}" if rng else ""
+        parts.append(f"近5日日均{_safe_num(avg5, 0)}亿元{rng_str}")
+    if avg20 is not None:
+        parts.append(f"近20日日均{_safe_num(avg20, 0)}亿元")
+    parts.append(f"近5日相对近20日为「{t_trend}」")
+
+    return (
+        "；".join(parts)
+        + "。成交额只反映交易活跃度（买卖双边合计），不含方向信息，"
+        + "请勿据此推断外资流入/流出方向，也不要给出任何北向净买入/净卖出的数字或结论。"
+    )
+
+
+def _north_user_text(north: dict) -> str:
+    """构造给普通用户看的北向资金描述（早安简报/市场温度用）。"""
+    north = north if isinstance(north, dict) else {}
+    turnover = north.get("turnover_today")
+    has_turnover = turnover is not None and bool(north.get("available")) and not north.get("stale")
+
+    if not has_turnover:
+        return "外资动向: 数据暂不可用（交易所已停止披露北向日频净买入）"
+
+    t_trend = north.get("turnover_trend") or "平稳"
+    txt = f"外资交投: {_north_date_label(north)}北向成交{_safe_num(turnover, 0)}亿（{t_trend}）"
+    avg5 = north.get("turnover_avg_5d")
+    if avg5 is not None:
+        txt += f"，近5日日均{_safe_num(avg5, 0)}亿"
+    txt += "；净买入方向数据交易所已停止披露（改按季度公布）"
+    return txt
+
+
+# ============================================================
 # 02:00 R1 Phase 1: 宏观+地缘+行业
 # ============================================================
 
@@ -429,7 +545,18 @@ def step_r1_phase1():
     # 逐个收集数据（单个失败不影响其他）
     fgi = {"score": 50, "level": "中性"}
     val = {"percentile": 50, "level": ""}
-    north = {"net_flow_5d": 0, "trend": "中性"}
+    # 北向：净流入维度已不可得（交易所停止披露），默认值也必须诚实降级
+    north = {
+        "net_flow_today": None,
+        "net_flow_5d": None,
+        "net_flow_20d": None,
+        "net_flow_available": False,
+        "unavailable_reason": NORTH_NET_FLOW_NOTE,
+        "trend": "数据不可得",
+        "turnover_today": None,
+        "turnover_trend": "",
+        "available": False,
+    }
     geo = {"level": "低", "max_severity": 0}
     sr = {"available": False}
     br = {"consensus": "未知"}
@@ -449,7 +576,10 @@ def step_r1_phase1():
         north = get_northbound_flow() or north
         shibor = get_shibor() or shibor
         margin = get_margin_trading() or margin
-        log(f"  北向5日={north.get('net_flow_5d', 0):.1f}亿, SHIBOR={shibor.get('overnight', 0)}")
+        # 只 log 成交额（净流入已不可得，log 数字会误导排障的人）
+        log(f"  北向成交额={_safe_num(north.get('turnover_today'), 0)}亿"
+            f"({north.get('turnover_trend') or '—'}), 净流入=不可得, "
+            f"SHIBOR={shibor.get('overnight', 0)}")
     except Exception as e:
         log(f"  ⚠️ 因子数据失败: {e}")
 
@@ -528,16 +658,8 @@ def step_r1_phase1():
     _geo_level_map = {"low": "低", "normal": "低", "moderate": "中等",
                       "elevated": "偏高", "high": "高", "extreme": "极高", "critical": "极高"}
     geo_cn_for_llm = _geo_level_map.get(geo.get('level', ''), geo.get('level', '低'))
-    # v9.5.130: 北向数据带日期区间标注，防止 LLM 把"近5日"误当"今日"
-    if not north.get('stale') and north.get('available'):
-        _dd = north.get('data_date', '')
-        _dlabel = f"{int(_dd[4:6])}/{int(_dd[6:8])}" if _dd and len(_dd) == 8 else "最新"
-        _range = north.get('flow_5d_range', '')
-        _range_str = f"（{_range}）" if _range else f"（截至{_dlabel}）"
-        north_text = (f"5日累计{north.get('net_flow_5d', 0):.1f}亿{_range_str}，"
-                      f"{_dlabel}当日{north.get('net_flow_today', 0):+.1f}亿，趋势:{north.get('trend', '中性')}")
-    else:
-        north_text = "数据暂不可用（交易所停止披露）"
+    # 北向资金：净流入自 2024-08-19 起交易所停止披露，只喂成交活跃度并声明边界
+    north_text = _north_llm_text(north)
     # A 股指数涨跌（关键：让 LLM 知道大盘方向，避免在下跌日误判"亮眼"）
     indices_text = ", ".join(f"{v['name']}{v['change_pct']:+.2f}%" for v in indices.values()) if indices else "暂无"
     data_text = f"""宏观数据快照:
@@ -566,12 +688,16 @@ def step_r1_phase1():
    - 直接给结论，一句话开头
 7. 禁止输出口水话和废话：如"情绪不冷不热""市场有所波动""整体表现平稳"等无信息量表达
 8. 每句话必须有具体信息：数字、方向或可执行建议，否则删掉这句
-9. 违反以上规则等于失职
+9. 【北向资金铁律】沪深交易所自2024-08-19起已停止披露北向日频净买入（改按季度公布），
+   所以你拿不到任何"外资净流入/净流出多少亿"的数据。绝对禁止说外资在买入/卖出/流入/流出/
+   加仓/撤退，也禁止给出任何外资净买入金额。数据里若给了北向成交额，那是买卖双边合计的
+   交易活跃度，只能说"外资交投活跃/清淡"，不能推断方向。
+10. 违反以上规则等于失职
 
 输出格式示例（直接给结论，不要前缀）：
 一句话：今天市场涨得不错，但估值偏高
 看点：
-- 外资昨天大幅卖出，情绪偏谨慎
+- 银行间利率偏紧，短期钱不太松
 - 好消息是市场整体不贵，跌不深
 建议：不用慌，持有为主"""
 
@@ -589,19 +715,22 @@ def step_r1_phase1():
 建议：<一句话，当前该怎么做>
 
 示例风格（内容不要照抄，根据实际数据写）：
-一句话：今天盘面偏弱但没大问题，外资在卖但国内资金还稳。
+一句话：今天盘面偏弱但没大问题，杠杆资金还稳。
 看点：
-- 外资连续5天卖出，总量接近470亿，情绪偏谨慎
+- 融资余额小幅减少，加杠杆的人在收手
 - 地缘局势让避险资金往银行、黄金跑
 - 好消息是市场整体不贵，跌不深
 建议：不用慌，持有为主。如果情绪很恐慌了再考虑捡便宜。
 
 重要: 上述数据就是全部信息。如果某个维度数据缺失，直接跳过不提。
+北向资金：数据里已说明日频净流入不可得，禁止写"外资流入/流出多少亿"，也禁止用成交额推断方向。
 禁止: 不要写"我来分析"之类的前缀，直接从"一句话："开始。"""
 
     fallback_macro = (
         f"市场情绪{fgi.get('level', '中性')}({fgi.get('score', 50)}分), "
-        f"外资5日{north.get('net_flow_5d', 0):.0f}亿, 热点:{sector_text}"
+        f"北向成交{_safe_num(north.get('turnover_today'), 0)}亿"
+        f"({north.get('turnover_trend') or '净买入方向数据已停止披露'}), "
+        f"热点:{sector_text}"
     )
     analysis = _call_v3(prompt, 800, system=ANTI_HALLUCINATION_SYSTEM)
     if analysis:
@@ -1231,18 +1360,8 @@ def step_generate_products(phase1, phase2, phase3):
     # ---- 市场温度（普通人看得懂的版本）----
     temp_parts = []
     temp_parts.append(f"市场情绪: {fgi.get('level', '中性')}({fgi.get('score', '?')}分)")
-    if north.get("net_flow_5d") and not north.get("stale"):
-        flow = north['net_flow_5d']
-        today_flow = north.get('net_flow_today', 0)
-        data_date = north.get('data_date', '')
-        date_label = f"{int(data_date[4:6])}/{int(data_date[6:8])}" if data_date and len(data_date) == 8 else "最新"
-        # v9.5.130: 加5日区间标注，如"（5/28-6/3）"，让用户知道是哪几天
-        range_label = north.get('flow_5d_range', '')
-        range_str = f"（{range_label}）" if range_label else ""
-        direction = "净卖出" if flow < 0 else "净买入"
-        temp_parts.append(f"外资动向: 5日{direction}{abs(flow):.0f}亿{range_str}，{date_label}当日{today_flow:+.0f}亿")
-    elif north.get("stale"):
-        temp_parts.append("外资动向: 数据暂不可用（数据源更新滞后）")
+    # 北向：净流入维度已不可得，只报成交活跃度（不要再报"5日净买入X亿"）
+    temp_parts.append(_north_user_text(north))
     if margin.get("change_5d_pct"):
         pct = margin['change_5d_pct']
         if pct > 1:

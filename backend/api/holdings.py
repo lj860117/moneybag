@@ -1573,12 +1573,17 @@ def family_monthly_report_api():
 
 
 @router.post("/api/goals/set")
+# TODO(2026-08-30) 坏味道：`req: dict = {}` 用可变对象作默认参数。
+#   Python 的默认值在**函数定义时**创建并跨调用共享，一旦有代码就地修改 req
+#   就会污染后续所有请求。本次未改，因为改签名（如 `req: dict | None = None`
+#   或改用 Pydantic model）可能影响 FastAPI 的请求体解析行为，需要单独验证。
+#   本文件内多处端点都是这个写法，建议统一整改。
 def set_financial_goal(req: dict = {}):
     """设定财务目标(如3年攒50万)
     
     请求: {userId, name: "装修费", target_amount: 200000, deadline: "2029-01", monthly_save: 5000}
     """
-    from services.persistence import load_user, save_user
+    from services.persistence import load_user, save_user, user_write_lock
     
     uid = req.get("userId", "default")
     goal = {
@@ -1592,15 +1597,26 @@ def set_financial_goal(req: dict = {}):
     if goal["target_amount"] <= 0:
         return {"ok": False, "error": "目标金额必须大于0"}
     
-    user = load_user(uid)
-    portfolio = user.get("portfolio") or {}
-    goals = portfolio.get("financial_goals") or []
-    goals.append(goal)
-    portfolio["financial_goals"] = goals[-5:]  # 最多5个目标
-    user["portfolio"] = portfolio
-    save_user(uid, user)
+    # FIX 2026-08-30: 原来这里是 save_user(uid, user) —— 传了 2 个参数，
+    # 而 persistence.save_user 的签名是 save_user(data)，只收 1 个。
+    # 结果这个端点自上线起每次调用必抛
+    # `TypeError: save_user() takes 1 positional argument but 2 were given` → 500，
+    # 从未成功保存过一次。因为 save_user 是函数内 late import，静态检查也扫不出来。
+    # 同时补上 user_write_lock：这是标准 RMW 临界区（load → 改 portfolio → save），
+    # 不加锁的话并发请求会互相覆盖（uvicorn 把 sync 端点跑在线程池里，是真并发）。
+    with user_write_lock(uid) as acquired:
+        if not acquired:
+            raise HTTPException(503, "系统繁忙（用户数据写锁超时），请稍后重试")
+        user = load_user(uid)
+        portfolio = user.get("portfolio") or {}
+        goals = portfolio.get("financial_goals") or []
+        goals.append(goal)
+        portfolio["financial_goals"] = goals[-5:]  # 最多5个目标
+        user["portfolio"] = portfolio
+        save_user(user)
+        total_goals = len(portfolio["financial_goals"])
     
-    return {"ok": True, "goal": goal, "total_goals": len(goals)}
+    return {"ok": True, "goal": goal, "total_goals": total_goals}
 
 
 @router.get("/api/goals")
@@ -1638,6 +1654,8 @@ def get_financial_goals(userId: str = "default"):
 # ═══ v9.5.123 Sprint 2: 止盈止损纪律线 ═══
 
 @router.post("/api/fund-holdings/discipline")
+# TODO(2026-08-30) 坏味道：`req: dict = {}` 用可变对象作默认参数（同
+#   set_financial_goal，原因见那里的注释）。本次未改，需单独验证 FastAPI 解析行为。
 def set_discipline_line(req: dict = {}):
     """设定基金止盈/止损纪律线
     
@@ -1646,7 +1664,7 @@ def set_discipline_line(req: dict = {}):
     - stop_loss: 亏损百分比(负数), 到达后推送止损提醒
     - 设为 null/0 = 取消该线
     """
-    from services.persistence import load_user, save_user
+    from services.persistence import load_user, save_user, user_write_lock
     
     uid = req.get("userId", "default")
     code = req.get("code", "")
@@ -1656,23 +1674,29 @@ def set_discipline_line(req: dict = {}):
     if not code:
         return {"ok": False, "error": "缺少基金代码"}
     
-    user = load_user(uid)
-    portfolio = user.get("portfolio") or {}
-    lines = portfolio.get("discipline_lines") or {}
-    
-    if take_profit or stop_loss:
-        lines[code] = {}
-        if take_profit and take_profit > 0:
-            lines[code]["take_profit"] = float(take_profit)
-        if stop_loss and stop_loss < 0:
-            lines[code]["stop_loss"] = float(stop_loss)
-    else:
-        # 取消纪律线
-        lines.pop(code, None)
-    
-    portfolio["discipline_lines"] = lines
-    user["portfolio"] = portfolio
-    save_user(uid, user)
+    # FIX 2026-08-30: 同 set_financial_goal —— 原来是 save_user(uid, user)，
+    # 多传一个参数导致 TypeError → 该端点自上线起每次必 500，纪律线从未保存成功。
+    # 一并补上 user_write_lock 保护 RMW 临界区。
+    with user_write_lock(uid) as acquired:
+        if not acquired:
+            raise HTTPException(503, "系统繁忙（用户数据写锁超时），请稍后重试")
+        user = load_user(uid)
+        portfolio = user.get("portfolio") or {}
+        lines = portfolio.get("discipline_lines") or {}
+        
+        if take_profit or stop_loss:
+            lines[code] = {}
+            if take_profit and take_profit > 0:
+                lines[code]["take_profit"] = float(take_profit)
+            if stop_loss and stop_loss < 0:
+                lines[code]["stop_loss"] = float(stop_loss)
+        else:
+            # 取消纪律线
+            lines.pop(code, None)
+        
+        portfolio["discipline_lines"] = lines
+        user["portfolio"] = portfolio
+        save_user(user)
     
     return {"ok": True, "code": code, "lines": lines.get(code, {}), "total_lines": len(lines)}
 

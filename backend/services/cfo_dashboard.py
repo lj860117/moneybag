@@ -24,12 +24,20 @@ from infra.cache import MemoryCache
 _cfo_cache = MemoryCache(default_ttl=60)
 
 
-def generate_cfo_summary(user_id: str) -> dict:
+def generate_cfo_summary(user_id: str, generate_todos: bool = True) -> dict:
     """聚合首页全部数据，单个模块失败不影响整体。
 
     性能优化：
     1. 结果级缓存 60s（用户刷新首页不重复计算）
     2. 并行获取外部数据（恐贪/期货/净资产/估值），避免串行等待
+
+    Args:
+        user_id: 用户ID
+        generate_todos: 是否把 E 区块生成的待办**落库**。默认 True 保持向后兼容
+            （真人页面请求）；机器驱动的只读路径（后台预热线程 _prewarm_loop）
+            必须传 False —— 否则每 55 秒就往用户 JSON 写一条待办。
+            注意：无论 True/False，返回结果里的 result["todos"] 显示内容都一样，
+            这个开关只控制"要不要写盘"。详见 _generate_todos() 的注释。
     """
     # ── 缓存命中 → <5ms 返回 ──
     cache_key = f"cfo_{user_id}"
@@ -168,7 +176,9 @@ def generate_cfo_summary(user_id: str) -> dict:
 
     # ── E. 本周待办 ──
     try:
-        result["todos"] = _generate_todos(user_id, allocation_data)
+        result["todos"] = _generate_todos(
+            user_id, allocation_data, persist=generate_todos
+        )
     except Exception as e:
         print(f"[CFO] todos failed: {e}")
 
@@ -504,10 +514,37 @@ def _generate_emotion(fear_greed: int, market_change: float,
 # E. 本周待办
 # ============================================================
 
-def _generate_todos(user_id: str, allocation: dict | None) -> list:
-    """基于当前数据状态自动生成本周待办并保存到数据库"""
-    from services.todo_manager import create_todo
-    
+def _generate_todos(user_id: str, allocation: dict | None,
+                    persist: bool = True) -> list:
+    """基于当前数据状态生成本周待办（显示用），可选地落库。
+
+    FIX 2026-08-30（P0：读操作不应有写副作用）
+    ------------------------------------------------
+    这个函数原本无条件调用 todo_manager.create_todo() 落库，而它自己位于
+    generate_cfo_summary()（纯读接口）的调用链上，且被 55 秒一次的后台预热
+    线程 _prewarm_loop() 反复触发 —— 相当于"每次读仪表板就写一条待办"，
+    153,093 条垃圾待办（33.9MB）就是这么堆出来的。
+
+    现在拆成两件事：
+      - 计算显示用的 todos 标题列表 —— 纯函数，永远执行，零写入
+      - 落库 —— 由 persist 开关控制
+    机器驱动的只读路径（预热线程）传 persist=False，真人页面请求保持 True。
+    即使某个调用方漏传，todo_manager.create_todo() 的幂等窗口也会兜住
+    （同规则同窗口内只留一条 open）。两道防线，缺一不可：
+      解耦解决"写得太频繁"，幂等解决"写重复内容"。
+
+    Args:
+        user_id: 用户ID
+        allocation: 资产配置数据（可能为 None）
+        persist: 是否把生成的待办写入用户数据库（默认 True 保持向后兼容）
+
+    Returns:
+        最多 4 条待办标题（显示用）
+    """
+    create_todo = None
+    if persist:
+        from services.todo_manager import create_todo
+
     todos = []
     todo_objects = []
     today = datetime.now()
@@ -519,35 +556,37 @@ def _generate_todos(user_id: str, allocation: dict | None) -> list:
         if max_dev > 15:
             title = "检查资产配置是否需要再平衡（偏离已超 15%）"
             todos.append(title)
-            # 自动保存到数据库
-            try:
-                todo_obj = create_todo(
-                    user_id,
-                    title,
-                    rule_triggered="allocation_deviation_gt_15",
-                    due_by_days=7,
-                    metadata={"deviation": max_dev}
-                )
-                if todo_obj:
-                    todo_objects.append(todo_obj)
-            except Exception as e:
-                print(f"[CFO] 创建 todo 失败: {e}")
+            # 自动保存到数据库（仅 persist=True）
+            if create_todo:
+                try:
+                    todo_obj = create_todo(
+                        user_id,
+                        title,
+                        rule_triggered="allocation_deviation_gt_15",
+                        due_by_days=7,
+                        metadata={"deviation": max_dev}
+                    )
+                    if todo_obj:
+                        todo_objects.append(todo_obj)
+                except Exception as e:
+                    print(f"[CFO] 创建 todo 失败: {e}")
 
     # 规则 2: 周末 → 家庭复盘
     if weekday >= 4:  # 周五/六/日
         title = "本周末和家人做一次财务小复盘"
         todos.append(title)
-        try:
-            todo_obj = create_todo(
-                user_id,
-                title,
-                rule_triggered="weekly_review",
-                due_by_days=3,
-            )
-            if todo_obj:
-                todo_objects.append(todo_obj)
-        except Exception:
-            pass
+        if create_todo:
+            try:
+                todo_obj = create_todo(
+                    user_id,
+                    title,
+                    rule_triggered="weekly_review",
+                    due_by_days=3,
+                )
+                if todo_obj:
+                    todo_objects.append(todo_obj)
+            except Exception:
+                pass
 
     # 规则 3: 检查记账
     try:
@@ -566,18 +605,19 @@ def _generate_todos(user_id: str, allocation: dict | None) -> list:
                     if days_since > 5:
                         title = f"已 {days_since} 天没记账，补录近期消费"
                         todos.append(title)
-                        try:
-                            todo_obj = create_todo(
-                                user_id,
-                                title,
-                                rule_triggered="accounting_overdue",
-                                due_by_days=2,
-                                metadata={"days_overdue": days_since}
-                            )
-                            if todo_obj:
-                                todo_objects.append(todo_obj)
-                        except Exception:
-                            pass
+                        if create_todo:
+                            try:
+                                todo_obj = create_todo(
+                                    user_id,
+                                    title,
+                                    rule_triggered="accounting_overdue",
+                                    due_by_days=2,
+                                    metadata={"days_overdue": days_since}
+                                )
+                                if todo_obj:
+                                    todo_objects.append(todo_obj)
+                            except Exception:
+                                pass
             else:
                 title = "开始记录日常收支（每周花 2 分钟）"
                 todos.append(title)
@@ -588,17 +628,18 @@ def _generate_todos(user_id: str, allocation: dict | None) -> list:
     if allocation and not allocation.get("target"):
         title = "设置你的目标资产配置比例"
         todos.append(title)
-        try:
-            todo_obj = create_todo(
-                user_id,
-                title,
-                rule_triggered="no_target_config",
-                due_by_days=7,
-            )
-            if todo_obj:
-                todo_objects.append(todo_obj)
-        except Exception:
-            pass
+        if create_todo:
+            try:
+                todo_obj = create_todo(
+                    user_id,
+                    title,
+                    rule_triggered="no_target_config",
+                    due_by_days=7,
+                )
+                if todo_obj:
+                    todo_objects.append(todo_obj)
+            except Exception:
+                pass
 
     # 返回最多 4 条（显示用）
     return todos[:4]
@@ -619,7 +660,15 @@ def _get_active_users() -> list:
 
 
 def _prewarm_loop():
-    """后台线程：循环预热 CFO 缓存"""
+    """后台线程：循环预热 CFO 缓存
+
+    FIX 2026-08-30：这个线程是 todos 膨胀的主要写入源
+    ------------------------------------------------
+    每 55 秒 × 2 个家庭成员 ≈ 每天 3140 次 generate_cfo_summary()，
+    而原来每次都会调 create_todo() 落库 —— 这就是 1444 条/天的来源。
+    预热是纯粹的"机器读"，绝不应该产生写副作用，故传 generate_todos=False。
+    真人访问路径（api/steward.py → generate_cfo_summary）仍保持落库能力。
+    """
     import threading
     while True:
         try:
@@ -631,7 +680,8 @@ def _prewarm_loop():
                     cache_key = f"cfo_{uid}"
                     # 清除旧缓存强制重算
                     _cfo_cache.delete(cache_key)
-                    generate_cfo_summary(uid)
+                    # generate_todos=False：预热只读，不写用户 JSON
+                    generate_cfo_summary(uid, generate_todos=False)
                 except Exception as e:
                     print(f"[CFO-PREWARM] {uid} failed: {e}")
         except Exception as e:

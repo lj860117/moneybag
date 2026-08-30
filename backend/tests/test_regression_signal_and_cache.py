@@ -123,7 +123,11 @@ def test_cfo_summary_force_refresh_rewrites_fresh_file(tmp_path, monkeypatch):
     )
 
     fake_cfo = types.ModuleType("services.cfo_dashboard")
-    fake_cfo.generate_cfo_summary = lambda user_id: {"timestamp": "new", "user": user_id}
+    # generate_todos kwarg: FIX 2026-08-30 起 steward.cfo_summary 会显式传该参数
+    # （force=1 的机器预热路径传 False，避免读操作写用户 JSON），fake 需同步签名
+    fake_cfo.generate_cfo_summary = (
+        lambda user_id, generate_todos=True: {"timestamp": "new", "user": user_id}
+    )
     monkeypatch.setitem(sys.modules, "services.cfo_dashboard", fake_cfo)
 
     result = steward.cfo_summary(userId="LeiJiang", force=True)

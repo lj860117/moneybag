@@ -215,26 +215,58 @@ def _build_market_context() -> str:
         pass
 
     # 资金面三件套
+    # ── 北向资金：净流入不可得，只报成交额活跃度 ──
+    # 2024-08-19 起沪深交易所停止披露北向「日频净买入」（改为按季度公布），
+    # Tushare moneyflow_hsgt 的 north_money/hgt/sgt 此后填的是【当日成交额】。
+    # 旧代码在这里拼「今日单日X亿 | 5日累计Y亿（趋势）」，数字来自对成交额做
+    # 相邻日差分，是纯噪声（20日 -759.8亿 vs 5日 +100.3亿 符号相反），而这段
+    # 正是喂给企业微信对话 / 站内问答 / 预制问答的主 prompt。
+    #
+    # ⚠️ 三个必须注意的点：
+    #   1) net_flow_* 现在是 None 而非缺键 → `.get(key, 0)` 的默认值【不会生效】，
+    #      必须显式 `is None` 判断，否则 f"{None:+.1f}" 抛 TypeError；
+    #   2) 判断净流入可用性看 net_flow_available，不是 available
+    #      （available=True 只代表成交额可得）；
+    #   3) 数据层已把 flow_5d_range 改名为 turnover_5d_range，旧名读出来恒空。
     try:
-        north = get_northbound_flow()
-        if north.get("available"):
-            # v9.5.130: 带日期标注，避免"今日单日"与"近5日累计"口径混淆
-            # data_date 是 Tushare 最新数据日期（通常比当日延迟1天），需明确标出
-            today_flow = north.get('net_flow_today', 0)
-            flow_5d = north.get('net_flow_5d', 0)
-            data_date = north.get('data_date', '')
-            # 把 20260603 → "6/3" 便于阅读
-            date_label = ""
-            if data_date and len(data_date) == 8:
-                date_label = f"{int(data_date[4:6])}/{int(data_date[6:8])}"
-            trend = north.get('trend', '')
-            range_label = north.get('flow_5d_range', '')
-            range_str = f"（{range_label}）" if range_label else (f"（截至{date_label}）" if date_label else "")
-            today_str = f"{date_label}单日{today_flow:+.1f}亿" if date_label else f"最新单日{today_flow:+.1f}亿"
-            fiveday_str = f"5日累计{flow_5d:+.1f}亿{range_str}"
-            lines.append(f"\n资金面：北向资金 {today_str} | {fiveday_str}（{trend}）\n  注：数据截至{date_label if date_label else '最新交易日'}，今日最新数据尚未披露")
-    except Exception:
-        pass
+        north = get_northbound_flow() or {}
+        _nb_reason = (north.get("unavailable_reason")
+                      or "2024-08-19 起沪深交易所停止披露北向日频净买入，改为按季度公布")
+        _nb_dd = str(north.get("data_date") or "")
+        _nb_date_label = ""
+        if len(_nb_dd) == 8 and _nb_dd.isdigit():
+            _nb_date_label = f"{int(_nb_dd[4:6])}/{int(_nb_dd[6:8])}"
+        _nb_turnover = north.get("turnover_today")
+        if north.get("available") and _nb_turnover is not None:
+            _nb_parts = [f"{_nb_date_label or '最新'}成交额{float(_nb_turnover):.0f}亿元"]
+            _nb_avg5 = north.get("turnover_avg_5d")
+            if _nb_avg5 is not None:
+                _nb_range = north.get("turnover_5d_range") or ""
+                _nb_parts.append(f"近5日日均{float(_nb_avg5):.0f}亿元"
+                                 + (f"（{_nb_range}）" if _nb_range else ""))
+            _nb_avg20 = north.get("turnover_avg_20d")
+            if _nb_avg20 is not None:
+                _nb_parts.append(f"近20日日均{float(_nb_avg20):.0f}亿元")
+            _nb_parts.append(f"活跃度「{north.get('turnover_trend') or '平稳'}」")
+            lines.append(
+                f"\n资金面：北向资金 —— 日频净流入已不可得（{_nb_reason}），本次分析没有这项数据；"
+                f"仅有成交额：{'，'.join(_nb_parts)}"
+                f"\n  注：成交额是买入+卖出的双边合计，不含方向。请勿据此推断外资流入/流出方向，"
+                f"也不要给出任何北向净买入/净卖出的金额或结论（该数据已停止披露）；"
+                f"用户问外资流向时，如实说明交易所已停止披露日频净买入、改为按季度公布。"
+            )
+        else:
+            lines.append(
+                f"\n资金面：北向资金数据不可得（{_nb_reason}）。"
+                f"请勿推断外资流入/流出方向，也不要编造净买入金额。"
+            )
+    except Exception as e:
+        # 本次教训的直接应用：原来这里是 `except Exception: pass`，净流入变 None 后
+        # 格式化抛 TypeError 被静默吞掉 → 整条「资金面：北向资金…」从 prompt 里消失，
+        # 而融资融券在下一个独立 try 块里照常输出，prompt 看起来"资金面还在"，
+        # 实际只剩两融，且没有任何日志/告警。沉默的降级 = 看不见的错误，必须留痕。
+        print(f"[MARKET_CTX] northbound injection failed, section skipped: "
+              f"{type(e).__name__}: {e}")
     try:
         margin = get_margin_trading()
         if margin.get("available"):
@@ -502,7 +534,23 @@ def _build_portfolio_context(p=None, user_id: str = "default") -> str:
                 if hit_top:
                     lines.append("\n【今日上龙虎榜】")
                     for t in hit_top[:3]:
-                        lines.append(f"  📊 {t.get('name','?')}({t.get('ts_code','')}) — {t.get('reason','')[:30]}, 净流入¥{t.get('net_amount',0)/1e8:.2f}亿")
+                        # 龙虎榜(top_list) 与北向是不同数据源，未受 2024-08-19 沪深港通口径变更影响。
+                        # 2026-08-28 实测确认 net_amount 有值（5410945.7），所以下面的缺值分支
+                        # 只是纵深防御。措辞刻意用"本次缺失"而非"未披露"——龙虎榜照常每日披露，
+                        # 说"未披露"会把一次偶发的取数失败误说成披露制度问题（只有北向净买入是
+                        # 永久性不可得，不要把那个结论外推到别的数据源）。
+                        # 仍不能写 `t.get('net_amount', 0)/1e8`（None 会 TypeError），
+                        # 也不能用 `or 0` 兜（会凭空输出"净流入¥0.00亿"这种假数字）。
+                        _seg = f"  📊 {t.get('name','?')}({t.get('ts_code','')}) — {t.get('reason','')[:30]}"
+                        _net = t.get("net_amount")
+                        if _net is not None:
+                            try:
+                                _seg += f", 净流入¥{float(_net)/1e8:.2f}亿"
+                            except (TypeError, ValueError):
+                                _seg += ", 净流入金额数据异常"
+                        else:
+                            _seg += ", 净流入金额本次缺失"
+                        lines.append(_seg)
                     # v9.5.101: 进一步看席位类型（机构 vs 游资）
                     try:
                         from services.tushare_data import get_top_inst
@@ -635,7 +683,17 @@ def _build_portfolio_context(p=None, user_id: str = "default") -> str:
     except Exception:
         pass
 
-    # 5.8 v9.5.99: 北向资金活跃股 — 持仓股是否被外资盯上
+    # 5.8 v9.5.99: 沪深股通十大成交活跃股 — 持仓股是否在北向成交活跃榜上
+    # 2026-08-28 实测修正（team-lead 用真实 token 逐日回看 8/17~8/28）：
+    #   ✅ 每日有值: trade_date, ts_code, name, close, change, rank, market_type, amount(成交额,元)
+    #   ❌ 恒为 None: net_amount, buy, sell
+    # 也就是说「成交额仍每日披露，净买入不再披露」这条规律在【个股层面同样成立】，
+    # 不只是市场层面。榜单本身每日更新（不陈旧、不是季度数据），但方向性字段已废。
+    #
+    # 旧代码 `net = r.get("net_amount", 0) or 0` 的后果不是崩溃而是更糟：
+    # None 被 `or 0` 兜成 0 → 每只股票都输出「❄️ 净流出¥0.00亿」，即凭空编造出
+    # 一个"全部净流出"的假信号喂给 LLM。所以这里改用真实可得的 amount/rank/close，
+    # 并显式声明"成交活跃 ≠ 持仓 ≠ 加仓"。
     try:
         from services.tushare_data import get_hsgt_top10
         from services.stock_monitor import load_stock_holdings
@@ -650,18 +708,54 @@ def _build_portfolio_context(p=None, user_id: str = "default") -> str:
                     for r in rows[:10]:
                         ts_code = r.get("ts_code", "")
                         code6 = ts_code.split(".")[0] if ts_code else ""
-                        if code6 in held_codes:
-                            net = r.get("net_amount", 0) or 0
-                            sign = "🔥" if net > 0 else "❄️"
-                            hsgt_alerts.append(f"{sign} {r.get('name','?')}({code6}) 上{'沪' if mt=='1' else '深'}股通TOP10，净{'流入' if net>0 else '流出'}¥{abs(net)/1e8:.2f}亿")
-            except Exception:
-                pass
+                        if code6 not in held_codes:
+                            continue
+                        board = "沪股通" if mt == "1" else "深股通"
+                        seg = [f"📊 {r.get('name', '?')}({code6}) 在{board}成交活跃榜"]
+                        # rank：排名（实测有值），显式判空避免 None 拼进文案
+                        _rank = r.get("rank")
+                        if _rank is not None:
+                            seg.append(f"第{_rank}名")
+                        # amount：北向成交额，单位【元】→ 亿元（实测有值，是这段唯一的真数据）
+                        _amt = r.get("amount")
+                        if _amt is not None:
+                            try:
+                                seg.append(f"成交额{float(_amt) / 1e8:.2f}亿元")
+                            except (TypeError, ValueError):
+                                pass
+                        # close：收盘价（实测有值）
+                        _close = r.get("close")
+                        if _close is not None:
+                            try:
+                                seg.append(f"收盘{float(_close):.2f}元")
+                            except (TypeError, ValueError):
+                                pass
+                        # change：涨跌【额】，单位元 —— 不是百分比！
+                        # 2026-08-28 交叉验证：hsgt_top10.change=0.65 == daily.change=0.65，
+                        # 而同日 daily.pct_chg=2.4083、pre_close+change=26.99+0.65=27.64=close。
+                        # 若误当百分比渲染会显示"涨跌0.65%"而真实涨幅+2.41%，差近4倍且看起来合理。
+                        # 所以这里必须带「元」字，禁止改成 %。
+                        _chg = r.get("change")
+                        if _chg is not None:
+                            try:
+                                seg.append(f"较前收盘{float(_chg):+.2f}元")
+                            except (TypeError, ValueError):
+                                pass
+                        hsgt_alerts.append("，".join(seg))
+            except Exception as _e_top:
+                print(f"[MARKET_CTX] hsgt_top10 rows parse failed: "
+                      f"{type(_e_top).__name__}: {_e_top}")
             if hsgt_alerts:
-                lines.append("\n【北向资金活跃持仓】")
+                lines.append("\n【沪深股通十大成交活跃股·你的持仓在榜】")
                 for a in hsgt_alerts[:3]:
                     lines.append(f"  {a}")
-    except Exception:
-        pass
+                lines.append("  注：该榜按【北向成交额】排名（买入+卖出双边合计），只反映这只股票的"
+                             "北向交投活跃度，**不含方向**。个股净买入/买入额/卖出额（net_amount/"
+                             "buy/sell）交易所已停止披露、实测返回空值，因此无法判断外资是在买还是在卖。"
+                             "上榜≠外资持仓、≠外资加仓，请勿据此推断加仓/减仓或外资看多看空。")
+    except Exception as e:
+        print(f"[MARKET_CTX] hsgt_top10 injection failed, section skipped: "
+              f"{type(e).__name__}: {e}")
 
     # 6. 历史决策记忆（pending_insights + ironies）— 让 AI 知道你说过什么
     if user_id and user_id != "default":
@@ -1042,6 +1136,67 @@ def _rule_based_reply_structured(msg: str, market_ctx: str, portfolio_ctx: str) 
             advice = "市场过热，考虑适当减仓锁利。"
         text = f"🎭 市场情绪分析：\n\n恐惧贪婪指数：**{fgi:.0f}** — {level}\n\n{advice}\n\n{market_ctx}\n\n💡 「别人恐惧时我贪婪」说的容易做起来难，但数据不会骗人。\n\n⚠️ 以上仅供参考，不构成投资建议。"
         return {"text": text, "confidence": 0.85, "intent": "sentiment"}
+
+    # 北向资金 / 外资 —— 净流入【永久不可得】，给确定性回答
+    # 2024-08-19 起沪深交易所停止披露北向日频净买入（改为按季度公布），Tushare
+    # moneyflow_hsgt 的 north_money 现为当日成交额。这是永久性数据边界，不应该依赖
+    # 「模型会不会照着 prompt 里的说明回答」这种软约束（换模型/改温度就可能失效），
+    # 所以在规则层直接答死；顺带省掉一次 LLM 调用（用户会反复追问这个问题）。
+    # 必须放在「宏观/新闻」分支之前，否则「外资为什么流出」会被新闻分支抢走。
+    if any(k in msg_lower for k in ["北向", "外资", "陆股通", "沪股通", "深股通"]):
+        nb: dict = {}
+        try:
+            nb = get_northbound_flow() or {}
+        except Exception as _e_nb:
+            print(f"[RULES] northbound fetch failed: {type(_e_nb).__name__}: {_e_nb}")
+        _nb_reason = (nb.get("unavailable_reason")
+                      or "2024-08-19 起沪深交易所停止披露北向日频净买入，改为按季度公布")
+        _nb_t = nb.get("turnover_today")
+        _nb_dd = str(nb.get("data_date") or "")
+        _nb_label = ""
+        if len(_nb_dd) == 8 and _nb_dd.isdigit():
+            _nb_label = f"（{int(_nb_dd[4:6])}/{int(_nb_dd[6:8])}）"
+
+        _nb_rows = []
+        if _nb_t is not None:
+            try:
+                _nb_rows.append(f"• 当日成交额：{float(_nb_t):.0f}亿元{_nb_label}")
+            except (TypeError, ValueError):
+                pass
+        for _key, _cn in (("turnover_avg_5d", "近5日日均"), ("turnover_avg_20d", "近20日日均")):
+            _v = nb.get(_key)
+            if _v is None:
+                continue
+            try:
+                _nb_rows.append(f"• {_cn}：{float(_v):.0f}亿元")
+            except (TypeError, ValueError):
+                pass
+        if nb.get("turnover_trend"):
+            _nb_rows.append(f"• 交投活跃度：{nb['turnover_trend']}（近5日相对近20日）")
+
+        # ⚠️ 措辞约束（2026-08，配合 infra/llm/red_team_audit.py 的北向拦截规则）：
+        # 守卫正则 `(北向|外资)[^。；\n]{0,15}(净流入|净流出|净买入|净卖出)` 的放行条件是
+        # 【匹配之后 25 字内】出现 不可得/停止披露/按季度 等词。它只向后看，不向前看，
+        # 所以"引用式否定"（「外资净流入X亿」这种说法不可信）会被误判为幻觉断言。
+        # 因此下面每处出现「外资+净流入」的地方，都必须在同一句、紧跟其后带上
+        # 「已停止披露」之类的字样，否则我们自己的诚实文案会被守卫拦掉。
+        text = ("🌏 北向资金（外资）\n\n"
+                "先说结论：**「外资今天净流入多少亿」这个数字已停止披露，现在看不到了。**\n\n"
+                f"{_nb_reason}。所以任何声称「外资今日净流入X亿」的数字都不可信"
+                "（该数据已停止披露），要么用的是旧数据，要么是拿成交额硬算出来的。\n\n")
+        if _nb_rows:
+            text += ("📊 现在能看到的是北向成交额（买入金额+卖出金额的合计）：\n"
+                     + "\n".join(_nb_rows)
+                     + "\n\n🔍 怎么理解：\n"
+                       "• 放量 = 外资交投更活跃，调仓和分歧都在增多\n"
+                       "• 缩量 = 外资参与度下降，观望为主\n"
+                       "• 成交额是买卖双边合计，**不含方向** —— 它只能说明外资忙不忙，"
+                       "不能说明外资在买还是在卖\n\n")
+        else:
+            text += "📊 北向成交额本次也未取到（数据源暂时无返回），所以这轮没有可用的北向数据。\n\n"
+        text += ("💡 想看外资真实的净买入方向，只能等交易所的季度披露。\n\n"
+                 "⚠️ 以上仅供参考，不构成投资建议。")
+        return {"text": text, "confidence": 0.85, "intent": "northbound"}
 
     # 宏观经济
     if any(k in msg_lower for k in ["宏观", "经济", "cpi", "pmi", "通胀", "利率", "货币", "m2", "gdp"]):
