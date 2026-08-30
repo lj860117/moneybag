@@ -71,7 +71,35 @@ SKIP_DIR_NAMES = (".git", ".venv", "venv", "node_modules", ".idea", ".vscode")
 DATED_NAME_RE = re.compile(r"(?:19|20)\d{2}[-_]?\d{2}[-_]?\d{2}")
 
 #: 被视为"历史归档日志"的后缀
+#: ⚠️ 刻意**不包含 `.json`**：归因/业务数据大量使用带日期的 .json
+#:    （data/audit/history/{date}.json、data/judgments/{YYYY-MM}.json、
+#:     data/precomputed/*_2026-*.json）。一旦把 .json 加进来，这些会被当成
+#:     "过期归档"删掉。要加新后缀前先确认没有业务数据在用它。
 ARCHIVED_LOG_SUFFIXES = (".log", ".log.gz", ".jsonl", ".jsonl.gz", ".txt")
+
+#: 🔴 归档清理的**保护白名单**（相对 DATA_DIR 的路径）。
+#:
+#: 这些目录里存的是"业务归因依据"而不是运行日志 —— 删了会直接损害
+#: V8 复盘/审计/推送质量评估的能力，且损失不可恢复（没有别处备份）。
+#: 它们**恰好**同时满足归档清理的两个判据（名字含日期 + 后缀在上面的列表里），
+#: 所以必须显式排除，否则会在第 90 天被静默删除：
+#:
+#:   data/decision_logs/{date}.jsonl   services/decision_log.py:76
+#:                                     → AI 投资建议记录，V8 复盘的归因依据
+#:   data/audit/{date}.jsonl           services/audit_log.py:48
+#:                                     → 审计日志（另有自己的 cleanup_old_logs(30d)，
+#:                                       不该由本脚本二次接管）
+#:   data/logs/pushes/{date}_*.txt     services/wxwork_push.py:451
+#:                                     → 推送存档，scripts/daily_push_quality_check.py 要读它做质量评估
+#:
+#: 注意 `logs/pushes` 是**嵌套**保护：`data/logs/{date}.log`（weekend_push 的
+#: 运行日志）仍然可清，只有 `data/logs/pushes/` 子目录受保护。
+#: 所以匹配必须按**相对路径前缀**判断，不能只看顶层目录名。
+PROTECTED_FROM_ARCHIVE_SWEEP: tuple = (
+    "decision_logs",
+    "audit",
+    "logs/pushes",
+)
 
 
 def _fmt_size(num_bytes: int) -> str:
@@ -197,6 +225,31 @@ def collect_cache_dirs(project_root: Path) -> list:
 # 清理任务 3：按日期命名的历史归档日志
 # ============================================================
 
+def _is_protected_from_archive_sweep(fp: Path, data_dir: Path) -> bool:
+    """
+    判断某文件是否落在归档清理的保护白名单内。
+
+    按**相对 DATA_DIR 的路径前缀**匹配，而不是只看顶层目录名 ——
+    因为 `logs/pushes` 需要受保护，但同级的 `logs/{date}.log` 仍应可清。
+
+    Args:
+        fp: 待判断的文件绝对路径
+        data_dir: DATA_DIR
+
+    Returns:
+        True = 受保护，绝不删
+    """
+    try:
+        rel = fp.relative_to(data_dir).as_posix()
+    except ValueError:
+        # 不在 data_dir 内（理论上不会发生）→ 保守视为受保护
+        return True
+    for protected in PROTECTED_FROM_ARCHIVE_SWEEP:
+        if rel == protected or rel.startswith(protected + "/"):
+            return True
+    return False
+
+
 def collect_dated_archives(data_dir: Path, max_age_days: float, now: float) -> list:
     """
     收集 data/** 下"文件名含日期"且超龄的归档文件。
@@ -204,6 +257,10 @@ def collect_dated_archives(data_dir: Path, max_age_days: float, now: float) -> l
     ⚠️ 判据是**文件名里必须含日期**（如 2026-05-16.log / night_worker_20260516.log）。
     文件名无日期的活跃日志（night_worker.log、cron.log）由 logrotate 负责，
     本函数一律不返回，两套机制互不干扰。
+
+    🔴 保护白名单：落在 PROTECTED_FROM_ARCHIVE_SWEEP 内的文件一律跳过。
+        那些是业务归因依据（决策日志 / 审计 / 推送存档），不是运行日志，
+        删了不可恢复。详见该常量的注释。
 
     Returns:
         [(路径, 体积, 年龄天数), ...]
@@ -221,6 +278,9 @@ def collect_dated_archives(data_dir: Path, max_age_days: float, now: float) -> l
                 continue  # 无日期 → 活跃日志，交给 logrotate
             fp = Path(root) / name
             if not fp.is_file():
+                continue
+            # 🔴 归因数据保护 —— 必须在年龄判断之前，避免任何路径漏过
+            if _is_protected_from_archive_sweep(fp, data_dir):
                 continue
             age = _age_days(fp, now)
             if age < max_age_days:
@@ -342,6 +402,10 @@ def main() -> int:
     print(f"仓库根:   {PROJECT_ROOT}")
     print(f"数据目录: {data_dir}")
     print(f"阈值:     .tmp > {args.tmp_age_days} 天 / 归档日志 > {args.log_age_days} 天")
+    # 每次运行都打印保护白名单 —— 运维不必读代码就能确认归因数据是安全的
+    print(f"🔒 归档清理保护白名单（相对 {data_dir.name}/，永不删）:")
+    for protected in PROTECTED_FROM_ARCHIVE_SWEEP:
+        print(f"     {protected}/")
 
     # ── 清理前占用 ──
     size_before_data = _dir_size(data_dir)

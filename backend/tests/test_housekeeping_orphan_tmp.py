@@ -161,3 +161,122 @@ def test_pathlib_rglob_matches_dotfiles_but_glob_does_not():
             "可放宽 collect_orphan_tmp 的实现约束"
         )
         assert "plain.tmp" in via_pathlib and "plain.tmp" in via_glob
+
+
+# ============================================================
+# 归档清理的归因数据保护白名单
+# ============================================================
+# 为什么必须守（2026-08-30）：
+#   collect_dated_archives() 的判据是「名字含日期 + 后缀在 ARCHIVED_LOG_SUFFIXES」。
+#   而下面这三类**业务归因数据**恰好同时满足这两个条件：
+#       data/decision_logs/{date}.jsonl   ← AI 投资建议记录，V8 复盘归因依据
+#       data/audit/{date}.jsonl           ← 审计日志
+#       data/logs/pushes/{date}_*.txt     ← 推送存档，质量评估要读
+#   如果没有白名单，它们会在第 90 天被**静默删除**，且无别处备份。
+#   这三条断言把"哪些目录不能删"变成可执行契约。
+# ============================================================
+
+def _load_hk_module():
+    import importlib.util
+    spec = importlib.util.spec_from_file_location(
+        "_hk_under_test2", _BACKEND / "scripts" / "housekeeping_cron.py"
+    )
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+def _make_archive_tree(root: Path) -> dict:
+    """构造归档清理场景：3 类受保护数据 + 2 类应被清的运行日志。"""
+    old = time.time() - 200 * 86400   # 200 天前，远超 90 天阈值
+    made = {}
+
+    def _mk(relpath: str, key: str):
+        p = root / relpath
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text("data", encoding="utf-8")
+        os.utime(p, (old, old))
+        made[key] = p
+
+    # 🔴 必须保护
+    _mk("decision_logs/2026-01-15.jsonl", "decision_log")
+    _mk("audit/2026-01-15.jsonl", "audit_log")
+    _mk("logs/pushes/2026-01-15_morning_LeiJiang.txt", "push_archive")
+    # ✅ 应该被清（运行日志）
+    _mk("night_worker/2026-01-15.log", "night_worker_log")
+    _mk("logs/2026-01-15.log", "weekend_push_log")
+    # ✅ 不该被碰（无日期 → logrotate 的地盘）
+    _mk("night_worker/night_worker.log", "active_log")
+    return made
+
+
+def test_attribution_data_is_protected_from_archive_sweep():
+    """核心断言：决策日志 / 审计 / 推送存档 绝不能被归档清理收走。"""
+    hk = _load_hk_module()
+    with tempfile.TemporaryDirectory() as td:
+        root = Path(td)
+        made = _make_archive_tree(root)
+        hits = {p for p, _s, _a in hk.collect_dated_archives(root, 90.0, time.time())}
+
+        for key, why in (
+            ("decision_log", "data/decision_logs/{date}.jsonl 是 V8 复盘的归因依据"),
+            ("audit_log", "data/audit/{date}.jsonl 是审计日志，另有自己的 30 天清理策略"),
+            ("push_archive", "data/logs/pushes/ 是推送存档，质量评估脚本要读"),
+        ):
+            assert made[key] not in hits, (
+                f"归因数据被归档清理命中了：{made[key].name} —— {why}。"
+                f"检查 housekeeping_cron.PROTECTED_FROM_ARCHIVE_SWEEP 是否被改动"
+            )
+
+
+def test_runtime_logs_are_still_collected():
+    """反向断言：白名单不能过度保护 —— 真正的运行日志仍要能清。
+
+    这条防的是"为了安全把整个 data/ 都加进白名单"这种过度收缩，
+    那样脚本就等于什么都不做了。
+    """
+    hk = _load_hk_module()
+    with tempfile.TemporaryDirectory() as td:
+        root = Path(td)
+        made = _make_archive_tree(root)
+        hits = {p for p, _s, _a in hk.collect_dated_archives(root, 90.0, time.time())}
+
+        assert made["night_worker_log"] in hits, (
+            "night_worker/{date}.log 应被清理 —— 它是运行日志不是归因数据"
+        )
+        assert made["weekend_push_log"] in hits, (
+            "logs/{date}.log 应被清理 —— 注意 logs/ 只有 pushes/ 子目录受保护，"
+            "logs/ 本身的运行日志仍可清（嵌套保护，不是整个 logs/ 免删）"
+        )
+        assert made["active_log"] not in hits, (
+            "无日期的活跃日志不该被收 —— 那是 logrotate 的地盘"
+        )
+        assert len(hits) == 2, f"应恰好收 2 个运行日志，实际 {len(hits)}"
+
+
+def test_protected_list_is_not_empty_and_covers_known_dirs():
+    """守住白名单本身不被清空或漏项。"""
+    hk = _load_hk_module()
+    protected = set(hk.PROTECTED_FROM_ARCHIVE_SWEEP)
+    for required in ("decision_logs", "audit", "logs/pushes"):
+        assert required in protected, (
+            f"保护白名单缺少 {required} —— 该目录存的是业务归因数据，"
+            f"移除保护会导致第 90 天静默删除"
+        )
+
+
+def test_json_suffix_stays_out_of_archive_sweep():
+    """`.json` 必须不在清理后缀里 —— 大量归因数据用带日期的 .json。
+
+    data/audit/history/{date}.json、data/judgments/{YYYY-MM}.json、
+    data/precomputed/*_2026-*.json 都是这个形状，
+    一旦 .json 进了 ARCHIVED_LOG_SUFFIXES，它们会被当过期归档删掉。
+    """
+    hk = _load_hk_module()
+    assert ".json" not in hk.ARCHIVED_LOG_SUFFIXES, (
+        "`.json` 被加进了 ARCHIVED_LOG_SUFFIXES —— "
+        "这会删掉 data/audit/history/、data/judgments/、data/precomputed/ 里的"
+        "带日期业务数据。如确需清理 .json，必须先把这些目录加进"
+        "PROTECTED_FROM_ARCHIVE_SWEEP"
+    )
+
