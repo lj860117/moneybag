@@ -225,3 +225,50 @@ shell    ls *.tmp / find -name "*.tmp"  → 不匹配      ❌
 
 （本次这条覆盖成立是运气好而非设计时想到的，所以尤其需要外部约束。）
 
+
+---
+
+## 10. ⚠️ P0 内部的顺序依赖：crontab 必须先于看门狗
+
+**看门狗会 KILL 进程 → 跳过 `finally` → 产生孤儿 `.tmp`。**
+如果看门狗先上线、而 `housekeeping_cron.py` 还没进 crontab：
+
+> **等于把「进程挂死」换成「磁盘单调泄漏」—— 正是本次刚治好的病。**
+
+所以 P0 内部必须拆序：
+```
+P0-a  housekeeping_cron.py 进 crontab（加完可再生性白名单后，一行配置）
+P0-b  看门狗上线（依赖 P0-a）
+P0-c  api/fund_detail.py 12 处（独立，可与 a/b 并行）
+```
+
+## 11. 原子写落点全清单 + 「部分失效」风险
+
+全项目 `mkstemp` 生产落点 5 处（已实测确认前缀差异）：
+
+| 落点 | 前缀 | `glob.glob` 重构后 |
+|---|---|---|
+| `scripts/cache_warmer.py` | **点开头** `.{name}.` | ❌ 漏掉 |
+| `services/persistence.py` | 默认 `tmpXXXXXX` | ✅ 仍命中 |
+| `services/precomputed_cache.py` | 默认 `tmpXXXXXX` | ✅ 仍命中 |
+| `services/llm_gateway.py` | 默认 `tmpXXXXXX` | ✅ 仍命中 |
+| `infra/store/file_store.py` | 默认 `tmpXXXXXX` | ✅ 仍命中 |
+
+### 🔑 这个分布让失效模式变得更危险
+**只有 1/5 落点用点开头**，所以 `rglob → glob.glob` 的重构造成的是
+**部分失效而非彻底失效**：4/5 照常清理、脚本报非零命中、日志一切正常，
+**只有 `_cache/` 在悄悄涨**。
+
+> **部分成功会掩盖失败，比彻底失效更难发现。**
+
+⚠️ 由此还暴露一个测试设计陷阱（本次真实踩到）：
+最初的故障注入 fixture **只放了点开头文件**，所以失效表现为 100% → 0%，
+看起来极其明显。**但真实生产是部分下降** —— 若照最初 fixture 的印象去判断
+"这种失效很好发现"，就会低估风险。
+**守门测试的 fixture 必须反映生产的真实构成比例，而不是只放最容易触发的那一类。**
+
+### 覆盖依赖（需知悉，非当前缺陷）
+`services/persistence.py` 与 `infra/store/file_store.py` 的 `dir=` 取自
+**调用方传入的 filepath 所在目录**，所以 `housekeeping_cron.py` 的
+`data_dir.rglob()` 能覆盖它们，前提是**调用方始终写在 `DATA_DIR` 内**。
+当前成立；若将来有人把用户数据写到 `DATA_DIR` 之外，该落点即逃出清理范围。
