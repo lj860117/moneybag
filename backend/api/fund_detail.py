@@ -34,14 +34,21 @@ _purchase_df_cache = {"df": None, "t": 0}
 _PURCHASE_TTL = 3600 * 24  # 24小时
 
 def _get_purchase_df():
-    """懒加载天天基金购买数据（24小时缓存）"""
+    """懒加载天天基金购买数据（24小时缓存）
+
+    v9.9.x: 接入 ak_call() 超时保护。实测 fund_purchase_em 全市场
+    ~2.7万条数据耗时约 15s（已逼近 ak_call 默认 15s 超时），故单独
+    传 timeout=25s 留余量；网络异常挂死时 25s 后放弃而不是无限等待。
+    """
     if _purchase_df_cache["df"] is not None and time.time() - _purchase_df_cache["t"] < _PURCHASE_TTL:
         return _purchase_df_cache["df"]
     try:
         import akshare as ak
-        df = ak.fund_purchase_em()
-        _purchase_df_cache["df"] = df
-        _purchase_df_cache["t"] = time.time()
+        from services.utils import ak_call
+        df = ak_call(ak.fund_purchase_em, timeout=25)
+        if df is not None:
+            _purchase_df_cache["df"] = df
+            _purchase_df_cache["t"] = time.time()
         return df
     except Exception:
         return None
@@ -98,13 +105,14 @@ def _get_fund_dividend_recent(code: str) -> dict:
     result = {"has_recent": False, "events": [], "has_history": False}
     try:
         import akshare as ak
+        from services.utils import ak_call
         from datetime import datetime, timedelta
         cutoff = datetime.now() - timedelta(days=365)
         history_all = []  # 历史全量事件
 
         # --- 1. 分红 ---
         try:
-            df_div = ak.fund_open_fund_info_em(symbol=code, indicator="分红送配详情")
+            df_div = ak_call(ak.fund_open_fund_info_em, symbol=code, indicator="分红送配详情")
             if df_div is not None and len(df_div) > 0:
                 date_col = next((c for c in df_div.columns if "除息" in c or "登记" in c), None)
                 ratio_col = next((c for c in df_div.columns if "分红" in c or "派息" in c), None)
@@ -124,7 +132,7 @@ def _get_fund_dividend_recent(code: str) -> dict:
 
         # --- 2. 拆分 ---
         try:
-            df_split = ak.fund_open_fund_info_em(symbol=code, indicator="拆分详情")
+            df_split = ak_call(ak.fund_open_fund_info_em, symbol=code, indicator="拆分详情")
             if df_split is not None and len(df_split) > 0:
                 date_col = next((c for c in df_split.columns if "折算" in c or "日" in c), None)
                 ratio_col = next((c for c in df_split.columns if "比例" in c), None)
@@ -1212,6 +1220,7 @@ def fund_portfolio_holdings(code: str, userId: str = ""):
 
     try:
         import akshare as ak
+        from services.utils import ak_call
         from datetime import date
 
         # 获取当前年份，尝试最近几个季度
@@ -1219,7 +1228,7 @@ def fund_portfolio_holdings(code: str, userId: str = ""):
         df = None
         for year in [current_year, str(date.today().year - 1)]:
             try:
-                df = ak.fund_portfolio_hold_em(symbol=code, date=year)
+                df = ak_call(ak.fund_portfolio_hold_em, symbol=code, date=year)
                 if df is not None and len(df) > 0:
                     break
             except Exception:
@@ -1356,9 +1365,10 @@ def ipo_upcoming():
     if not ipos:
         try:
             import akshare as ak
+            from services.utils import ak_call
             import math
             from datetime import date
-            df = ak.stock_new_ipo_cninfo()
+            df = ak_call(ak.stock_new_ipo_cninfo)
             if df is not None and not df.empty:
                 today = date.today()
                 for _, row in df.iterrows():
@@ -1478,19 +1488,7 @@ def ipo_watchlist():
 
 def _inject_hot_scores(watchlist: list) -> list:
     """为观察列表注入雪球热度分"""
-    hot_scores = {}
-    try:
-        import akshare as ak
-        df = ak.stock_hot_rank_wc_em()
-        if df is not None and len(df) > 0:
-            for _, row in df.iterrows():
-                name = str(row.get("股票名称", "") or row.iloc[1] if len(row) > 1 else "")
-                rank = row.get("排名", 999) or row.iloc[0]
-                if name:
-                    hot_scores[name] = int(rank) if rank else 999
-    except Exception:
-        pass
-
+    hot_scores = _get_hot_rank_scores()
     for entry in watchlist:
         name = entry.get("name", "")
         rank = hot_scores.get(name)
@@ -1500,20 +1498,48 @@ def _inject_hot_scores(watchlist: list) -> list:
     return watchlist
 
 
-def _ipo_watchlist_fallback() -> dict:
-    """Fallback: 使用硬编码数据 + 状态覆盖"""
+# v9.9.x: 热度榜 5 分钟 TTL 缓存
+# 修复背景：原 ak.stock_hot_rank_wc_em() 在当前 akshare(1.18.60) 中已不存在
+# （AttributeError），且此前完全没有缓存 —— /api/ipo/watchlist 每次请求都会
+# 直接同步打一次必败的网络调用，被 except: pass 静默吞掉，"雪球热度分"功能
+# 已经失效了不知道多久，用户看到的 hot_rank 字段永远是空的。
+# 改为 stock_hot_rank_em()（实测 0.13s/98 行，字段：当前排名/代码/股票名称），
+# 用 ak_call() 加超时保护，并把 _inject_hot_scores / _ipo_watchlist_fallback
+# 两处重复逻辑合并成这一个函数 —— 避免同一个 bug 改一处漏一处。
+_hot_rank_cache = {"scores": {}, "t": 0.0}
+_HOT_RANK_TTL = 300  # 5 分钟：热度榜分钟级波动，不需要每次请求都拉
+
+
+def _get_hot_rank_scores() -> dict:
+    """拉取雪球/东财热度榜，返回 {股票名称: 排名}（5 分钟缓存 + 超时保护）"""
+    now = time.time()
+    if _hot_rank_cache["scores"] and now - _hot_rank_cache["t"] < _HOT_RANK_TTL:
+        return _hot_rank_cache["scores"]
+
     hot_scores = {}
     try:
         import akshare as ak
-        df = ak.stock_hot_rank_wc_em()
+        from services.utils import ak_call
+        df = ak_call(ak.stock_hot_rank_em, timeout=10)
         if df is not None and len(df) > 0:
             for _, row in df.iterrows():
-                name = str(row.get("股票名称", "") or row.iloc[1] if len(row) > 1 else "")
-                rank = row.get("排名", 999) or row.iloc[0]
-                if name:
-                    hot_scores[name] = int(rank) if rank else 999
+                name = str(row.get("股票名称", ""))
+                rank = row.get("当前排名")
+                if name and rank:
+                    hot_scores[name] = int(rank)
     except Exception:
         pass
+
+    if hot_scores:
+        _hot_rank_cache["scores"] = hot_scores
+        _hot_rank_cache["t"] = now
+    return hot_scores or _hot_rank_cache["scores"]  # 拉取失败时沿用旧缓存，而不是清空
+
+
+def _ipo_watchlist_fallback() -> dict:
+    """Fallback: 使用硬编码数据 + 状态覆盖"""
+    hot_scores = _get_hot_rank_scores()
+
 
     # v9.5.123: 读取周日自动验证的状态覆盖
     _ipo_overrides = {}
@@ -1565,7 +1591,10 @@ def _get_fund_code_by_name(name: str) -> str | None:
     if not _fund_name_cache or now - _fund_name_cache_ts > 86400:
         try:
             import akshare as ak
-            df = ak.fund_name_em()
+            from services.utils import ak_call
+            df = ak_call(ak.fund_name_em)  # 实测全市场 ~2.8万条耗时 7.9s，默认 15s 超时够用
+            if df is None:
+                raise RuntimeError("ak_call 超时或返回空，沿用旧缓存")
             _fund_name_cache = {
                 str(row.get("基金简称", "")): str(row.get("基金代码", ""))
                 for _, row in df.iterrows()
@@ -1761,10 +1790,11 @@ def fund_nav_history(code: str, days: int = 90):
 
     try:
         import akshare as ak
+        from services.utils import ak_call
         from datetime import date, timedelta
 
         # 直接用 akshare fund_open_fund_info_em（列名：净值日期/单位净值/日增长率）
-        df = ak.fund_open_fund_info_em(symbol=code, indicator="单位净值走势")
+        df = ak_call(ak.fund_open_fund_info_em, symbol=code, indicator="单位净值走势")
         if df is None or df.empty:
             return {"ok": False, "code": code, "reason": "无法获取净值数据"}
 
@@ -1828,11 +1858,12 @@ def get_fx_rate(currency: str = "USD"):
 
     try:
         import akshare as ak
+        from services.utils import ak_call
         import math
         from datetime import date, timedelta
         end = date.today().strftime("%Y%m%d")
         start = (date.today() - timedelta(days=10)).strftime("%Y%m%d")
-        df = ak.currency_boc_sina(symbol=_CURRENCY_SYMBOLS[cur], start_date=start, end_date=end)
+        df = ak_call(ak.currency_boc_sina, symbol=_CURRENCY_SYMBOLS[cur], start_date=start, end_date=end)
         if df is None or df.empty:
             return {"ok": False, "currency": cur, "reason": "汇率数据为空"}
 
@@ -1888,12 +1919,13 @@ def get_ipo_upcoming_live(market: str = "hs"):
 
     try:
         import akshare as ak
+        from services.utils import ak_call
         import math
         from datetime import date
 
         items = []
         if market == "hs":
-            df = ak.stock_new_ipo_cninfo()
+            df = ak_call(ak.stock_new_ipo_cninfo)
             if df is None or df.empty:
                 return {"ok": False, "market": market, "reason": "无数据"}
             today = date.today()
@@ -1923,7 +1955,7 @@ def get_ipo_upcoming_live(market: str = "hs"):
             items = items[:20]
 
         elif market == "hk":
-            df = ak.stock_ipo_hk_ths()
+            df = ak_call(ak.stock_ipo_hk_ths)
             if df is None or df.empty:
                 return {"ok": False, "market": market, "reason": "无数据"}
             for _, row in df.iterrows():
