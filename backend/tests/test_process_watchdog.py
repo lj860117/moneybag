@@ -165,14 +165,27 @@ def _run(watchdog, argv, ps_output, data_dir=None, zombie_check=(lambda pid: Fal
 # 前 3 行是 2026-08-30 在 150.158.47.189 上 `ps -eo pid,etimes,comm,args` 的
 # 真实输出（为匹配本项目的 4 列格式去掉了 stat 列），其余为同形状构造。
 #
+# 线上 29 条生效 crontab 是**混合形态**（2026-08-31 服务器核对），fixture 必须覆盖到：
+#     21 条  /opt/moneybag/venv/bin/python scripts/X.py   ← 绝对路径（50013 这类）
+#      4 条  -m scripts.X                                  ← 模块形式（50006/50010）
+#      4 条  裸 `python3 scripts/X.py`                     ← ⚠️ 无路径可校验（50014~50017）
+#       （那 4 条裸命令用 `source .../venv/bin/activate && python3 scripts/X.py` 起，
+#         venv 路径只进 shell 的 activate、不进 argv —— 真实线上形态）
+#
 # 构成统计（这个数字是可以数的，别改坏它）：
-#     21 行 = 5 个真目标 + 16 个非目标      → 非目标 76%
+#     26 行 = 7 个真目标 + 19 个非目标      → 非目标 73%
 # 非目标细分类别：系统 python ×2、uvicorn/gunicorn ×3、cron shell 包装 ×2、
-#                 未超龄批量脚本 ×3、开发机同名进程 ×1、看门狗自己/父进程 ×2、
-#                 手工 python 命令（pytest / 空闲 REPL）×2、中文路径目标 ×1
+#                 未超龄批量脚本 ×7（含裸命令形态的 50015/16/17）、
+#                 开发机同名进程 ×1、看门狗自己/父进程 ×2、
+#                 手工 python 命令（pytest / 空闲 REPL）×2
+# 真目标 7 个：50001 / 50004 / 50005（137 天僵尸形状）/ 50006 / 50009（中文路径）
+#              / 50013（带 /tmp 参数）/ 50014（裸命令形态）
 #
 # 每种类别都对应**一条独立的排除规则**，缺一类就有一条规则没人守
 # （`test_fixture_is_majority_non_target` 会断言各类规则都真的被触发过）。
+# 注：system_path 规则在 fixture 里没被触发（那 2 个系统进程的 comm 不是 python，
+#     先被 comm 规则拦下了），它由 `test_system_path_rule_is_independent` 和
+#     `test_system_interpreter_is_excluded_even_with_absolute_path_args` 单独守。
 PS_FIXTURE_TEMPLATE = """\
     765 12181078 networkd-dispat /usr/bin/python3 /usr/bin/networkd-dispatcher --run-startup-triggers
     891 12181077 unattended-upgr /usr/bin/python3 /usr/share/unattended-upgrades/unattended-upgrade-shutdown --wait-for-signal
@@ -193,6 +206,11 @@ PS_FIXTURE_TEMPLATE = """\
   50010     300 python3 python3 -m scripts.daily_reflection_cron
   50011  999999 python3 python3 -m pytest tests/ -q
   50012  999999 python3 /opt/moneybag/venv/bin/python3
+  50013  999999 python3 /opt/moneybag/venv/bin/python scripts/cache_warmer.py --out /tmp/warm.json
+  50014  999999 python3 python3 scripts/dca_scheduler.py --discipline
+  50015     600 python3 python3 scripts/dca_scheduler.py --weekly
+  50016    1200 python3 python3 scripts/dca_scheduler.py --dca
+  50017     900 python3 python3 scripts/monthly_report.py --all
 {own_pid}  999999 python3 /opt/moneybag/venv/bin/python3 scripts/process_watchdog.py --apply
 {parent_pid}  999999 python3 /opt/moneybag/venv/bin/python3 scripts/process_watchdog.py --apply
 """
@@ -674,6 +692,86 @@ def test_manual_python_commands_are_not_selected():
         )
 
 
+def test_absolute_path_argument_does_not_hide_a_script():
+    """🔴 规则⑤ 的守门：脚本接了绝对路径参数（`--out /tmp/x.json`）也必须照常监控。
+
+    这条防的是"规则⑤ 遍历 args 里**每一个**以 / 开头的 token"那个 bug（初版实现）：
+    参数是**数据**不是**身份**，`/tmp/warm.json` 会被误判成"不在部署目录"，
+    于是这个脚本**静默掉出看门狗覆盖**。
+
+    为什么这类漏判特别坏：
+      - 它连 `threshold` 都不会有 —— 不是"监控中但未超龄"，而是**完全不可见**，
+        `--show-excluded` 里也只是一条不起眼的 outside_deploy_dir；
+      - "零命中自检"抓不到它：自检只在**所有**脚本都零命中时才报警，
+        单个脚本悄悄掉出去时其余脚本照常有命中，自检一片祥和。
+    修法：规则⑤ **只校验 argv[0]（解释器）**，参数一律不校验。
+    """
+    watchdog = _load_watchdog()
+
+    cases = (
+        ("/opt/moneybag/venv/bin/python scripts/cache_warmer.py --out /tmp/warm.json",
+         7200, "venv 绝对路径解释器 + /tmp 输出参数"),
+        ("python3 scripts/dca_scheduler.py --discipline --log /var/log/moneybag/dca.log",
+         3600, "裸 python3 + /var 日志参数"),
+        ("/opt/moneybag/venv/bin/python scripts/night_worker.py --export /data/tmp/nw.json",
+         28800, "venv 绝对路径解释器 + /data 导出参数"),
+        ("/opt/moneybag/venv/bin/python3 -m scripts.housekeeping_cron --data-dir /tmp/probe",
+         1800, "-m 模块形式 + /tmp 参数"),
+    )
+    for args, want_threshold, desc in cases:
+        probe = watchdog.PsProcess(pid=99003, etimes=999999, comm="python3", args=args)
+        verdict = watchdog.classify_process(probe, os.getpid(), os.getppid())
+        assert verdict.is_target, (
+            f"[{desc}] 被误排除（rule={verdict.rule}）—— 规则⑤ 只能校验 "
+            f"argv[0]（解释器），不能校验后面的参数：参数是数据不是身份，"
+            f"`--out /tmp/x.json` 这类写法会让脚本静默掉出监控，"
+            f"且 threshold=None 连'监控中但未超龄'都不算、零命中自检也抓不到。"
+            f"args={args}  原因={verdict.reason}"
+        )
+        assert verdict.threshold == want_threshold, (
+            f"[{desc}] 阈值应为 {want_threshold}，实际 {verdict.threshold}"
+        )
+
+    # fixture 里那条带 /tmp 参数的超龄 cache_warmer 也必须是目标
+    targets, _stats, _excluded = _select(watchdog)
+    assert 50013 in _pids(targets), (
+        "fixture 里 `... scripts/cache_warmer.py --out /tmp/warm.json`（999999s）未被选中 —— "
+        "规则⑤ 又在校验参数了"
+    )
+
+
+def test_system_interpreter_is_excluded_even_with_absolute_path_args():
+    """反向守门：改成"只看 argv[0]"之后，系统解释器的排除能力不能跟着没了。
+
+    尤其要覆盖"系统解释器 + 绝对路径参数"这个组合 —— 如果有人把上面那处修复
+    写成"跳过带绝对路径参数的进程"或"只在没有绝对路径参数时才校验"，
+    这一条会先报错，而不是让排除能力悄悄消失。
+    """
+    watchdog = _load_watchdog()
+
+    cases = (
+        ("/usr/bin/python3 scripts/cache_warmer.py --out /tmp/warm.json",
+         "system_path", "系统解释器 + /tmp 参数"),
+        ("/usr/bin/python3 scripts/dca_scheduler.py --discipline",
+         "system_path", "系统解释器（无参数）"),
+        ("/usr/share/moneybag/venv/bin/python3 scripts/cache_warmer.py --morning",
+         "system_path", "/usr/share 下的解释器"),
+        ("/Users/leijiang/dev/venv/bin/python3 scripts/cache_warmer.py --out /tmp/warm.json",
+         "outside_deploy_dir", "开发机解释器 + /tmp 参数"),
+    )
+    for args, want_rule, desc in cases:
+        probe = watchdog.PsProcess(pid=99004, etimes=999999, comm="python3", args=args)
+        verdict = watchdog.classify_process(probe, os.getpid(), os.getppid())
+        assert not verdict.is_target, (
+            f"[{desc}] 被判定为目标 —— 规则⑤ 的排除能力被改没了。"
+            f"只看 argv[0] 不等于不校验：/usr/bin/python3 这类系统解释器仍必须拦下。"
+            f"args={args}"
+        )
+        assert verdict.rule == want_rule, (
+            f"[{desc}] 应被 '{want_rule}' 拦下，实际 '{verdict.rule}'"
+        )
+
+
 def test_dev_machine_process_outside_deploy_dir_is_not_selected():
     """开发机上的同名进程（/Users/... 路径）不该被杀。
 
@@ -721,6 +819,24 @@ def test_bare_python_command_from_cron_is_still_matched():
     assert PID_137_DAY_ZOMBIE in _pids(targets), (
         "裸命令起的 dca_scheduler（已跑 137 天，正是生产上真实卡死的形状）未被选中"
     )
+
+    # 线上那 4 条裸命令脚本：挂死时必须照常回收（规则② 放宽的真正意义）
+    assert 50014 in _pids(targets), (
+        "裸命令 `python3 scripts/dca_scheduler.py --discipline`（999999s）未被选中 —— "
+        "线上有 4 条 crontab 是这种裸命令形态（用 source venv/bin/activate 起，"
+        "venv 路径不进 argv），规则② 必须对它们放行"
+    )
+
+    # 同形态但未超龄的三条：必须"被识别"但"不选中"
+    # （识别不到 = 静默掉出监控；误选中 = 误杀）
+    reasons = {p.pid: v for p, v in _excluded}
+    for pid, desc in ((50015, "dca_scheduler --weekly"),
+                      (50016, "dca_scheduler --dca"),
+                      (50017, "monthly_report --all")):
+        assert pid not in _pids(targets), f"未超龄的 {desc} 被误选中"
+        assert reasons[pid].script is not None, (
+            f"裸命令 {desc} 未被识别为批量脚本 —— 它会静默掉出监控"
+        )
 
 
 # ============================================================

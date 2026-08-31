@@ -36,26 +36,54 @@
      ① comm 必须以 `python` 开头（顺带排除 cron 的 `bash -c` 包装进程 ——
         它的 args 里也含脚本名，但 comm 是 `bash`；而且杀 shell 杀不掉子进程，
         只会留下孤儿 python，纯属噪音）
-     ② args 里的绝对路径必须落在部署目录内（默认 `/opt/moneybag/`），
-        且不在 `/usr/bin`、`/usr/share` 等系统路径下
+     ② argv[0]（也就是**解释器**那一个 token）若带绝对路径，必须落在部署目录内
+        （默认 `/opt/moneybag/`），且不在 `/usr/bin`、`/usr/share` 等系统路径下
         → 排除 `networkd-dispatcher` / `unattended-upgrade-shutdown` 这类系统 python
+        ⚠️ **只校验 argv[0]，绝不校验后面的参数**，原因见下面"关于判据 ②"那节
      ③ args 必须匹配 `scripts/<name>.py` 或 `-m scripts.<name>` 的批量脚本模式
         → uvicorn 的 args 是 `uvicorn main:app`，天然不匹配
      ④ 显式黑名单：args 含 `uvicorn` / `main:app` / `gunicorn` 直接跳过
      ⑤ 排除看门狗自己的 pid 和父 pid（以及 pid <= 1）
 
-⚠️ 关于判据 ② 的一个**刻意放宽**（与最初的设计不同，原因见下）：
-   原本要求 "args 必须含 `/opt/moneybag/`"，但 `scripts/setup_cron.sh` 里 cron
-   是这么起的：`cd $BACKEND_DIR && python scripts/night_worker.py`，
-   而 housekeeping_cron 的上线命令行是
-   `cd /opt/moneybag/backend && python3 -m scripts.housekeeping_cron --apply`。
-   这两种写法里 `python` / `python3` 都是 **裸命令名，args 里根本没有 `/opt/moneybag/`**
-   （`/opt/moneybag/` 只出现在 shell 的 `cd` 部分，不进 argv）。
-   若把 ② 做成"必须含"，看门狗会对**所有 cron 进程零命中** —— 又是一个
-   "脚本照跑、打印 0 个目标、看起来一切健康" 的静默失效。
-   所以 ② 改成"**只有当 args 里出现绝对路径时才校验它**"：
-   不带绝对路径的裸命令（`python3 -m scripts.x`）直接放行；
-   带绝对路径的必须落在部署目录（`--skip-deploy-check` 可关闭这条）。
+⚠️⚠️ **排班表的权威来源是服务器 `crontab -l`，不是 `scripts/setup_cron.sh`。**
+   `setup_cron.sh` 已与线上**漂移**（2026-08-31 核对）：
+     - 缺 5 个脚本：`closing_review_hallucination_check` / `daily_push_quality_check`
+       / `fund_rank_build` / `housekeeping_cron` / `monthly_rebalance_cron`
+     - 2 处频率不一致：`--midday` 它写 `5 13 * * 1-5`（日频），线上是 `*/30 9-14 * * 1-5`；
+       `stock_monitor_cron` 它写 `*/10`（盘中盯盘），线上那两行是 `# DISABLED`
+   👉 这个文件是"服务器迁移后重建 cron"会跑的东西，**按它重建会直接装出一套
+      缺 5 个脚本、频率也不对的错误排班**。而本文件的阈值表正确性**依赖真实排班**
+      —— 改阈值前请先 `crontab -l` 核对，别信 setup_cron.sh。
+
+⚠️ 关于判据 ② 的两处**刻意设计**（都与最初的设计不同，改动前请先读完）：
+
+   **(a) 裸命令名直接放行 —— 否则会漏掉线上 4 个脚本。**
+   线上 29 条生效 crontab 是**混合形态**（2026-08-31 服务器实测）：
+       21 条  `/opt/moneybag/venv/bin/python scripts/X.py`   ← 绝对路径，能校验
+        4 条  `-m scripts.X`                                  ← 模块形式
+        4 条  裸 `python3 scripts/X.py`                       ← ⚠️ 无路径可校验
+   那 4 条裸命令是 `dca_scheduler.py --discipline` / `--weekly` / `--dca`
+   和 `monthly_report.py --all`，它们用
+   `source /opt/moneybag/venv/bin/activate && ... && python3 scripts/X.py`
+   起进程 —— `venv` 路径只出现在 shell 的 `activate` 里，**不进 argv**，
+   ps 里看到的就是 `python3 scripts/dca_scheduler.py --discipline`。
+   若把 ② 做成"args 必须含 `/opt/moneybag/`"，这 4 个脚本会**静默掉出监控**
+   （漏掉约 16%）。所以：argv[0] **不带**绝对路径（裸 `python3`）时直接放行。
+
+   **(b) 只校验 argv[0]，绝不校验后面的参数 —— 否则会埋一个更难查的雷。**
+   参数是**数据**、不是**身份**：区分"我们的 venv python"和"系统 python"
+   靠的只有 argv[0]，参数不提供这个信息。
+   反例（真实存在的一类写法）：
+       /opt/moneybag/venv/bin/python scripts/cache_warmer.py --out /tmp/warm.json
+   如果 ② 遍历 args 里**每一个**以 `/` 开头的 token，`/tmp/warm.json` 会被当成
+   "不在部署目录" → 该进程被判 `outside_deploy_dir` 而**放行**。
+   这种漏判比 (a) 更隐蔽：它连 `threshold` 都不会有（不是"监控中但未超龄"，
+   而是**完全不可见**），而且下面的"零命中自检"也抓不到 ——
+   自检只在**所有**脚本都零命中时才报警，单个脚本悄悄掉出去时其余脚本照常有命中，
+   自检一片祥和。
+   👉 守门：`tests/test_process_watchdog.py::test_absolute_path_argument_does_not_hide_a_script`
+
+   （`--skip-deploy-check` 可整体关闭判据 ②，仅排障时用。）
 
 ⚠️ **2. 阈值按脚本分别配置，不能一刀切。**
    `night_worker.py` 全量链设计上就跨 01:00→07:30 = 6.5 小时（内部串跑 10 个阶段），
@@ -176,6 +204,15 @@ SCRIPT_THRESHOLDS: dict = {
     "fund_rank_build": 1800,
     # 磁盘清理 + 归档扫描，分钟级；与它自己的 90 天归档策略无关。
     "housekeeping_cron": 1800,
+    #
+    # ⚠️ stock_monitor_cron **刻意不在这里**，走默认的 3600（1 小时）。
+    #    它保持 3600 的前提是"每天只跑一次"：线上 crontab 目前只有
+    #    `0 21 * * 1-5 ... stock_monitor_cron.py --close`，
+    #    盘中的 `*/10 9-11`、`*/10 13-14` 两条当前是 **# DISABLED** 状态。
+    #    🔴 若将来重新启用那两条 `*/10`，必须把 stock_monitor_cron 降到 **600**
+    #       并加进本表 —— 否则挂死时会像 --midday 那样叠加实例（10 分钟一次
+    #       的调度配 1 小时阈值，最坏叠 6 个）。
+    #    注意：scripts/setup_cron.sh 里那个 `*/10` 是**历史残留**，别照它改。
 }
 
 #: 按 **脚本 + 模式** 的阈值。**更具体的模式必须优先匹配**，否则全量 night_worker
@@ -513,20 +550,27 @@ def classify_process(
                    "（uvicorn / 系统服务 / 一次性命令都在这一步被排除）",
         )
 
-    # ⑤ 绝对路径必须落在部署目录
+    # ⑤ 只校验 argv[0]（解释器）—— 绝不校验后面的参数
+    #
+    # ⚠️ 这里曾经是"遍历 args 里每一个以 / 开头的 token"，那是个 bug：
+    #    只要脚本接一个绝对路径参数（如 `--out /tmp/warm.json`），
+    #    它就会被判成 outside_deploy_dir 而**静默掉出看门狗覆盖**，
+    #    且 threshold=None（连"监控中但未超龄"都不算），自检也抓不到。
+    #    参数是数据、不是身份：区分"我们的 venv python"和"系统 python"
+    #    只需要 argv[0]。系统进程（/usr/bin/python3 ...）照样在这一步被拦下。
     if not skip_deploy_check:
-        for token in proc.args.split():
-            if not token.startswith("/"):
-                continue                 # 裸命令名（cron 里常见的 `python3 ...`）→ 不校验
-            if token.startswith(SYSTEM_PATH_PREFIXES):
+        tokens = proc.args.split()
+        argv0 = tokens[0] if tokens else ""      # 裸命令名（cron 里的 `python3`）→ 放行
+        if argv0.startswith("/"):
+            if argv0.startswith(SYSTEM_PATH_PREFIXES):
                 return Verdict(
                     rule="system_path",
-                    reason=f"路径 '{token}' 位于系统目录（系统 python 进程，不是我们的 cron）",
+                    reason=f"解释器 '{argv0}' 位于系统目录（系统 python 进程，不是我们的 cron）",
                 )
-            if not any(token.startswith(marker) for marker in deploy_markers):
+            if not any(argv0.startswith(marker) for marker in deploy_markers):
                 return Verdict(
                     rule="outside_deploy_dir",
-                    reason=f"路径 '{token}' 不在部署目录 {list(deploy_markers)} 内"
+                    reason=f"解释器 '{argv0}' 不在部署目录 {list(deploy_markers)} 内"
                            f"（可能是开发机上的同名进程）",
                 )
 
