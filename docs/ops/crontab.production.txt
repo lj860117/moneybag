@@ -1,0 +1,159 @@
+# ============================================================
+# 钱袋子生产排班快照（AUTHORITATIVE）
+# ============================================================
+#
+# 本文件是服务器 150.158.47.189 上 `crontab -l`（ubuntu 用户）的**只读快照**，
+# 用途是"可恢复 + 可 diff"，**不要直接拿去覆盖线上排班**。
+#
+# 刷新方式（排班有变动后请重新生成并提交）：
+#   ssh -i ~/.ssh/id_ed25519 ubuntu@150.158.47.189 'crontab -l' \
+#       > docs/ops/crontab.production.txt
+#
+# 恢复方式（仅在排班被误删/误改时使用，执行前先人工核对下面的内容）：
+#   ssh -i ~/.ssh/id_ed25519 ubuntu@150.158.47.189 'crontab -' \
+#       < docs/ops/crontab.production.txt
+#
+# ------------------------------------------------------------
+# ⚠️ 为什么需要这个文件（2026-08-31 事故隐患排查记录）
+# ------------------------------------------------------------
+# 仓库里的 `backend/scripts/setup_cron.sh` 自称"安装全部 cron 任务"，
+# 但它已经与线上漂移，且是**破坏性**的：
+#
+#   1. 它开头会先 `crontab -l | grep -v '<14 个关键字>' | crontab -`
+#      —— 该过滤器会命中线上全部条目（实测 35 行），即**先删光现有排班**。
+#   2. 它装的 23 条全部用裸 `python`，而服务器上 `python` **不存在**
+#      （实测 `which python: NOT FOUND`），装上必然 `command not found`。
+#   3. 裸 `python3` 在服务器上是 `/usr/bin/python3`，**不是 venv**
+#      （`/opt/moneybag/venv/bin/python3`），依赖全缺。
+#   4. 它不加载 `.env`（线上每条都有 `set -a && . /opt/moneybag/backend/.env && set +a`），
+#      即使解释器对了也会因缺 API Key 失败。
+#
+# 结论：在服务器上跑一次 `bash setup_cron.sh` 并回答 y，会**删光 29 条正常排班、
+# 换成 23 条必然失败的条目**，整条 AI 排班静默死亡。该文件已加拒绝执行保护。
+#
+# 漂移明细（线上 18 个脚本 / 29 条生效条目 vs setup_cron.sh 23 条）：
+#   setup_cron.sh 缺失的条目：
+#     - closing_review_hallucination_check.py --alert   (5 21 * * 1-5)
+#     - daily_push_quality_check.py --date today ...    (0 22 * * 1-5)
+#     - fund_rank_build.py                              (0 22 * * 0)
+#     - housekeeping_cron --apply                       (30 4 * * *)
+#     - monthly_rebalance_cron.py                       (30 15 28-31, 月末)
+#     - cache_warmer.py --full-extra                    (0 11 * * 6 + 30 16 * * 1-5)
+#     - cache_warmer.py --evening                       (0 18 * * 1-5)
+#   频率不一致：
+#     - cache_warmer --midday   线上 */30 9-14 * * 1-5  vs 文件 5 13 * * 1-5
+#     - stock_monitor_cron     线上仅 0 21 --close（*/10 盘中盯盘已 # DISABLED）
+#                              vs 文件 */10 9,10,11,13,14 + 30 15 --close
+#     - auto_extract_cron      线上 0 8（-m 形式）      vs 文件 0 2
+#     - monthly_report         线上 0 9 1 * * --all     vs 文件 0 1 1 * *
+#     - dca_scheduler --dca        线上 0 9 25 * *          vs 文件 0 10 25 * *
+#     - dca_scheduler --discipline 线上 0 18 * * 1-5        vs 文件 0 8 * * *
+#     - briefing_hallucination_check 线上 50 7 --rounds 1 --interval 0
+#                              vs 文件 35 2 --rounds 2 --interval 1
+#
+# ------------------------------------------------------------
+# 快照信息
+# ------------------------------------------------------------
+# 抓取时间：2026-08-31
+# 抓取命令：ssh -i ~/.ssh/id_ed25519 ubuntu@150.158.47.189 'crontab -l'
+# 生效条目：29 条（含注释行共 60 行）
+# 唯一脚本：18 个
+#   调用形式：21 条 /opt/moneybag/venv/bin/python scripts/X.py（绝对路径）
+#             4 条 python3 scripts/X.py（裸命令，venv 只出现在 shell 的 activate 里）
+#             4 条 -m scripts.X
+#
+# ⚠️ 这个"三种调用形式并存"的事实很重要：
+#    backend/scripts/process_watchdog.py 的阈值表依赖能识别全部三种形式，
+#    任何"统一改成绝对路径"的重构都必须同步更新它的识别正则与守门测试。
+# ============================================================
+
+--- 以下为 crontab -l 原始输出 ---
+
+
+# 
+# ============================================================
+# ━━━ 01:00-07:30 · AI 凌晨自主工作链 ━━━━━━━━━━━━━━━━━━━━━
+0 10 * * 6 cd /opt/moneybag/backend && set -a && . /opt/moneybag/backend/.env && set +a && /opt/moneybag/venv/bin/python scripts/cache_warmer.py --weekend >> /tmp/cache_warmer.log 2>&1
+0 1 * * 1-5 cd /opt/moneybag/backend && set -a && . /opt/moneybag/backend/.env && set +a && /opt/moneybag/venv/bin/python scripts/night_worker.py >> /opt/moneybag/data/night_worker/cron.log 2>&1
+0 11 * * 6 cd /opt/moneybag/backend && set -a && . /opt/moneybag/backend/.env && set +a && /opt/moneybag/venv/bin/python scripts/cache_warmer.py --full-extra >> /opt/moneybag/data/cache_warm.log 2>&1
+0 16 * * 1-5 cd /opt/moneybag/backend && set -a && . /opt/moneybag/backend/.env && set +a && /opt/moneybag/venv/bin/python scripts/cache_warmer.py --harvest >> /opt/moneybag/data/night_worker/cron.log 2>&1
+0 18 * * 1-5 cd /opt/moneybag/backend && source /opt/moneybag/venv/bin/activate && export $(cat .env | grep -v "^#" | xargs) && python3 scripts/dca_scheduler.py --discipline >> /opt/moneybag/logs/discipline.log 2>&1
+0 20 * * 0 cd /opt/moneybag/backend && set -a && . /opt/moneybag/backend/.env && set +a && /opt/moneybag/venv/bin/python scripts/broker_rating_cron.py >> /opt/moneybag/data/cron/broker_rating.log 2>&1
+0 20 * * 0 cd /opt/moneybag/backend && source /opt/moneybag/venv/bin/activate && export $(cat .env | grep -v "^#" | xargs) && python3 scripts/dca_scheduler.py --weekly >> /opt/moneybag/logs/weekly.log 2>&1
+0 21 * * 0 cd /opt/moneybag/backend && set -a && . /opt/moneybag/backend/.env && set +a && /opt/moneybag/venv/bin/python scripts/weekly_plan_cron.py >> /opt/moneybag/data/cron/weekly.log 2>&1
+0 22 * * 0 cd /opt/moneybag/backend && set -a && . /opt/moneybag/backend/.env && set +a && /opt/moneybag/venv/bin/python scripts/fund_rank_build.py >> /opt/moneybag/data/cron/fund_rank.log 2>&1
+0 4 1 * * cd /opt/moneybag/backend && set -a && . /opt/moneybag/backend/.env && set +a && /opt/moneybag/venv/bin/python -m scripts.memory_archive_cron >> /var/log/moneybag/memory_archive.log 2>&1
+# ━━━ 08:00-08:30 · 记忆处理 + 简报推送 ━━━━━━━━━━━━━━━━━━━
+# 08:00 批量提炼前一天对话 → pending_insights 待审队列
+# 08:10 深度复盘（窗口：昨天 06:00 → 今天 06:00）→ 写入 context.last_analysis
+# 08:30 推送早安简报到企微（工作日）
+0 8 * * * cd /opt/moneybag/backend && set -a && . /opt/moneybag/backend/.env && set +a && /opt/moneybag/venv/bin/python -m scripts.auto_extract_cron >> /var/log/moneybag/auto_extract.log 2>&1
+# 09:00-11:59 每 10 分钟盯盘
+# 09:00-14:59 每 30 分钟刷 midday 缓存
+# ━━━ 09:00-15:00 · 盘中盯盘 + 缓存预热（工作日）━━━━━━━━━━
+# 09:15 盘前缓存预热（morning payload）
+0 9 1 * * cd /opt/moneybag/backend && source /opt/moneybag/venv/bin/activate && export $(cat .env | grep -v "^#" | xargs) && python3 scripts/monthly_report.py --all >> /opt/moneybag/logs/monthly.log 2>&1
+0 9 25 * * cd /opt/moneybag/backend && source /opt/moneybag/venv/bin/activate && export $(cat .env | grep -v "^#" | xargs) && python3 scripts/dca_scheduler.py --dca >> /opt/moneybag/logs/dca.log 2>&1
+10 8 * * * cd /opt/moneybag/backend && set -a && . /opt/moneybag/backend/.env && set +a && /opt/moneybag/venv/bin/python -m scripts.daily_reflection_cron >> /var/log/moneybag/daily_reflection.log 2>&1
+# 13:00-14:59 每 10 分钟盯盘（下午）
+# ━━━ 15:30-15:35 · 收盘复盘 ━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# 15:30 周五 · 本周复盘
+# 15:30 收盘复盘（含地缘预警 + analyze 自动存档）
+# 15:30 月末最后一个工作日 · 资产再平衡
+# 15:35 收盘后数据缓存
+45 8 * * 1-5 cd /opt/moneybag/backend && set -a && . /opt/moneybag/backend/.env && set +a && /opt/moneybag/venv/bin/python scripts/cache_warmer.py --morning >> /tmp/cache_warmer.log 2>&1
+# 16:00 收盘后数据收割（存 precomputed 供凌晨 night_worker）
+#   1. 凌晨 01:00-07:30 让给 night_worker（内部 10 阶段全链路）
+#   2. 08:00-08:30 做对话提炼和复盘（R1 跑完了，不抢带宽）
+0 21 * * 1-5 cd /opt/moneybag/backend && set -a && . /opt/moneybag/backend/.env && set +a && /opt/moneybag/venv/bin/python scripts/stock_monitor_cron.py --close >> /opt/moneybag/data/monitor/cron.log 2>&1
+30 15 28-31 * * [ $(date -d "+1day" +\%m) != $(date +\%m) ] && cd /opt/moneybag/backend && set -a && . /opt/moneybag/backend/.env && set +a && /opt/moneybag/venv/bin/python scripts/monthly_rebalance_cron.py >> /opt/moneybag/data/cron/monthly.log 2>&1
+30 15 * * 5 cd /opt/moneybag/backend && set -a && . /opt/moneybag/backend/.env && set +a && /opt/moneybag/venv/bin/python scripts/weekly_review_cron.py >> /opt/moneybag/data/cron/weekly.log 2>&1
+30 16 * * 1-5 cd /opt/moneybag/backend && set -a && . /opt/moneybag/backend/.env && set +a && /opt/moneybag/venv/bin/python scripts/cache_warmer.py --full-extra >> /opt/moneybag/data/cache_warm.log 2>&1
+30 20 * * 1-5 cd /opt/moneybag/backend && set -a && . /opt/moneybag/backend/.env && set +a && /opt/moneybag/venv/bin/python scripts/cache_warmer.py --nav-confirmed >> /tmp/cache_warmer.log 2>&1
+30 8 * * 1-5 cd /opt/moneybag/backend && set -a && . /opt/moneybag/backend/.env && set +a && /opt/moneybag/venv/bin/python scripts/night_worker.py --push-only >> /opt/moneybag/data/night_worker/cron.log 2>&1
+#   3. 08:30 推送早安简报（能带上当天 08:10 刚生成的 handover）
+*/30 9-14 * * 1-5 cd /opt/moneybag/backend && set -a && . /opt/moneybag/backend/.env && set +a && /opt/moneybag/venv/bin/python scripts/cache_warmer.py --midday >> /tmp/cache_warmer.log 2>&1
+30 9 * * 6 cd /opt/moneybag/backend && set -a && . /opt/moneybag/backend/.env && set +a && /opt/moneybag/venv/bin/python scripts/weekend_push.py >> /opt/moneybag/data/night_worker/weekend_push.log 2>&1
+10 18 * * 1-5 cd /opt/moneybag/backend && set -a && . /opt/moneybag/backend/.env && set +a && /opt/moneybag/venv/bin/python scripts/cache_warmer.py --after-close >> /tmp/cache_warmer.log 2>&1
+#   4. 盘中 10 分钟盯盘 + 30 分钟刷缓存
+50 7 * * * cd /opt/moneybag/backend && set -a && . /opt/moneybag/backend/.env && set +a && /opt/moneybag/venv/bin/python scripts/briefing_hallucination_check.py --rounds 1 --interval 0 --alert >> /opt/moneybag/data/night_worker/hallucination_check.log 2>&1
+#   5. 周末不跑行情类 cron，只跑数据预热和记忆维护
+# DISABLED: */10 13-14 * * 1-5 cd /opt/moneybag/backend && set -a && . /opt/moneybag/backend/.env && set +a && /opt/moneybag/venv/bin/python scripts/stock_monitor_cron.py >> /opt/moneybag/data/monitor/cron.log 2>&1
+# DISABLED: */10 9-11 * * 1-5 cd /opt/moneybag/backend && set -a && . /opt/moneybag/backend/.env && set +a && /opt/moneybag/venv/bin/python scripts/stock_monitor_cron.py >> /opt/moneybag/data/monitor/cron.log 2>&1
+# night_worker 内部按顺序串跑 10 个阶段（时间是目标节点，实际可能提前完成）：
+# Sprint 3: 月度家庭报告
+#   Step 10 07:30 生成早安简报（落盘等推送）
+#   Step 1  01:00 健康巡检（数据源/Key）
+#   Step 2  01:30 数据预热（Tushare/AKShare 因子）
+#   Step 3  02:00 🧠 R1 Phase 1 - 全局市场分析
+#   Step 4  02:30 🧠 R1 Phase 2 - 持仓诊断
+#   Step 5  03:00 🧠 R1 Phase 3 - 推荐+决策+情景预计算
+#   Step 6  04:00 生成分析产物（每用户摘要）
+#   Step 7  05:00 研报存档
+#   Step 8  06:00 维护任务
+#   Step 9  07:00 外盘+地缘事件检查
+# V7.6 (2026-04-19)：把 LLM 提炼和复盘挪到 night_worker 之后
+# v9.5.100 全量补充预热（详情/催化/长持/宏观）
+# v9.5.123 Sprint 2: 定投纪律系统
+# v9.5.123: 净值确认后全量预热(确认净值重算排行)
+#       下游：08:30 推送早安简报时会自动带上 handover 内容
+# 周六 10:00 周末 cache 冷启
+# 周日 20:00 机构评级周报
+# 周日 21:00 下周规划
+# 周日 22:00 基金排行榜重建（17560 只基金，14 秒）
+# ━━━ 周末/月末维护 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# 周末轻量推送（每周六 09:30，纯规则版）
+# 每周日20:00 预测复盘
+# 每天18:00 检测止盈止损
+# 每月 1 号 04:00 记忆归档 + 月摘要（V7.5）
+# 每月25号09:00 定投提醒推送
+# 设计原则：
+# 避免和 R1 Phase 并发抢带宽
+# 钱袋子 AI 完整排班表 v7.6（2026-04-19 夜）
+
+# v9.8.2: 晚间预热（覆盖用户下班后打开场景）
+0 18 * * 1-5 cd /opt/moneybag/backend && set -a && . /opt/moneybag/backend/.env && set +a && /opt/moneybag/venv/bin/python scripts/cache_warmer.py --evening >> /tmp/cache_warmer.log 2>&1
+
+5 21 * * 1-5 cd /opt/moneybag/backend && set -a && . /opt/moneybag/backend/.env && set +a && /opt/moneybag/venv/bin/python scripts/closing_review_hallucination_check.py --alert >> /opt/moneybag/data/monitor/hallucination_check.log 2>&1
+0 22 * * 1-5 cd /opt/moneybag/backend && set -a && . /opt/moneybag/backend/.env && set +a && /opt/moneybag/venv/bin/python scripts/daily_push_quality_check.py --date today --user LeiJiang --alert >> /opt/moneybag/data/logs/push_quality_check.log 2>&1
+30 4 * * * cd /opt/moneybag/backend && set -a && . /opt/moneybag/backend/.env && set +a && /opt/moneybag/venv/bin/python -m scripts.housekeeping_cron --apply >> /var/log/moneybag/housekeeping.log 2>&1

@@ -1,6 +1,39 @@
 #!/usr/bin/env bash
-# setup_cron.sh — Install all MoneyBag cron jobs
-# Usage: bash backend/scripts/setup_cron.sh
+# setup_cron.sh — 安装全部 MoneyBag cron 任务
+#
+# ⛔⛔⛔ 本脚本已与线上排班漂移，并且是**破坏性**的，默认拒绝执行。⛔⛔⛔
+#
+# 2026-08-31 排查发现，在服务器上执行本脚本会：
+#   1. 先跑 `crontab -l | grep -v '<14 个关键字>' | crontab -` 清理旧条目 ——
+#      该过滤器会命中线上**全部**条目（实测 35 行），即先删光现有排班；
+#   2. 再装入本文件里的 23 条，而它们全部使用裸 `python` ——
+#      服务器上 `python` **不存在**（实测 `which python: NOT FOUND`），
+#      装上必然 `command not found`；
+#   3. 即便改成 `python3`，那也是 `/usr/bin/python3` 而非
+#      `/opt/moneybag/venv/bin/python3`，项目依赖全部缺失；
+#   4. 本文件的条目不加载 `.env`，即使解释器对了也会因缺 API Key 失败。
+#
+# 净效果：一次 `bash setup_cron.sh` + 回答 y = 删光 29 条正常排班、
+# 换成 23 条必然失败的条目，整条 AI 排班**静默死亡**。
+#
+# 排班的**权威来源**是服务器上的 `crontab -l`，本仓库的可恢复快照在：
+#     docs/ops/crontab.production.txt
+# （含完整漂移明细：本文件缺 7 类条目、7 处频率不一致）
+#
+# 若你确实要强制运行（例如要在全新机器上从零搭排班），请先读完上面的
+# 漂移清单、修正本文件，再显式解锁：
+#     SETUP_CRON_I_UNDERSTAND=yes bash backend/scripts/setup_cron.sh
+
+if [ "${SETUP_CRON_I_UNDERSTAND:-}" != "yes" ]; then
+    echo "⛔ 拒绝执行：setup_cron.sh 已过期且会删光线上排班（详见文件头注释）。"
+    echo ""
+    echo "   排班的权威来源：服务器 crontab -l"
+    echo "   可恢复快照：    docs/ops/crontab.production.txt"
+    echo ""
+    echo "   确认要强制运行请先修正本文件，再用："
+    echo "     SETUP_CRON_I_UNDERSTAND=yes bash backend/scripts/setup_cron.sh"
+    exit 1
+fi
 
 set -e
 
