@@ -42,6 +42,8 @@ data/
 .codebuddy/
 
 # ---- AI 技能库 / 跨项目记忆的服务器兜底副本（不入库）----
+# 2026-09-01：三方对账时发现服务器 /opt/moneybag/ 下多出未跟踪目录
+# .ai-memory/（280K，20 个子目录，含 moneybag-* 技能与跨项目记忆）。
 # 来源：scripts/sync-memory.sh 会把 moneybag-skills 私有技能库 rsync 到
 # 服务器的 /opt/moneybag/.ai-memory/ 兜底（2026-08-25 起，今天仍在使用）。
 # 该目录内容是 AI 技能文档，与钱袋子应用代码无关，且 README 明确标注
@@ -57,19 +59,6 @@ data/
 #      私有文件混进 PUBLIC 仓库）是同一类错误，只是这次仓库是私有的。
 #
 # 忽略它不影响同步：sync-memory.sh 走 rsync，不经过 git，数据照常落地。
-.ai-memory/
-
-# ---- AI 技能记忆库（服务器兜底副本，绝不入库）----
-# 2026-09-01：三方对账时发现服务器 /opt/moneybag/ 下多出未跟踪目录
-# .ai-memory/（280K，20 个子目录，含 moneybag-* 技能与跨项目记忆）。
-# 它不是垃圾：由 .ai-memory/scripts/sync-memory.sh 按设计 rsync 到服务器
-# 「兜底」，同步私有仓库 lj860117/moneybag-skills，今天仍在写入。
-# 但它躺在 moneybag 的 git 工作区里且未被忽略，有两个隐患：
-#   1. 任何一次 `git add -A` 会把 280K 无关私有内容提交进钱袋子仓库
-#      （与 biosphere-game 那次 .workbuddy P0 污染同型错误）
-#   2. 服务器 `git status` 永久显示 `?? .ai-memory/`，真正的代码漂移
-#      会被这行「已知可忽略」的噪音掩盖 —— 就是看门狗刚修掉的告警疲劳
-# 因此只做忽略、不删数据：同步机制与服务器副本都保持原样。
 .ai-memory/
 backend/scripts/seed_qa_*.py
 
