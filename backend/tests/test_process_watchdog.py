@@ -37,6 +37,7 @@ import subprocess
 import sys
 import tempfile
 import time
+from datetime import datetime, timedelta
 from pathlib import Path
 
 _BACKEND = Path(__file__).resolve().parent.parent
@@ -1088,8 +1089,14 @@ def test_jsonl_log_has_required_fields():
             assert field in rec, f"动作记录缺字段 {field}: {rec}"
 
 
-def test_zero_match_triggers_warning():
-    """一个批量脚本都匹配不到时必须告警 —— 防"配置写错 → 永远 0 目标"的静默失效。"""
+def test_single_zero_match_does_not_alarm():
+    """单次零命中**不**告警 —— 两次 cron 之间本来就是 0 个批量脚本。
+
+    ⚠️ 这条守的是"告警疲劳"：看门狗跑 */5，一天 288 次。实测服务器上
+    00:34 跑，109 个进程里 0 个批量脚本，完全正常。若每次空窗都喊 🚨，
+    运维会直接忽略这个日志 —— 那自检写得再好也等于没有。
+    所以改成看"最后一次见到批量脚本是多久以前"（见下一条测试）。
+    """
     watchdog = _load_watchdog()
     ps_output = (
         "1562523 124576 uvicorn /opt/moneybag/venv/bin/python3 "
@@ -1098,9 +1105,62 @@ def test_zero_match_triggers_warning():
     )
     tmp = Path(tempfile.mkdtemp())
     _code, out = _run(watchdog, [], ps_output, data_dir=tmp)
+    assert "零命中告警" not in out, (
+        f"两次 cron 之间本来就 0 个批量脚本，单次零命中不该告警"
+        f"（*/5 一天 288 次，喊多了就没人看了）。stdout:\n{out}"
+    )
+    assert "0 个批量脚本" in out, (
+        f"不告警可以，但要给一行 INFO 说明当前处于空窗期，"
+        f"否则排障时分不清「没告警」和「压根没跑自检」。stdout:\n{out}"
+    )
+
+
+def test_stale_zero_match_triggers_warning():
+    """连续 48 小时见不到任何批量脚本才告警 —— 那基本可以断定识别逻辑坏了。
+
+    判据：night_worker 全量链每天 01:00 起跑 6.5 小时，盘中 cache_warmer
+    每 30 分钟一次。正常排班下不可能 48 小时都不出现一个。
+    """
+    watchdog = _load_watchdog()
+    ps_output = (
+        "1562523 124576 uvicorn /opt/moneybag/venv/bin/python3 "
+        "/opt/moneybag/venv/bin/uvicorn main:app --host 0.0.0.0 --port 8000\n"
+    )
+    tmp = Path(tempfile.mkdtemp())
+    state = tmp / "logs" / "watchdog" / watchdog.LAST_BATCH_SEEN_FILE
+    state.parent.mkdir(parents=True, exist_ok=True)
+    stale = datetime.now() - timedelta(seconds=watchdog.ZERO_HIT_ALERT_AFTER + 3600)
+    state.write_text(stale.isoformat(timespec="seconds"), encoding="utf-8")
+
+    _code, out = _run(watchdog, [], ps_output, data_dir=tmp)
     assert "零命中告警" in out, (
-        f"ps 有进程但一个批量脚本都没匹配到时必须告警（通常是部署目录标记或"
-        f"脚本名正则配错，看门狗此时等于空转）。stdout:\n{out}"
+        f"连续 {watchdog.ZERO_HIT_ALERT_AFTER / 3600:.0f} 小时见不到任何批量脚本必须告警 —— "
+        f"按排班 night_worker 每天跑 6.5 小时，不可能这么久不出现，"
+        f"多半是部署目录标记 / 脚本名正则配错，看门狗等于空转。stdout:\n{out}"
+    )
+
+
+def test_seeing_a_batch_script_refreshes_state_file():
+    """见到批量脚本要刷新 .last_batch_seen —— 否则 48h 后会误报成"识别坏了"。
+
+    这条与上一条成对：一条守"该报时报"，这条守"不该报时别报"。
+    """
+    watchdog = _load_watchdog()
+    ps_output = (
+        "  50001 99999 python3 /opt/moneybag/venv/bin/python "
+        "scripts/night_worker.py --push-only\n"
+    )
+    tmp = Path(tempfile.mkdtemp())
+    _run(watchdog, [], ps_output, data_dir=tmp)
+
+    state = tmp / "logs" / "watchdog" / watchdog.LAST_BATCH_SEEN_FILE
+    assert state.exists(), (
+        f"见到批量脚本后应写入 {watchdog.LAST_BATCH_SEEN_FILE}，"
+        f"否则下次空窗期的自检算不出「多久没见到了」。"
+    )
+    recorded = datetime.fromisoformat(state.read_text(encoding="utf-8").strip())
+    assert (datetime.now() - recorded).total_seconds() < 120, (
+        f"状态文件里应是刚刚的时间戳，实际: {recorded}"
     )
 
 

@@ -528,8 +528,9 @@ def classify_process(
     if not proc.comm.lower().startswith("python"):
         return Verdict(
             rule="comm",
-            reason=f"comm='{proc.comm}' 不是 python（很可能是 cron 的 shell 包装进程，"
-                   f"杀它杀不掉子进程，只会留下孤儿 python）",
+            reason=f"comm='{proc.comm}' 不是 python 解释器"
+                   f"（内核线程 / 系统守护进程 / cron 的 shell 包装进程都不处理；"
+                   f"杀 shell 也杀不掉子进程，只会留下孤儿 python）",
         )
 
     # ③ 自己 / 父进程 / 内核进程
@@ -740,6 +741,104 @@ def terminate_process(
 
 
 # ============================================================
+# 零命中自检（带状态，防告警疲劳）
+# ============================================================
+
+#: 连续这么久没见过任何批量脚本进程才告警（秒）。
+#: 依据线上排班：night_worker 全量链每天 01:00 起、跑 6.5 小时（01:00→07:30），
+#: 盘中 cache_warmer --midday 每 30 分钟一次（09:00-14:59），收盘后还有多个
+#: cache_warmer 模式。**正常排班下 48 小时不出现任何批量脚本是不可能的**，
+#: 所以真到了这个点，基本可以断定是识别逻辑坏了。
+ZERO_HIT_ALERT_AFTER: int = 48 * 3600
+
+#: 记录"最后一次见到批量脚本进程"的状态文件名。
+#: 点开头 + 不含日期 → 不会被 housekeeping_cron.py 命中：
+#: 归档清理要求名字含 YYYY-MM-DD，孤儿 .tmp 清理只收 *.tmp。
+LAST_BATCH_SEEN_FILE: str = ".last_batch_seen"
+
+
+def _last_batch_seen_path(log_dir: Path) -> Path:
+    return Path(log_dir) / LAST_BATCH_SEEN_FILE
+
+
+def _update_last_batch_seen(script_matched: int, log_dir: Path) -> None:
+    """见到批量脚本进程就刷新状态文件的时间戳。
+
+    写失败刻意只打一行警告、不中断：它只是遥测，不值得让看门狗整体失败。
+    """
+    if script_matched <= 0:
+        return
+    try:
+        Path(log_dir).mkdir(parents=True, exist_ok=True)
+        _last_batch_seen_path(log_dir).write_text(
+            datetime.now().isoformat(timespec="seconds"), encoding="utf-8")
+    except OSError as e:
+        print(f"   ⚠️ 无法更新 {LAST_BATCH_SEEN_FILE}：{e}（仅影响零命中自检，不影响回收）")
+
+
+def _report_zero_hit_if_stale(stats: dict, log_dir: Path) -> None:
+    """
+    零命中自检。
+
+    ⚠️ 刻意**不是**"本次零命中就报警"。批量脚本只在 cron 触发的窗口里存在，
+    两次 cron 之间本来就是 0 个（实测 00:34 跑，109 个进程里 0 个批量脚本，
+    完全正常）。若每次都报警，*/5 的调度一天要喊 288 次 ——
+    **告警疲劳比没有告警更糟**，运维会直接忽略这个日志，那自检就白写了。
+
+    所以改成看"最后一次见到批量脚本是多久以前"，超过 ZERO_HIT_ALERT_AFTER 才告警。
+    这样既能抓住真正的静默失效（识别逻辑坏了 → 永远见不到），
+    又不会在正常的空窗期乱喊。
+    """
+    if stats["script_matched"] > 0:
+        return
+
+    hours = ZERO_HIT_ALERT_AFTER // 3600
+    path = _last_batch_seen_path(log_dir)
+
+    if not path.exists():
+        print(f"\nℹ️  本次 {stats['total']} 个进程里 0 个批量脚本（两次 cron 之间属正常）。")
+        print(f"   尚无「见到过批量脚本」的记录，暂不告警；"
+              f"连续 {hours} 小时见不到才会告警。")
+        return
+
+    try:
+        last = datetime.fromisoformat(path.read_text(encoding="utf-8").strip())
+    except (OSError, ValueError):
+        return
+
+    gap_h = (datetime.now() - last).total_seconds() / 3600
+    if gap_h * 3600 >= ZERO_HIT_ALERT_AFTER:
+        print("\n🚨🚨 零命中告警 🚨🚨")
+        print(f"   已连续 {gap_h:.1f} 小时（阈值 {hours}h）没见过任何批量脚本进程。")
+        print(f"   ps 返回 {stats['total']} 个进程。按排班，night_worker 每天 01:00 起跑 6.5 小时，"
+              f"不可能这么久不出现。")
+        print("   多半是配置问题（部署目录标记 / 脚本名正则 / ps 列格式变了），")
+        print("   看门狗此时等于空转 —— 请用 --show-excluded 排查，不要放着不管。")
+    else:
+        print(f"\nℹ️  本次 0 个批量脚本（正常，两次 cron 之间本就为空）。"
+              f"上次见到是 {gap_h:.1f} 小时前（告警阈值 {hours}h）。")
+
+
+def _is_worth_showing(proc) -> bool:
+    """
+    `--show-excluded` 的过滤判据。
+
+    实测服务器上 ps 返回 109 条，绝大多数是 kthreadd / ksoftirqd 这类内核线程
+    —— 全列出来会淹掉真正要看的（uvicorn、系统 python、看门狗自己），
+    排障时反而更难用，那一屏噪音里找不到 uvicorn 是否被正确排除。
+
+    只保留"有可能被误判成我们的进程"的那些：python 进程，或 args 里出现
+    部署标记 / `scripts/` 的（cron 的 shell 包装进程属于后一类，必须能看到）。
+    """
+    lowered = proc.args.lower()
+    return (
+        proc.comm.lower().startswith("python")
+        or "scripts/" in lowered
+        or any(marker.lower() in lowered for marker in DEPLOY_DIR_MARKERS)
+    )
+
+
+# ============================================================
 # 日志
 # ============================================================
 
@@ -857,6 +956,7 @@ def main() -> int:
     args = parser.parse_args()
 
     data_dir = Path(args.data_dir).expanduser() if args.data_dir else DATA_DIR
+    log_dir = log_dir_for(data_dir)
     markers = tuple(args.deploy_dir) if args.deploy_dir else DEPLOY_DIR_MARKERS
     own_pid = os.getpid()
     parent_pid = os.getppid()
@@ -868,7 +968,7 @@ def main() -> int:
     print(f"宽限期:     {args.grace}s（SIGTERM → 轮询 → 超时才 SIGKILL）")
     print(f"部署标记:   {list(markers)}"
           f"{'（已按 --skip-deploy-check 关闭校验）' if args.skip_deploy_check else ''}")
-    print(f"日志目录:   {log_dir_for(data_dir)}")
+    print(f"日志目录:   {log_dir}")
     _print_threshold_table()
 
     # ── 枚举 ──
@@ -888,16 +988,22 @@ def main() -> int:
 
     if args.show_excluded:
         print("\n── 被排除的进程（--show-excluded）──")
+        shown = 0
         for proc, verdict in excluded:
+            if not _is_worth_showing(proc):
+                continue
+            shown += 1
             print(f"   pid={proc.pid:<8d} [{verdict.rule}] {_short_args(proc.args, 70)}")
             print(f"        └─ {verdict.reason}")
+        hidden = len(excluded) - shown
+        if hidden:
+            print(f"   （另有 {hidden} 个与判定无关的进程未列出：内核线程 / 系统守护进程等。"
+                  f"共有 {len(excluded)} 条，绝大多数是 kthreadd 这类，"
+                  f"列出来只会淹掉真正要看的 uvicorn 与系统 python。）")
 
     # ── 零命中自检（防"配置写错 → 永远 0 目标"的静默失效）──
-    if stats["script_matched"] == 0 and stats["total"] > 0:
-        print("\n🚨🚨 零命中告警 🚨🚨")
-        print(f"   ps 返回了 {stats['total']} 个进程，但**没有任何一个**被识别为批量脚本。")
-        print("   这几乎总是配置问题（部署目录标记 / 脚本名正则 / ps 列格式变了），")
-        print("   看门狗此时等于空转 —— 请立刻用 --show-excluded 排查，不要放着不管。")
+    _update_last_batch_seen(stats["script_matched"], log_dir)
+    _report_zero_hit_if_stale(stats, log_dir)
 
     # ── 处理 ──
     print(f"\n── 超龄目标 {len(targets)} 个 ──")
