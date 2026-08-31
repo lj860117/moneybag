@@ -135,49 +135,68 @@ class TestBriefingHistoryFiltering(unittest.TestCase):
         cache_file.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
     
     def test_filters_future_dates(self):
-        """验证过滤未来日期"""
+        """验证 briefing_history() 真的过滤未来日期缓存
+
+        FIX 2026-09-01：原实现只是自己 glob 目录后断言原始文件列表里没有
+        未来日期——但它从未调用任何过滤代码，明天的文件是它自己创建的，
+        断言必然失败，和 briefing_history() 里第414行"跳过未来的缓存"这条
+        真实逻辑是否正确毫无关系。改为直接调用 Steward.briefing_history()，
+        让 _BRIEF_DIR 指向测试临时目录（briefing_history 不读写 self，
+        用 Steward.briefing_history(None, ...) 以 unbound 方式调用即可，
+        不需要真的构造 Steward() 去拉起 PipelineRunner 等重依赖）。
+        """
+        import services.steward as steward_module
+
         today_dt = datetime.now().date()
         tomorrow_str = (today_dt + timedelta(days=1)).strftime("%Y%m%d")
         today_str = today_dt.strftime("%Y%m%d")
-        
-        # 创建明天和今天的缓存
+
         self._create_cache_file("test_user", tomorrow_str)
         self._create_cache_file("test_user", today_str)
-        
-        # 扫描缓存文件
-        files = sorted(self.brief_dir.glob("test_user_*.json"), reverse=True)
-        
-        # 验证明天的缓存应该被过滤
-        for fp in files:
-            date_str = fp.stem.split('_')[-1]
-            self.assertLessEqual(date_str, today_str,
-                               f"Future date {date_str} should not be included")
+
+        original_brief_dir = steward_module._BRIEF_DIR
+        steward_module._BRIEF_DIR = self.brief_dir
+        try:
+            result = steward_module.Steward.briefing_history(None, "test_user", days=7)
+        finally:
+            steward_module._BRIEF_DIR = original_brief_dir
+
+        returned_dates = [item["date"] for item in result]
+        self.assertNotIn(tomorrow_str, returned_dates,
+                          "未来日期的缓存不应出现在 briefing_history() 返回结果里")
+        self.assertIn(today_str, returned_dates,
+                      "今天的缓存应该正常返回")
     
     def test_filters_old_dates(self):
-        """验证过滤太旧的日期"""
+        """验证 briefing_history() 真的过滤超过 N 天的太旧缓存
+
+        FIX 2026-09-01：同 test_filters_future_dates 的问题——原实现
+        自己重新实现了一遍"按 cutoff_date 判断"的逻辑，没有调用
+        briefing_history()，测的是测试自己的逻辑而不是生产代码。
+        """
+        import services.steward as steward_module
+
         today_dt = datetime.now().date()
         today_str = today_dt.strftime("%Y%m%d")
-        cutoff_date = (today_dt - timedelta(days=7)).strftime("%Y%m%d")
         old_date = (today_dt - timedelta(days=10)).strftime("%Y%m%d")
-        
-        # 创建多个日期的缓存
+
         self._create_cache_file("test_user", today_str)
         self._create_cache_file("test_user", old_date)
-        
-        # 扫描缓存文件
-        files = sorted(self.brief_dir.glob("test_user_*.json"), reverse=True)
-        
-        # 验证太旧的缓存应该被过滤
-        count = 0
-        for fp in files:
-            date_str = fp.stem.split('_')[-1]
-            if date_str >= cutoff_date:
-                count += 1
-            else:
-                break
-        
-        self.assertLessEqual(count, 7,
-                           f"Should have at most 7 recent days, got {count}")
+
+        original_brief_dir = steward_module._BRIEF_DIR
+        steward_module._BRIEF_DIR = self.brief_dir
+        try:
+            result = steward_module.Steward.briefing_history(None, "test_user", days=7)
+        finally:
+            steward_module._BRIEF_DIR = original_brief_dir
+
+        returned_dates = [item["date"] for item in result]
+        self.assertNotIn(old_date, returned_dates,
+                          "超过 7 天的旧缓存不应出现在 briefing_history() 返回结果里")
+        self.assertIn(today_str, returned_dates,
+                      "今天的缓存应该正常返回")
+        self.assertLessEqual(len(result), 7,
+                           f"最多返回 7 天，got {len(result)}")
     
     def test_date_format_validation(self):
         """验证日期格式验证"""

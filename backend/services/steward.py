@@ -37,7 +37,10 @@ _BRIEF_DIR = Path(os.environ.get("DATA_DIR", Path(__file__).parent.parent / "dat
 
 def _check_date_consistency() -> bool:
     """验证系统日期是否在合理范围内"""
-    from datetime import datetime
+    # 注意：不要在函数内部 `from datetime import datetime` 局部导入——
+    # 测试用 @patch('backend.services.steward.datetime') 打补丁依赖的是
+    # 模块级 datetime（本文件顶部第14行已导入），局部导入会绕开补丁，
+    # 永远拿到真实系统时间，导致 mock 完全不生效（FIX 2026-09-01）。
     today = datetime.now().date()
     # 允许范围：2020-2050
     if today.year < 2020 or today.year > 2050:
