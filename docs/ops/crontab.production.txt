@@ -56,11 +56,13 @@
 # ------------------------------------------------------------
 # 抓取时间：2026-08-31
 # 抓取命令：ssh -i ~/.ssh/id_ed25519 ubuntu@150.158.47.189 'crontab -l'
-# 生效条目：29 条（含注释行共 60 行）
-# 唯一脚本：18 个
-#   调用形式：21 条 /opt/moneybag/venv/bin/python scripts/X.py（绝对路径）
+# 生效条目：30 条（含注释行共 89 行）
+# 唯一脚本：19 个
+#   调用形式：22 条 /opt/moneybag/venv/bin/python scripts/X.py（绝对路径）
+#             4 条 -m scripts.X（解释器同样是 venv 绝对路径）
 #             4 条 python3 scripts/X.py（裸命令，venv 只出现在 shell 的 activate 里）
-#             4 条 -m scripts.X
+#
+#   2026-08-31 新增第 30 条：*/5 的 scripts/process_watchdog.py --apply（看门狗）
 #
 # ⚠️ 这个"三种调用形式并存"的事实很重要：
 #    backend/scripts/process_watchdog.py 的阈值表依赖能识别全部三种形式，
@@ -157,3 +159,4 @@
 5 21 * * 1-5 cd /opt/moneybag/backend && set -a && . /opt/moneybag/backend/.env && set +a && /opt/moneybag/venv/bin/python scripts/closing_review_hallucination_check.py --alert >> /opt/moneybag/data/monitor/hallucination_check.log 2>&1
 0 22 * * 1-5 cd /opt/moneybag/backend && set -a && . /opt/moneybag/backend/.env && set +a && /opt/moneybag/venv/bin/python scripts/daily_push_quality_check.py --date today --user LeiJiang --alert >> /opt/moneybag/data/logs/push_quality_check.log 2>&1
 30 4 * * * cd /opt/moneybag/backend && set -a && . /opt/moneybag/backend/.env && set +a && /opt/moneybag/venv/bin/python -m scripts.housekeeping_cron --apply >> /var/log/moneybag/housekeeping.log 2>&1
+*/5 * * * * cd /opt/moneybag/backend && set -a && . /opt/moneybag/backend/.env && set +a && /opt/moneybag/venv/bin/python3 scripts/process_watchdog.py --apply >> /var/log/moneybag/watchdog.log 2>&1
