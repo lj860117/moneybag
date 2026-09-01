@@ -37,14 +37,43 @@ from api.shared_helpers import (
 def save_user_data(data: UserData):
     """保存用户数据到服务端（兼容V3和V4）
 
-    FIX 2026-08-30（并发丢更新）：这一处是全项目最危险的 RMW ——
+    FIX 2026-08-30（并发丢更新，第一层）：这一处是全项目最危险的 RMW ——
     它**整体覆写** portfolio / ledger。不加锁的话，两个并发请求里后写的那个
     会把前一个的整份持仓/账本吃掉，且完全无声无息。
+
+    FIX 2026-09-01（并发丢更新，第二层——乐观并发控制）：user_write_lock
+    只保护"服务端内部"这一次请求的读-改-写原子性，管不到"客户端在提交前
+    读取旧数据"这一步——那一步发生在浏览器端，请求送达服务端之前，服务端
+    的锁根本无从介入。真实场景：手机在 T1 读到 {A,B}，PC 在 T2 写入 {A,B,C}，
+    手机在 T3 用 T1 时的旧快照 + 自己追加的 D 整体写回 {A,B,D}——锁保护了
+    T2 和 T3 各自内部不被打断，但保护不了 T3 用的是过期快照这个事实本身。
+
+    做法：客户端提交时带上 expectedUpdatedAt（上次从 GET .../portfolio 读到
+    的 updatedAt）。**必须在锁内比对**——如果校验放在锁外，两个请求都能通过
+    校验后一起进锁，等于没做。不传 expectedUpdatedAt（旧客户端/首次同步）
+    时跳过检测，保持渐进式升级、不强制所有旧客户端立刻升级才能用。
     """
     with user_write_lock(data.userId) as acquired:
         if not acquired:
             raise HTTPException(503, "系统繁忙（用户数据写锁超时），请稍后重试")
         user = load_user(data.userId)
+
+        if data.expectedUpdatedAt is not None:
+            server_updated_at = user.get("updatedAt")
+            if server_updated_at != data.expectedUpdatedAt:
+                # 冲突：服务端数据已经不是客户端读取时的那份了，拒绝覆盖，
+                # 把服务端当前最新状态带回去，让客户端决定怎么处理
+                # （重新拉取合并 / 提示用户 / 由用户选择覆盖）。
+                raise HTTPException(
+                    status_code=409,
+                    detail={
+                        "error": "conflict",
+                        "message": "数据已被其他设备更新，请刷新后重试",
+                        "serverPortfolio": user.get("portfolio"),
+                        "serverUpdatedAt": server_updated_at,
+                    },
+                )
+
         if data.portfolio:
             if isinstance(data.portfolio, dict):
                 user["portfolio"] = data.portfolio
@@ -55,7 +84,7 @@ def save_user_data(data: UserData):
         if not user.get("createdAt"):
             user["createdAt"] = datetime.now().isoformat()
         save_user(user)
-    return {"status": "ok", "userId": data.userId}
+    return {"status": "ok", "userId": data.userId, "updatedAt": user.get("updatedAt")}
 
 
 # ---- 用户偏好 ----
@@ -105,9 +134,15 @@ def update_user_preference(userId: str, body: dict):
 
 @router.get("/api/user/{user_id}/portfolio")
 def get_user_portfolio(user_id: str):
-    """v9.5.119: 轻量接口 — 只返回 portfolio（syncFromCloud 用，避免拉 4MB+ 全量数据）"""
+    """v9.5.119: 轻量接口 — 只返回 portfolio（syncFromCloud 用，避免拉 4MB+ 全量数据）
+
+    v9.9.x: 补充返回 updatedAt（FIX 2026-09-01 乐观并发控制）——前端保存这个
+    时间戳，下次 POST /api/user/save 时原样带回作为 expectedUpdatedAt，
+    服务端据此判断"我上次读到的版本"和"我要覆盖的版本"是否是同一份，
+    不是就拒绝覆盖而不是静默吃掉另一端的改动。
+    """
     user = load_user(user_id)
-    return {"portfolio": user.get("portfolio")}
+    return {"portfolio": user.get("portfolio"), "updatedAt": user.get("updatedAt")}
 
 
 @router.get("/api/user/{user_id}")

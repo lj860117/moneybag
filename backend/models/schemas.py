@@ -84,6 +84,11 @@ class UserData(BaseModel):
     ledger: list = []
     createdAt: Optional[str] = None
     updatedAt: Optional[str] = None
+    # v9.9.x FIX 2026-09-01（乐观并发控制）：客户端上次从服务端读到 portfolio
+    # 时看到的 updatedAt，原样带回。不传（None）= 旧客户端/首次同步，跳过冲突
+    # 检测直接覆盖（渐进式，不强制升级就报错）。新增独立字段而不复用上面已有
+    # 但从未被读取过的 updatedAt，避免语义混用引入不确定的历史兼容问题。
+    expectedUpdatedAt: Optional[str] = None
 
 class ChatHistoryMessage(BaseModel):
     """多轮对话历史条目"""

@@ -245,6 +245,7 @@ const _BASE_TXN_KEY='moneybag_transactions';
 const _BASE_ASSETS_KEY='moneybag_assets';
 const _BASE_LEDGER_KEY='moneybag_ledger';
 const _BASE_SOURCES_KEY='moneybag_income_sources';
+const _BASE_UPDATED_AT_KEY='moneybag_portfolio_updated_at';
 // 多用户隔离：key 加 userId 后缀（铁律 #19）
 function _uk(base){const uid=getProfileId();return uid?`${base}_${uid}`:base}
 Object.defineProperty(window,'STORAGE_KEY',{get(){return _uk(_BASE_STORAGE_KEY)}});
@@ -252,6 +253,7 @@ Object.defineProperty(window,'TXN_KEY',{get(){return _uk(_BASE_TXN_KEY)}});
 Object.defineProperty(window,'ASSETS_KEY',{get(){return _uk(_BASE_ASSETS_KEY)}});
 Object.defineProperty(window,'LEDGER_KEY',{get(){return _uk(_BASE_LEDGER_KEY)}});
 Object.defineProperty(window,'SOURCES_KEY',{get(){return _uk(_BASE_SOURCES_KEY)}});
+Object.defineProperty(window,'UPDATED_AT_KEY',{get(){return _uk(_BASE_UPDATED_AT_KEY)}});
 
 // ---- 多用户 Profile 系统 ----
 let _profileId = localStorage.getItem('moneybag_profile_id') || '';
@@ -545,7 +547,47 @@ type:'BUY',code:a.code,name:a.fullName,category:a.name,
 shares:buyAmt/nav,price:nav,amount:buyAmt,date:now,note:'测评配置',source:'quiz'})});
 saveTxns(txns)}
 
-async function syncCloud(portfolio){if(!API_AVAILABLE)return;try{await fetch(API_BASE+'/user/save',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({userId:getUserId(),portfolio})})}catch{}}
+// v9.9.x FIX 2026-09-01（乐观并发控制）：user_write_lock 只保护服务端内部
+// 一次请求的读-改-写原子性，管不到"客户端在提交前读取旧数据"这一步——那一步
+// 发生在浏览器端、请求送达服务端之前。真实风险场景：手机在 T1 读到旧持仓，
+// PC 在 T2 写入新持仓，手机在 T3 用 T1 时的旧快照 + 自己的改动整体写回，
+// 会静默抹掉 PC 在 T2 写入的内容，用户毫无察觉。
+// 做法：每次从云端读到 portfolio 时记住 updatedAt，下次保存时原样带回
+// 作为 expectedUpdatedAt；服务端发现"当前最新值"跟这个不一致就返回 409，
+// 说明中间有其他设备已经改过——不能直接覆盖，需要先刷新拿到最新数据。
+async function syncCloud(portfolio){
+  if(!API_AVAILABLE)return;
+  try{
+    const expectedUpdatedAt=localStorage.getItem(UPDATED_AT_KEY)||null;
+    const r=await fetch(API_BASE+'/user/save',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({userId:getUserId(),portfolio,expectedUpdatedAt})});
+    if(r.status===409){
+      // 冲突：服务端数据已被其他设备更新。本地这次的改动已经写进了 localStorage
+      // （savePortfolio 里先写本地再调这个函数），这里不做自动合并——先把本地
+      // 记的 updatedAt 更新为服务端最新值，避免下次保存又用同一个过期版本号
+      // 反复触发同一个冲突；同时提示用户，让用户知道要检查一下数据。
+      let serverUpdatedAt=null;
+      try{const body=await r.json();serverUpdatedAt=body?.detail?.serverUpdatedAt||null}catch{}
+      if(serverUpdatedAt)localStorage.setItem(UPDATED_AT_KEY,serverUpdatedAt);
+      console.warn('[syncCloud] 检测到数据冲突：其他设备已更新持仓数据，本次保存未生效。建议刷新页面确认最新数据。');
+      _notifyConflict&&_notifyConflict();
+      return;
+    }
+    if(r.ok){
+      const body=await r.json();
+      if(body.updatedAt)localStorage.setItem(UPDATED_AT_KEY,body.updatedAt);
+    }
+  }catch{}
+}
+// 冲突提示：不用 confirm() 阻断（syncCloud 是后台异步调用，用户未必在看屏幕，
+// 弹窗会打断当前操作）。项目里没有现成的 toast 组件，这里给一个可选的轻量
+// 挂载点——如果页面提供了 #syncConflictBanner 元素就显示，否则只留 console.warn，
+// 不额外造一套 UI 组件。
+function _notifyConflict(){
+  try{
+    const el=document.getElementById('syncConflictBanner');
+    if(el){el.style.display='block';el.textContent='⚠️ 检测到数据已在另一设备更新，请刷新页面查看最新持仓'}
+  }catch{}
+}
 // v9.5.112: 云端优先 — 之前只在本地为空时才同步，导致后端清理脏数据后用户前端还看老的
 //          现在每次登录都用云端 transactions/assets 覆盖本地
 async function syncFromCloud(){
@@ -555,6 +597,8 @@ async function syncFromCloud(){
     const r=await fetch(API_BASE+'/user/'+getUserId()+'/portfolio',{signal:AbortSignal.timeout(10000)});
     if(!r.ok)return;
     const d=await r.json();
+    // v9.9.x: 记住这次读到的 updatedAt，供下次 syncCloud 提交时做冲突检测
+    if(d.updatedAt)localStorage.setItem(UPDATED_AT_KEY,d.updatedAt);
     if(d.portfolio){
       const l=loadPortfolio();
       // 云端 transactions/assets 是 source of truth，总是覆盖
