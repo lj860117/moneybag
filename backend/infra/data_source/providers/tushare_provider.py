@@ -31,6 +31,15 @@ _SUPPORTED_METRICS = frozenset({
     "balance_sheet",
     "valuation",
     "dividend",
+    # v9.9.x FIX 2026-09-01（任务#1，用户显式要求）：个股基本信息（行业/
+    # 上市时间/市值），用于替换 AKShare stock_individual_info_em()——
+    # 该接口诊断出 push2.eastmoney.com 存在 ~30~70% 量级的间歇性连接
+    # 被动 reset（见 infra/data_source/alt/flows.py::get_stock_
+    # individual_info 的完整诊断记录）。stock_basic_info 拼接
+    # pro.stock_basic()（行业/名称/上市时间）+ pro.daily_basic()（市值），
+    # 唯一消费方 services/holding_intelligence.py::get_stock_industry()
+    # 只用"行业"字段。
+    "stock_basic_info",
 })
 
 # Caches by TTL requirement
@@ -96,6 +105,8 @@ class TushareProvider:
                 return self._fetch_valuation(**params)
             elif metric == "dividend":
                 return self._fetch_dividend(**params)
+            elif metric == "stock_basic_info":
+                return self._fetch_stock_basic_info(**params)
         except Exception as e:
             logger.debug(f"TushareProvider.fetch({metric}) failed: {e}")
 
@@ -328,6 +339,71 @@ class TushareProvider:
                 return df
         except Exception as e:
             logger.debug(f"Tushare pro.dividend failed: {e}")
+
+        return None
+
+    def _fetch_stock_basic_info(self, **params: Any) -> Any:
+        """Fetch stock basic info (industry/name/listing date/market cap).
+
+        v9.9.x FIX 2026-09-01（任务#1）：用于替换 AKShare
+        stock_individual_info_em()。返回 [item, value] 两列 DataFrame
+        （与 AKShare 版本格式一致），拼接 pro.stock_basic()（行业/名称/
+        上市时间，一次调用即可）+ pro.daily_basic(limit=1)（最新市值，
+        可选加分项，失败不影响主字段）。
+
+        Args:
+            symbol / ts_code: 股票代码，6位数字或已格式化的 ts_code
+
+        Returns:
+            DataFrame with columns [item, value]。None on failure。
+        """
+        symbol = params.get("symbol") or params.get("ts_code")
+        if not symbol:
+            return None
+
+        ts_code = self._normalize_code(symbol, "stock")
+        api = self._get_api()
+
+        try:
+            basic_df = api.stock_basic(
+                ts_code=ts_code,
+                fields="ts_code,name,industry,list_date,market",
+            )
+            if basic_df is None or len(basic_df) == 0:
+                return None
+
+            row = basic_df.iloc[0]
+            items: list = [
+                ("股票代码", symbol),
+                ("股票简称", row.get("name")),
+                ("行业", row.get("industry")),
+                ("上市时间", row.get("list_date")),
+            ]
+
+            # 市值是可选加分项，daily_basic 偶发失败不应影响主字段（行业等）
+            try:
+                mv_df = api.daily_basic(
+                    ts_code=ts_code, limit=1,
+                    fields="ts_code,trade_date,total_mv,circ_mv",
+                )
+                if mv_df is not None and len(mv_df) > 0:
+                    mv_row = mv_df.iloc[0]
+                    # Tushare total_mv/circ_mv 单位是万元，AKShare 原始
+                    # 单位是元，×10000 换算对齐
+                    if mv_row.get("total_mv") is not None:
+                        items.append(("总市值", float(mv_row["total_mv"]) * 10000))
+                    if mv_row.get("circ_mv") is not None:
+                        items.append(("流通市值", float(mv_row["circ_mv"]) * 10000))
+            except Exception as mv_e:
+                logger.debug(f"Tushare pro.daily_basic(市值) for {symbol} failed "
+                             f"(不影响行业等主字段): {mv_e}")
+
+            df = pd.DataFrame(items, columns=["item", "value"])
+            logger.debug(f"TushareProvider fetched stock_basic_info for {symbol}: "
+                         f"industry={row.get('industry')}")
+            return df
+        except Exception as e:
+            logger.debug(f"Tushare pro.stock_basic failed for {symbol}: {e}")
 
         return None
 

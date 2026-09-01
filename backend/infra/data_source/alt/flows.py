@@ -408,48 +408,67 @@ def get_industry_board_summary() -> Any:
 
 
 def get_stock_individual_info(symbol: str) -> Any:
-    """Get individual stock basic info (akshare stock_individual_info_em).
+    """Get individual stock basic info — Tushare 为主，AKShare 为降级。
 
-    ⚠️ 已知间歇性失败（2026-09-01 诊断结论，任务#8）：底层调用
-    push2.eastmoney.com/api/qt/stock/get，服务端存在 ~30~70% 量级的
-    间歇性连接被动 reset（TCP/TLS 建立后服务端主动断开，不返回任何
-    响应，failed in 0.06~0.2s——不是超时/挂死）。
+    v9.9.x FIX 2026-09-01（用户显式要求，任务#1）：此前唯一数据源是
+    AKShare stock_individual_info_em()，已诊断出该接口底层调用
+    push2.eastmoney.com 存在 ~30~70% 量级的间歇性连接被动 reset（完整
+    消除法排查结论见本函数下方降级分支注释）。钱袋子有 5000 积分的
+    Tushare Pro，其 stock_basic()/daily_basic() 接口稳定（2026-09-01
+    实测多次 elapsed 均 <0.3s，0% 失败），已改为主数据源，AKShare
+    降级为兜底（AKShare 仍有一定成功率，字段也更全，降级时尽量多拿
+    一点信息）。
 
-    排查过程（完整消除法，避免以后重新踩坑）：
-    1. 排除"网络挂死" —— 失败均在 0.2s 内，非 hang。
-    2. 排除"缺 User-Agent/Referer 被 WAF 拒绝" —— curl 不带任何自定义头
-       同样有失败率，说明和头内容无关。
-    3. 排除"79 字段超长 fields 参数触发拒绝" —— curl 复现同样长度的
-       fields 参数依然能成功，说明和参数长度无关。
-    4. 排除"requests/urllib3 库或 User-Agent 字符串被指纹拦截" ——
-       httpx（不同底层 transport）同样复现 100% 失败；curl（原生
-       TCP/TLS 栈）在多次采样中也有 30~70% 的失败率，与客户端库无关。
-    5. 排除"IPv6 路由问题"（服务器无公网 IPv6 出口，AAAA 记录解析到
-       不可达地址）—— 强制 IPv4 (`curl -4`) 后失败率仍有 ~10~30%，
-       说明 IPv6 不可达只是叠加因素之一，不是唯一根因。
-    6. 结论：这是 push2.eastmoney.com 后端本身的负载保护/限流行为，
-       与调用方是谁、用什么库、带什么头都基本无关，是外部数据源
-       固有的不稳定性。重试收益有限（3次重试测试仍有约30%概率全部
-       失败），不是"加个超时"或"换个库"能根治的问题。
+    实现放在 infra/data_source/providers/tushare_provider.py::
+    TushareProvider._fetch_stock_basic_info()（metric="stock_basic_info"），
+    这里只是薄封装 + AKShare 降级——**不直接 import services.tushare_
+    data**，因为本仓 .importlinter 定义的四层架构（api > use_cases >
+    domain > infra）明确规定 infra 不能反向依赖 services（那是给上层用
+    的老代码层），这条边界即使 import-linter 包本身在服务器 venv 里没
+    装、从未被 CI 真正检查过，也必须遵守（写代码时的约定 > 有没有工具
+    强制）。
 
-    处理方式：接入 call_with_timeout 统一超时保护（与本文件其他函数
-    一致，防止极端情况下线程挂死），保留 except 兜底返回 None——上层
-    （如 add_stock_holding）已验证能优雅降级为"行业:未知"，这是当前
-    唯一现实可行的处理方式。**请勿在未来"修复"此函数为切换到其他
-    HTTP 库或添加更多 header**，那些路径已被验证无效。
+    唯一真实调用方 services/holding_intelligence.py::get_stock_industry()
+    只消费"行业"这一个字段（遍历 item/value 两列 DataFrame 找含"行业"
+    字符串的行，取该行第二列），因此保持返回同样的 [item, value] 两列
+    DataFrame 格式，不改动下游消费逻辑，只换数据源。
 
     Args:
         symbol: stock code e.g. "000001"
 
     Returns:
-        DataFrame with stock info (总市值/流通市值/行业/上市时间 etc.).
-        None on failure（约 30~70% 概率，见上方诊断结论）。
+        DataFrame with columns [item, value]（行业/股票简称/上市时间/
+        总市值/流通市值 等，字段名与 AKShare 版本保持一致）。
+        None on failure（Tushare 和 AKShare 都失败时）。
     """
+    try:
+        from infra.data_source.providers.tushare_provider import TushareProvider
+        provider = TushareProvider()
+        if provider.is_available():
+            df = call_with_timeout(
+                provider.fetch, 8, metric="stock_basic_info", symbol=symbol,
+            )
+            if df is not None and len(df) > 0:
+                return df
+    except Exception as e:
+        print(f"[DATA_SOURCE/ALT] get_stock_individual_info({symbol}) Tushare 失败: {e}")
+
+    # 降级：AKShare。已知诊断结论（2026-09-01 完整消除法排查，避免以后
+    # 重新踩坑）：底层调用 push2.eastmoney.com/api/qt/stock/get，存在
+    # ~30~70% 量级的间歇性连接被动 reset（0.06~0.2s 内失败，非超时/
+    # 挂死）。依次排除了"缺 headers"（curl 裸调用同样有失败率）、
+    # "79字段超长fields参数"（curl复现同长度参数依然成功）、"requests/
+    # urllib3库或UA字符串指纹拦截"（httpx同样100%复现失败，curl原生栈
+    # 基础失败率本身就有30~70%）、"IPv6路由不可达"（强制IPv4后仍有
+    # 10~30%失败，只是叠加因素之一）——结论是 push2.eastmoney.com 后端
+    # 本身固有的负载保护/限流行为，与客户端库/UA/header均无关，这正是
+    # 本次改用 Tushare 为主数据源的原因。此处仍保留 AKShare 作为兜底
+    # （降级时"总比没有"，字段也更全，不追求100%可用只是尽力兜底）。
     try:
         import akshare as ak
         return call_with_timeout(ak.stock_individual_info_em, 10, symbol=symbol)
     except Exception as e:
-        print(f"[DATA_SOURCE/ALT] get_stock_individual_info({symbol}): {e}")
+        print(f"[DATA_SOURCE/ALT] get_stock_individual_info({symbol}) AKShare 降级也失败: {e}")
 
         return None
 
