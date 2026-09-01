@@ -177,3 +177,79 @@ def test_default_timeout_is_five_seconds():
     防止有人不小心改动默认值影响所有未显式传参的调用方。"""
     runner = FallbackRunner(metric="stock_price")
     assert runner.timeout_per_provider == 5.0
+
+
+# ============================================================
+# call_with_timeout() 纯函数测试（FIX 2026-09-01 追加）
+# ============================================================
+# 背景：把 FallbackRunner._fetch_with_timeout 的 thread+join 逻辑抽成
+# 模块级纯函数 call_with_timeout()，供 market/stocks.py 里未经过
+# FallbackRunner 编排的裸调用（get_stock_spot_xq/get_stock_daily_legacy/
+# get_fund_name_list/get_fund_estimated_nav）复用，避免同一个超时模式
+# 在 infra/data_source 里散落多份实现。
+# 之所以不直接复用 services/utils.py::ak_call()：本仓 .importlinter
+# 定义 infra 层不能反向依赖 services（四层架构 api>use_cases>domain>infra），
+# 且 ak_call() 带的 _AKSHARE_LOCK 是 AKShare 专属并发限制，不该被
+# infra 层所有裸调用都套上。
+
+from infra.data_source.fallback import call_with_timeout
+
+
+def _hang(seconds: float):
+    time.sleep(seconds)
+    return "should_not_see_this"
+
+
+def _instant(value="ok"):
+    return value
+
+
+def _raise():
+    raise RuntimeError("模拟调用抛异常")
+
+
+def test_call_with_timeout_bounds_wait_time():
+    """核心验证：函数挂死 5s，timeout=0.3s 时必须在 ~0.3s 内返回 None，
+    不能等 5s。"""
+    t0 = time.time()
+    result = call_with_timeout(_hang, 0.3, 5)
+    elapsed = time.time() - t0
+
+    assert elapsed < 2.0, f"应在 timeout(0.3s) 附近返回，实际等了 {elapsed:.2f}s"
+    assert result is None
+
+
+def test_call_with_timeout_normal_path_unaffected():
+    """正常返回时行为不变。"""
+    result = call_with_timeout(_instant, 5.0, value="real_data")
+    assert result == "real_data"
+
+
+def test_call_with_timeout_propagates_exception_when_not_hanging():
+    """函数抛异常（不是挂死）时，异常应正常冒泡，不能被超时机制吞掉。"""
+    with pytest.raises(RuntimeError, match="模拟调用抛异常"):
+        call_with_timeout(_raise, 2.0)
+
+
+def test_call_with_timeout_disabled_when_non_positive():
+    """timeout<=0 时应直接同步调用，不创建线程（显式禁用超时的转义阀）。"""
+    with patch("infra.data_source.fallback.threading.Thread") as mock_thread:
+        result = call_with_timeout(_instant, 0, value="ok")
+
+    assert result == "ok"
+    assert not mock_thread.called, "timeout<=0 时不应创建任何 daemon 线程"
+
+
+def test_fallback_runner_still_works_after_refactor_to_shared_function():
+    """回归验证：FallbackRunner._fetch_with_timeout 委托给 call_with_timeout
+    后，原有的挂死场景仍然正确处理（防止重构引入行为差异）。"""
+    fake = _FakeProvider("hang", sleep_seconds=5)
+    runner = _make_runner_with_fake_provider(fake, timeout_per_provider=0.3)
+
+    t0 = time.time()
+    result = runner._try_provider("fake")
+    elapsed = time.time() - t0
+
+    assert elapsed < 2.0
+    assert result["success"] is False
+

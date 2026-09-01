@@ -23,6 +23,58 @@ from typing import Any, Dict, List, Optional, Tuple
 logger = logging.getLogger(__name__)
 
 
+def call_with_timeout(func: Any, timeout: float, *args: Any, **kwargs: Any) -> Any:
+    """用 daemon 线程 + join(timeout) 给任意同步调用施加超时保护。
+
+    背景：这是从 FallbackRunner._fetch_with_timeout 抽出的纯函数版本
+    （FIX 2026-09-01），供 infra/data_source 内其他模块（如
+    market/stocks.py 里未经过 FallbackRunner 编排的裸调用）复用，
+    而不必各自重新实现一份 thread+join 逻辑。
+
+    为什么不直接用 services/utils.py 的 ak_call()：本仓 .importlinter
+    定义的四层架构（api > use_cases > domain > infra）明确规定 infra
+    不能反向依赖 services（那是给上层用的老代码层）。ak_call() 额外带了
+    一个 _AKSHARE_LOCK（防并发请求过快被封IP，AKShare 专属），这个纯函数
+    版本不含任何锁，调用方如果需要串行化需要自己在外层处理。
+
+    超时后主线程放弃等待并返回 None；僵死的请求线程随进程退出回收
+    （AKShare 等 scraper 式接口内部无法中断，只能放弃，不能真正杀死）。
+    timeout<=0 时视为不限时，直接同步调用（转义阀，供显式禁用超时）。
+
+    用法：
+        call_with_timeout(ak.fund_name_em, 15)
+        call_with_timeout(ak.stock_individual_spot_xq, 8, symbol="SH600519")
+    """
+    if not timeout or timeout <= 0:
+        return func(*args, **kwargs)
+
+    result_container: list = [None]
+    error_container: list = [None]
+
+    def _run() -> None:
+        try:
+            result_container[0] = func(*args, **kwargs)
+        except Exception as e:  # pragma: no cover - 异常via error_container传递
+            error_container[0] = e
+
+    t = threading.Thread(target=_run, daemon=True)
+    t.start()
+    t.join(timeout=timeout)
+
+    if t.is_alive():
+        fn_name = getattr(func, "__name__", repr(func))
+        logger.warning(
+            f"[TIMEOUT] {fn_name} 超过 {timeout}s 未返回，强制放弃"
+            f"（线程随进程退出回收）"
+        )
+        return None
+
+    if error_container[0] is not None:
+        raise error_container[0]
+
+    return result_container[0]
+
+
 # Default degradation chains by metric category
 DEFAULT_CHAINS = {
     # Market data
@@ -226,38 +278,25 @@ class FallbackRunner:
     def _fetch_with_timeout(self, provider_instance: Any, provider_name: str) -> Any:
         """调用 provider_instance.fetch() 并施加 timeout_per_provider 超时。
 
-        超时后主线程放弃等待并返回 None；僵死的请求线程随进程退出回收
-        （AKShare 等 scraper 式接口内部无法中断，只能放弃，不能真正杀死）。
-        timeout_per_provider <= 0 时视为不限时（保留旧行为，供显式禁用）。
+        FIX 2026-09-01：复用模块级 call_with_timeout() 纯函数（原地实现
+        改为委托），避免和 market/stocks.py 里裸调用的超时包装各写一份
+        thread+join 逻辑——同一个模式两处实现，以后改一处漏一处。
+
+        注意：call_with_timeout 超时告警里打的是 func.__name__（绑定方法
+        统一是 "fetch"，丢失 provider 名字），这里包一层 lambda 把
+        provider_name 也带进日志，保留原来"provider akshare 超过...未返回"
+        这种可定位到具体数据源的告警粒度。
         """
-        timeout = self.timeout_per_provider
-        if not timeout or timeout <= 0:
-            return provider_instance.fetch(self.metric, **self.kwargs)
+        def _bound_fetch(*args: Any, **kwargs: Any) -> Any:
+            return provider_instance.fetch(*args, **kwargs)
+        _bound_fetch.__name__ = f"{provider_name}.fetch"
 
-        result_container: list = [None]
-        error_container: list = [None]
-
-        def _run() -> None:
-            try:
-                result_container[0] = provider_instance.fetch(self.metric, **self.kwargs)
-            except Exception as e:  # pragma: no cover - 异常via error_container传递
-                error_container[0] = e
-
-        t = threading.Thread(target=_run, daemon=True)
-        t.start()
-        t.join(timeout=timeout)
-
-        if t.is_alive():
-            logger.warning(
-                f"[FALLBACK] {self.metric}: provider {provider_name} 超过 "
-                f"{timeout}s 未返回，强制放弃（线程随进程退出回收）"
-            )
-            return None
-
-        if error_container[0] is not None:
-            raise error_container[0]
-
-        return result_container[0]
+        return call_with_timeout(
+            _bound_fetch,
+            self.timeout_per_provider,
+            self.metric,
+            **self.kwargs,
+        )
 
     def _get_provider_instance(self, provider_name: str) -> Optional[Any]:
         """Get provider instance by name.

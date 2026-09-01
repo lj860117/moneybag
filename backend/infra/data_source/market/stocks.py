@@ -196,10 +196,17 @@ def get_stock_spot_xq(symbol: str) -> Any:
     Returns:
         DataFrame with single stock quote data.
         None on failure.
+
+    v9.9.x: 接入超时保护（FIX 2026-09-01）。这是 get_stock_realtime() 的
+    主查询源，被 GET /api/watchlist/alerts（前端每15秒轮询交易时段）
+    间接调用；雪球接口经实测已知不稳定（曾出现 JSONDecodeError），加超时
+    避免网络挂死时拖住整条降级链。实测正常耗时 <1s，给 8s 留足网络抖动
+    余量。
     """
     try:
         import akshare as ak
-        return ak.stock_individual_spot_xq(symbol=symbol)
+        from infra.data_source.fallback import call_with_timeout
+        return call_with_timeout(ak.stock_individual_spot_xq, 8, symbol=symbol)
     except Exception as e:
         print(f"[DATA_SOURCE/MARKET] get_stock_spot_xq({symbol}): {e}")
         return None
@@ -213,10 +220,14 @@ def get_stock_daily_legacy(symbol: str, adjust: str = "qfq") -> Any:
 
     Returns:
         DataFrame or None.
+
+    v9.9.x: 接入超时保护（FIX 2026-09-01）。这是降级链的第三层兜底
+    （雪球→东财→这里），实测正常耗时 <1s，给 8s 留足网络抖动余量。
     """
     try:
         import akshare as ak
-        return ak.stock_zh_a_daily(symbol=symbol, adjust=adjust)
+        from infra.data_source.fallback import call_with_timeout
+        return call_with_timeout(ak.stock_zh_a_daily, 8, symbol=symbol, adjust=adjust)
     except Exception as e:
         print(f"[DATA_SOURCE/MARKET] get_stock_daily_legacy({symbol}): {e}")
         return None
@@ -375,10 +386,16 @@ def get_fund_name_list() -> Any:
     Returns:
         DataFrame with fund codes and names.
         None on failure.
+
+    v9.9.x: 接入超时保护（FIX 2026-09-01）。实测全市场 ~2.8万条数据
+    耗时约 8s（P0-c 已实测过同一接口），给 15s 留足余量。被
+    services/fund_monitor.py 的 _load_fund_names() 用（24h缓存），
+    冷启动/缓存过期时会触发一次真实调用。
     """
     try:
         import akshare as ak
-        return ak.fund_name_em()
+        from infra.data_source.fallback import call_with_timeout
+        return call_with_timeout(ak.fund_name_em, 15)
     except Exception as e:
         print(f"[DATA_SOURCE/MARKET] get_fund_name_list: {e}")
         return None
@@ -390,13 +407,24 @@ def get_fund_estimated_nav() -> Any:
     Returns:
         DataFrame with estimated NAV for all open funds.
         None on failure.
+
+    v9.9.x: 接入超时保护（FIX 2026-09-01）。此接口目前无独立降级源
+    （fund_monitor.py 里的第三层兜底走的是完全不同的 fundgz 单只查询
+    services.market_data.get_fund_nav，不经过这个函数），加超时防止
+    上游挂死时拖住 GET /api/fund-holdings/alerts（2h缓存过期后触发）。
+    实测正常耗时 <1s，给 10s 留余量（全市场表比单只查询稍慢，且此接口
+    2026-09-01 实测已出现过 TypeError: 'NoneType' object is not
+    subscriptable——上游东财接口本身不稳定，超时和这个已知问题是两件
+    独立的事：超时保护接口挂死，异常兜底走 except 分支返回 None。
     """
     try:
         import akshare as ak
-        return ak.fund_value_estimation_em()
+        from infra.data_source.fallback import call_with_timeout
+        return call_with_timeout(ak.fund_value_estimation_em, 10)
     except Exception as e:
         print(f"[DATA_SOURCE/MARKET] get_fund_estimated_nav: {e}")
         return None
+
 
 
 def get_fund_rank(symbol: str = "全部") -> Any:
