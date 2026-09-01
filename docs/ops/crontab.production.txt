@@ -14,10 +14,9 @@
 #       < docs/ops/crontab.production.txt
 #
 # ------------------------------------------------------------
-# ⚠️ 为什么需要这个文件（2026-08-31 事故隐患排查记录）
+# ⚠️ setup_cron.sh 历史事故记录（2026-08-31 发现，2026-09-01 已修复）
 # ------------------------------------------------------------
-# 仓库里的 `backend/scripts/setup_cron.sh` 自称"安装全部 cron 任务"，
-# 但它已经与线上漂移，且是**破坏性**的：
+# `backend/scripts/setup_cron.sh` 曾经严重漂移且是**破坏性**的：
 #
 #   1. 它开头会先 `crontab -l | grep -v '<14 个关键字>' | crontab -`
 #      —— 该过滤器会命中线上全部条目（实测 35 行），即**先删光现有排班**。
@@ -28,28 +27,17 @@
 #   4. 它不加载 `.env`（线上每条都有 `set -a && . /opt/moneybag/backend/.env && set +a`），
 #      即使解释器对了也会因缺 API Key 失败。
 #
-# 结论：在服务器上跑一次 `bash setup_cron.sh` 并回答 y，会**删光 29 条正常排班、
-# 换成 23 条必然失败的条目**，整条 AI 排班静默死亡。该文件已加拒绝执行保护。
+# 净效果：跑一次 `bash setup_cron.sh` 并回答 y，会删光正常排班、换成
+# 必然失败的条目，整条 AI 排班静默死亡。
 #
-# 漂移明细（线上 18 个脚本 / 29 条生效条目 vs setup_cron.sh 23 条）：
-#   setup_cron.sh 缺失的条目：
-#     - closing_review_hallucination_check.py --alert   (5 21 * * 1-5)
-#     - daily_push_quality_check.py --date today ...    (0 22 * * 1-5)
-#     - fund_rank_build.py                              (0 22 * * 0)
-#     - housekeeping_cron --apply                       (30 4 * * *)
-#     - monthly_rebalance_cron.py                       (30 15 28-31, 月末)
-#     - cache_warmer.py --full-extra                    (0 11 * * 6 + 30 16 * * 1-5)
-#     - cache_warmer.py --evening                       (0 18 * * 1-5)
-#   频率不一致：
-#     - cache_warmer --midday   线上 */30 9-14 * * 1-5  vs 文件 5 13 * * 1-5
-#     - stock_monitor_cron     线上仅 0 21 --close（*/10 盘中盯盘已 # DISABLED）
-#                              vs 文件 */10 9,10,11,13,14 + 30 15 --close
-#     - auto_extract_cron      线上 0 8（-m 形式）      vs 文件 0 2
-#     - monthly_report         线上 0 9 1 * * --all     vs 文件 0 1 1 * *
-#     - dca_scheduler --dca        线上 0 9 25 * *          vs 文件 0 10 25 * *
-#     - dca_scheduler --discipline 线上 0 18 * * 1-5        vs 文件 0 8 * * *
-#     - briefing_hallucination_check 线上 50 7 --rounds 1 --interval 0
-#                              vs 文件 35 2 --rounds 2 --interval 1
+# **2026-09-01 已重写并三场景验证**：不再手写命令，改为把生产
+# `crontab -l` 原始输出整段固化进脚本（与本文件同源），语义改为
+# "对齐到权威内容"而不是"删旧装新"：
+#   - 已一致 → 什么都不做
+#   - 有差异 → 先检测有没有不属于 MoneyBag 的陌生命令行，有就中止
+#     并要求人工确认；没有就整体覆盖成权威内容
+#   - 默认 dry-run，需要 `--apply` 才真正写入
+# 现在可以安全使用：`bash backend/scripts/setup_cron.sh --apply`
 #
 # ------------------------------------------------------------
 # 快照信息
