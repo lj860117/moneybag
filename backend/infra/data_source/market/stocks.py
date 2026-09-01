@@ -84,10 +84,17 @@ def get_stock_realtime_quotes_em() -> Any:
     Returns:
         DataFrame with realtime price data for all A-shares.
         None on failure.
+
+    v9.9.x: 接入超时保护（FIX 2026-09-01）。实测该接口曾直接
+    ConnectionError（耗时6.4s才报错），且被 stock_data_provider.py/
+    valuation_engine.py/recommend_engine.py 三处引用——是这批未处理裸调用
+    里被引用最多的一个。全市场快照接口没有分页，超时兜底设 15s
+    （正常网络下应在数秒内返回，15s 留足给上游偶尔变慢的余量）。
     """
     try:
         import akshare as ak
-        return ak.stock_zh_a_spot_em()
+        from infra.data_source.fallback import call_with_timeout
+        return call_with_timeout(ak.stock_zh_a_spot_em, 15)
     except Exception as e:
         print(f"[DATA_SOURCE/MARKET] get_stock_realtime_quotes_em: {e}")
         return None
@@ -104,9 +111,13 @@ def get_stock_realtime_single(code: str) -> dict | None:
         None if all sources fail.
     """
     # 降级1: AKShare 个股行情
+    # v9.9.x: 接入超时保护（FIX 2026-09-01）——同 get_stock_realtime_quotes_em，
+    # 这是同一个全市场快照接口，挂死时必须及时放弃转下一层降级（腾讯/Tushare），
+    # 不能让第一层的裸调用无限期拖住整条三级降级链。
     try:
         import akshare as ak
-        df = ak.stock_zh_a_spot_em()
+        from infra.data_source.fallback import call_with_timeout
+        df = call_with_timeout(ak.stock_zh_a_spot_em, 15)
         if df is not None and len(df) > 0:
             row = df[df["代码"] == code]
             if len(row) > 0:
@@ -178,10 +189,15 @@ def get_stock_realtime_quotes() -> Any:
     Returns:
         DataFrame with realtime price data.
         None on failure.
+
+    v9.9.x: 接入超时保护（FIX 2026-09-01）。实测该接口耗时 13.72s（分页
+    拉取全市场，带进度条），比 stock_zh_a_spot_em 慢很多——超时兜底给
+    25s 留余量，正常网络下应该在这个窗口内完成。
     """
     try:
         import akshare as ak
-        return ak.stock_zh_a_spot()
+        from infra.data_source.fallback import call_with_timeout
+        return call_with_timeout(ak.stock_zh_a_spot, 25)
     except Exception as e:
         print(f"[DATA_SOURCE/MARKET] get_stock_realtime_quotes: {e}")
         return None
@@ -239,10 +255,17 @@ def get_stock_code_name_list() -> Any:
     Returns:
         DataFrame with columns: code, name.
         None on failure.
+
+    v9.9.x: 接入超时保护（FIX 2026-09-01）。实测耗时 6.92s、5553 行。
+    调用方 services/stock_monitor.py::_get_stock_name() 每次调用都拉
+    全量再遍历查找、完全没有缓存——这是效率问题（不在本次改动范围），
+    但超时保护先接上，避免上游挂死时无限期拖住"新增持仓自动补全名称"
+    这个用户可感知的写路径。
     """
     try:
         import akshare as ak
-        return ak.stock_info_a_code_name()
+        from infra.data_source.fallback import call_with_timeout
+        return call_with_timeout(ak.stock_info_a_code_name, 15)
     except Exception as e:
         print(f"[DATA_SOURCE/MARKET] get_stock_code_name_list: {e}")
         return None
@@ -308,10 +331,15 @@ def get_index_pe(symbol: str = "沪深300") -> Any:
     Returns:
         DataFrame with PE history.
         None on failure.
+
+    v9.9.x: 接入超时保护（FIX 2026-09-01）。实测 <1s，调用方
+    services/factor_data.py 和 services/market_data.py 均有各自的
+    factor_cache/precomputed_cache 兜底，超时保护给10s留网络抖动余量。
     """
     try:
         import akshare as ak
-        return ak.stock_index_pe_lg(symbol=symbol)
+        from infra.data_source.fallback import call_with_timeout
+        return call_with_timeout(ak.stock_index_pe_lg, 10, symbol=symbol)
     except Exception as e:
         print(f"[DATA_SOURCE/MARKET] get_index_pe({symbol}): {e}")
         return None
@@ -326,10 +354,13 @@ def get_index_valuation_csindex(symbol: str = "000300") -> Any:
     Returns:
         DataFrame with valuation data.
         None on failure.
+
+    v9.9.x: 接入超时保护（FIX 2026-09-01）。实测 <1s，超时兜底10s。
     """
     try:
         import akshare as ak
-        return ak.stock_zh_index_value_csindex(symbol=symbol)
+        from infra.data_source.fallback import call_with_timeout
+        return call_with_timeout(ak.stock_zh_index_value_csindex, 10, symbol=symbol)
     except Exception as e:
         print(f"[DATA_SOURCE/MARKET] get_index_valuation_csindex({symbol}): {e}")
         return None
@@ -436,10 +467,15 @@ def get_fund_rank(symbol: str = "全部") -> Any:
     Returns:
         DataFrame with fund ranking data.
         None on failure.
+
+    v9.9.x: 接入超时保护（FIX 2026-09-01）。实测全量约2万条耗时5.41s，
+    调用方 services/fund_rank.py 有24h缓存兜底，超时给20s留余量
+    （比实测值宽松，避免正常但稍慢的一次请求被误杀）。
     """
     try:
         import akshare as ak
-        return ak.fund_open_fund_rank_em(symbol=symbol)
+        from infra.data_source.fallback import call_with_timeout
+        return call_with_timeout(ak.fund_open_fund_rank_em, 20, symbol=symbol)
     except Exception as e:
         print(f"[DATA_SOURCE/MARKET] get_fund_rank({symbol}): {e}")
         return None
@@ -451,10 +487,14 @@ def get_etf_fund_daily() -> Any:
     Returns:
         DataFrame with ETF daily data.
         None on failure.
+
+    v9.9.x: 接入超时保护（FIX 2026-09-01）。实测 <1s，调用方
+    services/market_factors.py 有1h缓存兜底，超时兜底10s。
     """
     try:
         import akshare as ak
-        return ak.fund_etf_fund_daily_em()
+        from infra.data_source.fallback import call_with_timeout
+        return call_with_timeout(ak.fund_etf_fund_daily_em, 10)
     except Exception as e:
         print(f"[DATA_SOURCE/MARKET] get_etf_fund_daily: {e}")
         return None
@@ -473,10 +513,13 @@ def get_futures_main(symbol: str = "AU0") -> Any:
     Returns:
         DataFrame with OHLCV data.
         None on failure.
+
+    v9.9.x: 接入超时保护（FIX 2026-09-01）。实测 <1s，超时兜底10s。
     """
     try:
         import akshare as ak
-        return ak.futures_main_sina(symbol=symbol)
+        from infra.data_source.fallback import call_with_timeout
+        return call_with_timeout(ak.futures_main_sina, 10, symbol=symbol)
     except Exception as e:
         print(f"[DATA_SOURCE/MARKET] get_futures_main({symbol}): {e}")
         return None
@@ -491,10 +534,17 @@ def get_futures_foreign_hist(symbol: str = "布伦特原油") -> Any:
     Returns:
         DataFrame with price history.
         None on failure.
+
+    v9.9.x: 接入超时保护（FIX 2026-09-01）。实测该接口当前直接报
+    ValueError: Expected object or value（数据解析错误，是上游接口
+    本身的问题，跟超时无关，这里不修那个独立问题，只保证挂死场景下
+    也能及时放弃而不是无限等待——两个问题各自的 except 分支都能兜住）。
+    超时给10s。
     """
     try:
         import akshare as ak
-        return ak.futures_foreign_hist(symbol=symbol)
+        from infra.data_source.fallback import call_with_timeout
+        return call_with_timeout(ak.futures_foreign_hist, 10, symbol=symbol)
     except Exception as e:
         print(f"[DATA_SOURCE/MARKET] get_futures_foreign_hist({symbol}): {e}")
         return None
@@ -510,10 +560,14 @@ def get_restricted_release_summary() -> Any:
     Returns:
         DataFrame with upcoming restricted share release data.
         None on failure.
+
+    v9.9.x: 接入超时保护（FIX 2026-09-01）。实测 <1s，调用方
+    services/market_factors.py 有1h缓存兜底，超时兜底10s。
     """
     try:
         import akshare as ak
-        return ak.stock_restricted_release_summary_em()
+        from infra.data_source.fallback import call_with_timeout
+        return call_with_timeout(ak.stock_restricted_release_summary_em, 10)
     except Exception as e:
         print(f"[DATA_SOURCE/MARKET] get_restricted_release_summary: {e}")
         return None
