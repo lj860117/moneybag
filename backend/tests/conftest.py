@@ -25,9 +25,73 @@ flag_missing_cfo_cache_as_degraded` 断言"deepseek key 应为 missing"就会
 原值再还原"，是因为测试进程本来就不应该依赖真实密钥——如果某个测试确实
 需要模拟"已配置"的状态，应该用 monkeypatch.setenv 显式设置，而不是依赖
 残留的真实值。
+
+背景（FIX 2026-09-01 第二次，任务：防止测试写脏生产数据）：
+`config.py` 的 `DATA_DIR`/`USERS_DIR` 是**进程启动/首次 import 时一次性
+解析的模块级常量**（读一次 `os.environ.get("DATA_DIR", ...)` 就定死，
+之后同进程内谁都改不了它，只能整体 reload 模块）。此前的隔离手段全部
+依赖"每个测试文件自己记得在 import 被测模块之前，用 monkeypatch.setenv
++ importlib.reload 把 DATA_DIR 指到 tmp_path"——`test_user_optimistic_
+lock.py`/`test_process_watchdog.py`/`test_fund_detail_ak_timeout.py`
+等文件确实这么做了，但这是"人肉纪律"，不是机制强制。
+
+真实事故：`test_phase3_services.py` 顶层直接 `from services.persistence
+import load_user, save_user`，没有做任何隔离——如果这次 import 发生在
+`DATA_DIR` 环境变量还指向真实生产路径的时刻（例如直接在 /opt/moneybag
+生产目录下跑 `pytest tests/`，没有提前设置 `DATA_DIR` 环境变量），
+`config.py` 首次 import 时就会把 `USERS_DIR` 锁定成生产路径
+`/opt/moneybag/data/users`，该文件 13 个测试用例随后全部真实写入这个
+目录，留下 13 个 `test_*` 前缀的脏用户文件。2026-09-01 已发生一次，
+核对 createdAt 时间戳 + 用户 ID 哈希确认真实用户数据未受影响后手动清理。
+
+修法：**利用 pytest 保证 conftest.py 模块顶层代码在同目录任何测试文件
+被 import 之前执行**这个特性——在本文件模块顶层（不是某个 fixture 内部，
+必须在 collection 阶段、第一个测试文件 import 之前就生效）把 `DATA_DIR`
+环境变量强制指向一个 pytest 进程专属的临时目录。这样即使未来新增测试
+文件、或者现有测试文件忘记做 inline 隔离，`config.py` 首次 import 时
+拿到的也必然是临时目录，物理上不可能写到生产路径——**从"记得写隔离代码"
+升级为"写不写都安全"**。
+
+不影响现有测试的两种既有写法：
+  1. 已经手动 monkeypatch.setenv("DATA_DIR", tmp_path) + reload 的文件
+     （如 test_user_optimistic_lock.py）：它们的 tmp_path 会覆盖这里
+     设置的临时目录，行为不变，只是更保险（双重兜底）。
+  2. 从未做任何隔离、直接用模块级单例的文件（如 test_phase3_services.py
+     修复前的状态）：现在会自动落在这里设置的临时目录里，不再是死链。
 """
 import os
+import sys
+import tempfile
+import shutil
+from pathlib import Path
+
 import pytest
+
+# ============================================================
+# 关键：必须在任何 test_*.py 被 import 之前执行（模块顶层，非 fixture）
+# ============================================================
+# pytest 的 collection 阶段会先加载 conftest.py，再 import 各测试文件，
+# 这个特性保证了下面这行代码一定跑在任何 `from config import ...` /
+# `from services.persistence import ...` 之前，从而让 config.py 首次
+# import 时读到的 DATA_DIR 已经是这个临时目录，而不是真实生产路径
+# （如果用户在运行 pytest 前手动设置了 DATA_DIR 环境变量，这里会保留
+# 用户的显式设置——只在用户没设置时才兜底成临时目录，不覆盖显式意图）。
+_PYTEST_DATA_DIR: str = ""
+if not os.environ.get("DATA_DIR"):
+    _PYTEST_DATA_DIR = tempfile.mkdtemp(prefix="moneybag_pytest_data_")
+    os.environ["DATA_DIR"] = _PYTEST_DATA_DIR
+    (Path(_PYTEST_DATA_DIR) / "users").mkdir(parents=True, exist_ok=True)
+
+
+def pytest_sessionfinish(session, exitstatus):
+    """整个测试会话结束后清理这个临时目录（如果是本文件创建的）。
+
+    只清理 _PYTEST_DATA_DIR 非空的情况——如果用户显式设置了 DATA_DIR
+    （上面的 if 分支没有触发），这里也不会清理，绝不误删用户指定的目录。
+    """
+    if _PYTEST_DATA_DIR and os.path.isdir(_PYTEST_DATA_DIR):
+        shutil.rmtree(_PYTEST_DATA_DIR, ignore_errors=True)
+
 
 # 与 backend/.env 里出现的 key 名保持一致（脱敏后的清单，不含真实值）。
 # 新增密钥类环境变量时记得同步补充这里。
