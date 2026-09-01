@@ -177,7 +177,12 @@ def _fallback_hist_close(code: str) -> dict:
     try:
         end = datetime.now().strftime("%Y%m%d")
         start = (datetime.now() - timedelta(days=15)).strftime("%Y%m%d")
-        df = get_stock_daily_hist(symbol=code, period="daily", start_date=start, end_date=end, adjust="qfq")
+        # FIX 2026-09-01: 原来传的是 symbol=code，但 get_stock_daily_hist()
+        # 第一个参数名是 code（不是 symbol），关键字传参直接 TypeError，
+        # 导致这条"源1：东方财富"分支从未真正跑起来，一直静默 fall through
+        # 到"源2：新浪"——降级链的第一环失效了但没人发现，因为外层有
+        # try/except 吞掉了 TypeError，只在日志里留了一行不起眼的报错。
+        df = get_stock_daily_hist(code=code, period="daily", start_date=start, end_date=end, adjust="qfq")
         if df is not None and len(df) >= 1:
             last = df.iloc[-1]
             prev = df.iloc[-2] if len(df) >= 2 else last
@@ -309,7 +314,8 @@ def calc_stock_indicators(code: str) -> dict:
     }
     try:
         from infra.data_source.market.stocks import get_stock_daily_hist
-        df = get_stock_daily_hist(symbol=code, period="daily",
+        # FIX 2026-09-01: 同 _fallback_hist_close 的问题，symbol= 应为 code=
+        df = get_stock_daily_hist(code=code, period="daily",
                                 start_date=(datetime.now().replace(day=1) -
                                             __import__("datetime").timedelta(days=180)).strftime("%Y%m%d"),
                                 end_date=datetime.now().strftime("%Y%m%d"),
