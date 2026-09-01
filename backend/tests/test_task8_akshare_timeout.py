@@ -297,25 +297,38 @@ def test_fund_name_fund_rank_dead_interface_still_degrades_gracefully():
     assert result_rank is None, "fund_rank 底层接口已死，应优雅返回 None"
 
 
-def test_fund_nav_metric_is_pre_existing_dead_code_path():
-    """fund_nav 不在 _SUPPORTED_METRICS 白名单里（2026-09-01 任务#8 排查
-    发现，pre-existing，与本次改动无关）——`fetch("fund_nav", ...)` 一进
-    `fetch()` 就被 `if metric not in _SUPPORTED_METRICS: return None`
-    拦截，根本走不到 `_fetch_fund_nav`。代码检索确认没有任何调用方通过
-    `fetch("fund_nav", ...)` 触发这条路径（market/stocks.py 里的基金
-    净值走的是别的路径 FallbackRunner(metric="fund_nav")，那是
-    infra/data_source/fallback.py 自己的 DEFAULT_CHAINS 分发，和
-    AkshareProvider.fetch() 是两套独立的 metric 命名空间，不会混淆）。
+def test_fund_nav_metric_is_now_in_akshare_whitelist():
+    """fund_nav 已加入 _SUPPORTED_METRICS 白名单（2026-09-01 修复，任务#3）。
 
-    这是死代码路径，本次任务#8 仅记录不处理（不在授权范围内，属于
-    "该不该把 fund_nav 加入白名单" 的独立产品/架构决策）。"""
+    ⚠️ 更正历史记录：本测试原名
+    test_fund_nav_metric_is_pre_existing_dead_code_path，当时（任务#8）
+    错误判断"这是死代码路径，market/stocks.py 走的是别的 metric 命名
+    空间，不会触发 AkshareProvider.fetch('fund_nav', ...)"。
+
+    后续排查（任务#3，用户显式要求核实"白名单缺口"的严重性）证实这个
+    判断是错的：market/stocks.py::get_fund_nav_history() 通过
+    `FallbackRunner(metric="fund_nav", chain=["akshare","tushare"])`
+    调用，`FallbackRunner._try_provider()` 内部把 `self.metric`（就是
+    "fund_nav"）原样传给 `provider_instance.fetch(self.metric, **kwargs)`
+    ——这**正是** AkshareProvider.fetch() 的同一个 metric 参数，命名空间
+    完全共享，不是"两套独立命名空间"。
+
+    真实后果：AkshareProvider 一直被白名单拦截（0.02s内快速失败），
+    fund_nav 100%无条件降级到 TushareProvider——而 TushareProvider 原始
+    返回的英文列名（unit_nav/nav_date）与下游 services/fund_monitor.py
+    期望的 AKShare 中文列名不兼容，导致净值/日期长期解析成 None/空
+    字符串，已影响真实持仓用户的净值展示。这不是死代码，是真实生产
+    bug——已在 test_fund_nav_whitelist_and_column_fix.py 里补充完整
+    的回归测试。这里只保留一个精简断言防止白名单缺口复发。
+    """
     provider = AkshareProvider()
     provider._available = True
-    assert "fund_nav" not in __import__(
+    assert "fund_nav" in __import__(
         "infra.data_source.providers.akshare_provider", fromlist=["_SUPPORTED_METRICS"]
-    )._SUPPORTED_METRICS
-    result = provider.fetch("fund_nav", symbol="110011")
-    assert result is None, "fund_nav 不在白名单，fetch() 应直接返回 None"
+    )._SUPPORTED_METRICS, (
+        "fund_nav 应始终在白名单里——这里曾经缺失过一次并造成真实生产 bug"
+        "（详见 test_fund_nav_whitelist_and_column_fix.py），不能再退回去"
+    )
 
 
 # ============================================================

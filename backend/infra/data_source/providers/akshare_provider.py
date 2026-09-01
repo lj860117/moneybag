@@ -42,6 +42,18 @@ _SUPPORTED_METRICS = frozenset({
     # fundamental (secondary)
     "fund_name",
     "fund_rank",
+    # v9.9.x FIX 2026-09-01：fund_nav 此前从未加入白名单（pre-existing 缺口，
+    # 任务#8/#3 排查发现）——market/stocks.py::get_fund_nav_history() 通过
+    # FallbackRunner(chain=["akshare","tushare"]) 调用 fund_nav，AkshareProvider
+    # 一直被 `if metric not in _SUPPORTED_METRICS: return None` 拦截（0.02s内
+    # 快速失败，非超时），100%无条件降级到 TushareProvider——这不是"看起来有
+    # 主备实际零调用"的死代码，是**真实生产环境下 AKShare 主路径从未生效过**
+    # 的静默 bug，且因为 Tushare 返回列名（unit_nav/nav_date）与下游消费方
+    # services/fund_monitor.py 期望的 AKShare 中文列名（单位净值/净值日期）
+    # 不兼容，导致净值和日期字段长期解析成 None/空字符串——已影响真实持仓
+    # 用户的净值展示。修复：补齐白名单恢复 AKShare 为主，同时在
+    # TushareProvider._fetch_fund_nav 接上列名转换兜底两条路径都正确。
+    "fund_nav",
 })
 
 # Caches by TTL requirement

@@ -161,7 +161,22 @@ class TushareProvider:
         return None
 
     def _fetch_fund_nav(self, **params: Any) -> Any:
-        """Fetch fund NAV."""
+        """Fetch fund NAV.
+
+        v9.9.x FIX 2026-09-01（任务#8/#3 排查发现）：此前直接返回
+        pro.fund_nav() 的原始英文列名（ts_code/nav_date/unit_nav/accum_nav），
+        但下游唯一消费方 services/fund_monitor.py::get_fund_nav_history()
+        是按 AKShare `fund_open_fund_info_em()` 的中文列名读取的
+        （"净值日期"/"单位净值"/"累计净值"/"日增长率"）——因为 AkshareProvider
+        的 fund_nav 此前一直不在 _SUPPORTED_METRICS 白名单里（见
+        akshare_provider.py 对应注释），这条 Tushare 降级路径其实是
+        **唯一真正在生产环境跑的路径**，列名不兼容导致净值/日期长期解析
+        成 None/空字符串，已影响真实持仓用户的净值展示。
+
+        修复：在这里做列名转换，输出跟 AKShare 格式兼容的 DataFrame，
+        无论调用方后续走 AkshareProvider（已重新加入白名单）还是这条
+        Tushare 降级路径，下游都能正确解析。
+        """
         symbol = params.get("symbol") or params.get("ts_code")
         if not symbol:
             return None
@@ -181,6 +196,16 @@ class TushareProvider:
                 end_date=params.get("end_date", ""),
             )
             if df is not None and len(df) > 0:
+                # 按 nav_date 升序排列（Tushare 默认可能是降序，AKShare
+                # 惯例是升序，下游 df.tail(days) 假定升序取"最近N天"）
+                df = df.sort_values("nav_date").reset_index(drop=True)
+                # 计算日增长率（Tushare 原始数据没有这个字段，AKShare 有）
+                df["日增长率"] = df["unit_nav"].pct_change().round(4) * 100
+                df = df.rename(columns={
+                    "nav_date": "净值日期",
+                    "unit_nav": "单位净值",
+                    "accum_nav": "累计净值",
+                })
                 _kline_cache.set(cache_key, df)
                 logger.debug(f"TushareProvider fetched {len(df)} fund NAV rows for {symbol}")
                 return df
