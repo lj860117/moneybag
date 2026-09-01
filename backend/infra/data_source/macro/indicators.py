@@ -17,6 +17,15 @@ from __future__ import annotations
 import os
 from typing import Any
 
+from infra.data_source.fallback import call_with_timeout
+
+# v9.9.x: 接入超时保护（FIX 2026-09-01，任务#8）
+# 本文件 22 处裸 ak.xxx() 调用统一走 call_with_timeout()，超时值来自
+# 生产服务器真实测量（见 /tmp/measure_task8.py 记录），非拍脑袋估算。
+# 绝大多数调用 <1s，取 10s 留足余量；少数返回大表（stock_hold_
+# management_detail_cninfo 13371行/2.5s、futures_global_spot_em 2.9s、
+# stock_hsgt_hist_em 系列 0.9~1.1s）取 15s。
+
 
 # ============================================================
 # Tushare 降级辅助
@@ -50,7 +59,7 @@ def get_china_money_supply() -> Any:
     # Primary: AKShare
     try:
         import akshare as ak
-        df = ak.macro_china_money_supply()
+        df = call_with_timeout(ak.macro_china_money_supply, 10)
         if df is not None and len(df) > 0:
             return df
     except Exception as e:
@@ -88,7 +97,7 @@ def get_china_social_financing() -> Any:
     # Primary: AKShare
     try:
         import akshare as ak
-        df = ak.macro_china_shrzgm()
+        df = call_with_timeout(ak.macro_china_shrzgm, 10)
         if df is not None and len(df) > 0:
             return df
     except Exception as e:
@@ -127,7 +136,7 @@ def get_china_lpr() -> Any:
     # Primary: AKShare
     try:
         import akshare as ak
-        df = ak.macro_china_lpr()
+        df = call_with_timeout(ak.macro_china_lpr, 10)
         if df is not None and len(df) > 0:
             return df
     except Exception as e:
@@ -163,7 +172,7 @@ def get_china_real_estate() -> Any:
     """
     try:
         import akshare as ak
-        return ak.macro_china_real_estate()
+        return call_with_timeout(ak.macro_china_real_estate, 10)
     except Exception as e:
         print(f"[DATA_SOURCE/MACRO] get_china_real_estate: {e}")
         return None
@@ -178,7 +187,7 @@ def get_china_new_house_price() -> Any:
     """
     try:
         import akshare as ak
-        return ak.macro_china_new_house_price()
+        return call_with_timeout(ak.macro_china_new_house_price, 10)
     except Exception as e:
         print(f"[DATA_SOURCE/MACRO] get_china_new_house_price: {e}")
         return None
@@ -196,7 +205,7 @@ def get_china_cpi() -> Any:
     # Primary: AKShare
     try:
         import akshare as ak
-        df = ak.macro_china_cpi()
+        df = call_with_timeout(ak.macro_china_cpi, 10)
         if df is not None and len(df) > 0:
             return df
     except Exception as e:
@@ -230,7 +239,7 @@ def get_china_pmi() -> Any:
     # Primary: AKShare
     try:
         import akshare as ak
-        df = ak.macro_china_pmi()
+        df = call_with_timeout(ak.macro_china_pmi, 10)
         if df is not None and len(df) > 0:
             return df
     except Exception as e:
@@ -268,7 +277,7 @@ def get_china_ppi() -> Any:
     # Primary: AKShare
     try:
         import akshare as ak
-        df = ak.macro_china_ppi()
+        df = call_with_timeout(ak.macro_china_ppi, 10)
         if df is not None and len(df) > 0:
             return df
     except Exception as e:
@@ -305,7 +314,7 @@ def get_china_gdp() -> Any:
     # Primary: AKShare
     try:
         import akshare as ak
-        df = ak.macro_china_gdp()
+        df = call_with_timeout(ak.macro_china_gdp, 10)
         if df is not None and len(df) > 0:
             return df
     except Exception as e:
@@ -340,7 +349,7 @@ def get_china_industrial_value_added() -> Any:
     """
     try:
         import akshare as ak
-        return ak.macro_china_gyzjz()
+        return call_with_timeout(ak.macro_china_gyzjz, 10)
     except Exception as e:
         print(f"[DATA_SOURCE/MACRO] get_china_industrial_value_added: {e}")
         return None
@@ -358,7 +367,7 @@ def get_china_retail_sales() -> Any:
     # Primary: AKShare
     try:
         import akshare as ak
-        df = ak.macro_china_consumer_goods_retail()
+        df = call_with_timeout(ak.macro_china_consumer_goods_retail, 10)
         if df is not None and len(df) > 0:
             return df
     except Exception as e:
@@ -390,7 +399,7 @@ def get_china_fixed_asset_investment() -> Any:
     # Primary: AKShare
     try:
         import akshare as ak
-        df = ak.macro_china_gdzctz()
+        df = call_with_timeout(ak.macro_china_gdzctz, 10)
         if df is not None and len(df) > 0:
             return df
     except Exception as e:
@@ -423,7 +432,7 @@ def get_usa_interest_rate() -> Any:
     # Primary: AKShare
     try:
         import akshare as ak
-        df = ak.macro_bank_usa_interest_rate()
+        df = call_with_timeout(ak.macro_bank_usa_interest_rate, 10)
         if df is not None and len(df) > 0:
             return df
     except Exception as e:
@@ -449,13 +458,20 @@ def get_usa_interest_rate() -> Any:
 def get_market_activity() -> Any:
     """Get A-share market activity index (akshare stock_market_activity_legu).
 
+    ⚠️ 已知失效（2026-09-01 任务#8 排查发现）：乐咕乐股网页面结构已变化，
+    该接口 100% 复现失败（`'NoneType' object has no attribute 'text'` 或
+    `No tables found`，3次重试均同一逻辑错误，非网络抖动）。当前通过
+    except 静默返回 None，不影响调用方稳定性，但数据长期不可用。
+    需要单独排查上游页面结构或寻找替代接口，此处仅补充超时保护，不做
+    功能修复（范围外）。
+
     Returns:
         DataFrame with market activity/turnover data.
-        None on failure.
+        None on failure（当前恒为 None，见上方注释）。
     """
     try:
         import akshare as ak
-        return ak.stock_market_activity_legu()
+        return call_with_timeout(ak.stock_market_activity_legu, 10)
     except Exception as e:
         print(f"[DATA_SOURCE/MACRO] get_market_activity: {e}")
         return None
@@ -479,7 +495,7 @@ def get_lhb_detail(start_date: str = "", end_date: str = "") -> Any:
             kwargs["start_date"] = start_date
         if end_date:
             kwargs["end_date"] = end_date
-        return ak.stock_lhb_detail_em(**kwargs)
+        return call_with_timeout(ak.stock_lhb_detail_em, 10, **kwargs)
     except Exception as e:
         print(f"[DATA_SOURCE/MACRO] get_lhb_detail: {e}")
         return None
@@ -494,7 +510,7 @@ def get_management_holding_detail() -> Any:
     """
     try:
         import akshare as ak
-        return ak.stock_hold_management_detail_cninfo()
+        return call_with_timeout(ak.stock_hold_management_detail_cninfo, 15)
     except Exception as e:
         print(f"[DATA_SOURCE/MACRO] get_management_holding_detail: {e}")
         return None
@@ -516,7 +532,7 @@ def get_us_index(symbol: str = ".DJI") -> Any:
     """
     try:
         import akshare as ak
-        return ak.index_us_stock_sina(symbol=symbol)
+        return call_with_timeout(ak.index_us_stock_sina, 10, symbol=symbol)
     except Exception as e:
         print(f"[DATA_SOURCE/MACRO] get_us_index({symbol}): {e}")
         return None
@@ -531,7 +547,7 @@ def get_fx_spot_quote() -> Any:
     """
     try:
         import akshare as ak
-        return ak.fx_spot_quote()
+        return call_with_timeout(ak.fx_spot_quote, 10)
     except Exception as e:
         print(f"[DATA_SOURCE/MACRO] get_fx_spot_quote: {e}")
         return None
@@ -549,7 +565,7 @@ def get_global_market_pe(symbol: str = "美国") -> Any:
     """
     try:
         import akshare as ak
-        return ak.stock_market_pe_lg(symbol=symbol)
+        return call_with_timeout(ak.stock_market_pe_lg, 10, symbol=symbol)
     except Exception as e:
         print(f"[DATA_SOURCE/MACRO] get_global_market_pe({symbol}): {e}")
         return None
@@ -567,7 +583,7 @@ def get_stock_news(symbol: str = "财经") -> Any:
     """
     try:
         import akshare as ak
-        return ak.stock_news_em(symbol=symbol)
+        return call_with_timeout(ak.stock_news_em, 10, symbol=symbol)
     except Exception as e:
         print(f"[DATA_SOURCE/MACRO] get_stock_news({symbol}): {e}")
         return None
@@ -611,7 +627,7 @@ def get_global_futures_snapshot() -> dict:
     try:
         import akshare as ak
         import math
-        df = ak.futures_global_spot_em()
+        df = call_with_timeout(ak.futures_global_spot_em, 15)
         if df is None or len(df) == 0:
             print("[DATA_SOURCE/MACRO] get_global_futures_snapshot: 空数据")
             return result
@@ -701,7 +717,7 @@ def get_hsi_latest() -> dict | None:
     """
     try:
         import akshare as ak
-        df = ak.stock_hk_index_daily_sina(symbol="HSI")
+        df = call_with_timeout(ak.stock_hk_index_daily_sina, 10, symbol="HSI")
         if df is None or len(df) < 2:
             print("[DATA_SOURCE/MACRO] get_hsi_latest: 数据不足")
             return None

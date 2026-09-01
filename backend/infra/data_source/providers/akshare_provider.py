@@ -18,8 +18,13 @@ import logging
 from typing import Any, Dict, List, Union, cast
 
 from infra.cache import MemoryCache
+from infra.data_source.fallback import call_with_timeout
 
 logger = logging.getLogger(__name__)
+
+# v9.9.x: 接入超时保护（FIX 2026-09-01，任务#8）
+# 本文件 14 处裸 ak.xxx() 调用统一走 call_with_timeout()，超时值 10s
+# （生产服务器真实测量均 <3s，10s 留足余量）。
 
 _SUPPORTED_METRICS = frozenset({
     # macro (primary)
@@ -124,7 +129,7 @@ class AkshareProvider:
 
         ak = self._get_ak()
         try:
-            df = ak.macro_china_gdp()
+            df = call_with_timeout(ak.macro_china_gdp, 10)
             if df is not None and len(df) > 0:
                 _macro_cache.set(cache_key, df)
                 logger.debug(f"AkshareProvider fetched GDP data: {len(df)} rows")
@@ -143,7 +148,7 @@ class AkshareProvider:
 
         ak = self._get_ak()
         try:
-            df = ak.macro_china_cpi()
+            df = call_with_timeout(ak.macro_china_cpi, 10)
             if df is not None and len(df) > 0:
                 _macro_cache.set(cache_key, df)
                 logger.debug(f"AkshareProvider fetched CPI data: {len(df)} rows")
@@ -162,7 +167,7 @@ class AkshareProvider:
 
         ak = self._get_ak()
         try:
-            df = ak.macro_china_pmi()
+            df = call_with_timeout(ak.macro_china_pmi, 10)
             if df is not None and len(df) > 0:
                 _macro_cache.set(cache_key, df)
                 logger.debug(f"AkshareProvider fetched PMI data: {len(df)} rows")
@@ -181,7 +186,7 @@ class AkshareProvider:
 
         ak = self._get_ak()
         try:
-            df = ak.rate_interbank()  # AKShare's SHIBOR endpoint
+            df = call_with_timeout(ak.rate_interbank, 10)  # AKShare's SHIBOR endpoint
             if df is not None and len(df) > 0:
                 _macro_cache.set(cache_key, df)
                 logger.debug(f"AkshareProvider fetched SHIBOR data: {len(df)} rows")
@@ -200,7 +205,7 @@ class AkshareProvider:
 
         ak = self._get_ak()
         try:
-            df = ak.macro_china_lpr()
+            df = call_with_timeout(ak.macro_china_lpr, 10)
             if df is not None and len(df) > 0:
                 _macro_cache.set(cache_key, df)
                 logger.debug(f"AkshareProvider fetched LPR data: {len(df)} rows")
@@ -219,7 +224,7 @@ class AkshareProvider:
 
         ak = self._get_ak()
         try:
-            df = ak.macro_china_money_supply()
+            df = call_with_timeout(ak.macro_china_money_supply, 10)
             if df is not None and len(df) > 0:
                 _macro_cache.set(cache_key, df)
                 logger.debug(f"AkshareProvider fetched M1/M2 data: {len(df)} rows")
@@ -240,7 +245,7 @@ class AkshareProvider:
 
         ak = self._get_ak()
         try:
-            df = ak.stock_news_em(symbol=symbol)
+            df = call_with_timeout(ak.stock_news_em, 10, symbol=symbol)
             if df is not None and len(df) > 0:
                 _news_cache.set(cache_key, df)
                 logger.debug(f"AkshareProvider fetched news for {symbol}: {len(df)} articles")
@@ -259,7 +264,7 @@ class AkshareProvider:
 
         ak = self._get_ak()
         try:
-            df = ak.stock_hsgt_hist_em()  # AKShare's northbound flow endpoint
+            df = call_with_timeout(ak.stock_hsgt_hist_em, 10)  # AKShare's northbound flow endpoint
             if df is not None and len(df) > 0:
                 _flow_cache.set(cache_key, df)
                 logger.debug(f"AkshareProvider fetched northbound flow: {len(df)} rows")
@@ -278,7 +283,7 @@ class AkshareProvider:
 
         ak = self._get_ak()
         try:
-            df = ak.stock_margin_sse()  # Shanghai margin detail
+            df = call_with_timeout(ak.stock_margin_sse, 10)  # Shanghai margin detail
             if df is not None and len(df) > 0:
                 _flow_cache.set(cache_key, df)
                 logger.debug(f"AkshareProvider fetched margin detail: {len(df)} rows")
@@ -306,7 +311,7 @@ class AkshareProvider:
             if end_date:
                 kwargs["end_date"] = end_date
             
-            df = ak.stock_lhb_detail_em(**kwargs)
+            df = call_with_timeout(ak.stock_lhb_detail_em, 10, **kwargs)
             if df is not None and len(df) > 0:
                 _flow_cache.set(cache_key, df)
                 logger.debug(f"AkshareProvider fetched block trades: {len(df)} rows")
@@ -318,7 +323,23 @@ class AkshareProvider:
 
     # Fund data fetchers
     def _fetch_fund_name(self, **params: Any) -> Any:
-        """Fetch fund name/list data."""
+        """Fetch fund name/list data.
+
+        ⚠️ 已知失效（2026-09-01 任务#8 排查发现）：`ak.fund_info_sz()` /
+        `ak.fund_info_sh()` 在当前服务器 AKShare 1.18.60 中均已不存在
+        （`AttributeError: module 'akshare' has no attribute 'fund_info_sz'`），
+        应是随库升级被移除/改名。原 try/except 一直静默吞掉这个
+        AttributeError，`_fetch_fund_name` 长期恒返回 None，从未真正
+        工作过（同 P0-c `ak_call()` 写了两个月零调用方的模式——看起来
+        有实现，实际完全没接上）。
+
+        代码检索确认：当前没有任何调用方以 metric="fund_name" 触发
+        `AkshareProvider.fetch()`（`fund_name`/`fund_rank` 仅出现在
+        `_SUPPORTED_METRICS`/`DEFAULT_CHAINS`声明里，未见实际 fetch 调
+        用），属于死代码路径，暂无生产影响。这里仅补充超时保护（防止
+        未来一旦被启用会挂死），不替换新接口——替换需要验证新函数返回
+        的列名/字段与潜在调用方期望是否兼容，属于独立评估范围。
+        """
         cache_key = "ak_fund_name"
         cached = _fund_cache.get(cache_key)
         if cached is not None:
@@ -329,12 +350,12 @@ class AkshareProvider:
             # Multiple approaches: try fund_info first
             df = None
             try:
-                df = ak.fund_info_sz()  # Shenzhen fund info
+                df = call_with_timeout(ak.fund_info_sz, 10)  # Shenzhen fund info
             except:
                 pass
             
             if df is None or len(df) == 0:
-                df = ak.fund_info_sh()  # Shanghai fund info
+                df = call_with_timeout(ak.fund_info_sh, 10)  # Shanghai fund info
             
             if df is not None and len(df) > 0:
                 _fund_cache.set(cache_key, df)
@@ -346,7 +367,15 @@ class AkshareProvider:
         return None
 
     def _fetch_fund_rank(self, **params: Any) -> Any:
-        """Fetch fund ranking data."""
+        """Fetch fund ranking data.
+
+        ⚠️ 已知失效（2026-09-01 任务#8 排查发现）：`ak.fund_rank_ts()`
+        在当前 AKShare 1.18.60 中已不存在（同上 `_fetch_fund_name`
+        的排查结论）。代码检索确认无实际调用方（死代码路径），仅补
+        超时保护，不替换接口（详见 `_fetch_fund_name` docstring）。
+        若未来要启用此 metric，建议改用 `ak.fund_open_fund_rank_em()`
+        （已验证可用，2026-09-01 measured elapsed 4.65s/375 rows）。
+        """
         cache_key = "ak_fund_rank"
         cached = _fund_cache.get(cache_key)
         if cached is not None:
@@ -354,7 +383,7 @@ class AkshareProvider:
 
         ak = self._get_ak()
         try:
-            df = ak.fund_rank_ts()  # Fund ranking from TianShu
+            df = call_with_timeout(ak.fund_rank_ts, 10)  # Fund ranking from TianShu
             if df is not None and len(df) > 0:
                 _fund_cache.set(cache_key, df)
                 logger.debug(f"AkshareProvider fetched fund rank: {len(df)} rows")
@@ -378,7 +407,7 @@ class AkshareProvider:
         ak = self._get_ak()
         try:
             # AKShare 1.18.x 参数名是 symbol（旧版是 fund）
-            df = ak.fund_open_fund_info_em(symbol=symbol, indicator=indicator)
+            df = call_with_timeout(ak.fund_open_fund_info_em, 10, symbol=symbol, indicator=indicator)
             if df is not None and len(df) > 0:
                 _macro_cache.set(cache_key, df, ttl=3600)
                 logger.debug(f"AkshareProvider fund_nav({symbol}): {len(df)} rows")

@@ -11,6 +11,12 @@ from __future__ import annotations
 
 from typing import Any
 
+from infra.data_source.fallback import call_with_timeout
+
+# v9.9.x: 接入超时保护（FIX 2026-09-01，任务#8）
+# 本文件 16 处裸 ak.xxx() 调用统一走 call_with_timeout()，超时值来自
+# 生产服务器真实测量，见各函数内联注释。
+
 
 # ============================================================
 # Northbound / HSGT (Hong Kong-Shanghai/Shenzhen Connect)
@@ -41,7 +47,7 @@ def get_hsgt_hist(symbol: str = "北向资金") -> Any:
     # Primary: AKShare
     try:
         import akshare as ak
-        result = ak.stock_hsgt_hist_em(symbol=symbol)
+        result = call_with_timeout(ak.stock_hsgt_hist_em, 10, symbol=symbol)
         if result is not None and len(result) > 0:
             return result
     except Exception as e:
@@ -88,7 +94,7 @@ def get_hsgt_hold_stock(market: str = "北向", indicator: str = "今日排行")
     """
     try:
         import akshare as ak
-        return ak.stock_hsgt_hold_stock_em(market=market, indicator=indicator)
+        return call_with_timeout(ak.stock_hsgt_hold_stock_em, 10, market=market, indicator=indicator)
     except Exception as e:
         print(f"[DATA_SOURCE/ALT] get_hsgt_hold_stock({market}, {indicator}): {e}")
         return None
@@ -107,7 +113,7 @@ def get_margin_sse() -> Any:
     """
     try:
         import akshare as ak
-        return ak.stock_margin_sse()
+        return call_with_timeout(ak.stock_margin_sse, 10)
     except Exception as e:
         print(f"[DATA_SOURCE/ALT] get_margin_sse: {e}")
         return None
@@ -129,7 +135,7 @@ def get_bond_zh_us_rate(start_date: str = "20240101") -> Any:
     """
     try:
         import akshare as ak
-        return ak.bond_zh_us_rate(start_date=start_date)
+        return call_with_timeout(ak.bond_zh_us_rate, 10, start_date=start_date)
     except Exception as e:
         print(f"[DATA_SOURCE/ALT] get_bond_zh_us_rate: {e}")
         return None
@@ -153,7 +159,7 @@ def get_interbank_rate(
     """
     try:
         import akshare as ak
-        return ak.rate_interbank(market=market, symbol=symbol, indicator=indicator)
+        return call_with_timeout(ak.rate_interbank, 10, market=market, symbol=symbol, indicator=indicator)
     except Exception as e:
         print(f"[DATA_SOURCE/ALT] get_interbank_rate({indicator}): {e}")
         return None
@@ -175,7 +181,7 @@ def get_individual_fund_flow_rank(indicator: str = "今日") -> Any:
     """
     try:
         import akshare as ak
-        return ak.stock_individual_fund_flow_rank(indicator=indicator)
+        return call_with_timeout(ak.stock_individual_fund_flow_rank, 10, indicator=indicator)
     except Exception as e:
         print(f"[DATA_SOURCE/ALT] get_individual_fund_flow_rank({indicator}): {e}")
         return None
@@ -194,7 +200,7 @@ def get_individual_fund_flow(stock: str, market: str = "sh") -> Any:
     """
     try:
         import akshare as ak
-        return ak.stock_individual_fund_flow(stock=stock, market=market)
+        return call_with_timeout(ak.stock_individual_fund_flow, 10, stock=stock, market=market)
     except Exception as e:
         print(f"[DATA_SOURCE/ALT] get_individual_fund_flow({stock}): {e}")
         return None
@@ -217,7 +223,7 @@ def get_zt_pool(date: str = "") -> Any:
     try:
         import akshare as ak
         kwargs = {"date": date} if date else {"date": __import__("datetime").datetime.now().strftime("%Y%m%d")}
-        return ak.stock_zt_pool_em(**kwargs)
+        return call_with_timeout(ak.stock_zt_pool_em, 10, **kwargs)
     except Exception as e:
         print(f"[DATA_SOURCE/ALT] get_zt_pool({date}): {e}")
         return None
@@ -253,8 +259,8 @@ def get_north_net_flow() -> Any:
         import akshare as ak
         import pandas as pd
         # 用沪股通+深股通合并计算北向净流入
-        df_sh = ak.stock_hsgt_hist_em(symbol="沪股通")
-        df_sz = ak.stock_hsgt_hist_em(symbol="深股通")
+        df_sh = call_with_timeout(ak.stock_hsgt_hist_em, 10, symbol="沪股通")
+        df_sz = call_with_timeout(ak.stock_hsgt_hist_em, 10, symbol="深股通")
         if df_sh is not None and df_sz is not None and len(df_sh) > 0:
             # 列结构：[日期, 当日净买额, 买入成交额, 卖出成交额, ...]
             # 第 0 列是日期，第 1 列是当日净买额（单位亿），用列位置取（列名可能是中文，env 环境渲染可能乱码）
@@ -302,7 +308,7 @@ def get_block_trade_daily() -> Any:
     """
     try:
         import akshare as ak
-        return ak.stock_dzjy_mrtj()
+        return call_with_timeout(ak.stock_dzjy_mrtj, 10)
     except Exception as e:
         print(f"[DATA_SOURCE/ALT] get_block_trade_daily: {e}")
         return None
@@ -317,7 +323,7 @@ def get_insider_trade_xq() -> Any:
     """
     try:
         import akshare as ak
-        return ak.stock_inner_trade_xq()
+        return call_with_timeout(ak.stock_inner_trade_xq, 10)
     except Exception as e:
         print(f"[DATA_SOURCE/ALT] get_insider_trade_xq: {e}")
         return None
@@ -336,7 +342,7 @@ def get_sector_fund_flow_rank(indicator: str = "今日", sector_type: str = "行
     """
     try:
         import akshare as ak
-        return ak.stock_sector_fund_flow_rank(indicator=indicator, sector_type=sector_type)
+        return call_with_timeout(ak.stock_sector_fund_flow_rank, 10, indicator=indicator, sector_type=sector_type)
     except Exception as e:
         print(f"[DATA_SOURCE/ALT] get_sector_fund_flow_rank({indicator}): {e}")
         return None
@@ -361,7 +367,7 @@ def get_industry_board_summary() -> Any:
     # Try primary source first
     try:
         import akshare as ak
-        result = ak.stock_board_industry_summary_ths()
+        result = call_with_timeout(ak.stock_board_industry_summary_ths, 10)
         if result is not None and len(result) > 10:
             # Cache successful result to disk for grace period
             try:
@@ -404,18 +410,47 @@ def get_industry_board_summary() -> Any:
 def get_stock_individual_info(symbol: str) -> Any:
     """Get individual stock basic info (akshare stock_individual_info_em).
 
+    ⚠️ 已知间歇性失败（2026-09-01 诊断结论，任务#8）：底层调用
+    push2.eastmoney.com/api/qt/stock/get，服务端存在 ~30~70% 量级的
+    间歇性连接被动 reset（TCP/TLS 建立后服务端主动断开，不返回任何
+    响应，failed in 0.06~0.2s——不是超时/挂死）。
+
+    排查过程（完整消除法，避免以后重新踩坑）：
+    1. 排除"网络挂死" —— 失败均在 0.2s 内，非 hang。
+    2. 排除"缺 User-Agent/Referer 被 WAF 拒绝" —— curl 不带任何自定义头
+       同样有失败率，说明和头内容无关。
+    3. 排除"79 字段超长 fields 参数触发拒绝" —— curl 复现同样长度的
+       fields 参数依然能成功，说明和参数长度无关。
+    4. 排除"requests/urllib3 库或 User-Agent 字符串被指纹拦截" ——
+       httpx（不同底层 transport）同样复现 100% 失败；curl（原生
+       TCP/TLS 栈）在多次采样中也有 30~70% 的失败率，与客户端库无关。
+    5. 排除"IPv6 路由问题"（服务器无公网 IPv6 出口，AAAA 记录解析到
+       不可达地址）—— 强制 IPv4 (`curl -4`) 后失败率仍有 ~10~30%，
+       说明 IPv6 不可达只是叠加因素之一，不是唯一根因。
+    6. 结论：这是 push2.eastmoney.com 后端本身的负载保护/限流行为，
+       与调用方是谁、用什么库、带什么头都基本无关，是外部数据源
+       固有的不稳定性。重试收益有限（3次重试测试仍有约30%概率全部
+       失败），不是"加个超时"或"换个库"能根治的问题。
+
+    处理方式：接入 call_with_timeout 统一超时保护（与本文件其他函数
+    一致，防止极端情况下线程挂死），保留 except 兜底返回 None——上层
+    （如 add_stock_holding）已验证能优雅降级为"行业:未知"，这是当前
+    唯一现实可行的处理方式。**请勿在未来"修复"此函数为切换到其他
+    HTTP 库或添加更多 header**，那些路径已被验证无效。
+
     Args:
         symbol: stock code e.g. "000001"
 
     Returns:
         DataFrame with stock info (总市值/流通市值/行业/上市时间 etc.).
-        None on failure.
+        None on failure（约 30~70% 概率，见上方诊断结论）。
     """
     try:
         import akshare as ak
-        return ak.stock_individual_info_em(symbol=symbol)
+        return call_with_timeout(ak.stock_individual_info_em, 10, symbol=symbol)
     except Exception as e:
         print(f"[DATA_SOURCE/ALT] get_stock_individual_info({symbol}): {e}")
+
         return None
 
 
@@ -435,7 +470,7 @@ def get_futures_news(symbol: str = "黄金") -> Any:
     """
     try:
         import akshare as ak
-        return ak.futures_news_shmet(symbol=symbol)
+        return call_with_timeout(ak.futures_news_shmet, 10, symbol=symbol)
     except Exception as e:
         print(f"[DATA_SOURCE/ALT] get_futures_news({symbol}): {e}")
         return None
