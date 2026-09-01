@@ -475,7 +475,16 @@ def run_smoke_tests() -> list[dict[str, Any]]:
         label = regime.get("regime", "") if isinstance(regime, dict) else ""
         if label:
             confidence = regime.get("confidence", "") if isinstance(regime, dict) else ""
-            results.append({"name": "Regime判断", "status": "pass", "value_summary": f"regime={label}, confidence={confidence}", "issue": "", "elapsed_ms": elapsed})
+            # FIX 2026-09: regime_engine.classify() 新增了 confidence_note 字段
+            # （震荡市/趋势牛/高波熊/轮动市各自的置信度设计区间说明），跟13维
+            # 信号的 confidence_note 拼接方式保持一致，把归因上下文一起喂给
+            # LLM——否则 LLM 只看到孤零零一个"confidence=55"的数字，没有对应
+            # 的豁免依据，就会把它跟其他"低置信度"信号混在一起误判成功能风险。
+            note = regime.get("confidence_note", "") if isinstance(regime, dict) else ""
+            summary = f"regime={label}, confidence={confidence}"
+            if note:
+                summary += f", note={note}"
+            results.append({"name": "Regime判断", "status": "pass", "value_summary": summary, "issue": "", "elapsed_ms": elapsed})
         else:
             results.append({"name": "Regime判断", "status": "warn", "value_summary": str(regime)[:80], "issue": "regime 为空", "elapsed_ms": elapsed})
     except Exception as e:
@@ -576,7 +585,9 @@ def run_llm_audit(probe_results: list[dict[str, Any]], smoke_results: list[dict[
 - 恐贪指数 只基于价格动量+波动率+成交量偏离（技术面情绪），不含估值绝对水平，也不看新闻/地缘事件。它和"估值百分位"、"地缘风险"分属完全独立的算法维度，短期内出现"高估值但恐贪中性"或"地缘极端但恐贪中性"是正常组合，不是数据错误。
 - 新闻情绪 采样的是个股/行业/政策类新闻（如定增、回购、关税退税），地缘风险模块单独抓取"财经"/"A股"关键词新闻并按军事冲突等分类打分——两套新闻池不重叠。"新闻情绪乐观但地缘风险极端"是正常现象，不代表情绪判断遗漏了地缘负面信息。
 - 研报共识 天然存在看多偏差（券商买入/增持覆盖占70%+是行业常态），已在数据里标注 sample_bias 说明，不要重复指出"未做偏差校正"。
+- 研报共识 出现"全部研报无评级"（unrated_count等于total_reports，bullish/bearish/neutral全为0）时，请先看 degraded_reason 字段区分两种完全不同的情况：① degraded_reason="quota_exhausted_fallback_no_rating"——Tushare report_rc 主数据源每日限额（10次/天）已被其他进程（cache_warmer/night_worker等）耗尽，当前用的是 AKShare 降级源，该降级源本身不带评级字段，这是【正常的架构性降级】，不要上报为"数据源无评级字段"这类功能风险，最多可标注为低优先级的"建议关注限额分配"；② degraded_reason 为空或="source_has_no_rating"——主数据源本身返回的研报缺少评级字段，这才是需要上报的真实数据质量问题。不要把这两种情况混为一谈。
 - 13维信号 的置信度反映的是"多空分歧程度+信号强度"，市场震荡胶着期置信度天然偏低（30%-50%区间），只要数据里的 confidence_reason 不是 data_missing，就不是bug，不要重复上报为"功能风险"。
+- Regime判断（市场状态分类：趋势牛/震荡/高波熊/轮动）的置信度设计上本来就按状态分区间：震荡市（oscillating，默认状态）40-80，轮动市 70-85，趋势牛市/高波熊市 55-95——只要 confidence 落在对应 regime 的设计区间内（数据里的 note/confidence_note 字段会说明这一点），即使数值看起来不高（比如震荡市 confidence=55），也是设计如此、不是功能风险，不要重复上报。只有当 confidence 明显超出对应区间（比如震荡市却 <20 或 >95）才需要上报为异常。
 - 北向资金 的"净流入"维度已【永久不可得】：沪深交易所自 2024-08-19 起停止披露北向日频净买入（改为按季度公布），数据源现在只有"当日成交额"。所以 net_flow_today/net_flow_5d/net_flow_20d 为空、net_flow_available=false、trend="数据不可得" 都是【正常的合法降级】，不要报"北向数据缺失/失效/长期为0"。北向成交额是买卖双边合计的活跃度指标，不含方向，请勿把它解读为资金流入或流出。反过来，如果你看到 net_flow_available=false 却仍出现"流入/流出"字样的趋势标注，那是真 bug，必须上报为 high。
 如果发现的问题属于以上几类，请不要计入 issues，除非数值明显超出正常范围（比如置信度<20%或数据字段缺失）。
 

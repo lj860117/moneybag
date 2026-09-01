@@ -22,7 +22,17 @@ import os
 import time
 import json
 import urllib.request
+from datetime import datetime
+from pathlib import Path
 from infra.cache import MemoryCache
+
+try:
+    import fcntl  # POSIX 专有；Linux/macOS 均可用（生产是 Linux）
+    _FCNTL_AVAILABLE = True
+except ImportError:  # pragma: no cover - Windows 兜底，不应在生产出现
+    fcntl = None
+    _FCNTL_AVAILABLE = False
+
 
 def _get_token() -> str:
     """实时读取 Token（避免 import 时缓存空值）"""
@@ -40,6 +50,115 @@ _TS_CACHE_TTL = 3600  # 1 小时
 _ts_cache = MemoryCache(default_ttl=_TS_CACHE_TTL)
 
 
+# ============================================================
+# report_rc 跨进程共享每日额度计数器
+# ============================================================
+# FIX 2026-09: report_rc 是 Tushare 账号级硬限额（10次/天），但调用入口分散在
+# 多个独立进程：主 FastAPI 进程（api/broker.py 用户实时请求）、
+# scripts/cache_warmer.py（交易时段 crontab 每30分钟一次）、
+# scripts/night_worker.py（多处调用）、scripts/broker_rating_cron.py（周日）、
+# services/recommend_engine.py（自己的SQLite日缓存）。这些进程各自维护自己的
+# 进程内 MemoryCache，互不通信，导致同一份"每日10次"硬限额被多个进程分别
+# 消耗——交易时段 cache_warmer 每30分钟一次的任务就足以在早盘把限额打穿，
+# 之后所有调用方都会撞上 Tushare 的"频率超限"报错，被动降级到 AKShare
+# （无评级字段的数据源），却在展示层被误读为"数据源天生没有评级"。
+#
+# 修复思路：在真正发起 report_rc 请求前，先用一个落盘、跨进程共享的计数器
+# 文件（DATA_DIR/_cache/tushare_quota.json）检查今日已用次数，额度耗尽直接
+# 返回空列表走降级路径，而不是浪费一次真实请求、等 Tushare 报错了才降级。
+# 用 fcntl.flock 排他锁保证多进程并发自增时不发生"读-改-写"竞态（与
+# services/persistence.py::user_write_lock 用的是同一种跨进程锁模式）。
+#
+# 只对 report_rc 这一个 api_name 做这个限流，其余 Tushare 接口（5000积分档，
+# 没有这个每日10次的硬限额）不受影响。
+REPORT_RC_DAILY_LIMIT = int(os.getenv("TUSHARE_REPORT_RC_DAILY_LIMIT", "10"))
+_QUOTA_FILE_NAME = "tushare_quota.json"
+
+
+def _today_str() -> str:
+    return datetime.now().strftime("%Y%m%d")
+
+
+def _quota_file_path() -> Path:
+    """今日额度计数器落盘路径：DATA_DIR/_cache/tushare_quota.json"""
+    from config import DATA_DIR
+    quota_dir = Path(DATA_DIR) / "_cache"
+    quota_dir.mkdir(parents=True, exist_ok=True)
+    return quota_dir / _QUOTA_FILE_NAME
+
+
+def _parse_quota_state(raw: bytes) -> dict:
+    if not raw:
+        return {}
+    try:
+        return json.loads(raw.decode("utf-8"))
+    except Exception:
+        return {}
+
+
+def get_report_rc_quota_status() -> dict:
+    """只读查询今日 report_rc 已用/剩余额度，不消耗额度。
+
+    供上层（如 services/broker_research.py）判断"当前展示的是否为
+    限额耗尽后的降级数据"，而不是"数据源本身没有评级字段"。
+    """
+    today = _today_str()
+    fp = _quota_file_path()
+    try:
+        raw = fp.read_bytes() if fp.exists() else b""
+    except Exception:
+        raw = b""
+    state = _parse_quota_state(raw)
+    used = state.get("used", 0) if state.get("date") == today else 0
+    return {
+        "date": today,
+        "used": used,
+        "limit": REPORT_RC_DAILY_LIMIT,
+        "remaining": max(0, REPORT_RC_DAILY_LIMIT - used),
+        "exhausted": used >= REPORT_RC_DAILY_LIMIT,
+    }
+
+
+def _consume_report_rc_quota() -> tuple:
+    """跨进程原子地尝试消耗一次 report_rc 今日额度。
+
+    Returns:
+        (ok, used_after)。ok=True 表示本次调用被允许发起真实请求；
+        ok=False 表示今日额度已耗尽，调用方应直接走降级路径。
+    """
+    today = _today_str()
+    fp = _quota_file_path()
+
+    if not _FCNTL_AVAILABLE:  # pragma: no cover - Windows 兜底
+        state = _parse_quota_state(fp.read_bytes() if fp.exists() else b"")
+        used = state.get("used", 0) if state.get("date") == today else 0
+        if used >= REPORT_RC_DAILY_LIMIT:
+            return False, used
+        used += 1
+        fp.write_text(json.dumps({"date": today, "used": used}), encoding="utf-8")
+        return True, used
+
+    fd = os.open(str(fp), os.O_RDWR | os.O_CREAT, 0o644)
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX)  # 排他锁：跨进程串行化"读-判断-写"
+        try:
+            raw = os.read(fd, 65536)
+            state = _parse_quota_state(raw)
+            used = state.get("used", 0) if state.get("date") == today else 0
+            if used >= REPORT_RC_DAILY_LIMIT:
+                return False, used
+            used += 1
+            new_raw = json.dumps({"date": today, "used": used}).encode("utf-8")
+            os.lseek(fd, 0, os.SEEK_SET)
+            os.ftruncate(fd, 0)
+            os.write(fd, new_raw)
+            return True, used
+        finally:
+            fcntl.flock(fd, fcntl.LOCK_UN)
+    finally:
+        os.close(fd)
+
+
 def _call_tushare(api_name: str, params: dict, fields: str = "") -> list:
     """统一 Tushare API 调用"""
     token = _get_token()
@@ -51,6 +170,14 @@ def _call_tushare(api_name: str, params: dict, fields: str = "") -> list:
     cached = _ts_cache.get(cache_key)
     if cached is not None:
         return cached
+
+    # report_rc 跨进程共享限额检查（见模块级注释）——只有真正需要发起
+    # 新请求时（未命中上面的进程内缓存）才消耗额度，缓存命中不计入消耗。
+    if api_name == "report_rc":
+        ok, used = _consume_report_rc_quota()
+        if not ok:
+            print(f"[TUSHARE] report_rc 今日额度已耗尽({used}/{REPORT_RC_DAILY_LIMIT})，跳过真实请求直接降级")
+            return []
 
     try:
         payload = json.dumps({

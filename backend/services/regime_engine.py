@@ -42,6 +42,7 @@ def classify(force: bool = False) -> dict:
         {
             "regime": "trending_bull|oscillating|high_vol_bear|rotation",
             "confidence": 0-100,
+            "confidence_note": "人话说明该置信度是否在本regime的设计区间内",
             "params": {ma5, ma20, ma60, volatility_20d, return_20d, ...},
             "description": "人话描述",
             "timestamp": ISO时间
@@ -74,9 +75,20 @@ def classify(force: bool = False) -> dict:
         except Exception as e:
             print(f"[REGIME] 地缘检查失败(不影响原判定): {e}")
 
+        # FIX 2026-09: 周度自检 LLM 审计层曾把"Regime判断confidence=55"误判为
+        # "功能风险"——因为 use_cases/self_audit.py 只给13维信号的低置信度配了
+        # 归因豁免说明，完全没提 Regime。根因是 Regime 的置信度公式本身就按
+        # 市场状态设计了不同区间（震荡市 40-80，趋势牛/高波熊 更高，轮动市
+        # 40-85），这是设计如此，不是计算bug。跟 signal.py 的 confidence_note
+        # 模式保持一致：把归因说明放进数据源头，而不是只在 LLM prompt 里加
+        # 一条静态规则——这样任何下游消费方（审计/前端/推送）都能拿到同样的
+        # 归因上下文，不需要各自维护一份"哪些区间正常"的知识。
+        confidence_note = _confidence_note_for_regime(regime, confidence, geo_override)
+
         result = {
             "regime": regime,
             "confidence": confidence,
+            "confidence_note": confidence_note,
             "params": _clean_params(params),
             "description": desc,
             "timestamp": datetime.now().isoformat(),
@@ -88,6 +100,7 @@ def classify(force: bool = False) -> dict:
         result = {
             "regime": "oscillating",
             "confidence": 30,
+            "confidence_note": "数据获取失败降级为默认震荡判断，confidence=30为保底值，不代表真实市场状态的置信度评估",
             "params": {},
             "description": f"数据获取失败({e})，默认震荡",
             "timestamp": datetime.now().isoformat(),
@@ -95,6 +108,45 @@ def classify(force: bool = False) -> dict:
     
     _regime_cache.set("regime", result, ttl=_REGIME_TTL)
     return result
+
+
+# Regime 置信度的设计区间（下限, 上限, 场景说明）。
+# 这些区间直接对应 _classify_regime() 里各分支的打分/clamp 逻辑：
+#   trending_bull: bull_score>=60 才判定，min(bull_score, 95) → [60, 95]
+#   high_vol_bear: bear_score>=55 才判定，min(bear_score, 95) → [55, 95]
+#   rotation:      rotation_score>=65 才判定，min(rotation_score, 85) → [65, 85]
+#   oscillating:   max(40, 100-bull_score-bear_score)，再 min(.., 80) → [40, 80]
+# 只要 confidence 落在对应区间内，就是"设计如此"，不是异常；只有明显超出
+# 区间（比如震荡市却给出 <20 或 >95）才需要人工排查计算逻辑。
+_REGIME_CONFIDENCE_DESIGN_RANGES: dict = {
+    "trending_bull": (60, 95, "趋势牛市：均线多头排列+20日涨幅+低波动多重信号叠加，置信度设计区间较高"),
+    "high_vol_bear": (55, 95, "高波熊市：均线空头排列+高波动+显著下跌信号叠加，置信度设计区间较高"),
+    # QA 复核发现（2026-09）：rotation_score 的4个加分项 {30,25,25,20} 子集和
+    # 永远凑不出65（可能值仅 0,20,25,30,45,50,55,70,75,80,100），触发阈值
+    # rotation_score>=65 时实际最小可达值是70，65-69是不可达死区。下限改成
+    # 70精确匹配 _classify_regime() 的真实可达范围，不再是宽松的近似值。
+    "rotation":      (70, 85, "轮动市：大盘横盘+低波动+缩量+均线纠缠多重弱信号叠加，置信度设计上限受控在85"),
+    "oscillating":   (40, 80, "震荡市（默认状态）：多空力量接近、缺乏单边趋势信号，置信度天然落在40-80区间，这是市场胶着期的正常特征，不代表判断力弱"),
+}
+
+
+def _confidence_note_for_regime(regime: str, confidence: float, geo_override: bool = False) -> str:
+    """给 Regime 判断的置信度附加人话归因说明。
+
+    目的：解决"LLM/人类看到一个孤零零的置信度数字就误判为功能风险"的问题——
+    跟 services/signal.py 里 confidence_note 的设计模式保持一致，在数据源头
+    就把"这个置信度是否符合设计预期"说清楚，而不是依赖 prompt 里的静态规则。
+    """
+    if geo_override:
+        return "地缘风险覆盖强制切换为高波熊市（cautious模式），confidence已被提升至≥70作为风控保护性判断，非常规市场状态分类，不适用下方设计区间校验"
+
+    lo, hi, scene_desc = _REGIME_CONFIDENCE_DESIGN_RANGES.get(regime, (0, 100, ""))
+    if lo <= confidence <= hi:
+        return f"{scene_desc}（设计区间{lo}-{hi}，当前{confidence}属于正常范围）"
+    return (
+        f"⚠️ confidence={confidence} 超出 {regime} 的设计区间（{lo}-{hi}），"
+        f"可能存在打分逻辑异常，建议排查 _classify_regime() 的分支打分"
+    )
 
 
 def _get_market_params() -> dict:

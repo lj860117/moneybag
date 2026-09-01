@@ -156,6 +156,7 @@ def get_broker_consensus() -> dict:
         "available": False,
         "source": "rule_engine",
         "sample_bias": "券商研报天然看多倾向：买入/增持占比通常70%+，该数据反映的是机构覆盖面而非市场真实多空力量对比。请结合估值、资金流等客观数据综合判断。",
+        "degraded_reason": "",
     }
 
     reports = get_latest_reports(limit=30)
@@ -236,8 +237,47 @@ def get_broker_consensus() -> dict:
             result["consensus"] = "中性分化"
     else:
         # 全部无评级时
+        # FIX 2026-09: 区分"主数据源限额耗尽被迫降级"vs"数据源本身就没有评级"
+        # 这两种完全不同的情况——之前统一写成"所有研报均无明确评级字段，
+        # 无法提取多空信号"，会让人误以为是数据源天生缺陷，但真实情况通常是
+        # Tushare report_rc 的每日10次硬限额已被其他进程（cache_warmer/
+        # night_worker等）耗尽，当前展示的是 AKShare 降级源（东财研报标题，
+        # 该源结构上就不带 rating 字段）。用 reports 里的 source 字段 +
+        # 今日额度状态来判断具体原因，写进 degraded_reason 供
+        # use_cases/self_audit.py 的 LLM 审计层区分归因。
+        all_from_fallback = bool(reports) and all(
+            r.get("source") != "tushare" for r in reports
+        )
+        if all_from_fallback:
+            try:
+                from services.tushare_data import get_report_rc_quota_status
+                quota = get_report_rc_quota_status()
+            except Exception:
+                quota = {"exhausted": False, "used": 0, "limit": 0}
+            if quota.get("exhausted"):
+                result["degraded_reason"] = "quota_exhausted_fallback_no_rating"
+                result["sample_bias"] = (
+                    f"主数据源 Tushare report_rc 今日限额已耗尽"
+                    f"（{quota.get('used')}/{quota.get('limit')}次，由多个后台任务共同消耗），"
+                    f"当前展示的是 AKShare 降级数据源（东财研报标题），该降级源结构上不携带"
+                    f"评级字段，因此全部研报计入 unrated。这是主数据源限额被打穿后的"
+                    f"正常降级行为，不代表数据源本身没有评级能力，限额每日重置。"
+                )
+            else:
+                # source 不是 tushare 但额度未耗尽 → 主数据源大概率是真实请求
+                # 失败（网络/token问题），而不是限额问题，仍需人工关注。
+                result["degraded_reason"] = "primary_source_unavailable_fallback_no_rating"
+                result["sample_bias"] = (
+                    "主数据源 Tushare report_rc 本次未返回数据（非限额耗尽，可能是网络"
+                    "或配置问题），当前展示的是 AKShare 降级数据源（东财研报标题），"
+                    "该降级源结构上不携带评级字段，因此全部研报计入 unrated。"
+                )
+        else:
+            # 有 tushare 来源的研报，但评级字段仍然缺失 —— 这才是真实的数据
+            # 质量问题（主数据源本身没给评级），需要上报。
+            result["degraded_reason"] = "source_has_no_rating"
+            result["sample_bias"] = "所有研报均无明确评级字段，无法提取多空信号（主数据源本身缺失评级，非限额降级导致）。"
         result["consensus"] = "数据不足"
-        result["sample_bias"] = "所有研报均无明确评级字段，无法提取多空信号。"
 
     # 2. 热门行业提取（从标题+摘要中计数）
     sector_counts = {}
