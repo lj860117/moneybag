@@ -4,8 +4,8 @@
 import unittest
 from unittest.mock import patch
 
-from backend.services.llm_output_guard import LLMOutputGuard
-from backend.scripts.night_worker import _inject_hallucination_label
+from services.llm_output_guard import LLMOutputGuard
+from scripts.night_worker import _inject_hallucination_label
 
 
 class TestLLMOutputGuard(unittest.TestCase):
