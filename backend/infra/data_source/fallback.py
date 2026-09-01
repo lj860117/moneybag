@@ -16,6 +16,7 @@ Invariant #6: All external data through infra/data_source.
 from __future__ import annotations
 
 import logging
+import threading
 import time
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -157,7 +158,18 @@ class FallbackRunner:
 
     def _try_provider(self, provider_name: str) -> Dict[str, Any]:
         """Try to fetch from a single provider.
-        
+
+        FIX 2026-09-01：`timeout_per_provider` 构造参数此前从未被使用——
+        `provider_instance.fetch(...)` 是直接同步调用，上游（scraper 式
+        接口，最典型是 AKShare）网络挂死时会让这次请求的线程无限等待。
+        这与 P0-c 里 `ak_call()` 写了两个月零调用方是同一种模式的 bug：
+        看起来有保护参数，实际完全没接上。
+        改法：用 daemon 线程 + join(timeout) 实现超时（同 services/utils.py
+        的 ak_call() 思路，但不复用它的 _AKSHARE_LOCK——那把锁是防
+        AKShare 并发请求过快被封 IP 专用的，这里是所有 provider
+        （tushare/baostock/akshare/tencent）的统一入口，不该套用
+        AKShare 专属的并发限制）。
+
         Returns dict with keys:
             - success: bool
             - data: result if successful, None if failed
@@ -185,8 +197,8 @@ class FallbackRunner:
                     "error": f"Provider {provider_name} is not available",
                 }
 
-            # Fetch data
-            data = provider_instance.fetch(self.metric, **self.kwargs)
+            # Fetch data with timeout protection (daemon thread + join)
+            data = self._fetch_with_timeout(provider_instance, provider_name)
 
             if data is not None:
                 return {
@@ -210,6 +222,42 @@ class FallbackRunner:
                 "elapsed": time.time() - t0,
                 "error": str(e),
             }
+
+    def _fetch_with_timeout(self, provider_instance: Any, provider_name: str) -> Any:
+        """调用 provider_instance.fetch() 并施加 timeout_per_provider 超时。
+
+        超时后主线程放弃等待并返回 None；僵死的请求线程随进程退出回收
+        （AKShare 等 scraper 式接口内部无法中断，只能放弃，不能真正杀死）。
+        timeout_per_provider <= 0 时视为不限时（保留旧行为，供显式禁用）。
+        """
+        timeout = self.timeout_per_provider
+        if not timeout or timeout <= 0:
+            return provider_instance.fetch(self.metric, **self.kwargs)
+
+        result_container: list = [None]
+        error_container: list = [None]
+
+        def _run() -> None:
+            try:
+                result_container[0] = provider_instance.fetch(self.metric, **self.kwargs)
+            except Exception as e:  # pragma: no cover - 异常via error_container传递
+                error_container[0] = e
+
+        t = threading.Thread(target=_run, daemon=True)
+        t.start()
+        t.join(timeout=timeout)
+
+        if t.is_alive():
+            logger.warning(
+                f"[FALLBACK] {self.metric}: provider {provider_name} 超过 "
+                f"{timeout}s 未返回，强制放弃（线程随进程退出回收）"
+            )
+            return None
+
+        if error_container[0] is not None:
+            raise error_container[0]
+
+        return result_container[0]
 
     def _get_provider_instance(self, provider_name: str) -> Optional[Any]:
         """Get provider instance by name.
