@@ -242,33 +242,61 @@ def _collect_news_signals() -> list:
 def _collect_holder_changes() -> list:
     """从 Tushare 收集大股东增减持信号
 
-    ⚠️ 单位（2026-09 修正，服务器实测 stk_holdertrade 1333 行）：
+    ⚠️ 方向字段是 `in_de`，不是 `change_type`（2026-09-04 修正，服务器实测
+    stk_holdertrade 1333 行）：
+      * `in_de == 'IN'` → 增持；`in_de == 'DE'` → 减持。
+      * **接口不返回 `change_type`**（请求它会被静默丢弃，见 tushare_data.
+        get_holder_trades 的取证）。原代码写成
+        `"增持" if t.get("change_type") == "增持" else "减持"`，
+        而 `change_type` 恒为 None ⇒ **277 条真实增持（占 20.8%）全部被报成
+        减持**，并且 level 跟着 action 走，这批信号的 level 也一起错了。
+      * 未知方向（空 / None / 未枚举到的新取值）**不猜**：如实写"方向未披露"、
+        level 降级为 info、且不把它当成增持/减持塞进 tags。
+        写成 `if in_de == 'IN': 增持 else: 减持` 只是把同一个 bug 换个写法。
+
+    ⚠️ 单位（同上实测）：
       * `change_vol` 单位是【股】，不是万股。实测值如 4016100.0（= 401.61 万股），
         原代码直接拼 "万股" 把它放大了 10000 倍（401 亿股）。
-      * `change_amount` 单位是【元】，不是万元。而且**源数据根本不返回这个字段**
-        —— 1333 行里 1333 行都是 None，原代码 `.get('change_amount', 0)` 恒拿
-        到 0，于是每一行都推送 "变动金额: 0万元" 这种没有信息量的文案。
-        修正后按 _collect_unlock_signals() 里 holder_count 的同一套降级风格
-        处理：拿不到（<= 0）就不显示该字段，而不是显示一个假的 0。
+      * `change_amount` 单位是【元】，不是万元。而且**接口不返回这个字段**
+        （1333/1333 行缺失，请求它会被静默丢弃）—— 注意这不等于"金额是 0"：
+        下面 `_safe_float(..., 0.0)` 拿到的 0 是**兜底值，不是真实值**，
+        别理解成"这笔变动金额真的是 0 万元"。处理沿用
+        _collect_unlock_signals() 里 holder_count 的同一套降级风格：拿不到
+        就不显示该字段，而不是显示一个假的 0。
     """
     signals = []
     try:
         from services.tushare_data import get_holder_trades
         trades = get_holder_trades()
         for t in trades[:20]:
-            action = "增持" if t.get("change_type") == "增持" else "减持"
-            level = "warning" if action == "减持" else "info"
+            # 方向：只看 in_de。
+            # ⚠️ 绝不能写成 `if in_de == "IN": 增持 else: 减持` —— 这正是当前
+            # bug 的形状：任何拿不到的值都会默认成减持，并把 level 连带判成
+            # warning。拿不到就如实说"方向未披露"，不编方向。
+            raw_direction = str(t.get("in_de") or "").strip().upper()
+            if raw_direction == "IN":
+                action = "增持"
+                level = "info"
+            elif raw_direction == "DE":
+                action = "减持"
+                level = "warning"
+            else:
+                action = "方向未披露"
+                level = "info"
 
             # 股 → 万股（源数据单位是【股】）
             change_vol_shares = _safe_float(t.get("change_vol"), 0.0)
             vol_wan = change_vol_shares / _SHARES_PER_WAN
-            # 元 → 万元（源数据单位是【元】，且实测恒为 None）
+            # 元 → 万元（源数据单位是【元】，且接口不返回该字段 → 恒为兜底 0）
             change_amount_yuan = _safe_float(t.get("change_amount"), 0.0)
             amount_wan = change_amount_yuan / _SHARES_PER_WAN
 
             parts = [f"变动股数: {_fmt_number(vol_wan)} 万股"]
             if amount_wan > 0:
                 parts.append(f"变动金额: {_fmt_number(amount_wan)} 万元")
+
+            # 方向未知时不把它塞进 tags 当成增持/减持 —— 下游按 tag 过滤会误伤
+            tags = [action, "股东"] if action in ("增持", "减持") else ["股东变动", "股东"]
 
             signals.append({
                 "type": "holder_change",
@@ -278,7 +306,7 @@ def _collect_holder_changes() -> list:
                 "source": "Tushare",
                 "time": t.get("ann_date", ""),
                 "level": level,
-                "tags": [action, "股东"],
+                "tags": tags,
             })
     except Exception as e:
         print(f"[SIGNAL_SCOUT] holder_change failed: {e}")

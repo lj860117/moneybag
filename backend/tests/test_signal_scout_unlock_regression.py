@@ -939,6 +939,8 @@ def test_holder_change_content_uses_shares_and_wan_yuan(ss, monkeypatch):
 
     实测 stk_holdertrade：change_vol = 4016100.0（= 401.61 万股），
     change_amount 源数据恒为 None → 该字段必须隐藏，不能显示"变动金额: 0万元"。
+
+    ⚠️ 夹具用 `in_de`（接口真实字段），不用 `change_type`（接口不返回）。
     """
     import services.tushare_data as td
 
@@ -947,7 +949,7 @@ def test_holder_change_content_uses_shares_and_wan_yuan(ss, monkeypatch):
         "ann_date": "20260902",
         "holder_name": "长城人寿保险股份有限公司",
         "holder_type": "C",
-        "change_type": "减持",
+        "in_de": "DE",
         "change_vol": 4016100.0,
         # change_amount 在真实响应里**根本没有这个 key**（1333/1333 行缺失）
     }]
@@ -971,7 +973,7 @@ def test_holder_change_shows_amount_only_when_source_provides_it(ss, monkeypatch
         "ts_code": "601199.SH",
         "ann_date": "20260902",
         "holder_name": "长城人寿保险股份有限公司",
-        "change_type": "增持",
+        "in_de": "IN",                  # 接口真实方向字段（不是 change_type）
         "change_vol": 1000000.0,        # 100 万股
         "change_amount": 25600000.0,    # 2,560 万元（源单位是元）
     }]
@@ -992,7 +994,7 @@ def test_holder_change_hides_non_positive_amount(ss, monkeypatch, amount):
 
     trades = [{
         "ts_code": "601199.SH", "ann_date": "20260902",
-        "holder_name": "某股东", "change_type": "减持",
+        "holder_name": "某股东", "in_de": "DE",
         "change_vol": 500000.0, "change_amount": amount,
     }]
     monkeypatch.setattr(td, "get_holder_trades", lambda *a, **kw: trades)
@@ -1009,10 +1011,10 @@ def test_holder_change_never_raises_on_dirty_vol(ss, monkeypatch):
     import services.tushare_data as td
 
     trades = [
-        {"ts_code": "000001.SZ", "holder_name": "A", "change_vol": None, "change_type": "减持"},
-        {"ts_code": "000002.SZ", "holder_name": "B", "change_vol": "abc", "change_type": "减持"},
-        {"ts_code": "000003.SZ", "holder_name": "C", "change_vol": "inf", "change_type": "减持"},
-        {"ts_code": "000004.SZ", "holder_name": "D", "change_vol": -500000.0, "change_type": "减持"},
+        {"ts_code": "000001.SZ", "holder_name": "A", "change_vol": None, "in_de": "DE"},
+        {"ts_code": "000002.SZ", "holder_name": "B", "change_vol": "abc", "in_de": "DE"},
+        {"ts_code": "000003.SZ", "holder_name": "C", "change_vol": "inf", "in_de": "DE"},
+        {"ts_code": "000004.SZ", "holder_name": "D", "change_vol": -500000.0, "in_de": "DE"},
     ]
     monkeypatch.setattr(td, "get_holder_trades", lambda *a, **kw: trades)
 
@@ -1020,3 +1022,101 @@ def test_holder_change_never_raises_on_dirty_vol(ss, monkeypatch):
 
     assert [s["codes"][0] for s in sigs] == ["000001", "000002", "000003", "000004"]
     assert "变动股数: -50 万股" in sigs[3]["content"]
+
+
+# ============================================================
+# B3：增减持方向必须用 in_de，不能用 change_type
+# ============================================================
+
+def test_direction_comes_from_in_de_not_change_type(ss, monkeypatch):
+    """B3 反例夹具 1：锁死「不得再使用 change_type」。
+
+    构造一行**同时**带 change_type="增持"（接口根本不返回的字段）和
+    in_de="DE"（接口真实字段）。正确实现只能看 in_de ⇒ 结果是**减持**。
+
+    这条用例的意义：如果哪天有人把 `change_type` 改回判定依据，或者把
+    in_de 的优先级放到 change_type 之后，这条立刻变红。
+    """
+    import services.tushare_data as td
+
+    trades = [{
+        "ts_code": "601199.SH",
+        "ann_date": "20260902",
+        "holder_name": "长城人寿保险股份有限公司",
+        "holder_type": "C",
+        "change_type": "增持",   # ← 陷阱字段：接口不返回，不得被采用
+        "in_de": "DE",           # ← 真实方向
+        "change_vol": 4016100.0,
+    }]
+    monkeypatch.setattr(td, "get_holder_trades", lambda *a, **kw: trades)
+
+    sig = ss._collect_holder_changes()[0]
+
+    assert "减持" in sig["title"], f"被 change_type 带偏了: {sig['title']}"
+    assert "增持" not in sig["title"], f"采用了不存在的 change_type: {sig['title']}"
+    assert sig["level"] == "warning", f"DE 必须是 warning: {sig['level']}"
+    assert "减持" in sig["tags"]
+
+
+def test_in_de_in_maps_to_info_not_warning(ss, monkeypatch):
+    """B3 正例：IN → 增持 + info（修复前会被误报成减持 + warning）。"""
+    import services.tushare_data as td
+
+    trades = [{
+        "ts_code": "601199.SH", "ann_date": "20260902",
+        "holder_name": "某股东", "in_de": "IN", "change_vol": 1000000.0,
+    }]
+    monkeypatch.setattr(td, "get_holder_trades", lambda *a, **kw: trades)
+
+    sig = ss._collect_holder_changes()[0]
+
+    assert "增持" in sig["title"], sig["title"]
+    assert sig["level"] == "info", f"IN 不得是 warning: {sig['level']}"
+    assert "增持" in sig["tags"]
+
+
+@pytest.mark.parametrize("in_de", ["", None, "   ", "UNKNOWN", 0, "INDE", "D"])
+def test_unknown_direction_is_not_defaulted_to_reduce(ss, monkeypatch, in_de):
+    """B3 反例夹具 2：锁死「不得把未知方向默认成减持」。
+
+    这正是原 bug 的形状 —— `if x == "增持": 增持 else: 减持` 会把空值、
+    None、未枚举到的新取值一律默认成减持，并连带把 level 判成 warning
+    （减持是利空，会进推送）。未知就必须如实说"方向未披露"、level 降级。
+    """
+    import services.tushare_data as td
+
+    trades = [{
+        "ts_code": "601199.SH", "ann_date": "20260902",
+        "holder_name": "某股东", "in_de": in_de, "change_vol": 1000000.0,
+    }]
+    monkeypatch.setattr(td, "get_holder_trades", lambda *a, **kw: trades)
+
+    sig = ss._collect_holder_changes()[0]
+
+    assert "方向未披露" in sig["title"], f"{in_de!r} 应如实标注未知: {sig['title']}"
+    assert "减持" not in sig["title"], f"{in_de!r} 被默认成减持了: {sig['title']}"
+    assert "增持" not in sig["title"], f"{in_de!r} 被默认成增持了: {sig['title']}"
+    assert sig["level"] != "warning", f"未知方向不得升级为 warning: {sig['level']}"
+    # 未知方向不能当成增持/减持塞进 tags（下游按 tag 过滤会误伤）
+    assert "减持" not in sig["tags"], f"未知方向混进了 tags: {sig['tags']}"
+    assert "增持" not in sig["tags"], f"未知方向混进了 tags: {sig['tags']}"
+
+
+def test_lowercase_in_de_is_normalised(ss, monkeypatch):
+    """B3 边界：大小写/空格归一化（'de' / ' in ' 也要认）。
+
+    上游字段值形态不稳定是常态，这里统一 strip().upper() 后再比对，
+    避免因为 'de' 没被识别而走"方向未披露"分支。
+    """
+    import services.tushare_data as td
+
+    trades = [
+        {"ts_code": "000001.SZ", "holder_name": "A", "in_de": "de", "change_vol": 1.0},
+        {"ts_code": "000002.SZ", "holder_name": "B", "in_de": " in ", "change_vol": 1.0},
+    ]
+    monkeypatch.setattr(td, "get_holder_trades", lambda *a, **kw: trades)
+
+    sigs = ss._collect_holder_changes()
+
+    assert "减持" in sigs[0]["title"] and sigs[0]["level"] == "warning", sigs[0]["title"]
+    assert "增持" in sigs[1]["title"] and sigs[1]["level"] == "info", sigs[1]["title"]

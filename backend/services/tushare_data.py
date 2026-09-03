@@ -331,7 +331,35 @@ def get_valuation_history(code: str, start_date: str = "", end_date: str = "") -
 # ============================================================
 
 def get_holder_trades(start_date: str = "", end_date: str = "") -> list:
-    """获取近期大股东增减持记录"""
+    """获取近期大股东增减持记录
+
+    ⚠️ 字段口径（2026-09-04 服务器实测：30 天窗口 1333 行、356 只票，
+    不带 fields 参数调用以拿到接口真实返回的字段）：
+        真实返回 = ['ts_code', 'ann_date', 'holder_name', 'holder_type',
+                    'in_de', 'change_vol', 'change_ratio', 'after_share',
+                    'after_ratio', 'avg_price', 'total_share']
+
+    三条必须记住的事实（违反任意一条都会复现历史 bug）：
+
+      1. **方向字段是 `in_de`**，取值 'IN'（增持）/ 'DE'（减持）。
+         全窗口实测分布：**DE = 1056 行、IN = 277 行**（约 79% : 21%），
+         空值 0 行。
+
+      2. **没有 `change_type`，也没有 `change_amount`**。这两个字段曾被写进
+         请求列表，但接口不返回。更危险的是：**请求不存在的字段会被静默
+         丢弃** —— 实测请求 9 个字段只回来 7 个，不报错、不告警，于是消费方
+         `.get('change_type')` 恒拿到 None。原代码
+         `"增持" if t.get("change_type") == "增持" else "减持"`
+         因此把 **277 条真实增持（20.8%）全部报成减持**，且 level 跟着
+         action 走，这批信号的 level 也一起错了。
+         这也是本函数曾经把 `change_amount` 写进请求列表却从未察觉的原因。
+
+      3. `change_vol` 单位是【股】，不是万股（实测 4016100.0 = 401.61 万股）。
+
+    ⚠️ 本函数只取数，不做方向/单位翻译 —— 翻译在 signal_scout.
+    _collect_holder_changes()，那里的 docstring 记了消费侧口径。改动字段
+    列表时必须同步改那边，否则又会静默拿不到值。
+    """
     from datetime import datetime, timedelta
     if not end_date:
         end_date = datetime.now().strftime("%Y%m%d")
@@ -341,7 +369,7 @@ def get_holder_trades(start_date: str = "", end_date: str = "") -> list:
     rows = _call_tushare(
         "stk_holdertrade",
         {"start_date": start_date, "end_date": end_date},
-        "ts_code,ann_date,holder_name,holder_type,change_type,change_vol,change_amount,after_share,after_ratio",
+        "ts_code,ann_date,holder_name,holder_type,in_de,change_vol,change_ratio,after_share,after_ratio",
     )
     return rows[:50]
 
