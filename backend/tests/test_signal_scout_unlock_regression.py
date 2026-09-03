@@ -1055,7 +1055,10 @@ def test_direction_comes_from_in_de_not_change_type(ss, monkeypatch):
     assert "减持" in sig["title"], f"被 change_type 带偏了: {sig['title']}"
     assert "增持" not in sig["title"], f"采用了不存在的 change_type: {sig['title']}"
     assert sig["level"] == "warning", f"DE 必须是 warning: {sig['level']}"
-    assert "减持" in sig["tags"]
+    # 精确锁定 tags 形状，而不是只断言"包含减持"：
+    # 若写成 `[action, "股东"]` 无条件形式，已知方向下与期望一致、看不出问题，
+    # 但未知方向那一路会漏出 "方向未披露" 这种伪方向标签（见下方未知用例）。
+    assert sig["tags"] == ["减持", "股东"], f"tags 形状变了: {sig['tags']}"
 
 
 def test_in_de_in_maps_to_info_not_warning(ss, monkeypatch):
@@ -1072,7 +1075,7 @@ def test_in_de_in_maps_to_info_not_warning(ss, monkeypatch):
 
     assert "增持" in sig["title"], sig["title"]
     assert sig["level"] == "info", f"IN 不得是 warning: {sig['level']}"
-    assert "增持" in sig["tags"]
+    assert sig["tags"] == ["增持", "股东"], f"tags 形状变了: {sig['tags']}"
 
 
 @pytest.mark.parametrize("in_de", ["", None, "   ", "UNKNOWN", 0, "INDE", "D"])
@@ -1097,9 +1100,15 @@ def test_unknown_direction_is_not_defaulted_to_reduce(ss, monkeypatch, in_de):
     assert "减持" not in sig["title"], f"{in_de!r} 被默认成减持了: {sig['title']}"
     assert "增持" not in sig["title"], f"{in_de!r} 被默认成增持了: {sig['title']}"
     assert sig["level"] != "warning", f"未知方向不得升级为 warning: {sig['level']}"
-    # 未知方向不能当成增持/减持塞进 tags（下游按 tag 过滤会误伤）
-    assert "减持" not in sig["tags"], f"未知方向混进了 tags: {sig['tags']}"
-    assert "增持" not in sig["tags"], f"未知方向混进了 tags: {sig['tags']}"
+    # 未知方向不能当成增持/减持塞进 tags（下游按 tag 过滤会误伤），
+    # 也不能把 "方向未披露" 这个**非方向**的占位串当成 tag 漏出去 ——
+    # 它同样会被当成方向标签消费。必须退化为中性的 "股东变动"。
+    #
+    # ⚠️ 这里必须**精确断言** tags 全等，不能只写
+    # `"减持" not in tags and "增持" not in tags`：
+    # 后者对 `[action, "股东"]`（无条件形式，tags=["方向未披露","股东"]）
+    # 也成立 —— 实测该写法能骗过全部既有用例（0 红），是死测试缺口。
+    assert sig["tags"] == ["股东变动", "股东"], f"未知方向的 tags 退化错了: {sig['tags']}"
 
 
 def test_lowercase_in_de_is_normalised(ss, monkeypatch):
