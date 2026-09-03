@@ -1307,29 +1307,41 @@ def get_margin_data(days: int = 30) -> dict:
 # ============================================================
 
 def get_fund_share(ts_code: str, days: int = 30) -> dict:
-    """获取基金/ETF 每日份额变化"""
+    """获取基金/ETF 份额数据（用于计算规模 = 份额 × 净值）
+
+    Tushare fund_share 接口的 fd_share 单位 = 万份。
+    - 场内基金（ETF/LOF，.SH/.SZ）数据为每日更新
+    - 场外基金（.OF）数据为季度末更新（如 20260331 / 20260630）
+
+    因此对场外基金必须放大回看窗口（约 400 天）才能命中最近季度末数据；
+    否则 20 天窗口会切掉全部季度数据，返回 available=False（规模退化为 AKShare 兜底）。
+
+    shares_latest 返回「亿份」（fd_share 万份 ÷ 1e4），供消费方乘净值算规模（亿元）。
+    """
     from datetime import datetime, timedelta
     result = {"available": False, "source": "tushare"}
     end_date = datetime.now().strftime("%Y%m%d")
-    start_date = (datetime.now() - timedelta(days=days + 10)).strftime("%Y%m%d")
+    # 窗口放大到 400 天：覆盖场外基金季度末数据（最新季度末距当前最长约 100 天）
+    lookback = max(days, 400)
+    start_date = (datetime.now() - timedelta(days=lookback)).strftime("%Y%m%d")
+    # fund_share 实际字段仅 ts_code/trade_date/fd_share（可选 fund_type/market）；
+    # 请求不存在的字段会被接口静默丢弃，这里只请求真实存在的字段。
     rows = _call_tushare("fund_share", {"ts_code": ts_code, "start_date": start_date, "end_date": end_date},
-                         "ts_code,trade_date,fd_share,total_share,float_share")
+                         "ts_code,trade_date,fd_share")
     if not rows:
         return result
     rows = sorted(rows, key=lambda x: x.get("trade_date", ""))
-    if len(rows) < 2:
-        return result
     latest = rows[-1]
-    prev_5d = rows[-6] if len(rows) >= 6 else rows[0]
-    current_share = float(latest.get("fd_share", 0) or latest.get("total_share", 0) or 0)
-    prev_share = float(prev_5d.get("fd_share", 0) or prev_5d.get("total_share", 0) or 0)
+    current_share = float(latest.get("fd_share", 0) or 0)
     if current_share <= 0:
         return result
-    change_pct = round((current_share - prev_share) / max(prev_share, 1) * 100, 2)
-    result.update({"shares_latest": round(current_share / 1e8, 2), "shares_change_5d": round((current_share - prev_share) / 1e8, 2),
-                   "shares_change_pct": change_pct, "data_date": latest.get("trade_date", ""), "available": True})
-    result["trend"] = "份额大增" if change_pct > 5 else "温和增长" if change_pct > 1 else "大减" if change_pct < -5 else "温和减少" if change_pct < -1 else "稳定"
-    print(f"[TUSHARE-SHARE] {ts_code}: {result['shares_latest']}亿份, 5d{change_pct:+.2f}%")
+    # 万份 → 亿份（÷1e4）；此前误用 ÷1e8，导致场外基金规模被缩小 1 万倍显示为 0.0
+    result.update({
+        "shares_latest": round(current_share / 1e4, 2),
+        "data_date": latest.get("trade_date", ""),
+        "available": True,
+    })
+    print(f"[TUSHARE-SHARE] {ts_code}: {result['shares_latest']}亿份 @{result['data_date']}")
     return result
 
 
