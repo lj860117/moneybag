@@ -262,9 +262,15 @@ def test_empty_result_and_rows_with_blank_code(td, monkeypatch):
 # ============================================================
 
 def test_unlock_signal_carries_name_date_shares_holdercount(ss, td, monkeypatch):
+    """⚠️ 单位：share_float.float_share 的原始单位是【股】，展示口径是【万股】。
+
+    用例数据取 301563.SZ 2026-09-30 的**服务器实测值**（32 行，此处简化成 3 行）：
+    合计 34,782,667.4 股 = 3,478.27 万股；合计 float_ratio = 41.09%（占总股本）。
+    历史上这里把股数当万股直接拼进文案，正文变成"合计解禁 34,782,667.40 万股"。
+    """
     rows = [
-        _row("301563.SZ", "20260930", 1000.0, 60.0, "A"),
-        _row("301563.SZ", "20260930", 2478.0, 121.77, "B"),
+        _row("301563.SZ", "20260930", 10000000.0, 16.00, "A"),
+        _row("301563.SZ", "20260930", 24782667.4, 25.09, "B"),
         _row("301563.SZ", "20260930", 0.0, 0.0, "C"),
     ]
     monkeypatch.setattr(td, "_call_tushare", _fake_tushare({"share_float": rows}))
@@ -274,9 +280,10 @@ def test_unlock_signal_carries_name_date_shares_holdercount(ss, td, monkeypatch)
 
     assert len(sigs) == 1, f"3 行应聚合成 1 条信号，实际 {len(sigs)}"
     s = sigs[0]
-    assert s["title"] == "解禁预警: 云汉芯城(301563) 解禁181.77%", s["title"]
+    # float_ratio 口径 = 占【总股本】（Tushare 原值），不是占流通盘
+    assert s["title"] == "解禁预警: 云汉芯城(301563) 解禁41.09%", s["title"]
     assert "解禁日 2026-09-30" in s["content"]
-    assert "合计解禁 3,478 万股" in s["content"], s["content"]
+    assert "合计解禁 3,478.27 万股" in s["content"], s["content"]
     assert "涉及 3 个股东" in s["content"]
     assert s["codes"] == ["301563"]
     assert s["level"] == "danger"
@@ -732,10 +739,13 @@ def test_holder_count_wording_is_not_self_contradictory(ss, td, monkeypatch):
     场景：同一股东持有多笔**不同类型**的限售股（占 2 行）。
     正确文案必须是"合计解禁 300 万股，涉及 1 个股东" ——
     一个股东有两笔解禁是正常且常见的，不能报成 2 个股东。
+
+    ⚠️ 构造数据用【股】为单位（源数据口径）：1,000,000 + 2,000,000 = 3,000,000 股
+    = 300 万股。
     """
     rows = [
-        _row("002163.SZ", "20261001", 100.0, 5.0, "同一股东"),
-        _row("002163.SZ", "20261001", 200.0, 8.0, "同一股东"),
+        _row("002163.SZ", "20261001", 1000000.0, 5.0, "同一股东"),
+        _row("002163.SZ", "20261001", 2000000.0, 8.0, "同一股东"),
     ]
     monkeypatch.setattr(td, "_call_tushare", _fake_tushare({"share_float": rows}))
     monkeypatch.setattr(td, "_get_stock_names", lambda: {})
@@ -749,10 +759,15 @@ def test_holder_count_wording_is_not_self_contradictory(ss, td, monkeypatch):
 
 def test_holder_count_distinguishes_different_holders(ss, td, monkeypatch):
     """反向验证：不同股东仍然按名字数正确计数，没有被"一律算 1 个"。"""
+    # 第 3 行与第 1 行 holder_name 相同（要测的就是"重复名只数一次"），但
+    # share_type 必须不同 —— 现在上游会按"解禁事件"去重，六字段完全相同的
+    # 两行会被判为同一笔解禁的两次公告而合并掉，那测的就不是本用例的意图了。
+    row_a2 = _row("002163.SZ", "20261001", 1000000.0, 5.0, "股东A")  # 重复名
+    row_a2["share_type"] = "股权激励限售流通"
     rows = [
-        _row("002163.SZ", "20261001", 100.0, 5.0, "股东A"),
-        _row("002163.SZ", "20261001", 100.0, 5.0, "股东B"),
-        _row("002163.SZ", "20261001", 100.0, 5.0, "股东A"),  # 重复名
+        _row("002163.SZ", "20261001", 1000000.0, 5.0, "股东A"),
+        _row("002163.SZ", "20261001", 1000000.0, 5.0, "股东B"),
+        row_a2,
     ]
     monkeypatch.setattr(td, "_call_tushare", _fake_tushare({"share_float": rows}))
     monkeypatch.setattr(td, "_get_stock_names", lambda: {})
@@ -828,8 +843,8 @@ def test_holder_field_omitted_when_no_holder_name(ss, td, monkeypatch):
     """BUG-02 配套：全部行都没有股东名 → 不显示股东数字段，
     不能出现"涉及 0 个股东"这种自相矛盾的文案。"""
     rows = [
-        _row("000001.SZ", "20261001", 100.0, 9.0, ""),
-        _row("000001.SZ", "20261001", 200.0, 3.0, None),
+        _row("000001.SZ", "20261001", 1000000.0, 9.0, ""),
+        _row("000001.SZ", "20261001", 2000000.0, 3.0, None),
     ]
     monkeypatch.setattr(td, "_call_tushare", _fake_tushare({"share_float": rows}))
     monkeypatch.setattr(td, "_get_stock_names", lambda: {})
@@ -840,3 +855,168 @@ def test_holder_field_omitted_when_no_holder_name(ss, td, monkeypatch):
     content = sigs[0]["content"]
     assert "股东" not in content, f"无股东名时不该显示股东数字段: {content}"
     assert "合计解禁 300 万股" in content  # 数量仍要加总，不能因为没名字就丢
+
+
+def test_float_share_is_converted_from_shares_to_wan_shares(ss, td, monkeypatch):
+    """BUG-1 正例：float_share 单位是【股】，正文必须换算成【万股】。
+
+    实测事故值：34,782,667.4 股（301563.SZ 2026-09-30）被原代码直接标成
+    "34,782,667.40 万股"，放大 10000 倍；正确是 3,478.27 万股。
+    """
+    rows = [_row("301563.SZ", "20260930", 34782667.4, 41.09, "A")]
+    monkeypatch.setattr(td, "_call_tushare", _fake_tushare({"share_float": rows}))
+    monkeypatch.setattr(td, "_get_stock_names", lambda: {})
+
+    content = ss._collect_unlock_signals()[0]["content"]
+
+    assert "合计解禁 3,478.27 万股" in content, content
+    assert "34,782,667" not in content, f"股数没有被换算: {content}"
+
+
+def test_float_share_conversion_keeps_small_amounts_readable(ss, td, monkeypatch):
+    """BUG-1 边界：小额解禁也走同一条换算路径，不能出现 0.00 万股这种无信息量文案。
+
+    834,000 股 = 83.40 万股（603683.SH 2026-09-30 实测值）。
+    """
+    rows = [_row("603683.SH", "20260930", 834000.0, 0.2864, "A")]
+    monkeypatch.setattr(td, "_call_tushare", _fake_tushare({"share_float": rows}))
+    monkeypatch.setattr(td, "_get_stock_names", lambda: {})
+
+    content = ss._collect_unlock_signals()[0]["content"]
+
+    assert "合计解禁 83.40 万股" in content, content
+
+
+def test_float_ratio_over_100_is_marked_not_silently_shown(ss, td, monkeypatch):
+    """防线：解禁占【总股本】> 100% 是物理不可能的，必须标注而不是照常展示。
+
+    历史实例：301507.SZ 曾算出 138.00%（真因是同一笔解禁的两次公告被重复
+    累加；去重后 69.00%）。去重已在上游修掉，这里守的是"上游再出别的脏数据
+    时，异常值仍然可见"。
+    """
+    rows = [_row("301507.SZ", "20260907", 492044944.0, 138.0, "A")]
+    monkeypatch.setattr(td, "_call_tushare", _fake_tushare({"share_float": rows}))
+    monkeypatch.setattr(td, "_get_stock_names", lambda: {})
+
+    s = ss._collect_unlock_signals()[0]
+
+    assert "数据存疑" in s["content"], f"异常占比没有被标注: {s['content']}"
+    # 不钳制：真实值必须保留，把 138 改成 100 是凭空造数
+    assert "138.00%" in s["title"], s["title"]
+    assert "100.00%" not in s["title"], f"异常值被钳制了: {s['title']}"
+
+
+def test_float_ratio_at_or_below_100_is_not_marked(ss, td, monkeypatch):
+    """边界：正常占比不得被误标（含正好 100% 与刚好超过阈值的边界）。"""
+    rows = [
+        _row("000001.SZ", "20261001", 1000000.0, 100.0, "A"),
+        _row("000002.SZ", "20261001", 1000000.0, 99.99, "B"),
+        _row("000003.SZ", "20261001", 1000000.0, 5.0, "C"),
+    ]
+    monkeypatch.setattr(td, "_call_tushare", _fake_tushare({"share_float": rows}))
+    monkeypatch.setattr(td, "_get_stock_names", lambda: {})
+
+    sigs = {s["codes"][0]: s for s in ss._collect_unlock_signals()}
+
+    assert "数据存疑" not in sigs["000001"]["content"], sigs["000001"]["content"]
+    assert "数据存疑" not in sigs["000002"]["content"], sigs["000002"]["content"]
+    assert "数据存疑" not in sigs["000003"]["content"], sigs["000003"]["content"]
+
+
+def test_float_ratio_just_over_100_is_marked(ss, td, monkeypatch):
+    """边界：刚过 100% 就要标（不能等到明显离谱才拦）。"""
+    rows = [_row("000001.SZ", "20261001", 1000000.0, 100.01, "A")]
+    monkeypatch.setattr(td, "_call_tushare", _fake_tushare({"share_float": rows}))
+    monkeypatch.setattr(td, "_get_stock_names", lambda: {})
+
+    content = ss._collect_unlock_signals()[0]["content"]
+
+    assert "数据存疑" in content, content
+
+
+def test_holder_change_content_uses_shares_and_wan_yuan(ss, monkeypatch):
+    """BUG-2：change_vol 单位是【股】（不是万股），change_amount 单位是【元】。
+
+    实测 stk_holdertrade：change_vol = 4016100.0（= 401.61 万股），
+    change_amount 源数据恒为 None → 该字段必须隐藏，不能显示"变动金额: 0万元"。
+    """
+    import services.tushare_data as td
+
+    trades = [{
+        "ts_code": "601199.SH",
+        "ann_date": "20260902",
+        "holder_name": "长城人寿保险股份有限公司",
+        "holder_type": "C",
+        "change_type": "减持",
+        "change_vol": 4016100.0,
+        # change_amount 在真实响应里**根本没有这个 key**（1333/1333 行缺失）
+    }]
+    monkeypatch.setattr(td, "get_holder_trades", lambda *a, **kw: trades)
+
+    sigs = ss._collect_holder_changes()
+
+    assert len(sigs) == 1
+    content = sigs[0]["content"]
+    assert "变动股数: 401.61 万股" in content, content
+    assert "4,016,100" not in content, f"股数没有换算: {content}"
+    assert "变动金额" not in content, f"源数据没有金额，不该显示 0: {content}"
+
+
+def test_holder_change_shows_amount_only_when_source_provides_it(ss, monkeypatch):
+    """BUG-2 反向验证：源数据真的给了 change_amount（单位【元】）时才显示，
+    且要换算成万元 —— 不能被"隐藏 0"的逻辑连带隐藏掉真实金额。"""
+    import services.tushare_data as td
+
+    trades = [{
+        "ts_code": "601199.SH",
+        "ann_date": "20260902",
+        "holder_name": "长城人寿保险股份有限公司",
+        "change_type": "增持",
+        "change_vol": 1000000.0,        # 100 万股
+        "change_amount": 25600000.0,    # 2,560 万元（源单位是元）
+    }]
+    monkeypatch.setattr(td, "get_holder_trades", lambda *a, **kw: trades)
+
+    sigs = ss._collect_holder_changes()
+
+    content = sigs[0]["content"]
+    assert "变动股数: 100 万股" in content, content
+    assert "变动金额: 2,560 万元" in content, content
+    assert "25,600,000" not in content, f"金额没有换算: {content}"
+
+
+@pytest.mark.parametrize("amount", [0, 0.0, None, "", "0", "abc", -1.0])
+def test_holder_change_hides_non_positive_amount(ss, monkeypatch, amount):
+    """BUG-2 降级：amount <= 0 / 脏值 → 隐藏该字段（与 holder_count 同风格）。"""
+    import services.tushare_data as td
+
+    trades = [{
+        "ts_code": "601199.SH", "ann_date": "20260902",
+        "holder_name": "某股东", "change_type": "减持",
+        "change_vol": 500000.0, "change_amount": amount,
+    }]
+    monkeypatch.setattr(td, "get_holder_trades", lambda *a, **kw: trades)
+
+    content = ss._collect_holder_changes()[0]["content"]
+
+    assert "变动股数: 50 万股" in content, content
+    assert "变动金额" not in content, f"脏值/0 金额不该显示: {amount!r} -> {content}"
+
+
+def test_holder_change_never_raises_on_dirty_vol(ss, monkeypatch):
+    """BUG-2 容错：change_vol 脏值不得抛异常（调用点被 try/except 包着只 print，
+    抛异常的表现是**整批增减持信号静默消失**）。"""
+    import services.tushare_data as td
+
+    trades = [
+        {"ts_code": "000001.SZ", "holder_name": "A", "change_vol": None, "change_type": "减持"},
+        {"ts_code": "000002.SZ", "holder_name": "B", "change_vol": "abc", "change_type": "减持"},
+        {"ts_code": "000003.SZ", "holder_name": "C", "change_vol": "inf", "change_type": "减持"},
+        {"ts_code": "000004.SZ", "holder_name": "D", "change_vol": -500000.0, "change_type": "减持"},
+    ]
+    monkeypatch.setattr(td, "get_holder_trades", lambda *a, **kw: trades)
+
+    sigs = ss._collect_holder_changes()
+
+    assert [s["codes"][0] for s in sigs] == ["000001", "000002", "000003", "000004"]
+    assert "变动股数: -50 万股" in sigs[3]["content"]

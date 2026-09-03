@@ -96,6 +96,27 @@ _HOLDING_REQUIRED_TYPES = {
     "announcement",
 }
 
+# ---- 单位换算 ----
+#
+# Tushare 的**股数类**字段（share_float.float_share、stk_holdertrade.change_vol）
+# 原始单位一律是【股】；中文语境的展示口径是【万股】。展示前必须除这个常数。
+# 历史坑：曾经直接把股数当成万股拼进文案（"合计解禁 34,782,667.40 万股"），
+# 数字被放大 10000 倍。凡是要展示股数的地方，都要显式走这个换算。
+_SHARES_PER_WAN = 10000.0
+
+# 解禁占【总股本】比例的物理上限：超过 100% 意味着解禁股数比公司总股本还多，
+# 只可能是上游数据脏了（历史实例：同一笔解禁的两次公告被重复累加，
+# 301507.SZ 算出 138.00%，去重后 69.00%）。
+#
+# 命中时**保留真实值 + 加标注 + 打告警，不做钳制**（用法见
+# _collect_unlock_signals()）。
+#
+# ⚠️ 判定是严格大于（float_ratio > 100.0），**没有容差**：
+# 100% 本身是合法的（清仓式解禁），且 float_ratio 来自上游的百分比数值，
+# 不存在"累加小数位导致 100.0000001"的浮点场景，加容差只会让真正的异常
+# 100.5% 漏报。真出现 100.0000001 这种值时，标个"数据存疑"也是对的。
+_FLOAT_RATIO_SANITY_MAX = 100.0
+
 # ---- 缓存 ----
 _SIGNAL_CACHE_TTL = 1800  # 30 分钟
 _signal_cache = MemoryCache(default_ttl=_SIGNAL_CACHE_TTL)
@@ -219,7 +240,17 @@ def _collect_news_signals() -> list:
 
 
 def _collect_holder_changes() -> list:
-    """从 Tushare 收集大股东增减持信号"""
+    """从 Tushare 收集大股东增减持信号
+
+    ⚠️ 单位（2026-09 修正，服务器实测 stk_holdertrade 1333 行）：
+      * `change_vol` 单位是【股】，不是万股。实测值如 4016100.0（= 401.61 万股），
+        原代码直接拼 "万股" 把它放大了 10000 倍（401 亿股）。
+      * `change_amount` 单位是【元】，不是万元。而且**源数据根本不返回这个字段**
+        —— 1333 行里 1333 行都是 None，原代码 `.get('change_amount', 0)` 恒拿
+        到 0，于是每一行都推送 "变动金额: 0万元" 这种没有信息量的文案。
+        修正后按 _collect_unlock_signals() 里 holder_count 的同一套降级风格
+        处理：拿不到（<= 0）就不显示该字段，而不是显示一个假的 0。
+    """
     signals = []
     try:
         from services.tushare_data import get_holder_trades
@@ -227,10 +258,22 @@ def _collect_holder_changes() -> list:
         for t in trades[:20]:
             action = "增持" if t.get("change_type") == "增持" else "减持"
             level = "warning" if action == "减持" else "info"
+
+            # 股 → 万股（源数据单位是【股】）
+            change_vol_shares = _safe_float(t.get("change_vol"), 0.0)
+            vol_wan = change_vol_shares / _SHARES_PER_WAN
+            # 元 → 万元（源数据单位是【元】，且实测恒为 None）
+            change_amount_yuan = _safe_float(t.get("change_amount"), 0.0)
+            amount_wan = change_amount_yuan / _SHARES_PER_WAN
+
+            parts = [f"变动股数: {_fmt_number(vol_wan)} 万股"]
+            if amount_wan > 0:
+                parts.append(f"变动金额: {_fmt_number(amount_wan)} 万元")
+
             signals.append({
                 "type": "holder_change",
                 "title": f"{t.get('holder_name', '股东')} {action} {t.get('ann_date', '')}",
-                "content": f"变动股数: {t.get('change_vol', 0)}万股, 变动金额: {t.get('change_amount', 0)}万元",
+                "content": ", ".join(parts),
                 "codes": [t.get("ts_code", "").split(".")[0]],
                 "source": "Tushare",
                 "time": t.get("ann_date", ""),
@@ -245,11 +288,32 @@ def _collect_holder_changes() -> list:
 def _collect_unlock_signals() -> list:
     """收集限售股解禁信号
 
-    ⚠️ 口径修正：Tushare share_float 按【股东逐行】返回，单行 float_ratio
-    只是"某一个股东这一笔"的占比，不是这只票当天的解禁总量。此前直接消费
-    原始行，导致数字严重失真（301563.SZ 2026-09-30 实际合计占流通盘
-    181.77%，单行只显示 7.68%）。现在消费 get_upcoming_unlocks() 已按
-    (ts_code, float_date) 聚合后的结果，float_share / float_ratio 均为当日合计。
+    ⚠️ 口径修正 1（聚合）：Tushare share_float 按【股东逐行】返回，单行
+    float_ratio 只是"某一个股东这一笔"的占比，不是这只票当天的解禁总量。
+    此前直接消费原始行，导致数字严重失真。现在消费 get_upcoming_unlocks()
+    已按 (ts_code, float_date) 聚合后的结果，float_share / float_ratio 均为
+    当日合计。实例（服务器实测 2026-09-30，301563.SZ 云汉芯城）：
+      * 单行最大值        = 7.68%
+      * 当日 32 行合计    = 41.09%（= 占总股本，与 Tushare float_ratio 同口径）
+
+    ⚠️ 口径修正 2（float_ratio 的分母）：Tushare 的 float_ratio 分母是
+    【总股本】，不是【流通股本】。两个比例都真实，但含义不同，不能混用：
+      * 占总股本 = float_share / daily_basic.total_share
+                  = 34,782,667.4 / 84,650,928 = 41.09%
+      * 占流通盘 = float_share / daily_basic.float_share
+                  = 34,782,667.4 / 19,135,696 = 181.77%
+    本信号展示的是**占总股本**（即 Tushare 原值），与 get_upcoming_unlocks()
+    的 docstring 口径一致。若将来要展示"占流通盘"，必须自己除
+    daily_basic.float_share，不能直接把 181.77% 当成 float_ratio 的默认值。
+
+    ⚠️ 口径修正 3（单位）：float_share 的单位是【股】，不是万股。
+    34,782,667.4 股 = 3,478.27 万股。此前直接拼 "万股" 把数字放大 10000 倍，
+    推送正文变成"合计解禁 34,782,667.40 万股"。
+
+    ⚠️ 口径修正 4（去重）：上游 get_upcoming_unlocks() 已按"解禁事件"去重
+    （同一笔解禁的原始公告 + 提示性公告只算一次，见 tushare_data.
+    _dedupe_share_float_rows）。不去重时合计值会放大约 2 倍，出现过
+    "解禁 138.00%" 这种超过总股本的荒谬数字。
     """
     signals = []
     try:
@@ -273,12 +337,29 @@ def _collect_unlock_signals() -> list:
             label = f"{name}({code6})" if name else code6
 
             level = "danger" if float_ratio > 5 else ("warning" if float_ratio > 2 else "info")
+            # float_share 单位是【股】，展示口径是【万股】 → 必须除 10000
+            # （实测：未除时正文为"合计解禁 34,782,667.40 万股"，正确值是 3,478.27 万股）
             content = (
                 f"解禁日 {float_date}，"
-                f"合计解禁 {_fmt_number(float_share)} 万股"
+                f"合计解禁 {_fmt_number(float_share / _SHARES_PER_WAN)} 万股"
             )
             if holder_count > 0:
                 content += f"，涉及 {holder_count} 个股东"
+
+            # 防线：解禁比例不可能超过 100% 总股本，超过就说明上游数据脏了
+            # （历史实例：301507.SZ 曾算出 138.00%，真因是同一笔解禁的
+            #  原始公告 + 提示性公告被重复累加；去重后是 69.00%）。
+            # 处理方式：**不钳制**——把 138 改成 100 是凭空造数，与本项目
+            # "宁可显示得难看也不编数字"的取向冲突（见 _collect_fund_flow_signals
+            #  里对"买入 0万"的处理）。这里保留真实值但加标注 + 打告警，
+            #  让异常既可见、又不被伪装成正常值。
+            if float_ratio > _FLOAT_RATIO_SANITY_MAX:
+                print(
+                    f"[SIGNAL_SCOUT] 解禁比例异常：{ts_code} {float_date} "
+                    f"float_ratio={float_ratio:.2f}% > {_FLOAT_RATIO_SANITY_MAX}%"
+                    f"（超过总股本，上游数据存疑，已标注后照常产出）"
+                )
+                content += "（数据存疑：占比超 100%）"
 
             signals.append({
                 "type": "unlock",
@@ -869,7 +950,13 @@ def _fmt_signal_date(value) -> str:
 
 
 def _fmt_number(value: float) -> str:
-    """数字千分位格式化（万股），整数不带小数点
+    """数字千分位格式化（纯格式化，单位由调用方负责），整数不带小数点
+
+    ⚠️ 单位是调用方的责任，本函数**不做任何换算**：传进来是什么单位，
+    显示的就是什么单位。调用方必须自己先把源数据换算到目标单位再传进来
+    （例：解禁信号传的是 float_share / _SHARES_PER_WAN，源数据单位是【股】，
+    展示单位是【万股】）。历史坑：这里曾既不做换算、又在 docstring 里写死
+    "（万股）"，让调用方误以为函数内部会换算，结果正文把股数放大 10000 倍。
 
     ⚠️ 必须吞掉一切异常、绝不外抛：本函数在 _collect_unlock_signals() 的
     循环里被调用，而那个循环外层 try/except 只 print —— 一旦这里抛

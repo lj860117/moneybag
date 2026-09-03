@@ -370,20 +370,137 @@ def get_pledge_stat(code: str = "") -> list:
 # 7. 限售股解禁（signal_scout P0 数据源）
 # ============================================================
 
+# ---- share_float 分页取数的硬上限 ----
+#
+# _SHARE_FLOAT_PAGE_SIZE：Tushare **单次返回行数硬上限**，实测传
+#   limit=8000 / 20000 都只返回 6000 行，所以按 6000 分页即可（传更大的
+#   limit 没有意义，反而让人误以为一次就能取完）。
+# _SHARE_FLOAT_MAX_PAGES / _SHARE_FLOAT_MAX_ROWS：防死循环的双保险。
+#   offset 翻页只有在"单页取不满"时才能确认取完，万一上游数据异常（或
+#   Tushare 改版让 offset 失效、每页都返回满页）就会无限翻下去 —— 用这两个
+#   上限把它钉死。实测 30 天窗口 41840 行 = 7 页，6 万行（10 页）留了约
+#   1.4 倍余量，20 页是行数上限之上的又一道保险；任一命中都会打印告警
+#   并把 complete 置为 False，绝不假装数据完整。
+_SHARE_FLOAT_PAGE_SIZE = 6000
+_SHARE_FLOAT_MAX_PAGES = 20
+_SHARE_FLOAT_MAX_ROWS = 60000
+
+# ---- share_float 请求字段 / 去重键 ----
+#
+# _SHARE_FLOAT_FIELDS 比 _SHARE_FLOAT_DEDUPE_FIELDS **多一个 ann_date**，
+# 这不是笔误，是刻意的，详见 _dedupe_share_float_rows() 的说明。这里先给结论：
+# 接口实际返回 7 个字段，早期版本只请求 6 个（漏了 ann_date），于是把
+# "同一笔解禁的两次公告"误判成"两笔解禁"，合计值被放大约 2 倍。
+_SHARE_FLOAT_FIELDS = "ts_code,ann_date,float_date,float_share,float_ratio,holder_name,share_type"
+_SHARE_FLOAT_DEDUPE_FIELDS = (
+    "ts_code", "float_date", "float_share", "float_ratio", "holder_name", "share_type",
+)
+
+
+def _dedupe_share_float_rows(rows: list) -> list:
+    """按"解禁事件"去重：同一笔解禁的多次公告只算一次
+
+    ⚠️ 背景（2026-09-04 全窗口实测，41840 行）：share_float 会把**同一笔解禁
+    登记两次** —— 一次是原始公告（IPO / 股权激励授予时），一次是解禁前的
+    **提示性公告**。两行的 ts_code / float_date / float_share / float_ratio /
+    holder_name / share_type **六个字段完全相同**，只有 `ann_date`（公告日期）
+    不同。实例：
+
+        301507.SZ 杭州民生药业 238000000 股 float_date=20260907 首发原始股
+            ann_date=20230904   ← IPO 时的原始公告
+            ann_date=20260831   ← 解禁前 7 天的提示性公告
+        600298.SH 高路         30000 股 float_date=20260909 股权激励限售流通
+            ann_date=20240911   ← 授予时的原始公告
+            ann_date=20260904   ← 解禁前 5 天的提示性公告
+
+    不去重的后果：合计 float_share / float_ratio 被放大约 2 倍，出现
+    "解禁 138% 总股本"这种物理上不可能的数字（301507.SZ 138.00% → 69.00%），
+    并且会改变"按影响排序"的 Top-N 结果。
+
+    ⚠️ 为什么去重键**不包含 ann_date**（重要，改这里前先读完）：
+    ann_date 是"这条公告记录是哪天发的"，不是"这笔解禁"的组成部分 —— 它区分
+    的是**公告**，不是**解禁事件**。把它加进去重键会让去重完全失效（实测
+    9004 组重复行里，9004 组的 ann_date 都不同，0 组相同），合计值重新变回
+    2 倍。所以 _SHARE_FLOAT_DEDUPE_FIELDS 刻意比 _SHARE_FLOAT_FIELDS 少一个
+    ann_date；ann_date 仍然请求下来，是为了让这个判断在代码里可核对。
+
+    ⚠️ 误伤风险已量化评估（2026-09-04）：
+      * 全窗口 41840 行中，7 字段（含 ann_date）唯一数 = 41840，**0 条真重复**
+        → 不存在"完全一样的记录被登记多次"的情况，去重删掉的每一行都确实
+        是"另一次公告"，不是独立事件。
+      * 重复组大小**恒为 2**（9004 组全部是 2，没有 3 及以上）→ 与"原始公告
+        + 提示性公告 = 2 次"完全吻合，没有把不同事件错误合并。
+      * 最大的一只票 001257.SZ（9559 行）中，6 字段重复 **0 条**，连
+        "同名同股数"的碰撞都是 0 → 去重对它零影响。
+
+    Args:
+        rows: 翻页拼合后的原始行。
+
+    Returns:
+        去重后的行（保持原顺序，保留每组第一次出现的那行）。
+    """
+    seen: set = set()
+    deduped: list = []
+    for row in rows:
+        key = tuple(str(row.get(field, "") or "") for field in _SHARE_FLOAT_DEDUPE_FIELDS)
+        if key in seen:
+            continue
+        seen.add(key)
+        deduped.append(row)
+    return deduped
+
+
 def get_upcoming_unlocks(days: int = 30, limit: int = 30) -> list:
     """获取未来N天的限售股解禁计划（已按 (ts_code, float_date) 聚合）
 
-    ⚠️ 口径修正：Tushare share_float 是**按股东逐行**返回的 —— 同一只股票
-    同一天的解禁会拆成多行，每行一个股东。原实现直接取单行 float_ratio，
+    ⚠️ 口径修正 1（聚合）：Tushare share_float 是**按股东逐行**返回的 —— 同一
+    只股票同一天的解禁会拆成多行，每行一个股东。原实现直接取单行 float_ratio，
     把"某个股东的一笔"当成了"这只票当天的解禁总量"，后果有两个：
-      1. 严重低估真实冲击（实例：301563.SZ 在 2026-09-30 当天合计解禁
-         占流通股本 181.77%，单笔股东行只显示 7.68%）；
+      1. 严重低估真实冲击（实例：301563.SZ 在 2026-09-30 当天 32 行合计
+         float_ratio = 41.09%，最大的单行只有 7.68%）；
       2. 同一只股票同一天解禁会产生多条重复信号。
+
+    ⚠️ 口径修正 2（float_ratio 的分母 = 总股本，不是流通股本）：
+    Tushare 的 float_ratio 分母是【总股本】。想要"占流通盘"必须自己拿
+    daily_basic.float_share 再除一次 —— 两个数都真实，但差很多：
+        301563.SZ（2026-09-30，实测）：
+            占总股本 = float_share / daily_basic.total_share
+                     = 34,782,667.4 / 84,650,928 = 41.09%   ← 本函数返回的值
+            占流通盘 = float_share / daily_basic.float_share
+                     = 34,782,667.4 / 19,135,696 = 181.77%  ← 需要另外算
+        920222.BJ（2026-09-30，实测）：
+            占总股本 = 10,581,305 / 85,647,100 = 12.35%     ← 本函数返回的值
+            占流通盘 = 10,581,305 / 11,562,590 = 91.51%
+    本函数返回的是**占总股本**（Tushare 原口径，可直接与 Tushare 的 float_ratio
+    对账），不做换算 —— 换算交给展示层，并要在文案里写清是哪个口径。
+
+    ⚠️ 口径修正 3（float_share 的单位 = 股，不是万股）：
+    上面两个算式里的 34,782,667.4 就是 float_share 的**原始值**，单位是【股】
+    （= 3,478.27 万股）。展示层要换算成万股必须自己除 10000。
 
     现在改为：先按 (ts_code, float_date) 聚合（float_share / float_ratio
     求和，记录股东数 holder_count 与股东名 holder_names），**再**按合计
     比例降序排序，**最后**才截断 Top limit —— 顺序不能反，否则排序算法
     看到的是残缺分母，且同一只票的多笔解禁会被截断拆散。
+
+    ⚠️ 取数修正（单次 6000 行截断，见 _fetch_share_float_rows）：窗口内行数
+    常常远超 6000 行（实测 30 天窗口共 4 万余行，其中 001257.SZ 一只票就占
+    5964 行），单次调用只能拿回前 6000 行 → 聚合后只剩 4 只票，其余 160 只
+    被静默丢掉，其中不乏解禁比例远高于前者的标的。实测对比（同一窗口）：
+        单次调用（6000 行）Top1 = 301563.SZ 41.09%
+        翻页取全 + 去重    Top5 = 600925.SH 76.69% / 920100.BJ 73.49%
+                                 301558.SZ 72.14% / 920015.BJ 71.22%
+                                 301507.SZ 69.00%
+    即：单页 Top1 的 41.09% 在完整数据里连前五都进不去 —— 按"影响最大优先"
+    排序却先丢了影响最大的，这个信号就失去意义了。现在改成 offset 翻页取全。
+    取不全时本函数会打印告警，调用方可用 get_upcoming_unlocks_with_meta()
+    拿到 complete 标记，不要假装数据完整。
+
+    去重：Tushare 把同一笔解禁登记两次（原始公告 + 解禁前提示性公告），
+    会在翻页取全的基础上再按"解禁事件"去重一次，否则合计值放大约 2 倍
+    （301507.SZ 不去重是 138.00%，去重后 69.00%）。详见
+    _dedupe_share_float_rows()。这两个问题是**独立的**：翻页解决覆盖度，
+    去重解决绝对值精度，任何一层缺失都会得到错的数字。
 
     容错：Tushare 返回值类型不稳定（None / "" / "1.23" / 123 都出现过），
     聚合统一走 _finite_float() 安全转换，脏值（含 inf / nan）按 0 累加，
@@ -398,9 +515,11 @@ def get_upcoming_unlocks(days: int = 30, limit: int = 30) -> list:
         {
             "ts_code": "301563.SZ",
             "float_date": "20260930",
-            "float_share": 3478.0,      # 当日合计解禁股数（万股）
-            "float_ratio": 181.77,      # 当日合计占流通股本比例（%）
-            "holder_count": 3,          # 去重后的股东数 = len(holder_names)
+            "float_share": 34782667.4, # 当日合计解禁股数（单位【股】！
+                                       #  = 3,478.27 万股，展示层自行换算）
+            "float_ratio": 41.09,      # 当日合计占【总股本】比例（%）
+                                       #  （占流通盘 = 181.77%，需另算）
+            "holder_count": 32,        # 去重后的股东数 = len(holder_names)
             "holder_names": ["A", "B"], # 去重后的股东名称
         }
 
@@ -408,17 +527,130 @@ def get_upcoming_unlocks(days: int = 30, limit: int = 30) -> list:
         不按行数计数 —— 同一股东持有多笔不同类型的限售股会占多行。
         全部行都没有股东名时 holder_count = 0，调用方应降级为不显示该字段。
     """
+    items, _meta = get_upcoming_unlocks_with_meta(days=days, limit=limit)
+    return items
+
+
+def _fetch_share_float_rows(start_date: str, end_date: str) -> tuple:
+    """分页拉全 share_float 在 [start_date, end_date] 窗口内的所有行
+
+    ⚠️ 为什么必须翻页（实测，2026-09-04 ~ 2026-10-04 窗口）：
+      * Tushare 单次调用**硬上限 6000 行**：limit 传 8000 / 20000 实测仍只
+        返回 6000 行，响应里的 has_more=True、count=0（count 恒为 0，不可用）。
+      * 该窗口真实共 41840 行、164 只票；单次调用只拿回 6000 行 → 聚合只剩
+        4 只票（301563 / 920222 / 001257 / 603683），**其余 160 只被静默丢掉**。
+        001257.SZ 一只票就独占 5964 行（5964 个基金股东），几乎吃满一整页。
+      * 更糟的是丢掉的恰恰是更重要的：单页 Top1 = 301563.SZ 41.09%，
+        翻页取全 + 去重后的 Top1 = 600925.SH 76.69%（41.09% 连前五都进不去，
+        见 get_upcoming_unlocks() 里的完整对比）。按"影响最大优先"排序却先
+        丢了影响最大的，这个信号就失去意义了。
+      * 注：翻页取全**未去重**时的 Top1 是 301507.SZ 138.00%（超过总股本，
+        物理上不可能），去重后回到 69.00% —— 两者是独立的两层修正，见下。
+
+    为什么用 offset 而不是"按日切分"：按日切分**解决不了** —— 实测
+    20260907 / 20260928 / 20260930 三天各自的行数都 ≥ 6000（同样被截断），
+    所以日级窗口也必须翻页。
+
+    offset 翻页的稳定性已实测验证（同一窗口、同一秒内）：
+      * call(offset=24000, limit=6000) 与 call(offset=24500, limit=6000) 的
+        B[:5500] == A[500:] 完全一致 → 服务端分页游标稳定，不会跳行/重行；
+      * 同一 offset 重复调用结果完全一致 → 翻页**不会**制造重复行。
+
+    翻页取全后还会再做一层**按解禁事件去重**（_dedupe_share_float_rows）：
+    Tushare 把同一笔解禁登记两次（原始公告 + 解禁前提示性公告），不去重会让
+    合计值放大约 2 倍。去重键刻意**不含 ann_date**，原因见那个函数的 docstring。
+
+    防死循环：三重硬上限，任一命中即停止并回报 complete=False
+      * 最多 _SHARE_FLOAT_MAX_PAGES 页；
+      * 累计行数不超过 _SHARE_FLOAT_MAX_ROWS；
+      * 单页返回行数 < page_size ⇒ 已经是最后一页，正常结束（complete=True）。
+
+    Args:
+        start_date: 起始日期 YYYYMMDD。
+        end_date: 结束日期 YYYYMMDD。
+
+    Returns:
+        (rows, meta)，rows 已去重；meta = {
+            "complete": bool,          # False = 被上限截断，数据不完整
+            "pages": int,              # 实际发起的调用次数
+            "rows": int,               # 翻页取回的原始行数（去重前）
+            "duplicate_rows": int,     # 被去重删掉的行（同一事件的多次公告）
+            "rows_used": int,          # 去重后实际参与聚合的行数
+            "truncated_reason": str,   # 不完整时的原因，完整时为 ""
+        }
+    """
+    fields = _SHARE_FLOAT_FIELDS
+
+    rows: list = []
+    complete = False
+    truncated_reason = ""
+    pages = 0
+
+    for page_index in range(_SHARE_FLOAT_MAX_PAGES):
+        page = _call_tushare(
+            "share_float",
+            {
+                "start_date": start_date,
+                "end_date": end_date,
+                "offset": page_index * _SHARE_FLOAT_PAGE_SIZE,
+                "limit": _SHARE_FLOAT_PAGE_SIZE,
+            },
+            fields,
+        )
+        pages = page_index + 1
+        rows.extend(page or [])
+
+        # 取不满一页 ⇒ 这就是最后一页（唯一"真的取完了"的判定条件）
+        if len(page or []) < _SHARE_FLOAT_PAGE_SIZE:
+            complete = True
+            break
+        if len(rows) >= _SHARE_FLOAT_MAX_ROWS:
+            truncated_reason = f"累计行数达到上限 {_SHARE_FLOAT_MAX_ROWS}"
+            break
+    else:
+        truncated_reason = f"翻页次数达到上限 {_SHARE_FLOAT_MAX_PAGES}"
+
+    # 去重必须在翻页拼合**之后**做：同一笔解禁的两次公告可能被分页边界切开，
+    # 逐页去重会漏掉跨页的那一半。
+    deduped = _dedupe_share_float_rows(rows)
+    duplicate_rows = len(rows) - len(deduped)
+
+    meta = {
+        "complete": complete,
+        "pages": pages,
+        "rows": len(rows),
+        "duplicate_rows": duplicate_rows,
+        "rows_used": len(deduped),
+        "truncated_reason": truncated_reason,
+    }
+    if not complete:
+        print(
+            f"[TUSHARE] share_float 未取全：{truncated_reason}"
+            f"（{start_date}~{end_date}，已取 {len(rows)} 行 / {pages} 页）"
+            f" → 解禁聚合结果不完整，勿当作全市场快照使用"
+        )
+    return deduped, meta
+
+
+def get_upcoming_unlocks_with_meta(days: int = 30, limit: int = 30) -> tuple:
+    """get_upcoming_unlocks() 的带元信息版本：额外回报取数是否完整
+
+    返回 (items, meta)。items 与 get_upcoming_unlocks() 的返回值完全一致；
+    meta 见 _fetch_share_float_rows()，另加 "groups"（聚合后的 (ts_code,
+    float_date) 组数，即截断前的候选条数）。complete=False 表示被 6000 行
+    / 翻页上限截断，排序结果的"Top N"不再可信。
+    另见 meta["duplicate_rows"] —— 同一笔解禁被多次公告而删掉的行数，
+    正常量级是总行数的 20% 上下；若骤降到 0，说明上游数据结构变了，
+    去重可能失效，需要重新核对 _dedupe_share_float_rows() 的取证结论。
+    """
     from datetime import datetime, timedelta
     start = datetime.now().strftime("%Y%m%d")
     end = (datetime.now() + timedelta(days=days)).strftime("%Y%m%d")
 
-    rows = _call_tushare(
-        "share_float",
-        {"start_date": start, "end_date": end},
-        "ts_code,float_date,float_share,float_ratio,holder_name,share_type",
-    )
+    rows, meta = _fetch_share_float_rows(start, end)
     if not rows:
-        return []
+        meta["groups"] = 0  # 与下面的非空路径保持同样的 key 集合，避免调用方 KeyError
+        return [], meta
 
     # 1) 先聚合（顺序关键：聚合 → 排序 → 截断）
     grouped: dict = {}
@@ -456,7 +688,8 @@ def get_upcoming_unlocks(days: int = 30, limit: int = 30) -> list:
 
     # 2) 排序 3) 截断
     merged = sorted(grouped.values(), key=lambda x: x["float_ratio"], reverse=True)
-    return merged[:limit]
+    meta["groups"] = len(merged)
+    return merged[:limit], meta
 
 
 # ============================================================
