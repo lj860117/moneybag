@@ -31,6 +31,7 @@ MODULE_META = {
 
 import os
 import json
+import math
 import time
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -52,9 +53,58 @@ SIGNAL_TYPES = {
     "st_warning": "🔴 ST预警",
 }
 
+# ---- 个股事件类信号类型（stock-event types）----
+#
+# 收录标准：信号的语义是"**某只特定股票**发生了某事"，即它一定带一个
+# **股票代码**标的。登记进来后有两个效果（两处都用它，语义一致）：
+#
+#   1. 推送门槛（deliver/_should_push）：
+#      即便 level == "danger"，也不得绕过 match() 的持仓相关性校验，
+#      必须 relevance >= 50（= 命中持仓代码，或命中关键标签）才允许推送。
+#      因为用户没持有这只票时这类推送是纯噪音 —— 既不能据此操作，还会
+#      让用户怀疑数据串号（事故：用户实际只持有 8 只基金、股票持仓为空，
+#      却收到 "301563.SZ 解禁7.6847%" / "920222.BJ 解禁7.4623%"）。
+#
+#   2. 代码命名空间（match）：
+#      这类信号的 codes 里装的**只会是股票代码**，因此只用【股票持仓】
+#      匹配。股票代码与基金代码都是 6 位数字且会重叠（002163 既是深市
+#      股票「海南发展」也是基金「东方惠新灵活配置混合C」），拿基金持仓
+#      去匹配会串号 —— 把个股事件挂到基金名下，比推无关股票更糟，因为
+#      它"看起来相关"，用户会当真。
+#
+# 逐个类型的判定依据（codes 来源）：
+#   unlock        ← Tushare share_float.ts_code（股票）
+#   holder_change ← Tushare stk_holdertrade.ts_code（股票）
+#   fund_flow     ← 北向十大活跃成交股的 6 位**股票**代码（不是基金！）
+#   pledge_risk / st_warning / dividend / announcement
+#                 ← 当前无采集器，但语义同为个股事件，先登记防漏
+#
+# 反例（**不要**登记）：news_policy / news_market / technical —— 没有具体
+#   标的，对所有用户都成立，保留"danger 级直接放行"的原逻辑。
+#   注：news_* 的 codes 是从标题正则抽的 6 位数字，理论上可能抽到基金代码，
+#   所以它们也必须走"股票+基金"合并视图，否则会漏匹配。
+#
+# 维护约定：新增"个股事件类"信号类型时，务必同步登记到本集合，
+#   否则会重新引入"无关标的推送"的骚扰问题 + 代码串号问题。
+_HOLDING_REQUIRED_TYPES = {
+    "unlock",
+    "holder_change",
+    "fund_flow",
+    "pledge_risk",
+    "st_warning",
+    "dividend",
+    "announcement",
+}
+
 # ---- 缓存 ----
 _SIGNAL_CACHE_TTL = 1800  # 30 分钟
 _signal_cache = MemoryCache(default_ttl=_SIGNAL_CACHE_TTL)
+
+# 代码→名称本地缓存。底层复用 tushare_data._get_stock_names() 的 24h 批量映射，
+# 这里只做进程内兜底：查不到的代码也缓存空串，避免重复查询。
+_name_cache: dict = {}
+_name_map_attempt_ts: float = 0.0
+_NAME_MAP_RETRY_TTL = 600.0  # 名称映射拉取失败后的冷却秒数
 
 # ---- 休市日历 ----
 _MARKET_HOLIDAYS_2026 = {
@@ -193,21 +243,50 @@ def _collect_holder_changes() -> list:
 
 
 def _collect_unlock_signals() -> list:
-    """收集限售股解禁信号"""
+    """收集限售股解禁信号
+
+    ⚠️ 口径修正：Tushare share_float 按【股东逐行】返回，单行 float_ratio
+    只是"某一个股东这一笔"的占比，不是这只票当天的解禁总量。此前直接消费
+    原始行，导致数字严重失真（301563.SZ 2026-09-30 实际合计占流通盘
+    181.77%，单行只显示 7.68%）。现在消费 get_upcoming_unlocks() 已按
+    (ts_code, float_date) 聚合后的结果，float_share / float_ratio 均为当日合计。
+    """
     signals = []
     try:
         from services.tushare_data import get_upcoming_unlocks
-        unlocks = get_upcoming_unlocks()
-        for u in unlocks[:10]:
-            float_ratio = u.get("float_ratio", 0)
+        for u in get_upcoming_unlocks()[:10]:
+            ts_code = str(u.get("ts_code") or "").strip()
+            if not ts_code:
+                continue
+
+            code6 = ts_code.split(".")[0]
+            float_ratio = _safe_float(u.get("float_ratio"), 0.0)
+            float_share = _safe_float(u.get("float_share"), 0.0)
+            # holder_count = 去重后的股东名数量（与 holder_names 同口径，见
+            # tushare_data.get_upcoming_unlocks）。全部行都没有股东名时为 0
+            # → 不显示该字段，避免出现"涉及 0 个股东"这种自相矛盾的文案。
+            holder_count = int(_safe_float(u.get("holder_count"), 0.0))
+            float_date = _fmt_signal_date(u.get("float_date"))
+
+            # 标题带公司名称，代码退居括号内（"看不懂推送"的直接原因之一）
+            name = _lookup_stock_name(ts_code)
+            label = f"{name}({code6})" if name else code6
+
             level = "danger" if float_ratio > 5 else ("warning" if float_ratio > 2 else "info")
+            content = (
+                f"解禁日 {float_date}，"
+                f"合计解禁 {_fmt_number(float_share)} 万股"
+            )
+            if holder_count > 0:
+                content += f"，涉及 {holder_count} 个股东"
+
             signals.append({
                 "type": "unlock",
-                "title": f"解禁预警: {u.get('ts_code', '')} 解禁{float_ratio}%",
-                "content": f"解禁日: {u.get('float_date', '')}, 解禁数量: {u.get('float_share', 0)}万股",
-                "codes": [u.get("ts_code", "").split(".")[0]],
+                "title": f"解禁预警: {label} 解禁{float_ratio:.2f}%",
+                "content": content,
+                "codes": [code6],
                 "source": "Tushare",
-                "time": u.get("float_date", ""),
+                "time": str(u.get("float_date") or ""),
                 "level": level,
                 "tags": ["解禁"],
             })
@@ -319,15 +398,20 @@ def match(user_id: str) -> list:
         return []
 
     # 获取用户持仓代码
-    user_codes = set()
-    user_names = {}
+    #
+    # ⚠️ 股票代码与基金代码**都是 6 位数字且会重叠**（实例：002163 既是深市
+    # 股票「海南发展」，也是基金「东方惠新灵活配置混合C」）。原实现把两者
+    # 合并进同一个 user_codes 集合，导致个股事件信号被误判成命中基金持仓、
+    # related_holding 串成基金名 —— 比推无关股票更糟，因为它"看起来相关"，
+    # 用户会当真。因此必须拆成两个映射，按信号类型分别取用。
+    user_stock_codes = {}  # {股票代码: 持仓名称}
+    user_fund_codes = {}   # {基金代码: 持仓名称}
     try:
         from services.stock_monitor import load_stock_holdings
         for h in load_stock_holdings(user_id):
             code = h.get("code", "")
             if code:
-                user_codes.add(code)
-                user_names[code] = h.get("name", code)
+                user_stock_codes[code] = h.get("name", code)
     except Exception:
         pass
     try:
@@ -335,21 +419,30 @@ def match(user_id: str) -> list:
         for h in load_fund_holdings(user_id):
             code = h.get("code", "")
             if code:
-                user_codes.add(code)
-                user_names[code] = h.get("name", code)
+                user_fund_codes[code] = h.get("name", code)
     except Exception:
         pass
+
+    # 非个股事件类沿用原「股票+基金全量」匹配，保持原有行为不受本次改动影响。
+    # 基金后写入 → 代码冲突时基金名覆盖股票名，与原实现（先股票后基金）一致。
+    user_all_codes = {**user_stock_codes, **user_fund_codes}
 
     matched = []
     for sig in all_signals:
         relevance = 0
         related_holding = ""
+        sig_type = sig.get("type", "")
 
         # 直接代码匹配（最高相关性）
+        # 个股事件类信号的 codes 里装的都是股票代码，只拿股票持仓来匹配；
+        # 用基金代码去匹配它属于类型错误，会串号（见上方 002163 事故说明）。
+        holding_map = (
+            user_stock_codes if sig_type in _HOLDING_REQUIRED_TYPES else user_all_codes
+        )
         for code in sig.get("codes", []):
-            if code in user_codes:
+            if code in holding_map:
                 relevance = 100
-                related_holding = user_names.get(code, code)
+                related_holding = holding_map[code]
                 break
 
         # 标签匹配（中等相关性）
@@ -395,24 +488,55 @@ def _save_matched(user_id: str, signals: list):
 # 3. deliver(user_id) — 推送
 # ============================================================
 
+def _should_push(sig: dict) -> bool:
+    """判断单条信号是否值得推送
+
+    规则：
+      1. relevance >= 50（命中持仓代码，或命中关键标签）→ 推送
+      2. level == "danger" 且**不是**个股事件类 → 推送
+         （宏观/市场类信号无具体标的，全市场用户都受影响，保留放行）
+      3. 其余 → 不推送
+
+    ⚠️ 原实现是 `relevance >= 50 or level == "danger"`，右半支让**所有**
+    全市场 danger 级信号绕过持仓匹配直接推送，与文件头"公共信号 → 按持仓
+    私有化 → 再推送"的定位冲突，是用户收到无关标的推送的根本原因。
+    """
+    if _safe_float(sig.get("relevance"), 0.0) >= 50:
+        return True
+    if sig.get("level") == "danger" and sig.get("type") not in _HOLDING_REQUIRED_TYPES:
+        return True
+    return False
+
+
 def deliver(user_id: str, signals: list = None) -> dict:
     """
     推送信号到企微
     只推高相关性(≥50)或危险级别的信号，避免骚扰
+
+    ⚠️ danger 级不再无条件放行：个股事件类信号（unlock/holder_change/
+    pledge_risk/st_warning/dividend/announcement）必须命中持仓才推，
+    详见 _HOLDING_REQUIRED_TYPES 的注释与 _should_push()。
     """
     if signals is None:
         signals = match(user_id)
 
-    important = [s for s in signals if s.get("relevance", 0) >= 50 or s.get("level") == "danger"]
+    important = [s for s in signals if _should_push(s)]
     if not important:
         return {"pushed": 0, "reason": "无重要信号"}
 
     # 构建推送文本（纯文本，不用 Markdown — 铁律 #20）
     lines = [f"📡 信号侦察 ({len(important)}条)"]
     for s in important[:8]:
-        icon = SIGNAL_TYPES.get(s["type"], "📌")
+        icon = SIGNAL_TYPES.get(s.get("type", ""), "📌")
+        title = str(s.get("title", "") or "")
         holding = f" → {s['related_holding']}" if s.get("related_holding") else ""
-        lines.append(f"{icon} {s['title']}{holding}")
+        # 带上 content：解禁日、解禁数量等关键信息此前被整段丢弃，
+        # 用户只看到"某代码 解禁X%"，无法判断"什么时候、多少"。
+        content = str(s.get("content", "") or "").strip()
+        line = f"{icon} {title}{holding}"
+        if content and content != title:
+            line += f"\n   {content}"
+        lines.append(line)
 
     text = "\n".join(lines)
 
@@ -665,3 +789,100 @@ def _extract_codes_from_text(text: str) -> list:
     import re
     codes = re.findall(r'\b(\d{6})\b', text)
     return list(set(codes))[:5]
+
+
+def _safe_float(value, default: float = 0.0) -> float:
+    """安全转 float，非有限值（inf / nan）也按 default 处理
+
+    Tushare 返回值类型不稳定（None / "" / "1.23" / 123 / "1,234" 都出现过），
+    脏值一律按 default 返回，不抛异常。
+
+    ⚠️ 为什么要把 inf / nan 也当脏值：它们能穿过 float() 不报错，但会让
+    后续算术和格式化全线崩坏（x + inf = inf、int(inf) → OverflowError、
+    int(nan) → ValueError），而本模块的调用点大多被 try/except 包着只 print
+    —— 结果是整批信号**静默丢弃**，日志里只有一行，线上根本看不出来。
+    """
+    if value is None:
+        return default
+    try:
+        parsed = float(value)
+    except (TypeError, ValueError):
+        return default
+    return parsed if math.isfinite(parsed) else default
+
+
+def _lookup_stock_name(ts_code: str) -> str:
+    """查询股票名称；拿不到时返回空串，由调用方降级显示代码
+
+    复用 services.tushare_data._get_stock_names() —— 它内部用 stock_basic
+    一次性拉全量并缓存 24 小时，因此**不会**为补充名称而新增每次推送的
+    网络请求（硬约束）。
+
+    不用 services.stock_monitor._get_stock_name()：那个走 akshare 全量列表
+    且无缓存，每查一个代码就是一次全量网络拉取。
+
+    Args:
+        ts_code: Tushare 格式代码，如 "301563.SZ"。
+
+    Returns:
+        股票名称；查不到或数据源故障时返回 ""。
+    """
+    global _name_map_attempt_ts
+
+    ts_code = str(ts_code or "").strip()
+    if not ts_code:
+        return ""
+    if ts_code in _name_cache:
+        return _name_cache[ts_code]
+
+    name = ""
+    now = time.time()
+    # 名称映射拉不到时做冷却，避免每个代码都重复打一次数据源
+    if now - _name_map_attempt_ts >= _NAME_MAP_RETRY_TTL:
+        try:
+            from services.tushare_data import _get_stock_names
+            mapping = _get_stock_names() or {}
+            if mapping:
+                _name_cache.update({k: str(v or "") for k, v in mapping.items()})
+                name = _name_cache.get(ts_code, "")
+            else:
+                _name_map_attempt_ts = now
+        except Exception as e:
+            _name_map_attempt_ts = now
+            print(f"[SIGNAL_SCOUT] stock name lookup failed: {e}")
+
+    _name_cache.setdefault(ts_code, name)
+    return name
+
+
+def _fmt_signal_date(value) -> str:
+    """把 Tushare 日期（20260930 / 2026-09-30）规范成 YYYY-MM-DD
+
+    拿不到或格式异常时返回 "待定"，保证信号不会因为日期脏而丢失。
+    """
+    raw = str(value or "").strip()
+    if len(raw) == 8 and raw.isdigit():
+        return f"{raw[:4]}-{raw[4:6]}-{raw[6:8]}"
+    if len(raw) == 10 and raw[4] == "-":
+        return raw
+    return "待定"
+
+
+def _fmt_number(value: float) -> str:
+    """数字千分位格式化（万股），整数不带小数点
+
+    ⚠️ 必须吞掉一切异常、绝不外抛：本函数在 _collect_unlock_signals() 的
+    循环里被调用，而那个循环外层 try/except 只 print —— 一旦这里抛
+    （int(inf) → OverflowError、int(nan) → ValueError），**该条及其后所有**
+    解禁信号都会被静默丢弃，产出从 3 条变 1 条且无人报警。
+    非有限值降级为 str(value)（"inf" / "nan"），宁可显示得难看，
+    也不能让脏数据吃掉同批次的其他信号。
+    """
+    try:
+        if not math.isfinite(value):
+            return str(value)
+        if value == int(value):
+            return f"{int(value):,}"
+        return f"{value:,.2f}"
+    except (TypeError, ValueError, OverflowError):
+        return str(value)

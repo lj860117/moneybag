@@ -19,6 +19,7 @@ MODULE_META = {
     "priority": 1,
 }
 import os
+import math
 import time
 import json
 import urllib.request
@@ -369,8 +370,44 @@ def get_pledge_stat(code: str = "") -> list:
 # 7. 限售股解禁（signal_scout P0 数据源）
 # ============================================================
 
-def get_upcoming_unlocks(days: int = 30) -> list:
-    """获取未来N天的限售股解禁计划"""
+def get_upcoming_unlocks(days: int = 30, limit: int = 30) -> list:
+    """获取未来N天的限售股解禁计划（已按 (ts_code, float_date) 聚合）
+
+    ⚠️ 口径修正：Tushare share_float 是**按股东逐行**返回的 —— 同一只股票
+    同一天的解禁会拆成多行，每行一个股东。原实现直接取单行 float_ratio，
+    把"某个股东的一笔"当成了"这只票当天的解禁总量"，后果有两个：
+      1. 严重低估真实冲击（实例：301563.SZ 在 2026-09-30 当天合计解禁
+         占流通股本 181.77%，单笔股东行只显示 7.68%）；
+      2. 同一只股票同一天解禁会产生多条重复信号。
+
+    现在改为：先按 (ts_code, float_date) 聚合（float_share / float_ratio
+    求和，记录股东数 holder_count 与股东名 holder_names），**再**按合计
+    比例降序排序，**最后**才截断 Top limit —— 顺序不能反，否则排序算法
+    看到的是残缺分母，且同一只票的多笔解禁会被截断拆散。
+
+    容错：Tushare 返回值类型不稳定（None / "" / "1.23" / 123 都出现过），
+    聚合统一走 _finite_float() 安全转换，脏值（含 inf / nan）按 0 累加，
+    绝不抛异常。
+
+    Args:
+        days: 向前看多少天，默认 30。
+        limit: 聚合排序后返回的条数上限，默认 30。
+
+    Returns:
+        list[dict]，每条:
+        {
+            "ts_code": "301563.SZ",
+            "float_date": "20260930",
+            "float_share": 3478.0,      # 当日合计解禁股数（万股）
+            "float_ratio": 181.77,      # 当日合计占流通股本比例（%）
+            "holder_count": 3,          # 去重后的股东数 = len(holder_names)
+            "holder_names": ["A", "B"], # 去重后的股东名称
+        }
+
+        注：holder_count 与 holder_names **同口径**（都是去重后的名字数），
+        不按行数计数 —— 同一股东持有多笔不同类型的限售股会占多行。
+        全部行都没有股东名时 holder_count = 0，调用方应降级为不显示该字段。
+    """
     from datetime import datetime, timedelta
     start = datetime.now().strftime("%Y%m%d")
     end = (datetime.now() + timedelta(days=days)).strftime("%Y%m%d")
@@ -380,8 +417,46 @@ def get_upcoming_unlocks(days: int = 30) -> list:
         {"start_date": start, "end_date": end},
         "ts_code,float_date,float_share,float_ratio,holder_name,share_type",
     )
-    # 按解禁比例降序
-    return sorted(rows, key=lambda x: x.get("float_ratio", 0) or 0, reverse=True)[:30]
+    if not rows:
+        return []
+
+    # 1) 先聚合（顺序关键：聚合 → 排序 → 截断）
+    grouped: dict = {}
+    for row in rows:
+        ts_code = str(row.get("ts_code") or "").strip()
+        float_date = str(row.get("float_date") or "").strip()
+        key = (ts_code, float_date)
+        bucket = grouped.get(key)
+        if bucket is None:
+            bucket = {
+                "ts_code": ts_code,
+                "float_date": float_date,
+                "float_share": 0.0,
+                "float_ratio": 0.0,
+                "holder_count": 0,
+                "holder_names": [],
+            }
+            grouped[key] = bucket
+
+        # 用 _finite_float 而非 _to_float：inf 一旦进入求和会污染整个合计值
+        # （x + inf = inf），且后续 int(inf) 会抛 OverflowError。非有限值
+        # 与 "abc" 一样属于脏值，按 0 累加。
+        bucket["float_share"] += _finite_float(row.get("float_share"), 0.0)
+        bucket["float_ratio"] += _finite_float(row.get("float_ratio"), 0.0)
+        holder_name = str(row.get("holder_name") or "").strip()
+        if holder_name and holder_name not in bucket["holder_names"]:
+            bucket["holder_names"].append(holder_name)
+
+    # holder_count 与 holder_names 必须同口径 = **去重后的股东名数量**。
+    # 不能按行数累加：同一股东持有多笔不同类型的限售股时会占多行，
+    # 于是算出"涉及 2 个股东"但只列得出 1 个名字，文案自相矛盾。
+    # 全部行都没有股东名时 = 0，由调用方降级为不显示该字段。
+    for bucket in grouped.values():
+        bucket["holder_count"] = len(bucket["holder_names"])
+
+    # 2) 排序 3) 截断
+    merged = sorted(grouped.values(), key=lambda x: x["float_ratio"], reverse=True)
+    return merged[:limit]
 
 
 # ============================================================
@@ -1776,6 +1851,18 @@ def _to_float(value, default=0.0):
         return float(value)
     except (TypeError, ValueError):
         return default
+
+
+def _finite_float(value, default=0.0):
+    """转 float 且剔除 inf / nan（非有限值按 default 返回）
+
+    与 _to_float() 的区别：_to_float 是**通用转换**，允许 inf 通过（调用方
+    可能就是要原样透传）；本函数用于**求和/聚合**场景，inf 一旦进入累加会
+    污染整个合计值（x + inf = inf），且下游 int(inf) 会抛 OverflowError。
+    Tushare 偶发返回 "inf"/"nan"/"1e400" 一类脏值，聚合层必须在这里拦掉。
+    """
+    parsed = _to_float(value, default)
+    return parsed if math.isfinite(parsed) else default
 
 
 
