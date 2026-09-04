@@ -463,8 +463,18 @@ def test_both_holdings_stock_name_wins_for_stock_event(ss, monkeypatch):
 
 
 def test_macro_type_still_matches_fund_code(ss, monkeypatch):
-    """回归：非个股事件类仍沿用「股票+基金」合并视图，行为没有回退。"""
-    _set_holdings(monkeypatch, stocks=[], funds=[("002163", "东方惠新灵活配置混合C")])
+    """回归：非个股事件类仍沿用「股票+基金」合并视图，行为没有回退。
+
+    ⚠️ 用【混合账户】（持股 + 基金）而非纯基金账户：C 方案接缝
+    build_signal_pool 对纯基金账户会绕过 collect()（只跑 news+technical +
+    基金信号），而本测试要验证的是 match() 的匹配逻辑，必须让 collect()
+    仍在调用路径上，因此给账户加一只占位股票。
+    """
+    _set_holdings(
+        monkeypatch,
+        stocks=[("000001", "平安银行")],
+        funds=[("002163", "东方惠新灵活配置混合C")],
+    )
     monkeypatch.setattr(ss, "collect", lambda: [{
         "type": "news_market",
         "title": "002163 相关市场消息",

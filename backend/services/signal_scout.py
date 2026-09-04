@@ -96,6 +96,19 @@ _HOLDING_REQUIRED_TYPES = {
     "announcement",
 }
 
+# ---- 基金信号专用类型（C 方案）----
+# 这四类信号由 fund_signal 包产出，render._signal() 已自带 relevance：
+#   100 = 推送级，40 = 仅前端（被 budget.gate 砍掉预算后降级）。
+# 它们的 relevance 已在预算守门阶段定稿，match() 不得再走「codes 命中 →
+# 重算 100」的公共逻辑，否则超预算被砍到 40 的信号会因 codes 命中基金代码
+# 被覆盖回 100 照推，预算守门失效。契约见 docs/design/signal-scout-fund-account.md §3.1/§3.4。
+_FUND_SIGNAL_TYPES = {
+    "fund_xray_concentration",
+    "fund_manager_change",
+    "fund_drawdown_rung",
+    "dca_preflight",
+}
+
 # ---- 单位换算 ----
 #
 # Tushare 的**股数类**字段（share_float.float_share、stk_holdertrade.change_vol）
@@ -502,10 +515,6 @@ def match(user_id: str) -> list:
     将公共信号与用户持仓匹配
     返回: 按相关性排序的信号列表，每条附加 relevance 和 holding_name
     """
-    all_signals = collect()
-    if not all_signals:
-        return []
-
     # 获取用户持仓代码
     #
     # ⚠️ 股票代码与基金代码**都是 6 位数字且会重叠**（实例：002163 既是深市
@@ -536,11 +545,34 @@ def match(user_id: str) -> list:
     # 基金后写入 → 代码冲突时基金名覆盖股票名，与原实现（先股票后基金）一致。
     user_all_codes = {**user_stock_codes, **user_fund_codes}
 
+    # ---- 基金账户专用通道（C 方案唯一接缝）----
+    # 纯基金账户：跳过 unlock/holder_change/fund_flow，追加 P0-1/P0-2/P0-3/P1-1 基金信号；
+    # 持股/混合账户：原样 collect()，行为零变更。契约见 docs/design/signal-scout-fund-account.md §3.2。
+    from services.fund_signal import build_signal_pool
+    all_signals = build_signal_pool(user_id, user_stock_codes, user_fund_codes)
+    if not all_signals:
+        return []
+
     matched = []
     for sig in all_signals:
+        sig_type = sig.get("type", "")
+
+        # 基金信号专用通道（C 方案）：relevance 已在 budget.gate 定稿
+        # （100=推送 / 40=仅前端），此处直接沿用，不走下方「codes 命中 →
+        # 重算 100」的公共逻辑；否则被砍到 40 的信号会因 codes 命中基金代码
+        # 被覆盖回 100 照推，预算守门失效。详见 _FUND_SIGNAL_TYPES 注释。
+        if sig_type in _FUND_SIGNAL_TYPES:
+            relevance = _safe_float(sig.get("relevance"), 0.0)
+            if relevance > 0:
+                matched.append({
+                    **sig,
+                    "relevance": relevance,
+                    "related_holding": sig.get("related_holding", ""),
+                })
+            continue
+
         relevance = 0
         related_holding = ""
-        sig_type = sig.get("type", "")
 
         # 直接代码匹配（最高相关性）
         # 个股事件类信号的 codes 里装的都是股票代码，只拿股票持仓来匹配；
@@ -612,7 +644,11 @@ def _should_push(sig: dict) -> bool:
     """
     if _safe_float(sig.get("relevance"), 0.0) >= 50:
         return True
-    if sig.get("level") == "danger" and sig.get("type") not in _HOLDING_REQUIRED_TYPES:
+    if (
+        sig.get("level") == "danger"
+        and sig.get("type") not in _HOLDING_REQUIRED_TYPES
+        and sig.get("type") not in _FUND_SIGNAL_TYPES
+    ):
         return True
     return False
 

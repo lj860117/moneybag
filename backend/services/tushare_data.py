@@ -194,6 +194,11 @@ def _call_tushare(api_name: str, params: dict, fields: str = "") -> list:
         )
         resp = json.loads(urllib.request.urlopen(req, timeout=15).read())
 
+        # B4：非 0 code 显式告警（不改返回值，零行为变更）。区分「无权限（40203）」
+        # 与「有权限但无数据（code=0）」，避免排障时把权限缺失误判成数据源挂了。
+        if resp.get("code") not in (0, None):
+            print(f"[TUSHARE] ⚠️ {api_name} code={resp.get('code')} msg={resp.get('msg')}")
+
         if resp.get("data") and resp["data"].get("items"):
             # 转换为 dict 列表
             columns = resp["data"]["fields"]
@@ -1507,17 +1512,35 @@ def get_fund_manager(code: str) -> dict:
             pass
         return {"available": False, "source": "tushare"}
     # 取当前在任的（end_date 为空的）
-    active = [r for r in rows if not r.get("end_date")]
+    # ⚠️ B1：Tushare 的 end_date 空值实测是【单个空格 ' '】，不是 ''/None，
+    # `not r.get("end_date")` 对 ' ' 求值为 False → 在任经理恒为 0 → 8 只基金
+    # 全部落到 fallback。013107 的屠环宇(20240704 已离任)与在任经理 begin_date
+    # 完全相同，fallback 会选中已离任者。必须先 strip 再判空。
+    def _is_active(r: dict) -> bool:
+        return not ((r.get("end_date") or "")).strip()
+
+    active = [r for r in rows if _is_active(r)]
     if not active:
-        active = sorted(rows, key=lambda r: r.get("begin_date", ""))[-1:]
+        # 数据仍可能脏到一条在任都判不出。此时取 begin_date 最大的一条，
+        # 但并列时显式告警，避免「静默选错人」。
+        _max_begin = max(((r.get("begin_date") or "") for r in rows), default="")
+        _tied = [r for r in rows if (r.get("begin_date") or "") == _max_begin]
+        if len(_tied) > 1:
+            print(f"[TUSHARE-MANAGER] ⚠️ {ts_code} 无在任记录且 begin_date 并列 "
+                  f"({len(_tied)} 人同日 {_max_begin})，fallback 可能选中已离任者")
+        active = _tied[-1:]
     # 计算任期年数
     from datetime import datetime
     for mgr in active:
-        begin_str = (mgr.get("begin_date") or "").replace("-", "")
+        begin_str = (mgr.get("begin_date") or "").replace("-", "").strip()
+        end_str = (mgr.get("end_date") or "").replace("-", "").strip()   # ← B1：认 end_date
         if begin_str and len(begin_str) == 8:
             try:
                 begin_dt = datetime.strptime(begin_str, "%Y%m%d")
-                mgr["tenure_years"] = round((datetime.now() - begin_dt).days / 365, 1)
+                # 已离任者任期算到 end_date，不是算到今天
+                ref_dt = (datetime.strptime(end_str, "%Y%m%d")
+                          if len(end_str) == 8 else datetime.now())
+                mgr["tenure_years"] = round((ref_dt - begin_dt).days / 365, 1)
             except Exception:
                 mgr["tenure_years"] = 0
         else:
@@ -1526,6 +1549,7 @@ def get_fund_manager(code: str) -> dict:
         "available": True,
         "source": "tushare",
         "managers": active[:5],
+        "all_managers": rows,      # ← B1：含离任记录，供 fund_signal.manager diff
     }
 
 
@@ -1546,6 +1570,35 @@ def get_fund_portfolio(code: str, period: str = "") -> dict:
     )
     if not rows:
         return {"available": False, "source": "tushare"}
+    # ---- B6：港股代码归一化 + 同标的去重 ----
+    # 实测 016501 的 20260630 期同时返回 '00981.HK'(5.83%) 与 '0981.HK'(5.83%)，
+    # 同一标的两行 → 不去重会虚增穿透集中度。归一化只有一份实现，在
+    # services.fund_signal.symbols，本处直接复用。
+    from services.fund_signal.symbols import normalize_symbol
+    _buckets: dict = {}
+    for r in rows:
+        sym = normalize_symbol(r.get("symbol", "") or "")
+        # ⚠️ 键必须带 end_date：不传 period 时 rows 可能横跨多个报告期，
+        # 只按 symbol 分桶会把 20260331 与 20260630 的权重加在一起。
+        key = (r.get("end_date", ""), sym)
+        b = _buckets.setdefault(key, {
+            "symbol": sym, "raw_symbols": [],
+            "end_date": r.get("end_date", ""), "ann_date": r.get("ann_date", ""),
+            "mkv": 0.0, "amount": 0.0,
+            "stk_mkv_ratio": 0.0, "stk_float_ratio": 0.0,
+        })
+        b["raw_symbols"].append(r.get("symbol", ""))
+        # 单位：mkv=元, amount=股, stk_mkv_ratio=%占该基金净值, stk_float_ratio=%占流通股
+        b["mkv"] += float(r.get("mkv") or 0)
+        b["amount"] += float(r.get("amount") or 0)
+        b["stk_mkv_ratio"] += float(r.get("stk_mkv_ratio") or 0)
+        b["stk_float_ratio"] += float(r.get("stk_float_ratio") or 0)
+    for b in _buckets.values():
+        if len(b["raw_symbols"]) > 1:
+            print(f"[TUSHARE-PORTFOLIO] {ts_code} {b['end_date']} 港股代码去重: "
+                  f"{b['raw_symbols']} → {b['symbol']}, 合并后权重 {b['stk_mkv_ratio']:.2f}%")
+    rows = list(_buckets.values())
+    # ---- B6 end ----
     # 同一个 end_date 内按 mkv 降序
     latest_date = max((r.get("end_date", "") for r in rows), default="")
     top_holdings = sorted(
