@@ -73,7 +73,15 @@ def load(user_id: str, name: str) -> dict:
 
 
 def save(user_id: str, name: str, data: dict) -> None:
-    """原子写入状态（tmp + os.replace）。失败只打印不抛。
+    """原子写入状态（tmp + os.replace）。失败【只告警不抛】。
+
+    设计原意：信号侦察是旁路，状态写失败绝不能阻断 match()/Pipeline。
+
+    ⚠️ 但「静默」不等于「不可见」：本函数曾因调用方用了 tuple 键导致
+    json.dumps 抛错被吞掉，快照永不落盘 → 采集器每次冷启动 → 功能等于
+    没上线，而日志里只有一行普通 print，线上完全没被发现。
+    因此失败日志带 `[WARNING]` 前缀，便于日志检索/告警命中，同时保持
+    「不抛异常、不阻断主流程」的旁路语义不变。
 
     Args:
         user_id: 用户 ID。
@@ -91,7 +99,8 @@ def save(user_id: str, name: str, data: dict) -> None:
         tmp.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
         os.replace(tmp, p)
     except Exception as e:
-        print(f"[FUND_SIGNAL] 状态 {name} 保存失败（{e}）")
+        print(f"[FUND_SIGNAL][WARNING] 状态 {name} 保存失败（{e}）｜状态未落盘，"
+              f"该采集器下次仍会走冷启动路径")
 
 
 def _backup_corrupt(p: Path) -> None:

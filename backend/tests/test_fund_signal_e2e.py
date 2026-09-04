@@ -4,6 +4,7 @@
 （预算守门、纯基金账户端到端、4 类文案纯文本 ≤8 行）。
 全部离线：不发起任何网络请求，状态用内存态，持仓/采集器全部打桩。
 """
+import json
 import sys
 from datetime import date, datetime, timedelta
 from pathlib import Path
@@ -290,6 +291,55 @@ def test_manager_cold_start_then_pairing(monkeypatch):
     out = manager.collect("u1", positions)
 
     assert len(out) == 1
+    assert out[0]["type"] == "fund_manager_change"
+    assert "张胤" in out[0]["content"] and "袁泽强" in out[0]["content"]
+
+
+def test_manager_snapshot_survives_real_disk_roundtrip(monkeypatch, tmp_path):
+    """P0-2 真·落盘往返回归：必须走真实 state.save/load + 磁盘，不能用 _FakeState。
+
+    ⚠️ 背景（线上真 bug）：`_records()` 曾用 **tuple** 作记录键，而 state.save
+    内部走 json.dumps —— JSON 不支持 tuple key，抛错后被 save 的 except 静默
+    吞掉，快照永远落不了盘，collect() 每次都判定冷启动并返回 []，P0-2 等于
+    没上线。所有存量测试用的 _FakeState 是内存 dict、不经过 JSON 序列化，
+    tuple 键在内存里完全合法，正是这个测试替身掩盖了该缺陷。
+    本用例在修复前会因「快照文件不存在」而失败，不是死测试。
+    """
+    import services.tushare_data as td
+    from services.fund_signal import state as st
+
+    # 关键点：state.py 是 `from config import DATA_DIR`，DATA_DIR 已绑定进
+    # state 模块命名空间，改 config.DATA_DIR 对 state.DATA_DIR 无效，
+    # 必须直接改 state 命名空间里的这个绑定。
+    monkeypatch.setattr(st, "DATA_DIR", str(tmp_path))
+
+    positions = [_pf("008984", "财通科技创新混合C", 12.5)]
+    ann = (datetime.now() - timedelta(days=5)).strftime("%Y-%m-%d")
+    end = (datetime.now() - timedelta(days=6)).strftime("%Y-%m-%d")
+
+    # ---- 第一轮：冷启动返回 []，但快照必须真实落盘 ----
+    monkeypatch.setattr(td, "get_fund_manager", lambda code: {
+        "available": True, "all_managers": [
+            {"name": "张胤", "begin_date": "20210927", "end_date": " ", "ann_date": ann},
+        ]})
+    assert manager.collect("u1", positions) == []
+
+    snap_path = tmp_path / "u1" / "fund_signal" / "manager_snapshot.json"
+    assert snap_path.exists(), "快照未落盘：state.save 静默失败（tuple 键不兼容 JSON）"
+
+    on_disk = json.loads(snap_path.read_text(encoding="utf-8"))
+    assert list(on_disk["funds"]["008984"].keys()) == ["张胤|2021-09-27"], \
+        "记录键必须是 `name|begin_date` 字符串，tuple 键无法 JSON 序列化"
+
+    # ---- 第二轮：张胤离任 + 袁泽强接任（begin_date 与 end_date 相差 0 天 → 配对）----
+    monkeypatch.setattr(td, "get_fund_manager", lambda code: {
+        "available": True, "all_managers": [
+            {"name": "张胤", "begin_date": "20210927", "end_date": end, "ann_date": ann},
+            {"name": "袁泽强", "begin_date": end, "end_date": " ", "ann_date": ann},
+        ]})
+    out = manager.collect("u1", positions)
+
+    assert len(out) == 1, out
     assert out[0]["type"] == "fund_manager_change"
     assert "张胤" in out[0]["content"] and "袁泽强" in out[0]["content"]
 

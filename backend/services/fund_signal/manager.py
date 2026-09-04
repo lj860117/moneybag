@@ -6,9 +6,13 @@ P0-2 基金经理变更（快照 diff + 离任/接任配对 + 30 天冷却）。
 「在任经理」恒为 0，本采集器不可用。
 
 diff 语义（关键）：
-  * 记录键 = (name, begin_date) —— 不含 end_date。这样「end_date 从空 → 非空」
-    才能被正确识别为【离任】，而不是被误判成一条「新任」记录（若把 end_date
-    放进键里，同一个人离任会同时产生一条消失 + 一条新增，配对会错）。
+  * 记录键 = f"{name}|{begin_date}"（字符串化）—— 不含 end_date。这样
+    「end_date 从空 → 非空」才能被正确识别为【离任】，而不是被误判成一条
+    「新任」记录（若把 end_date 放进键里，同一个人离任会同时产生一条消失
+    + 一条新增，配对会错）。
+  * 键【必须】是字符串：状态要经 state.save() 走 json.dumps，而 JSON 不支持
+    tuple key —— 用 tuple 会抛 TypeError 并被静默吞掉，快照永远落不了盘，
+    冷启动恒为真，P0-2 永远推不出来。详见 _records() 注释。
   * 离任：end_date 从空变非空，或记录整体消失（罕见，数据回撤）。
   * 新任：出现全新记录且仍在任（end_date 为空）。
   * 冷却：只推 ann_date 在最近 30 天内的记录（防历史回填误报）。
@@ -61,7 +65,13 @@ def _fetch(code: str) -> dict:
 
 
 def _records(rows) -> dict:
-    """把 fund_manager 行转成 {(name, begin_date): record}。
+    """把 fund_manager 行转成 {"name|begin_date": record}。
+
+    ⚠️ 键必须字符串化，不能用 tuple：state.save() 内部走 json.dumps，
+    而 JSON 不支持 tuple key —— 用 tuple 会抛 TypeError 并被 save() 的
+    except 静默吞掉（只 print 一行），结果是快照永远落不了盘、collect()
+    每次都是冷启动、P0-2 基金经理变更永远推不出来。
+    分隔符用 `|`：经理姓名与 YYYY-MM-DD 均不含该字符，不会产生歧义键。
 
     仅保留能定位身份的行（name 非空）；日期统一成 YYYY-MM-DD。
     """
@@ -70,10 +80,11 @@ def _records(rows) -> dict:
         name = str(r.get("name") or "").strip()
         if not name:
             continue
-        key = (name, _norm_date(r.get("begin_date")))
+        begin = _norm_date(r.get("begin_date"))
+        key = f"{name}|{begin}"
         rec[key] = {
             "name": name,
-            "begin_date": _norm_date(r.get("begin_date")),
+            "begin_date": begin,
             "end_date": _norm_date(r.get("end_date")),
             "ann_date": _norm_date(r.get("ann_date")),
         }
