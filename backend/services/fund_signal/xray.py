@@ -222,7 +222,14 @@ def decide_emit(result: XrayResult, portfolios: dict, state: dict) -> bool:
         if not isinstance(pf, dict) or not pf.get("ok"):
             continue
         ed = _norm_date(pf.get("end_date"))
-        if ed and last.get(code) != ed:
+        # ⚠️ 两边必须都规范化再比：last_end_dates 里存的是调用方【原样写入】的
+        # pf["end_date"]（见 fund_signal/__init__.py _collect_fund_signals，
+        # Tushare 原始格式是 YYYYMMDD），而 ed 已被 _norm_date 转成 YYYY-MM-DD。
+        # 不规范化 last 侧 → "20260630" != "2026-06-30" 恒成立 →
+        # new_period 恒为 True → P0-1 每次 match() 都重推，冷启动「只推一次」
+        # 的语义彻底失效（2026-09-05 线上实测：已 baseline_sent 仍返回 True）。
+        last_ed = _norm_date(last.get(code))
+        if ed and last_ed != ed:
             new_period = True
             break
     return bool(new_period and result.triggered_rules)

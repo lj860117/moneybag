@@ -31,25 +31,66 @@ pip install -r requirements-dev.txt      # 开发+测试依赖
 
 ### 跑测试
 
+绝大多数测试是**纯 pytest 单元测试**（不需要后端运行）。只有 `online_only` /
+`MB_TEST_HOST` 相关用例才需要后端在跑。
+
 ```bash
-# 跑所有测试（需要后端在 8000 端口运行）
-pytest tests/
+cd backend
 
-# 跑单个测试文件
-pytest tests/test_skeleton_m1.py -v
+# 跑全部测试（推荐写法：不要设 DATA_DIR，见下方「数据隔离」）
+python3 -m pytest tests/ -q
 
-# 跑单个测试函数
-pytest tests/test_red_team.py::test_xxx -v
-
-# 并行跑（快）
-pytest tests/ -n auto
+# 跑单个文件 / 单个用例
+python3 -m pytest tests/test_fund_signal_render_dca.py -v
+python3 -m pytest tests/test_fund_signal_combo_caliber.py::test_xxx -v
 
 # 跳过需要 LLM 的慢测试
-pytest tests/ -m "not llm_heavy"
+python3 -m pytest tests/ -m "not llm_heavy" -q
 
-# 针对线上服务跑
-MB_TEST_HOST=http://150.158.47.189:8000 pytest tests/
+# 针对线上服务跑（需要后端在 8000 端口运行）
+MB_TEST_HOST=http://150.158.47.189:8000 python3 -m pytest tests/ -q
 ```
+
+#### 数据隔离（机制强制，不是人肉纪律）
+
+`backend/tests/conftest.py` 在**模块顶层**（早于任何 `test_*.py` 被 import）执行：
+
+1. 若未设 `DATA_DIR` → 自动 `tempfile.mkdtemp(prefix="moneybag_pytest_data_")` 并写入环境变量
+2. `pytest_sessionfinish` 在整个会话结束后 `shutil.rmtree` 清理
+3. autouse fixture `_clear_secret_env_pollution` 清空 `TUSHARE_TOKEN` 等 13 个密钥类环境变量
+
+⚠️ **不要手动设 `DATA_DIR` 指向生产路径** —— 显式设置会绕过兜底，测试就会读写真实数据。
+（2026-09-01 事故：`test_phase3_services.py` 未隔离，13 个用例真实写入生产 `data/users/`。）
+
+#### 本地 vs 服务器：哪里才是权威
+
+本地缺 `akshare` / `tushare` / `pandas` / `httpx` 等依赖，全量跑会有约 140 条
+`ModuleNotFoundError` / `PermissionError` 失败，**与改动无关**。判断回归与否请：
+
+```bash
+# 服务器才是权威（557 passed / 0 failed @ v9.9.7）
+ssh -i ~/.ssh/id_ed25519 ubuntu@150.158.47.189
+cd /opt/moneybag/backend && ../venv/bin/python -m pytest tests/ -q
+```
+
+本地要和基线对比时，用 `git archive` 导出干净基线到临时目录同法跑，**不要用 `git stash`**
+（会打断正在编辑的工作区）：
+
+```bash
+git archive <baseline-sha> | tar -x -C /tmp/mb_baseline
+cd /tmp/mb_baseline/backend && python3 -m pytest tests/ -q
+```
+
+#### 沙箱环境已知坑
+
+沙箱 shim 会把「对已存在目录调用 `mkdir(exist_ok=True)`」误判为越权，报
+`PermissionError: EEXIST`。每次跑测试都要用**全新**临时目录：
+
+```bash
+DD=$(mktemp -d); TD=$(mktemp -d); DATA_DIR=$DD TMPDIR=$TD python3 -m pytest tests/ -q
+```
+
+（这是沙箱假象，服务器上不会出现；复用上次的目录会再次触发。）
 
 ### 类型检查 & 架构门禁
 
@@ -103,7 +144,7 @@ pages/             # 前端页面模块（M7 拆分后，每个 render*() 独立
 styles.css         # 全局样式（不拆，不改框架）
 index.html         # 单页入口，按顺序加载 app.js 后加载所有 pages/*.js
 sw.js              # Service Worker（PWA 离线缓存）
-tests/             # 集成测试（httpx 直连后端，不做 mock）
+tests/             # 测试（主体为纯 pytest 单测；少量集成用例 httpx 直连后端不 mock）
 ```
 
 ### 四层单向依赖（强制约束，import-linter 门禁）
@@ -196,11 +237,16 @@ api/ → use_cases/ → domain/ → infra/
 
 ## 测试说明
 
-- 测试通过 httpx 直连运行中的后端（不 mock），需要后端先启动
+- **主体是纯 pytest 单元测试**（557 条 @ v9.9.7），**不需要后端运行**。
+  只有少量集成用例才通过 httpx 直连后端（不 mock）
 - `conftest.py` 提供 `client` fixture（自动探活，服务未起则 `pytest.skip`）
 - 测试账号：`qa_test_20260419`（环境变量 `MB_TEST_USER` 可覆盖）
 - `llm_heavy` 标记的测试会调 LLM，耗时且消耗 token，CI 可跳过
 - `online_only` 标记的测试仅在线上 host 有意义
+- 数据隔离机制见「跑测试 → 数据隔离」——**不要手动把 `DATA_DIR` 指向生产路径**
+- ⚠️ `test_user` 是**代码中在用的测试 user id**（`app.js` 黑名单 + 几十个测试用例）。
+  服务器上若出现 `data/test_user` 这类残留目录，是历史测试未隔离时写入的数据垃圾，
+  可删；但删前先确认当前代码没有依赖它
 
 ---
 

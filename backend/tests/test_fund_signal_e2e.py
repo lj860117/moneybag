@@ -196,8 +196,12 @@ def test_budget_monthly_limit_across_days(monkeypatch):
     fs = _patch_state(monkeypatch, _FakeState())
 
     def run(day):
+        """走完整链路：gate() 判额度 → 挑出推送级 → commit() 记账。"""
         sigs = [_sig("fund_drawdown_rung") for _ in range(2)]
-        return budget.gate("u1", sigs, now=datetime(2026, 9, day, 8, 0, 0))
+        gated = budget.gate("u1", sigs, now=datetime(2026, 9, day, 8, 0, 0))
+        budget.commit("u1", [s for s in gated if s["relevance"] == 100],
+                      now=datetime(2026, 9, day, 8, 0, 0))
+        return gated
 
     d1, d2, d3 = run(4), run(5), run(6)
 
@@ -205,6 +209,100 @@ def test_budget_monthly_limit_across_days(monkeypatch):
     assert sum(1 for s in d2 if s["relevance"] == 100) == 2
     # 第 3 天：月额度 4 已用满 → 全部降级
     assert all(s["relevance"] == 40 for s in d3), [s["relevance"] for s in d3]
+
+
+# ============================================================
+# T05b：gate() 只读 / commit() 才记账（2026-09-05 线上实测回归）
+# ============================================================
+# 线上 bug：gate() 在 match() 里被 /api/signals 前端轮询反复调用，而它同时
+# 负责记账 → 日额度 2 条在 1 秒内被两次「页面浏览」烧光（实测
+# 2026-09-05T00:20:10 与 00:20:11 两条记录）。真正 deliver() 时所有基金信号
+# 已被砍成 relevance=40 → _should_push(40 < 50) 不过 → 返回「无重要信号」，
+# 信号侦察【永远推不出去】且无任何报错。
+#
+# 修复：gate() 只判额度不写账；deliver() 推送成功后调 commit() 才记账。
+
+def test_gate_is_read_only_repeated_calls_do_not_consume_budget(monkeypatch):
+    """gate() 连调 10 次，push_log 必须一条都不涨。"""
+    fs = _patch_state(monkeypatch, _FakeState())
+
+    for _ in range(10):
+        sigs = [_sig("fund_xray_concentration"), _sig("fund_drawdown_rung")]
+        out = budget.gate("u1", sigs, now=datetime(2026, 9, 4, 8, 0, 0))
+        # 每次都得是同样的判决：日额度 2 → 两条都放行
+        assert [s["relevance"] for s in out] == [100, 100], [s["relevance"] for s in out]
+
+    log = fs.store.get(("u1", "push_log"))
+    assert log is None or not log.get("2026-09"), f"gate() 不该写 push_log，实际={log}"
+
+
+def test_commit_records_only_after_deliver(monkeypatch):
+    """gate() 不记账，commit() 才记账 —— 且只记推送级基金信号。"""
+    fs = _patch_state(monkeypatch, _FakeState())
+    now = datetime(2026, 9, 4, 8, 0, 0)
+
+    sigs = [_sig("fund_xray_concentration"), _sig("fund_drawdown_rung"),
+            _sig("fund_xray_concentration")]
+    gated = budget.gate("u1", sigs, now=now)
+    kept = [s for s in gated if s["relevance"] == 100]
+    dropped = [s for s in gated if s["relevance"] == 40]
+    assert len(kept) == 2 and len(dropped) == 1
+
+    # gate 之后仍未记账
+    assert not (fs.store.get(("u1", "push_log")) or {}).get("2026-09")
+
+    n = budget.commit("u1", kept, now=now)
+    assert n == 2
+    log = fs.store[("u1", "push_log")]
+    assert len(log["2026-09"]) == 2
+
+    # 被砍到 40 的信号不得再计入额度
+    assert budget.commit("u1", dropped, now=now) == 0
+    assert len(fs.store[("u1", "push_log")]["2026-09"]) == 2
+
+
+def test_commit_ignores_non_fund_signals(monkeypatch):
+    """普通公共信号（unlock 等）不在 BUDGET_PRIORITY 里，不得占基金信号额度。"""
+    fs = _patch_state(monkeypatch, _FakeState())
+    now = datetime(2026, 9, 4, 8, 0, 0)
+
+    assert budget.commit("u1", [_sig("unlock"), _sig("macro_danger")], now=now) == 0
+    assert not (fs.store.get(("u1", "push_log")) or {}).get("2026-09")
+
+
+def test_deliver_commits_budget_only_when_send_succeeds(monkeypatch):
+    """deliver() 在 send_text 成功时才记账；发送失败不得占额度。"""
+    fs = _patch_state(monkeypatch, _FakeState())
+
+    sent = {"ok": True, "n": 0}
+
+    class _FakeWxwork:
+        @staticmethod
+        def is_configured():
+            return True
+
+        @staticmethod
+        def send_text(text, user_id=None, **kw):
+            sent["n"] += 1
+            return {"ok": sent["ok"]}
+
+    import sys as _sys
+    import types as _types
+    fake_mod = _types.ModuleType("services.wxwork_push")
+    fake_mod.is_configured = _FakeWxwork.is_configured
+    fake_mod.send_text = _FakeWxwork.send_text
+    monkeypatch.setitem(_sys.modules, "services.wxwork_push", fake_mod)
+
+    matched = [_sig("fund_xray_concentration"), _sig("fund_drawdown_rung")]
+
+    signal_scout.deliver("u1", matched)
+    assert sent["n"] == 1
+    assert len(fs.store[("u1", "push_log")]["2026-09"]) == 2, "推送成功应记账 2 条"
+
+    # 发送失败 → 不记账
+    sent["ok"] = False
+    signal_scout.deliver("u1", matched)
+    assert len(fs.store[("u1", "push_log")]["2026-09"]) == 2, "推送失败不得占额度"
 
 
 # ============================================================

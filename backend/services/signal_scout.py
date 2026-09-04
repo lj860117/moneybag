@@ -690,6 +690,17 @@ def deliver(user_id: str, signals: list = None) -> dict:
         if is_configured():
             result = send_text(text, user_id=user_id)  # FIX: 使用正确的参数名 user_id
             pushed = result.get("ok", False)
+            if pushed:
+                # 推送成功后才记账：日/月额度的口径必须是「实际发出去的条数」，
+                # 不是「match() 被调用的次数」。budget.gate() 在 match() 里只
+                # 判额度不写账；这里才是唯一该记账的地方。
+                # 失败不记账 —— 没发出去就不该占额度。
+                try:
+                    from services.fund_signal.budget import commit as _budget_commit
+                    _budget_commit(user_id, important)
+                except Exception as ce:
+                    # 记账失败绝不能让已成功的推送变成失败返回。
+                    print(f"[SIGNAL_SCOUT][WARNING] 推送预算记账失败（{ce}）")
             return {"pushed": len(important) if pushed else 0, "text": text}
     except Exception as e:
         print(f"[SIGNAL_SCOUT] push failed: {e}")

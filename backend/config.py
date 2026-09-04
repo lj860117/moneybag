@@ -120,7 +120,7 @@ LLM_MODEL = os.environ.get("LLM_MODEL", "deepseek-v4-flash")
 TUSHARE_TOKEN = os.environ.get("TUSHARE_TOKEN", "")
 
 # ---- 版本号（Phase 1 更新）----
-APP_VERSION = "9.9.7"
+APP_VERSION = "9.9.8"
 
 # ---- v9.5.123: API 鉴权 ----
 # 每个用户一个token，格式: userId:token（环境变量或data/auth_tokens.json）

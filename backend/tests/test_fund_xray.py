@@ -137,3 +137,40 @@ def test_decide_emit_new_period_with_rule_is_true():
     state = {"baseline_sent": True, "last_end_dates": {
         "013107": "2026-03-31", "007356": "2026-03-31"}}  # 新的 06-30 报告期
     assert xray.decide_emit(result, PORTFOLIOS, state) is True
+
+
+# ------------------------------------------------------------------
+# 2026-09-05 线上实测回归：last_end_dates 的日期格式必须两边都规范化
+# ------------------------------------------------------------------
+# 线上 bug：fund_signal/__init__.py 把 pf["end_date"]【原样】写进 state
+# （Tushare 原始格式 "20260630"），而 decide_emit 拿它跟 _norm_date() 之后
+# 的 "2026-06-30" 直接比字符串 → 永远不等 → new_period 恒为 True →
+# P0-1 每次 match() 都重推，冷启动「只推一次」语义失效。
+#
+# 上方 test_decide_emit_same_period_no_rerun 用的是【已规范化】的
+# "2026-06-30" 写 state，与线上写入形状不一致，所以测不出这个 bug。
+# 下面两个用例刻意复刻线上写入形状（YYYYMMDD）。
+
+def test_decide_emit_same_period_no_rerun_when_state_stores_raw_yyyymmdd():
+    """线上真实形状：state 里存 Tushare 原始 YYYYMMDD → 同报告期不得重推。"""
+    result = xray.compute_exposure(POSITIONS, PORTFOLIOS, SW_MAP, "sw_l2")
+    state = {"baseline_sent": True, "last_end_dates": {
+        "013107": "20260630", "007356": "20260630"}}   # ← 原样写入，未规范化
+    assert xray.decide_emit(result, PORTFOLIOS, state) is False
+
+
+def test_decide_emit_mixed_date_formats_in_state_still_matches():
+    """新旧格式混存（历史状态 + 新写入）时也不能误判为新报告期。"""
+    result = xray.compute_exposure(POSITIONS, PORTFOLIOS, SW_MAP, "sw_l2")
+    state = {"baseline_sent": True, "last_end_dates": {
+        "013107": "20260630",          # 旧：YYYYMMDD
+        "007356": "2026-06-30"}}       # 新：已规范化
+    assert xray.decide_emit(result, PORTFOLIOS, state) is False
+
+
+def test_decide_emit_blank_state_date_counts_as_new_period():
+    """state 里是空串（QDII 盲区基金写进去的 ""）→ 视为未见过的报告期。"""
+    result = xray.compute_exposure(POSITIONS, PORTFOLIOS, SW_MAP, "sw_l2")
+    state = {"baseline_sent": True, "last_end_dates": {
+        "013107": "20260630", "007356": ""}}
+    assert xray.decide_emit(result, PORTFOLIOS, state) is True
