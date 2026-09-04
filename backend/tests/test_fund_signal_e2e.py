@@ -20,6 +20,7 @@ import services.fund_signal as fund_signal
 from services.fund_signal import budget, dca, drawdown, manager, render, xray
 from services.fund_signal import state as real_state
 from services.fund_signal.portfolio import FundPosition
+from services.fund_signal.xray import Coverage, IndustryExposure, XrayResult
 
 
 class _FakeState:
@@ -464,4 +465,85 @@ def test_render_dca_is_plain_text_within_8_lines():
 
     assert sig is not None
     assert len(sig["content"].split("\n")) <= 8, sig["content"]
-    assert "相对成本净值" in sig["content"]
+    assert "相对成本" in sig["content"]
+    # 口径标注必须跟着 combo_cost_pct（口径 A）走：写「按市值加权」等于把 A 说成 B，
+    # 而 B ≥ A 恒成立 —— 用户会以为自己亏得比实际少。
+    assert "按持仓成本加权" in sig["content"], sig["content"]
+    assert "按市值加权" not in sig["content"], sig["content"]
+
+
+# ============================================================
+# T05 补：定投结论行的行业名必须来自穿透数据，不是硬编码
+# ============================================================
+
+_CONCLUSION_TAIL = "集中度将进一步上升"
+
+
+def _xray_with_top_industry(industry: str, exposure_pct: float = 30.0) -> XrayResult:
+    """构造「第一大行业 = industry」的 xray（industries 为空列表时传 industry=None）。"""
+    cov = Coverage(
+        penetrated_pct=exposure_pct, blind_pct=0.0,
+        residual_pct=round(100.0 - exposure_pct, 2), blind_funds=[],
+        end_date="2026-06-30", ann_date="2026-07-21", lag_days=21,
+        industry_source="sw_l2",
+    )
+    industries = [] if industry is None else [IndustryExposure(industry=industry,
+                                                              exposure_pct=exposure_pct)]
+    return XrayResult(industries=industries, stocks=[], coverage=cov,
+                      triggered_rules=["R1_industry_concentration"] if industries else [])
+
+
+def _minimal_dca_snap(xray_obj) -> dict:
+    """只带组合口径与 xray 的最小快照（其余字段为空，render_dca 会跳过）。"""
+    return {
+        "combo_cost_pct": -2.2, "rows": [], "deepest": None, "best": None,
+        "gainers": [], "losers": [], "xray": xray_obj, "nav_date": "20260924",
+    }
+
+
+def test_render_dca_conclusion_names_top_industry_from_xray():
+    """第一大行业是「半导体」→ 结论行写「半导体」，且全篇不出现硬编码的「科技成长」。
+
+    防死测试：前半句（含行业名）同时证明这一行**确实输出了**，否则后半句
+    「不出现科技成长」会因为「整行没输出」而平凡通过。
+    """
+    xr = _xray_with_top_industry("半导体")
+    sig = render.render_dca(_minimal_dca_snap(xr), [_pf("013107", "华夏先进制造", 17.1)])
+
+    assert sig is not None
+    content = sig["content"]
+    assert f"本期定投若仍投向半导体，{_CONCLUSION_TAIL}" in content, content
+    assert "科技成长" not in content, content
+
+
+def test_render_dca_conclusion_follows_a_different_top_industry():
+    """换成「白酒Ⅱ」后结论行跟着变 —— 证明上面那条不是换了个词硬编码。"""
+    xr = _xray_with_top_industry("白酒Ⅱ")
+    sig = render.render_dca(_minimal_dca_snap(xr), [_pf("013107", "华夏先进制造", 17.1)])
+
+    content = sig["content"]
+    assert f"本期定投若仍投向白酒Ⅱ，{_CONCLUSION_TAIL}" in content, content
+    assert "半导体" not in content, content
+    assert "科技成长" not in content, content
+
+
+def test_render_dca_omits_conclusion_line_when_no_industry_data():
+    """xray 缺失 / industries 为空 → 整行不输出，且不作任何硬编码 fallback。
+
+    ⚠️ 只覆盖 xray=None 与 industries=[] 两种：生产路径传进来的永远是 XrayResult
+    dataclass，必有 industries 字段。故意不覆盖「鸭子对象没有 industries 属性」——
+    那种输入会先在 render.py:249 的集中度提醒段 AttributeError，属于本用例之外的
+    既有隐患，补它会让这条测试断言一个并不存在的契约。
+    """
+    for xray_obj in (None, _xray_with_top_industry(None)):
+        sig = render.render_dca(_minimal_dca_snap(xray_obj),
+                                [_pf("013107", "华夏先进制造", 17.1)])
+        assert sig is not None
+        content = sig["content"]
+        # 整行不输出：结论行的任何一部分都不该出现
+        assert _CONCLUSION_TAIL not in content, content
+        assert "本期定投若仍投向" not in content, content
+        # 更严的要求：硬编码行业词在任何位置都不该出现
+        assert "科技成长" not in content, content
+        # 其余文案照常输出（证明是「跳过这一行」而不是「整个渲染失败」）
+        assert "组合整体：相对成本 -2.2%" in content, content

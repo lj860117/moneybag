@@ -229,8 +229,11 @@ def render_dca(snap: dict, positions: list) -> dict:
     title = (f"🗓️ 定投前瞻｜{pay_day} 号扣款，组合相对成本 {combo_s}，"
              f"{len(gainers)} 浮盈 {len(losers)} 浮亏")
 
+    # ⚠️ 括号里的口径标注必须跟着 combo_cost_pct 走：它是【口径 A / 成本加权】
+    # （Σmv/Σcost-1，见 dca.py 模块 docstring）。写「按市值加权」会把 A 说成 B，
+    # 而 B ≥ A 恒成立 —— 用户会以为自己亏得比实际少。改数字不改这里就是错的。
     lines = [f"数据截止 {_fmt_md(snap.get('nav_date', ''))}（QDII 滞后 2 天）",
-             f"组合整体：相对成本净值 {combo_s}（{total} 只基金按市值加权）"]
+             f"组合整体：相对成本 {combo_s}（{total} 只基金按持仓成本加权）"]
 
     if deepest:
         d = deepest
@@ -241,10 +244,25 @@ def render_dca(snap: dict, positions: list) -> dict:
         b_s = f"{b['dd_cost_pct']:+.1f}%" if b.get("dd_cost_pct") is not None else "-"
         lines.append(f"表现最好：{b['name']}({b['code']}) {b_s}，占你总净值 {b['weight_mv']:.1f}%")
 
-    if xray is not None:
+    # 拿到行业敞口才说话：industries 为空时整行不输出（与下方结论行一致）。
+    # 真实可命中：组合全是 QDII（穿透盲区）或申万行业表未覆盖 —— 此时拼出来的
+    # 是「集中度提醒（…）：」冒号后一片空白的空壳行，摆在正文中间很刺眼。
+    if xray is not None and xray.industries:
         cov = xray.coverage
         seg = " ｜ ".join(f"{i.industry} {i.exposure_pct:.1f}%" for i in xray.industries[:2])
-        lines.append(f"集中度提醒（穿透覆盖 {cov.penetrated_pct:.1f}% 净值）：{seg}")
+        # 穿透数据来自季报（滞后 21~28 天），必须标注自己的时点（PRD §6.1 规则 4 +
+        # §6.1.1 H1：定投集中度段属穿透类内容，需标注持仓截止日 + 滞后天数）。
+        # ⚠️ 两个不要：
+        #   1) 不要用 _fmt_md 压日期 —— 它会把 2026-06-30 砍成 06-30 丢掉年份，
+        #      用户会误以为半年前的季报是最近几天的数据，也不满足 YYYY-MM-DD 要求；
+        #   2) 不要用顶部 snap["nav_date"] 顶替 —— 那是净值日（QDII 滞后 2 天），
+        #      两者混在一起正是规则 4 要防的口径污染。
+        # 降级：时点算不出来（end_date 空 / lag_days<=0）只丢掉这个子句，
+        # 保留覆盖率与行业敞口本身 —— 它们依然成立。
+        stamp = ""
+        if cov.end_date and cov.lag_days > 0:
+            stamp = f"持仓截止 {cov.end_date}，滞后 {cov.lag_days} 天，"
+        lines.append(f"集中度提醒（{stamp}穿透覆盖 {cov.penetrated_pct:.1f}% 净值）：{seg}")
 
     if losers:
         seg = " ｜ ".join(
@@ -253,7 +271,12 @@ def render_dca(snap: dict, positions: list) -> dict:
         )
         lines.append(f"浮亏排名：{seg}")
 
-    lines.append("本期定投若仍投向科技成长，集中度将进一步上升")
+    # 结论行的行业名必须来自实际穿透结果的第一大行业（xray.industries 已按
+    # exposure_pct 降序，见 xray.compute_exposure）。
+    # ⚠️ 不要 fallback 到任何硬编码行业词：当前是等权测试数据，重录真实持仓后
+    # 组合未必以硬编码行业为主，那时这句就是明确错误的陈述。拿不到穿透数据 → 整行不输出。
+    if xray is not None and xray.industries:
+        lines.append(f"本期定投若仍投向{xray.industries[0].industry}，集中度将进一步上升")
 
     return _signal(
         "dca_preflight", title, "\n".join(lines),
