@@ -9,9 +9,105 @@ MoneyBag pytest 共享配置
 """
 import os
 import re
+import shutil
+import tempfile
 import time
+from pathlib import Path
+
 import pytest
 import httpx
+
+# ============================================================
+# 数据隔离（FIX 2026-09-05）—— 必须在任何 fixture 定义之前执行
+# ============================================================
+# 为什么要有这一段（真实事故，不是防御性想象）：
+#
+# `backend/config.py` 的 `DATA_DIR` / `USERS_DIR` 是**模块级常量**，在
+# `config.py` 首次 import 时一次性解析（读一次 `os.environ.get("DATA_DIR")`
+# 就定死）。同进程内之后谁再改 `os.environ` 都影响不了它，只能整体 reload
+# 模块。而 `DATA_DIR` 的默认值是 `BACKEND_DIR.parent / "data"`，也就是
+# **仓库根的 data/ —— 生产数据目录**。
+#
+# 这个文件（根 `tests/conftest.py`）历史上**完全没有数据隔离**，于是：
+# 在服务器上直接跑 `pytest tests/` 时，`config.py` 首次 import 会把
+# `DATA_DIR` 锁成 `/opt/moneybag/data`，后续所有测试直接在生产目录里建用户。
+# 2026-09-05 之前已因此留下 6 个垃圾用户目录：
+#     data/test_llm_gateway/   data/test_stream/        data/test_user/
+#     backend/data/test_user_report/
+#     backend/data/test_w6/    backend/data/test_user/
+# 已备份到 /home/ubuntu/backups/test_dirs_backup_20260905.tar.gz 后删除。
+#
+# 2026-09-05 本地复核时又原样复现了一次：不设 DATA_DIR 跑
+# `pytest tests/test_skeleton_m1.py tests/test_m7_batch2_batch3.py
+#  tests/test_memory_e2e.py tests/test_phase3_e2e.py`，
+# 在仓库根 `data/` 下凭空生成 25 个 test_* 目录，外加污染了两个**真实**
+# 用户目录 `data/LeiJiang/memory/pending_insights.json`、
+# `data/BuLuoGeLi/memory/ironies.json`（`test_memory_e2e.py` 的家庭主账号
+# 路由用例用的是真实 userId）。
+#
+# 更隐蔽的一点：**`data/` 在 .gitignore:39 里**，所以 `git status` 永远
+# 看不到这些污染 —— 光靠看 git 干净就以为没脏数据是错误的安全感。
+#
+# 修法（与 `backend/tests/conftest.py` 完全同一套机制）：利用 pytest 保证
+# conftest.py 模块顶层代码在同目录任何 `test_*.py` 被 import 之前执行这个
+# 特性，在**模块顶层**（不是 fixture 内部，必须在 collection 阶段就生效）
+# 把 `DATA_DIR` 环境变量强制指向 pytest 进程专属的临时目录。这样即使未来
+# 新增测试文件、或者现有测试文件忘了写隔离，`config.py` 首次 import 时
+# 拿到的也必然是临时目录，物理上不可能写到生产路径 —— **从"记得写隔离
+# 代码"升级为"写不写都安全"**。
+#
+# 尊重显式意图：如果用户运行 pytest 前已手动设置了 DATA_DIR，这里不覆盖。
+if not os.environ.get("DATA_DIR"):
+    _PYTEST_DATA_DIR: str = tempfile.mkdtemp(prefix="moneybag_pytest_data_")
+    os.environ["DATA_DIR"] = _PYTEST_DATA_DIR
+    (Path(_PYTEST_DATA_DIR) / "users").mkdir(parents=True, exist_ok=True)
+else:
+    # 用户显式指定了目录 → 不是我们创建的，会话结束时也绝不清理
+    _PYTEST_DATA_DIR = ""
+
+
+# 与 backend/.env 里出现的 key 名保持一致（脱敏后的清单，不含真实值）。
+# 新增密钥类环境变量时记得同步补充这里。
+_SECRET_ENV_KEYS = (
+    "LLM_API_KEY", "LLM_API_BASE", "LLM_MODEL",
+    "WXWORK_CORP_ID", "WXWORK_AGENT_ID", "WXWORK_SECRET",
+    "WXWORK_TOUSER", "WXWORK_CALLBACK_TOKEN", "WXWORK_CALLBACK_AES_KEY",
+    "TUSHARE_TOKEN",
+    "DOUBAO_API_KEY", "DASHSCOPE_API_KEY",
+    "DOUBAO_API_BASE", "DASHSCOPE_API_BASE",
+)
+
+
+def pytest_sessionfinish(session, exitstatus):
+    """整个测试会话结束后清理临时数据目录（仅限本文件自己创建的情况）。
+
+    只清理 _PYTEST_DATA_DIR 非空的情况 —— 如果用户显式设置了 DATA_DIR
+    （上面的 if 分支没触发），这里不会清理，绝不误删用户指定的目录。
+    """
+    if _PYTEST_DATA_DIR and os.path.isdir(_PYTEST_DATA_DIR):
+        shutil.rmtree(_PYTEST_DATA_DIR, ignore_errors=True)
+
+
+@pytest.fixture(autouse=True)
+def _clear_secret_env_pollution(monkeypatch):
+    """每个测试运行前清空密钥类环境变量。
+
+    背景：`scripts/cache_warmer.py` 等模块在 import 时会手动解析 `.env`
+    并用 `os.environ.setdefault(k, v)` 写入真实密钥 —— 这是生产环境的正常
+    兜底行为，但它是**模块级副作用**：只要任何测试 import 了它，Python 的
+    模块缓存就让这次副作用永久污染当前 pytest 进程，而 `monkeypatch` 的
+    自动回滚机制管不到不是通过它设置的值。
+
+    后果是"测试单独跑永远通过、混在全量套件里就失败"这类幽灵故障。
+    根 `tests/` 的测试会 import 到 `backend/scripts/` 下的模块，同样有
+    这个风险，所以这里照搬 `backend/tests/conftest.py` 的同名 fixture。
+
+    用 monkeypatch.delenv 而不是直接 del os.environ[...]：测试结束后
+    monkeypatch 会自动恢复，写法统一且不影响测试进程之外的环境。
+    """
+    for key in _SECRET_ENV_KEYS:
+        monkeypatch.delenv(key, raising=False)
+    yield
 
 
 # 默认本地 8000，可用 MB_TEST_HOST 覆盖（线上：http://150.158.47.189:8000）

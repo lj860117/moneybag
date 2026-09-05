@@ -51,6 +51,37 @@ python3 -m pytest tests/ -m "not llm_heavy" -q
 MB_TEST_HOST=http://150.158.47.189:8000 python3 -m pytest tests/ -q
 ```
 
+#### ⚠️ 两套测试目录并存（被测目标不重叠，两边都要跑）
+
+仓库里有**两套并存的 pytest 目录**，都归 git 跟踪：
+
+| 目录 | 文件数 | 测什么 |
+|---|---|---|
+| `backend/tests/` | 33 | `services/*` 老架构层：fund_signal、tushare、signal_scout、watchdog、steward、chat 模型路由 |
+| `tests/`（仓库根） | 29 | `domain/`、`use_cases/`、`infra.store`、`infra.knowledge` 新架构层 + HTTP 端到端 |
+
+⚠️ 命令行里的相对路径 `tests/` 在仓库根和 `backend/` 下指向**两个不同目录**，
+阅读本节命令时务必先看有没有 `cd backend` 前缀。
+
+**不要以为它们重复，删任何一个都会丢掉另一半覆盖。** 2026-09-05 做过符号级
+交叉验证：根 `tests/` 用到的 35 个核心被测符号（`ChangjiangParser` /
+`glide_path` / `deviation_thresholds` / `fund_filter_rules` / `behavior_detector` /
+`behavior_intervention` / `event_matcher` / `agent_memory` / `report_service` /
+`multi_view_advisor` / `education_service` / `interpret_with_rag` / `migrate_phase3` …）
+里 **32 个在 `backend/tests/` 零命中**；两边覆盖的 HTTP 端点**交集为空**。
+判定结果：COVERED 0 / PARTIAL 1 / MISSING 21。
+
+#### CI 只跑 1 个文件（重要）
+
+- `.github/workflows/ci.yml:73` 是全仓库 CI 里**唯一**一条 pytest 命令：
+  `cd backend && python -m pytest ../tests/test_skeleton_m1.py -v`
+- 也就是说 `backend/tests/` 的 31 个文件在 CI 上**一次都没跑过**，它的回归
+  只能靠人在服务器上手动跑
+- `test_skeleton_m1.py`（219 用例，含架构不变量 Invariant #6「api 层禁直连
+  akshare/tushare」）是 CI 里**唯一**的 pytest 守门员
+- 因此：**任何删改 `tests/test_skeleton_m1.py` 的动作都必须先确认 CI 有替代
+  守门，否则架构护栏直接失效**
+
 #### 数据隔离（机制强制，不是人肉纪律）
 
 `backend/tests/conftest.py` 在**模块顶层**（早于任何 `test_*.py` 被 import）执行：
@@ -61,6 +92,22 @@ MB_TEST_HOST=http://150.158.47.189:8000 python3 -m pytest tests/ -q
 
 ⚠️ **不要手动设 `DATA_DIR` 指向生产路径** —— 显式设置会绕过兜底，测试就会读写真实数据。
 （2026-09-01 事故：`test_phase3_services.py` 未隔离，13 个用例真实写入生产 `data/users/`。）
+
+#### 根 tests/ 的数据隔离（2026-09-05 补上）
+
+- **历史问题**：根 `tests/conftest.py` 原本没有任何数据隔离。在服务器跑
+  `pytest tests/` 时，`config.py` 首次 import 会把 `DATA_DIR` 锁成生产
+  `/opt/moneybag/data`，测试直接在生产目录建用户，已因此留下 6 个垃圾用户目录：
+  `data/test_llm_gateway/`、`data/test_stream/`、`data/test_user/`、
+  `backend/data/test_user_report/`、`backend/data/test_w6/`、`backend/data/test_user/`。
+  2026-09-05 已备份到 `/home/ubuntu/backups/test_dirs_backup_20260905.tar.gz` 后删除。
+- **现已修复**：把 `backend/tests/conftest.py` 的同一套三段机制原样移植到根
+  `tests/conftest.py` 的模块顶层 —— 强制 `DATA_DIR` 到临时目录 /
+  `pytest_sessionfinish` 清理 / autouse 清空 13 个密钥环境变量。
+- **跑法不变，但现在即使测试代码忘了写隔离，也物理上不可能脏生产数据。**
+
+⚠️ 注意 `data/` 在 `.gitignore:39` 里：**`git status` 永远看不到这类污染**，
+验证测试是否脏数据时必须直接看 `data/` 目录本身，不能只看 git 干净。
 
 #### 本地 vs 服务器：哪里才是权威
 
