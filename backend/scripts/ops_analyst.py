@@ -445,6 +445,8 @@ class OpsAnalyst:
                 user_id="ops",
                 module="ops_analyst",
                 max_tokens=OPS_LLM_MAX_TOKENS,
+                # 结构化 JSON 输出：关闭推理，避免 reasoning_content 挤占 content 预算导致 JSON 截断
+                force_no_thinking=True,
             )
         except Exception as e:
             print(f"[OPS_ANALYST] LLM 调用异常: {e}")
@@ -456,9 +458,15 @@ class OpsAnalyst:
             print(f"[OPS_ANALYST] LLM 不可用 source={source}，走规则兜底")
             return None
 
+        # 截断的 JSON 是半截字符串，解析必然失败；显式记录 finish_reason 便于定位
+        finish_reason = r.get("finish_reason", "")
+        if finish_reason == "length":
+            print(f"[OPS_ANALYST] LLM 输出被 max_tokens 截断（finish_reason=length, tokens={r.get('tokens')}），走规则兜底")
+            return None
+
         parsed = extract_json_object(content)
         if parsed is None:
-            print("[OPS_ANALYST] LLM JSON 解析失败，走规则兜底")
+            print(f"[OPS_ANALYST] LLM JSON 解析失败（model={r.get('model')}, finish_reason={finish_reason}, content_len={len(content)}），走规则兜底")
             return None
         parsed["_model"] = r.get("model", "")
         return parsed
