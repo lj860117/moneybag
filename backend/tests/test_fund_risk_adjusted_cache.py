@@ -328,6 +328,60 @@ def test_worker_passes_name_to_compute(monkeypatch):
     assert fra._WARMUP_RUNNING is False
 
 
+def test_enrich_self_heal_chinese_unknown_negative_cache(monkeypatch):
+    """自愈分支回归：真实坏负缓存 fund_type 为中文「未知」也应触发自愈。
+
+    QA 实证：历史坏负缓存落盘的 fund_type 是 `_TYPE_LABEL_MAP["unknown"]="未知"`
+    （中文），而早期自愈判断写死英文 "unknown" 导致自愈失效。此用例用真实中文
+    「未知」构造坏负缓存，验证 _enrich_risk_adjusted 全链路：
+      invalidate 被调用 → 携 name 重新入队 → worker 补算后 available=True。
+    """
+    from api import signals
+
+    code = "017849"
+    name = "东方红先进制造混合C"
+
+    # 1. 构造历史坏负缓存：available=False + fund_type=中文「未知」+ 无 name_provided
+    fra.set_risk_adjusted_cache(code, {"code": code, "available": False, "fund_type": "未知"})
+    fra._RA_CACHE[code]["v"].pop("name_provided", None)  # 模拟旧版落盘无此字段
+
+    # 2. 打桩 compute：补算返回正缓存（available=True），避免真实网络
+    monkeypatch.setattr(
+        fra,
+        "compute_risk_adjusted_metrics",
+        lambda c, name="", fund_type="": {"code": c, "name_provided": bool(name), "available": True, "sharpe_ratio": 1.8},
+    )
+
+    # 3. spy invalidate：记录调用 + 委托真实删除
+    calls = []
+    real_invalidate = fra.invalidate_risk_adjusted_cache
+
+    def spy_invalidate(c):
+        calls.append(c)
+        real_invalidate(c)
+
+    monkeypatch.setattr(fra, "invalidate_risk_adjusted_cache", spy_invalidate)
+
+    # 4. 阻止 enqueue 真正起线程（只入队），便于同步断言 + 手动 drain
+    fra._WARMUP_RUNNING = True
+    try:
+        signals._enrich_risk_adjusted([{"code": code, "name": name}])
+    finally:
+        fra._WARMUP_RUNNING = False
+
+    # 5. 断言：invalidate 被调用 + 坏负缓存已删 + 携 name 重新入队
+    assert calls == [code]
+    assert fra.get_risk_adjusted_cache(code) is None
+    assert fra._PENDING_WARMUP.get(code) == name
+
+    # 6. 同步 drain 队列（worker 补算），断言自愈成功 available=True
+    fra._warm_risk_adjusted_worker()
+    got = fra.get_risk_adjusted_cache(code)
+    assert got is not None
+    assert got["available"] is True
+    assert fra._WARMUP_RUNNING is False
+
+
 def test_compute_batch_swallows_compute_errors(monkeypatch):
     def _boom(code, name=""):
         raise RuntimeError("network down")
@@ -368,6 +422,7 @@ if __name__ == "__main__":
         test_worker_skips_already_cached,
         test_worker_writes_negative_cache_for_noncomputable,
         test_worker_passes_name_to_compute,
+        test_enrich_self_heal_chinese_unknown_negative_cache,
         test_compute_batch_swallows_compute_errors,
         test_compute_batch_timeout_does_not_raise,
     ]
@@ -377,7 +432,7 @@ if __name__ == "__main__":
             # 手动跑时用 pytest 的 monkeypatch 不方便，跳过需要 monkeypatch 的用例
             if t.__name__ in ("test_ttl_expiry_returns_none", "test_enqueue_does_not_start_second_worker",
                               "test_worker_skips_already_cached", "test_worker_writes_negative_cache_for_noncomputable",
-                              "test_worker_passes_name_to_compute",
+                              "test_worker_passes_name_to_compute", "test_enrich_self_heal_chinese_unknown_negative_cache",
                               "test_compute_batch_swallows_compute_errors", "test_compute_batch_timeout_does_not_raise"):
                 continue
             fra._RA_CACHE.clear()

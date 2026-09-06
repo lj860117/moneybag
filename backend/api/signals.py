@@ -1593,7 +1593,7 @@ def _enrich_risk_adjusted(funds: list) -> None:
             # 自愈：历史「缺 name → classify_fund 误判 unknown」的坏负缓存，
             # 当前拿到 name 时先删除坏负缓存再重新入队补算（否则 enqueue 粗过滤
             # 会因「负缓存也算已缓存」而跳过，永远无法覆盖）。
-            if metrics.get("fund_type") == "unknown" and not metrics.get("name_provided") and name:
+            if metrics.get("fund_type") in ("unknown", "未知") and not metrics.get("name_provided") and name:
                 invalidate_risk_adjusted_cache(code)
                 missed[code] = name
             continue
