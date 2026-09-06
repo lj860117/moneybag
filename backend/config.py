@@ -148,12 +148,17 @@ TOKEN_BUDGET = {
     "max_output_per_call": 30_000,      # 单次最大 3万 output token
 }
 
-# DeepSeek 定价（2026-04，¥/百万token）
-DEEPSEEK_PRICING = {
-    "input_cache_hit":    0.20,   # 缓存命中
-    "input_cache_miss":   2.03,   # 缓存未命中
-    "output":             3.04,   # 输出
+# 多 provider 定价（¥/百万token）
+# doubao/qwen 价目待查，None = 只记用量不计费
+PROVIDER_PRICING = {
+    "deepseek": {
+        "input_cache_hit": 0.2, "input_cache_miss": 1.0,
+        "output_peak": 27.0, "output_valley": 13.5,  # 待核对
+    },
+    "doubao": None,  # 价目待查，None = 只记用量不计费
+    "qwen": None,
 }
+DEEPSEEK_PRICING = PROVIDER_PRICING["deepseek"]  # 兼容旧引用
 
 # ============================================================
 # V7.2 硬编码治理（2026-04-19）

@@ -457,10 +457,9 @@ def get_news_sentiment_score() -> dict:
             )
             if not llm_result.get("fallback") and llm_result.get("content"):
                 text = llm_result["content"]
-                import re
-                json_match = re.search(r'\{[^}]+\}', text, re.DOTALL)
-                if json_match:
-                    parsed = json.loads(json_match.group())
+                from services.json_extract import extract_json_object
+                parsed = extract_json_object(text)
+                if parsed is not None:
                     result["score"] = max(-100, min(100, int(parsed.get("score", 0))))
                     result["level"] = parsed.get("level", "中性")
                     result["reason"] = parsed.get("reason", "")

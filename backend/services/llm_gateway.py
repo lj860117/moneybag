@@ -75,6 +75,8 @@ def _is_interactive_auto_module(module: str = "") -> bool:
 
 def _is_deepseek_peak_window(now=None) -> bool:
     now = _china_now(now)
+    if now.weekday() >= 5:   # 周六=5, 周日=6，DeepSeek 周末全天平价
+        return False
     hm = (now.hour, now.minute)
     return ((9, 0) <= hm < (12, 0)) or ((14, 0) <= hm < (18, 0))
 
@@ -802,25 +804,34 @@ class LLMGateway:
                            cache_miss_tokens: int = 0):
         """记录本次调用的金额成本到磁盘（按天+按用户双维度）
 
-        V7.6 (2026-04-19)：用真实 cache_hit/miss 算成本，不再猜 50%
+        按 provider 选价目：
+        - deepseek：cache_hit/miss + 输出价（峰值/谷值按 _is_deepseek_peak_window 选）
+        - doubao/qwen：价目未知（PROVIDER_PRICING=None），只记用量不计费
         """
         try:
-            from config import TOKEN_BUDGET, DEEPSEEK_PRICING
+            from config import TOKEN_BUDGET, PROVIDER_PRICING
 
-            # V7.6: 用真实命中/未命中 token 算真实成本
-            # 若 DeepSeek 没返回这俩字段（老 API 或非 DS 模型），回退到 50% 估算
+            provider = _provider_from_model(model)
+            pricing = PROVIDER_PRICING.get(provider)
+            if not pricing:
+                # 价目未知（doubao/qwen），跳过金额记账
+                return
+
+            # deepseek 输出价按峰谷窗口选择
+            output_rate = pricing["output_peak"] if _is_deepseek_peak_window() else pricing["output_valley"]
+
+            # 用真实命中/未命中 token 算真实成本
+            # 若没返回这俩字段（老 API），回退到 hit/miss 平均估算
             if cache_hit_tokens + cache_miss_tokens > 0:
-                # 真实命中数据
                 cost = (
-                    cache_hit_tokens * DEEPSEEK_PRICING["input_cache_hit"]
-                    + cache_miss_tokens * DEEPSEEK_PRICING["input_cache_miss"]
-                    + output_tokens * DEEPSEEK_PRICING["output"]
+                    cache_hit_tokens * pricing["input_cache_hit"]
+                    + cache_miss_tokens * pricing["input_cache_miss"]
+                    + output_tokens * output_rate
                 ) / 1_000_000
                 cache_ratio = cache_hit_tokens / (cache_hit_tokens + cache_miss_tokens)
             else:
-                # 回退
-                input_rate = (DEEPSEEK_PRICING["input_cache_hit"] + DEEPSEEK_PRICING["input_cache_miss"]) / 2
-                cost = (input_tokens * input_rate + output_tokens * DEEPSEEK_PRICING["output"]) / 1_000_000
+                input_rate = (pricing["input_cache_hit"] + pricing["input_cache_miss"]) / 2
+                cost = (input_tokens * input_rate + output_tokens * output_rate) / 1_000_000
                 cache_ratio = None
 
             # 读取今日全局用量
@@ -882,6 +893,19 @@ class LLMGateway:
 
         except Exception as e:
             print(f"[LLM_GATEWAY] ⚠️ Token 记账失败（不影响调用）: {e}")
+
+    def record_external_call(self, *, user_id: str, module: str, model: str,
+                             input_tokens: int, output_tokens: int,
+                             cache_hit_tokens: int = 0, cache_miss_tokens: int = 0) -> None:
+        """供外部直连调用点（FC / multi_model_scorer 等）记账的窄接口。
+
+        统一走 usage + cost 两步：
+        - usage 始终记录（调用次数与 token 用量）
+        - cost 由 _record_token_cost 按 provider 价目决定（价目未知则跳过金额）
+        """
+        self._record_usage(user_id, module, model, input_tokens + output_tokens)
+        self._record_token_cost(user_id, model, input_tokens, output_tokens,
+                                cache_hit_tokens, cache_miss_tokens)
 
     def get_api_config(self, model_tier: str = "llm_light", module: str = "") -> dict:
         """返回当前默认模型对应的 API 配置。"""

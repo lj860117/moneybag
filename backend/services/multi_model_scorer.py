@@ -146,14 +146,8 @@ def _call_model(model_cfg: dict, prompt: str) -> dict:
             content = resp.json().get("choices", [{}])[0].get("message", {}).get("content", "")
             # 解析 JSON（兼容 markdown code block + 截断修复）
             import re
-            # 先尝试完整 JSON
-            json_match = re.search(r'\{[^}]*\}', content)
-            parsed = None
-            if json_match:
-                try:
-                    parsed = json.loads(json_match.group())
-                except json.JSONDecodeError:
-                    pass
+            from services.json_extract import extract_json_object
+            parsed = extract_json_object(content)
             # 截断修复：如果没匹配到完整 }，手动补全
             if parsed is None and '"score"' in content:
                 try:

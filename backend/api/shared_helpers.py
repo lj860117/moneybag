@@ -1451,10 +1451,9 @@ async def _do_ocr(file_path: Path, content: bytes) -> dict:
 
         if not llm_result.get("fallback") and llm_result.get("content"):
             text = llm_result["content"]
-            import re
-            json_match = re.search(r'\{[^}]+\}', text, re.DOTALL)
-            if json_match:
-                parsed = json.loads(json_match.group())
+            from services.json_extract import extract_json_object
+            parsed = extract_json_object(text)
+            if parsed is not None:
                 result = {
                     "amount": float(parsed.get("amount", 0)),
                     "merchant": parsed.get("merchant", ""),

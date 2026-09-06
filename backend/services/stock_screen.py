@@ -130,12 +130,10 @@ def _get_dynamic_weights() -> dict:
             return DEFAULT_DIM_WEIGHTS
 
         text = result["content"]
-        import re
-        json_match = re.search(r'\{[^}]+\}', text, re.DOTALL)
-        if not json_match:
+        from services.json_extract import extract_json_object
+        parsed = extract_json_object(text)
+        if parsed is None:
             return DEFAULT_DIM_WEIGHTS
-
-        parsed = json.loads(json_match.group())
 
         # 验证权重合法性
         weights = {}
