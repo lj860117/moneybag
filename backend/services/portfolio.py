@@ -296,11 +296,6 @@ def _ai_pick_funds(risk_profile: str, val_pct: float, fgi: float) -> list:
         if not all_candidates:
             return None  # 降级到硬编码
 
-        # 调 DeepSeek
-        from config import LLM_API_URL, LLM_API_KEY, LLM_MODEL
-        if not LLM_API_KEY:
-            return None
-
         # 风险等级→偏好描述
         risk_desc = {
             "保守型": "极度保守，债券为主(60%+)，股票极少",
@@ -330,30 +325,31 @@ def _ai_pick_funds(risk_profile: str, val_pct: float, fgi: float) -> list:
 [{{"code":"110020","name":"沪深300","reason":"低估值反弹机会","pct":25,"category":"stock"}},...]
 只返回 JSON 数组，不要其他内容。"""
 
-        import httpx
-        with httpx.Client(timeout=40) as client:  # 从20秒提高到40秒
-            resp = client.post(
-                LLM_API_URL,
-                headers={"Authorization": f"Bearer {LLM_API_KEY}", "Content-Type": "application/json"},
-                json={
-                    "model": LLM_MODEL,
-                    "messages": [{"role": "user", "content": prompt}],
-                    "max_tokens": 600,  # 从500提高到600，避免JSON被截断
-                    "temperature": 0.3,
-                },
-            )
-            if resp.status_code != 200:
-                print(f"[AI_FUND] LLM failed: {resp.status_code}")
-                return None
+        # v9.5.140: 走 gateway 统一管理，模型由 MODEL_ROUTING 路由，
+        # 根除直连废弃 LLM_MODEL/deepseek-chat（2026-07-24 停服，触发即 400）。
+        # 结构化 JSON 抽取不需要深度推理，关 thinking 避免 reasoning 挤占输出预算。
+        from services.llm_gateway import LLMGateway
+        gw = LLMGateway.instance()
+        llm_result = gw.call_sync(
+            prompt,
+            model_tier="llm_heavy",    # deepseek-v4-pro，高质量低幻觉
+            user_id="",
+            module="ai_pick_funds",
+            max_tokens=800,            # 关 thinking 后 5 只基金 JSON 输出足够
+            force_no_thinking=True,    # 关推理：避免 reasoning 挤占内容预算（P0-1 同源）
+        )
+        if not llm_result.get("content"):
+            print(f"[AI_FUND] LLM empty: {llm_result.get('source', 'unknown')}")
+            return None
 
-            text = resp.json()["choices"][0]["message"]["content"]
-            import re
-            json_match = re.search(r'\[.*\]', text, re.DOTALL)
-            if not json_match:
-                print(f"[AI_FUND] LLM no JSON in response")
-                return None
+        text = llm_result["content"]
+        import re
+        json_match = re.search(r'\[.*\]', text, re.DOTALL)
+        if not json_match:
+            print(f"[AI_FUND] LLM no JSON in response")
+            return None
 
-            picks = json.loads(json_match.group())
+        picks = json.loads(json_match.group())
 
         # 构造标准格式
         result = []
