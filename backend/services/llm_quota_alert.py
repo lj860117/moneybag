@@ -1,6 +1,7 @@
 """
 LLM 配额/余额告警
 - DeepSeek 余额不足 → 推送企微
+- 豆包(火山引擎 ARK) 余额耗尽 / API Key 异常 → 推送企微
 - 通义千问免费额度用完 → 推送企微
 - 同种告警一天只推一次（文件去重）
 - 没看见第二天会再推（次日重新允许推送）
@@ -64,6 +65,21 @@ def classify_llm_error(provider: str, status_code: int, error_msg: str) -> str |
         if "payment required" in err_lower or "支付" in error_msg:
             return "deepseek_balance_exhausted"
 
+    # 豆包(火山引擎 ARK): 402/403 额度/余额耗尽 / 余额不足 / 鉴权失败
+    if provider == "doubao":
+        if status_code in (401, 403) and (
+            "auth" in err_lower or "invalid" in err_lower or "key" in err_lower
+        ):
+            return "doubao_auth_failed"
+        if status_code == 402:
+            return "doubao_balance_exhausted"
+        if status_code == 403 and "quota" in err_lower:
+            return "doubao_balance_exhausted"
+        if "余额不足" in error_msg or "insufficient" in err_lower or "balance" in err_lower:
+            return "doubao_balance_exhausted"
+        if "arrearage" in err_lower or "arrears" in err_lower or "欠费" in error_msg:
+            return "doubao_balance_exhausted"
+
     # 千问: 403 AllocationQuota.FreeTierOnly / 余额不足
     if provider == "qwen":
         if "freetieronly" in err_lower or "allocationquota" in err_lower:
@@ -114,6 +130,20 @@ def maybe_alert_quota(provider: str, status_code: int, error_msg: str):
                 "💳 通义千问余额告警",
                 "**❗ 通义千问账户余额不足**\n\n"
                 "前往百炼控制台充值：https://bailian.console.aliyun.com/"
+            ),
+            "doubao_balance_exhausted": (
+                "💳 豆包余额提醒",
+                "**❗ 豆包（火山引擎 ARK）账户余额已用尽或不足**\n\n"
+                "影响：DeepSeek 降级到豆包时，豆包也欠费，AI 功能可能整体不可用\n\n"
+                "建议处理：\n"
+                "• 前往火山引擎控制台充值 https://console.volcengine.com/ark\n"
+                "• 或尽快为 DeepSeek 充值恢复主路径\n\n"
+                "_DeepSeek 若正常则不受影响_"
+            ),
+            "doubao_auth_failed": (
+                "🔑 豆包 API Key 异常",
+                "**⚠️ 豆包（火山引擎 ARK）API Key 可能失效或权限不足**\n\n"
+                "前往火山引擎控制台检查：https://console.volcengine.com/ark"
             ),
         }
         title, content = messages.get(alert_type, ("LLM 告警", error_msg))
