@@ -55,7 +55,7 @@ fi
 # 19 个真实脚本名（2026-09-01 从生产 crontab -l 提取，去重）。
 # 用于识别"哪些 crontab 行属于 MoneyBag"，从而安全地做替换而不误删
 # 用户/系统的其它 cron 任务。新增脚本时记得把名字加进这个列表。
-MONEYBAG_SCRIPT_NAMES='auto_extract_cron|briefing_hallucination_check|broker_rating_cron|cache_warmer|closing_review_hallucination_check|daily_push_quality_check|daily_reflection_cron|dca_scheduler|fund_rank_build|housekeeping_cron|memory_archive_cron|monthly_rebalance_cron|monthly_report|night_worker|process_watchdog|stock_monitor_cron|weekend_push|weekly_plan_cron|weekly_review_cron'
+MONEYBAG_SCRIPT_NAMES='auto_extract_cron|briefing_hallucination_check|broker_rating_cron|cache_warmer|closing_review_hallucination_check|daily_push_quality_check|daily_reflection_cron|dca_scheduler|fund_rank_build|housekeeping_cron|llm_balance_monitor|memory_archive_cron|monthly_rebalance_cron|monthly_report|night_worker|process_watchdog|stock_monitor_cron|weekend_push|weekly_plan_cron|weekly_review_cron'
 
 # ============================================================
 # 权威排班内容（2026-09-01 从生产 `crontab -l` 原始输出固化）
@@ -84,6 +84,8 @@ CRONTAB_AUTHORITATIVE_BLOCK=$(cat << 'CRONTAB_EOF'
 # 08:00 批量提炼前一天对话 → pending_insights 待审队列
 # 08:10 深度复盘（窗口：昨天 06:00 → 今天 06:00）→ 写入 context.last_analysis
 # 08:30 推送早安简报到企微（工作日）
+# 07:40 LLM 供应商余额主动监控（赶在 08:00 早报链前预警，2026-09-06 新增）
+40 7 * * * cd /opt/moneybag/backend && mkdir -p logs && set -a && . /opt/moneybag/backend/.env && set +a && /opt/moneybag/venv/bin/python scripts/llm_balance_monitor.py --alert >> /opt/moneybag/backend/logs/llm_balance_monitor.log 2>&1
 0 8 * * * cd /opt/moneybag/backend && set -a && . /opt/moneybag/backend/.env && set +a && /opt/moneybag/venv/bin/python -m scripts.auto_extract_cron >> /var/log/moneybag/auto_extract.log 2>&1
 # 09:00-11:59 每 10 分钟盯盘
 # 09:00-14:59 每 30 分钟刷 midday 缓存
