@@ -18,11 +18,10 @@ MODULE_META = {
     "layer": "data",
     "priority": 2,
 }
-import os
 import time
 import json
 from datetime import datetime, timedelta
-from config import FACTOR_CACHE_TTL, LLM_API_URL, LLM_API_KEY, LLM_MODEL
+from config import FACTOR_CACHE_TTL
 # FIX 2026-04-19: 补 import，解决 [TREASURY] Failed: name 'get_valuation_percentile' is not defined
 from services.market_data import get_valuation_percentile
 from infra.cache import MemoryCache
@@ -427,16 +426,11 @@ def get_news_sentiment_score() -> dict:
         headlines = [n["title"] for n in valid[:10]]
         result["headlines"] = headlines
 
-        # 尝试用 LLM 打分
-        api_key = os.environ.get("OPENAI_API_KEY") or os.environ.get("LLM_API_KEY")
-        api_base = os.environ.get("LLM_API_BASE", "https://api.openai.com/v1")
-        model = os.environ.get("LLM_MODEL", "gpt-4o-mini")
-
-        if api_key:
-            try:
-                import httpx
-                headlines_text = "\n".join([f"{i+1}. {h}" for i, h in enumerate(headlines)])
-                prompt = f"""你是A股市场情绪分析师。请对以下新闻标题进行情绪打分。
+        # 尝试用 LLM 打分（走 gateway 统一管理，模型由 MODEL_ROUTING 路由，
+        # 不再直连读取废弃的 LLM_MODEL/deepseek-chat，也不用手工判断 key）
+        try:
+            headlines_text = "\n".join([f"{i+1}. {h}" for i, h in enumerate(headlines)])
+            prompt = f"""你是A股市场情绪分析师。请对以下新闻标题进行情绪打分。
 
 新闻标题：
 {headlines_text}
@@ -450,31 +444,31 @@ def get_news_sentiment_score() -> dict:
 - 日常资讯/无明确方向 → 0附近(-10~+10)
 只返回JSON，不要其他内容。"""
 
-                # 同步调用（通过 gateway 管理）
-                from services.llm_gateway import LLMGateway
-                gw = LLMGateway.instance()
-                llm_result = gw.call_sync(
-                    prompt,
-                    system="",
-                    model_tier="llm_light",
-                    user_id="",
-                    module="sentiment_score",
-                    max_tokens=200,
-                )
-                if not llm_result.get("fallback") and llm_result.get("content"):
-                    text = llm_result["content"]
-                    import re
-                    json_match = re.search(r'\{[^}]+\}', text, re.DOTALL)
-                    if json_match:
-                        parsed = json.loads(json_match.group())
-                        result["score"] = max(-100, min(100, int(parsed.get("score", 0))))
-                        result["level"] = parsed.get("level", "中性")
-                        result["reason"] = parsed.get("reason", "")
-                        result["available"] = True
-                        result["source"] = "llm"
-                        print(f"[SENTIMENT] LLM score={result['score']}, level={result['level']}")
-            except Exception as e:
-                print(f"[SENTIMENT] LLM failed: {e}")
+            # 同步调用（通过 gateway 管理）
+            from services.llm_gateway import LLMGateway
+            gw = LLMGateway.instance()
+            llm_result = gw.call_sync(
+                prompt,
+                system="",
+                model_tier="llm_light",
+                user_id="",
+                module="sentiment_score",
+                max_tokens=200,
+            )
+            if not llm_result.get("fallback") and llm_result.get("content"):
+                text = llm_result["content"]
+                import re
+                json_match = re.search(r'\{[^}]+\}', text, re.DOTALL)
+                if json_match:
+                    parsed = json.loads(json_match.group())
+                    result["score"] = max(-100, min(100, int(parsed.get("score", 0))))
+                    result["level"] = parsed.get("level", "中性")
+                    result["reason"] = parsed.get("reason", "")
+                    result["available"] = True
+                    result["source"] = "llm"
+                    print(f"[SENTIMENT] LLM score={result['score']}, level={result['level']}")
+        except Exception as e:
+            print(f"[SENTIMENT] LLM failed: {e}")
 
         # 降级：关键词规则打分
         if not result["available"]:
