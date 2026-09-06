@@ -178,10 +178,138 @@ def step_confidence_gate(ctx: DecisionContext) -> DecisionContext:
     return ctx
 
 
+def _parse_llm_json(content: str) -> Optional[dict]:
+    """从 LLM 输出中提取 JSON dict（复用现有三级解析策略）。
+
+    返回 dict；解析失败返回 None。绝不返回非 dict 类型。
+    """
+    if not content:
+        return None
+    import json as _json
+    import re
+
+    parsed = None
+    # 方法1: 直接解析整个 content
+    try:
+        parsed = _json.loads(content.strip())
+    except _json.JSONDecodeError:
+        pass
+    # 方法2: 提取 ```json...``` 代码块
+    if not parsed:
+        code_match = re.search(r'```(?:json)?\s*(\{.*?\})\s*```', content, re.DOTALL)
+        if code_match:
+            try:
+                parsed = _json.loads(code_match.group(1))
+            except _json.JSONDecodeError:
+                pass
+    # 方法3: 找第一个完整的 {} 对
+    if not parsed:
+        brace_count = 0
+        start_idx = content.find('{')
+        if start_idx >= 0:
+            for i in range(start_idx, len(content)):
+                if content[i] == '{':
+                    brace_count += 1
+                elif content[i] == '}':
+                    brace_count -= 1
+                if brace_count == 0:
+                    try:
+                        parsed = _json.loads(content[start_idx:i + 1])
+                    except _json.JSONDecodeError:
+                        pass
+                    break
+    return parsed if isinstance(parsed, dict) else None
+
+
+def _llm_result_content(result: dict) -> str:
+    """提取 LLM 输出正文；若被 max_tokens 截断则置空（复用截断降级逻辑）。"""
+    content = result.get("content", "") or ""
+    if result.get("finish_reason") == "length":
+        print("[PIPELINE] LLM输出被 max_tokens 截断，按解析失败降级")
+        return ""
+    return content
+
+
+def _read_prompt(prompts_dir, filename: str, default: str) -> str:
+    """读取 prompt 文件；不存在或读取失败时返回默认值（fail-open）。"""
+    try:
+        path = prompts_dir / filename
+        if path.exists():
+            return path.read_text(encoding="utf-8")
+    except Exception as e:
+        print(f"[PIPELINE] 读取 prompt {filename} 失败: {e}")
+    return default
+
+
+def _build_modules_text(ctx: DecisionContext) -> str:
+    """组装各模块分析结果文本（首轮/空头/复核共用）。"""
+    modules_text = ""
+    for name, result in ctx.modules_results.items():
+        d = result.get("direction", "neutral")
+        c = result.get("confidence", 0)
+        detail = str(result.get("detail", ""))[:200]
+        modules_text += f"  - {name}: 方向={d}, 置信={c}, 详情={detail}\n"
+        # 个股新闻（signal_scout 提供）
+        if name == "signal_scout" and result.get("stock_news"):
+            news_titles = [n.get("title", "") for n in result["stock_news"][:5]]
+            modules_text += f"    📰 个股新闻({len(news_titles)}条): {'; '.join(news_titles)}\n"
+            if result.get("stock_news_direction"):
+                modules_text += f"    📰 新闻方向: {result['stock_news_direction']}\n"
+    return modules_text
+
+
+def _build_stock_info(ctx: DecisionContext) -> str:
+    """组装查询个股信息（首轮/空头/复核共用）。"""
+    if getattr(ctx, "question_stock_name", ""):
+        return f"\n## 查询个股\n名称: {ctx.question_stock_name}, 代码: {getattr(ctx, 'question_stock_code', '')}\n"
+    return ""
+
+
+def _fallback_module_vote(ctx: DecisionContext, reason: str) -> None:
+    """仲裁失败/LLM 不可用时的统一降级：模块多数投票 + 安全占位文案。
+
+    绝不把 LLM 原文当结论（v9.9.10 泄漏根因）。
+    """
+    dirs = [r.get("direction", "neutral") for r in ctx.modules_results.values()]
+    if dirs:
+        ctx.direction = Counter(dirs).most_common(1)[0][0]
+    ctx.conclusion = _SAFE_ARBITRATION_FALLBACK
+    print(f"[PIPELINE] LLM仲裁降级({reason}): 多数投票→{ctx.direction}")
+
+
+def _apply_arbitration_result(ctx: DecisionContext, parsed: dict) -> None:
+    """把仲裁 JSON 写入 ctx 的 direction/confidence/conclusion/reasoning。"""
+    ctx.direction = parsed.get("direction", "neutral")
+    raw_conf = parsed.get("confidence", 50)
+    try:
+        raw_conf = int(raw_conf)
+    except (TypeError, ValueError):
+        raw_conf = 50
+    ctx.confidence_score = raw_conf / 100.0
+    ctx.confidence = raw_conf  # 0-100 整数给前端
+    ctx.conclusion = parsed.get("conclusion", "")
+    ctx.llm_reasoning = parsed.get("reasoning", "")
+
+
+def _is_stock_fund_question(ctx: DecisionContext) -> bool:
+    """判断是否为股票/基金类问题（启用空头反驳的前提）。
+
+    question_is_fund 是 steward 运行时动态赋值的字段（不在 dataclass 里），
+    question_stock_code/question_stock_name 同样用 getattr 防御。
+    """
+    return bool(
+        getattr(ctx, "question_stock_code", "") or
+        getattr(ctx, "question_stock_name", "") or
+        getattr(ctx, "question_is_fund", False)
+    )
+
+
 def step_llm_arbitration(ctx: DecisionContext) -> DecisionContext:
     """Layer3.5: LLM 仲裁（仅 gate_decision == llm_arbitration 时执行）
     
     把所有模块结果 + Regime + 用户持仓打包给 DeepSeek，让它做多空辩论仲裁。
+    T01: 首轮成功后，对股票/基金类问题追加空头反驳三步链
+    （首轮仲裁 → 空头研究员 → 最终复核），全程 fail-open。
     """
     if ctx.gate_decision != "llm_arbitration":
         ctx.pipeline_steps.append("llm_arbitration_skipped")
@@ -191,29 +319,12 @@ def step_llm_arbitration(ctx: DecisionContext) -> DecisionContext:
         from infra.llm.gateway import LLMGateway
         gw = LLMGateway.instance()
 
-        # 加载仲裁 prompt 文件
         from pathlib import Path
-        _arb_prompt_path = Path(__file__).parent.parent / "prompts" / "steward_arbitrate.md"
-        system = _arb_prompt_path.read_text(encoding="utf-8") if _arb_prompt_path.exists() else "你是投资仲裁官。只输出JSON。"
+        prompts_dir = Path(__file__).parent.parent / "prompts"
+        system = _read_prompt(prompts_dir, "steward_arbitrate.md", "你是投资仲裁官。只输出JSON。")
 
-        # 组装数据部分
-        modules_text = ""
-        for name, result in ctx.modules_results.items():
-            d = result.get("direction", "neutral")
-            c = result.get("confidence", 0)
-            detail = str(result.get("detail", ""))[:200]
-            modules_text += f"  - {name}: 方向={d}, 置信={c}, 详情={detail}\n"
-            # 个股新闻（signal_scout 提供）
-            if name == "signal_scout" and result.get("stock_news"):
-                news_titles = [n.get("title","") for n in result["stock_news"][:5]]
-                modules_text += f"    📰 个股新闻({len(news_titles)}条): {'; '.join(news_titles)}\n"
-                if result.get("stock_news_direction"):
-                    modules_text += f"    📰 新闻方向: {result['stock_news_direction']}\n"
-
-        # 个股信息
-        stock_info = ""
-        if getattr(ctx, "question_stock_name", ""):
-            stock_info = f"\n## 查询个股\n名称: {ctx.question_stock_name}, 代码: {getattr(ctx, 'question_stock_code', '')}\n"
+        modules_text = _build_modules_text(ctx)
+        stock_info = _build_stock_info(ctx)
 
         prompt = f"""## 用户问题
 {ctx.question}
@@ -242,75 +353,21 @@ Regime: {ctx.regime} ({ctx.regime_description})
         ctx.llm_called = True
         ctx.llm_model = result.get("model", "deepseek-v4-flash")
         ctx.llm_calls_count += 1
-
-        content = result.get("content", "")
         ctx.llm_reasoning = result.get("reasoning", "") or ""  # LLM 的思考过程
 
-        # v9.9.10: 输出被 max_tokens 截断 → 半截 JSON 无法安全抢救，
-        # 按"解析失败"处理（content 置空，走下面的降级路径）
-        if result.get("finish_reason") == "length":
-            print("[PIPELINE] LLM仲裁: 输出被 max_tokens 截断，按解析失败降级")
-            content = ""
+        content = _llm_result_content(result)
 
         if content and not result.get("fallback"):
-            # 解析 JSON 返回
-            import json as _json
-            import re
-            parsed = None
-            # 方法1: 直接解析整个 content
-            try:
-                parsed = _json.loads(content.strip())
-            except _json.JSONDecodeError:
-                pass
-            # 方法2: 提取 ```json...``` 代码块
-            if not parsed:
-                code_match = re.search(r'```(?:json)?\s*(\{.*?\})\s*```', content, re.DOTALL)
-                if code_match:
-                    try:
-                        parsed = _json.loads(code_match.group(1))
-                    except _json.JSONDecodeError:
-                        pass
-            # 方法3: 找第一个完整的 {} 对
-            if not parsed:
-                brace_count = 0
-                start_idx = content.find('{')
-                if start_idx >= 0:
-                    for i in range(start_idx, len(content)):
-                        if content[i] == '{': brace_count += 1
-                        elif content[i] == '}': brace_count -= 1
-                        if brace_count == 0:
-                            try:
-                                parsed = _json.loads(content[start_idx:i+1])
-                            except _json.JSONDecodeError:
-                                pass
-                            break
-
-            if parsed and isinstance(parsed, dict):
-                ctx.direction = parsed.get("direction", "neutral")
-                raw_conf = parsed.get("confidence", 50)
-                ctx.confidence_score = raw_conf / 100.0
-                ctx.confidence = int(raw_conf)  # 0-100 整数给前端
-                ctx.conclusion = parsed.get("conclusion", "")
-                ctx.llm_reasoning = parsed.get("reasoning", "")
+            parsed = _parse_llm_json(content)
+            if parsed is not None:
+                _apply_arbitration_result(ctx, parsed)
                 print(f"[PIPELINE] LLM仲裁: {ctx.direction} {ctx.confidence_score*100:.0f}% — {ctx.conclusion}")
+                # ━━ T01: 空头反驳三步链（仅股票/基金类问题启用） ━━
+                _run_bear_rebuttal_chain(ctx, gw, prompts_dir)
             else:
-                # v9.9.10: 解析失败（或被 max_tokens 截断）时，绝不把 LLM 原文当结论。
-                # 旧实现 `ctx.conclusion = content[:200]` 会把未闭合的裸 JSON
-                # （'"direction": "bearish", ...'）直接推给用户 —— 这是线上泄漏的根因。
-                # 改为降级到模块多数投票，与 step_output 的降级分支保持一致。
-                dirs = [r.get("direction", "neutral") for r in ctx.modules_results.values()]
-                if dirs:
-                    ctx.direction = Counter(dirs).most_common(1)[0][0]
-                ctx.conclusion = _SAFE_ARBITRATION_FALLBACK
-                print(f"[PIPELINE] LLM仲裁: 无有效JSON，降级模块投票→{ctx.direction}")
+                _fallback_module_vote(ctx, "无有效JSON")
         else:
-            # LLM 不可用，降级：用模块多数投票
-            directions = [r.get("direction", "neutral") for r in ctx.modules_results.values()]
-            if directions:
-                most_common = Counter(directions).most_common(1)[0][0]
-                ctx.direction = most_common
-            ctx.conclusion = _SAFE_ARBITRATION_FALLBACK
-            print(f"[PIPELINE] LLM仲裁降级: 多数投票→{ctx.direction}")
+            _fallback_module_vote(ctx, "LLM不可用")
 
     except Exception as e:
         # v9.9.10: 异常原文可能含文件路径/接口报错，同样不能透出给用户
@@ -319,6 +376,167 @@ Regime: {ctx.regime} ({ctx.regime_description})
 
     ctx.pipeline_steps.append("llm_arbitration")
     return ctx
+
+
+def _run_bear_rebuttal_chain(ctx: DecisionContext, gw, prompts_dir) -> None:
+    """T01: 空头反驳三步链（首轮仲裁成功后，仅股票/基金类问题启用）。
+
+    步骤：首轮（已完成）→ 空头研究员 → 最终复核。
+    降级（fail-open）：空头或复核任一 fallback / 截断 / 解析失败，
+    打印日志、保持首轮结果、不阻塞主流程。
+    """
+    if not _is_stock_fund_question(ctx):
+        return
+
+    first_round = {
+        "direction": ctx.direction,
+        "confidence": ctx.confidence,
+        "conclusion": ctx.conclusion,
+        "reasoning": ctx.llm_reasoning,
+    }
+
+    bear = _run_bear_attack(ctx, gw, prompts_dir, first_round)
+    if bear is None:
+        return
+
+    _run_final_review(ctx, gw, prompts_dir, first_round, bear)
+
+
+def _run_bear_attack(ctx: DecisionContext, gw, prompts_dir, first_round: dict) -> Optional[dict]:
+    """第2步：空头研究员。任一环节失败返回 None（保持首轮结果，fail-open）。"""
+    system = _read_prompt(prompts_dir, "steward_bear_attack.md", "你是空头研究员。只输出JSON。")
+
+    prompt = f"""## 首轮仲裁结论
+方向: {first_round.get('direction')}
+置信度: {first_round.get('confidence')}
+结论: {first_round.get('conclusion')}
+推理: {first_round.get('reasoning')}
+
+## 原始模块数据
+{_build_modules_text(ctx)}
+
+请以空头研究员视角挑出首轮结论的漏洞，严格按 JSON 格式输出。"""
+
+    try:
+        result = gw.call_sync(
+            prompt,
+            system=system,
+            model_tier="llm_light",
+            user_id=ctx.user_id,
+            module="steward_bear_attack",
+            max_tokens=800,
+        )
+    except Exception as e:
+        print(f"[PIPELINE] 空头研究员异常，保持首轮结果: {e}")
+        return None
+
+    ctx.llm_calls_count += 1
+
+    content = _llm_result_content(result)
+    if not content or result.get("fallback"):
+        print("[PIPELINE] 空头研究员降级/无输出，保持首轮结果")
+        return None
+
+    parsed = _parse_llm_json(content)
+    if parsed is None:
+        print("[PIPELINE] 空头研究员无有效JSON，保持首轮结果")
+        return None
+
+    bear = {
+        "bear_attack_points": parsed.get("bear_attack_points", []) or [],
+        "strongest_objection": parsed.get("strongest_objection", "") or "",
+        "overlooked_risk": parsed.get("overlooked_risk", "") or "",
+        "fatal_risk": bool(parsed.get("fatal_risk", False)),
+        "data_sources_referenced": parsed.get("data_sources_referenced", []) or [],
+    }
+    # 挂到 ctx（运行时扩展字段）供审计/透出，不参与主流程契约
+    ctx.bear_attack = bear
+    print(f"[PIPELINE] 空头研究员: fatal_risk={bear['fatal_risk']}, objection={bear['strongest_objection'][:40]}")
+    return bear
+
+
+def _run_final_review(ctx: DecisionContext, gw, prompts_dir, first_round: dict, bear: dict) -> None:
+    """第3步：最终复核。任一环节失败则保持首轮结果（fail-open）。"""
+    system = _read_prompt(prompts_dir, "steward_final_review.md", "你是最终裁决官。只输出JSON。")
+
+    attack_points = "；".join(bear.get("bear_attack_points", []) or [])
+    prompt = f"""## 首轮仲裁结论
+方向: {first_round.get('direction')}
+置信度: {first_round.get('confidence')}
+结论: {first_round.get('conclusion')}
+推理: {first_round.get('reasoning')}
+
+## 空头研究员反驳
+致命风险(fatal_risk): {bear.get('fatal_risk')}
+最强反驳: {bear.get('strongest_objection')}
+被忽略的风险: {bear.get('overlooked_risk')}
+攻击点: {attack_points}
+
+请综合双方给出最终裁决，严格按 JSON 格式输出。"""
+
+    try:
+        result = gw.call_sync(
+            prompt,
+            system=system,
+            model_tier="llm_light",
+            user_id=ctx.user_id,
+            module="steward_final_review",
+            max_tokens=1000,
+        )
+    except Exception as e:
+        print(f"[PIPELINE] 最终复核异常，保持首轮结果: {e}")
+        return
+
+    ctx.llm_calls_count += 1
+
+    content = _llm_result_content(result)
+    if not content or result.get("fallback"):
+        print("[PIPELINE] 最终复核降级/无输出，保持首轮结果")
+        return
+
+    parsed = _parse_llm_json(content)
+    if parsed is None:
+        print("[PIPELINE] 最终复核无有效JSON，保持首轮结果")
+        return
+
+    prev_direction = ctx.direction
+    prev_conf = ctx.confidence
+
+    new_direction = parsed.get("direction", prev_direction)
+    raw_conf = parsed.get("confidence", prev_conf)
+    try:
+        new_conf = int(raw_conf)
+    except (TypeError, ValueError):
+        new_conf = prev_conf
+    new_conf = max(0, min(100, new_conf))
+
+    # ━━ 强影响机制 · 代码层兜底 ━━
+    # LLM 层已由 steward_final_review.md 要求在 fatal_risk=true 时下调 confidence
+    # （腰斩或 0-29）或翻转 direction。这里做代码层兜底：若复核结果未下调，
+    # 打印 warning + 追加 risk_alert 透出 strongest_objection；不做代码层强制翻转。
+    if bear.get("fatal_risk"):
+        downgraded = (
+            new_direction != prev_direction
+            or new_conf <= 29
+            or new_conf <= prev_conf / 2
+        )
+        if not downgraded:
+            print(f"[PIPELINE] ⚠️ fatal_risk=true 但复核未下调(confidence {prev_conf}→{new_conf}, "
+                  f"direction {prev_direction}→{new_direction})，追加 risk_alert")
+            ctx.risk_alerts.append({
+                "source": "bear_attack",
+                "level": "warning",
+                "msg": f"空头反驳提出致命风险：{bear.get('strongest_objection', '')[:120]}",
+            })
+
+    # 覆盖 ctx（复核结果）
+    ctx.direction = new_direction
+    ctx.confidence_score = new_conf / 100.0
+    ctx.confidence = new_conf
+    ctx.conclusion = parsed.get("conclusion", ctx.conclusion)
+    ctx.llm_reasoning = parsed.get("reasoning", ctx.llm_reasoning)
+
+    print(f"[PIPELINE] 最终复核: {ctx.direction} {ctx.confidence}% — {ctx.conclusion}")
 
 
 def step_payoff_ev(ctx: DecisionContext) -> DecisionContext:
@@ -616,9 +834,9 @@ PIPELINES: dict[str, list[Callable]] = {
 
 # 管线描述（给前端/日志用）
 PIPELINE_INFO = {
-    "default": {"name": "日常决策", "steps": 9, "llm_max": 1, "description": "门控60%直出+需要时仲裁"},
+    "default": {"name": "日常决策", "steps": 9, "llm_max": 3, "description": "门控60%直出+仲裁(股票/基金最多3次LLM)"},
     "fast": {"name": "紧急快速", "steps": 5, "llm_max": 0, "description": "零LLM，纯模块+风控"},
-    "cautious": {"name": "谨慎深度", "steps": 10, "llm_max": 1, "description": "含持仓体检，熊市专用"},
+    "cautious": {"name": "谨慎深度", "steps": 10, "llm_max": 3, "description": "含持仓体检+空头反驳三步链，熊市专用"},
 }
 
 
