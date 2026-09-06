@@ -260,7 +260,18 @@ def _push_alert(failures: list, total: int):
 
 
 def _save_results(results: list):
-    """写入巡检日志"""
+    """写入巡检日志（供 main() 调用）"""
+    save_health_results(results)
+
+
+def save_health_results(results: list) -> Path:
+    """公开落盘入口：供 night_worker.step_health_check 等外部调用方复用。
+
+    night_worker 里 step_health_check 直接调 run_health_check() 拿到结果，
+    但 run_health_check() 本身不落盘，导致 data/health/{date}.json 长期不更新，
+    元巡检（ops_summary）靠落盘文件 mtime 判新鲜度 → 误判「巡检失效」。
+    这里抽成公开函数，让调用方能显式落盘。
+    """
     log_dir = DATA_DIR / "health"
     log_dir.mkdir(parents=True, exist_ok=True)
     log_file = log_dir / f"{date.today()}.json"
@@ -275,6 +286,7 @@ def _save_results(results: list):
         }
     }, ensure_ascii=False, indent=2), encoding="utf-8")
     print(f"  📝 巡检日志: {log_file}")
+    return log_file
 
 
 def main():

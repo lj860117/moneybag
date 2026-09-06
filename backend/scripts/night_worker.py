@@ -272,8 +272,14 @@ def _user_has_account(user_id: str) -> bool:
 def step_health_check():
     log("🔍 01:00 数据源健康巡检")
     try:
-        from scripts.datasource_health_check import run_health_check
+        from scripts.datasource_health_check import run_health_check, save_health_results
         result = run_health_check()
+        # 落盘到 data/health/{date}.json，让元巡检（ops_summary）能靠 mtime 判新鲜度
+        # （run_health_check 本身不落盘，之前导致元巡检误判「巡检失效 82 天」）
+        try:
+            save_health_results(result)
+        except Exception as e:
+            log(f"  ⚠️ 巡检结果落盘失败: {e}")
         failed = [r for r in result if not r.get("ok")]
         if failed:
             log(f"  ⚠️ {len(failed)} 个数据源异常: {[r['name'] for r in failed]}")
@@ -282,7 +288,7 @@ def step_health_check():
                 from services.wxwork_push import is_configured, send_daily_report_to
                 if is_configured():
                     msg = f"⚠️ 数据源巡检异常 ({len(failed)}个)\n"
-                    msg += "\n".join(f"❌ {r['name']}: {r.get('error', '未知')}" for r in failed)
+                    msg += "\n".join(f"❌ {r['name']}: {r.get('detail', '未知')}" for r in failed)
                     send_daily_report_to("LeiJiang", msg)
             except Exception:
                 pass
