@@ -1580,8 +1580,6 @@ AVAILABLE_MODELS = [
     {"id": "doubao-seed-2-0-pro-260215", "name": "豆包 Seed 2.0 Pro (字节·旗舰)", "provider": "doubao", "base": "https://ark.cn-beijing.volces.com/api/v3", "env_key": "DOUBAO_API_KEY"},
     {"id": "doubao-seed-2-0-lite-260215", "name": "豆包 Seed 2.0 Lite (字节·通用)", "provider": "doubao", "base": "https://ark.cn-beijing.volces.com/api/v3", "env_key": "DOUBAO_API_KEY"},
     {"id": "doubao-seed-2-0-mini-260215", "name": "豆包 Seed 2.0 Mini (字节·快速)", "provider": "doubao", "base": "https://ark.cn-beijing.volces.com/api/v3", "env_key": "DOUBAO_API_KEY"},
-    {"id": "qwen3.6-plus", "name": "通义千问3.6 Plus (高性价比)", "provider": "qwen", "base": "https://dashscope.aliyuncs.com/compatible-mode/v1", "env_key": "DASHSCOPE_API_KEY"},
-    {"id": "qwen3.6-flash", "name": "通义千问3.6 Flash (轻量快速)", "provider": "qwen", "base": "https://dashscope.aliyuncs.com/compatible-mode/v1", "env_key": "DASHSCOPE_API_KEY"},
 ]
 
 

@@ -60,7 +60,7 @@ def _call_v3(prompt, max_tokens=500, system="", force_no_thinking=False):
     """调用 DeepSeek V4 Pro（通过 gateway 统一管理）
 
     晨报场景默认走 V4 Pro：5/23 永久降价后比 Flash 只贵一点，但幻觉更少、质量更好
-    如果 DeepSeek 挂掉，gateway 会自动降级到通义千问3.6 Plus
+    如果 DeepSeek 挂掉，gateway 会自动降级到豆包
 
     Args:
         prompt: 用户 prompt
@@ -117,9 +117,6 @@ def _reset_model_stats():
 def _format_model_display_name(model: str) -> str:
     """模型 ID → 中文展示名"""
     lc = (model or "").lower()
-    if "qwen3.6-plus" in lc or "qwen-plus" in lc: return "通义千问 Plus"
-    if "qwen3.6-flash" in lc or "qwen-flash" in lc: return "通义千问 Flash"
-    if "qwen" in lc: return "通义千问"
     if "seed-2-0-pro" in lc or "seed-2.0-pro" in lc: return "豆包 Seed 2.0 Pro"
     if "seed-2-0-lite" in lc or "seed-2.0-lite" in lc: return "豆包 Seed 2.0 Lite"
     if "seed-2-0-mini" in lc or "seed-2.0-mini" in lc: return "豆包 Seed 2.0 Mini"
@@ -143,7 +140,7 @@ def _build_model_usage_footer() -> str:
     parts = [f"{_format_model_display_name(m)}×{cnt}" for m, cnt in items]
     detail = " · ".join(parts)
     if stats["any_fallback"]:
-        # v9.5.69: 降级目标可能是豆包或千问，根据实际调用的模型动态展示
+        # v9.5.69: 降级目标可能是豆包，根据实际调用的模型动态展示
         fallback_models = [m for m in stats["models"] if not m.startswith("deepseek")]
         if fallback_models:
             fb_names = [_format_model_display_name(m) for m in fallback_models]

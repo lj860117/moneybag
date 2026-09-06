@@ -1,12 +1,12 @@
 """
-LLM 供应商余额主动监控 cron — 每天定时查询三家 provider 的余额/可用性，低余额时预警。
+LLM 供应商余额主动监控 cron — 每天定时查询两家 provider 的余额/可用性，低余额时预警。
 
 背景
 ----
 现有 llm_quota_alert.py 是**事后**告警：只有在调用返回 402/403（欠费）时才会触发。
 本脚本是**主动**监控：每天定时、主动查询余额，在真正欠费之前提前预警。
 
-三家 provider 的查询能力差异（重要，务必读）：
+两家 provider 的查询能力差异（重要，务必读）：
   1. DeepSeek  —— 官方提供 `GET {base}/user/balance` 余额接口，可直接读真实余额。
      低于阈值（默认 10 元）时告警。
   2. 豆包(ARK)  —— Volcengine ARK 的 OpenAI 兼容接口（/api/v3）**不提供**余额查询端点；
@@ -15,11 +15,10 @@ LLM 供应商余额主动监控 cron — 每天定时查询三家 provider 的�
         - 200        → 正常
         - 401        → API Key 无效（配置问题）
         - 402 / 403  → 额度/余额耗尽（等价于欠费信号）
-  3. 千问(DashScope) —— DashScope 的 OpenAI 兼容接口同样**不提供**余额查询端点；
-     真实余额要走阿里云 BSS OpenAPI（需 AccessKey，非本项目 API Key）。
-     因此同样用「最小化 chat 调用」探测，402/403 视为额度/余额耗尽。
 
-每日探测仅额外消耗 ~2 次 1-token 调用（豆包 lite + 千问 flash），成本可忽略。
+（千问 DashScope 已于欠费后下线，不再探测。）
+
+每日探测仅额外消耗 ~1 次 1-token 调用（豆包 lite），成本可忽略。
 
 用法
 ----
@@ -29,13 +28,13 @@ LLM 供应商余额主动监控 cron — 每天定时查询三家 provider 的�
   # 打印 + 写日志 + 触发告警时推送企微（生产 cron 建议带上 --alert）
   python backend/scripts/llm_balance_monitor.py --alert
 
-  # 跳过豆包/千问的可用性探测（只查 DeepSeek 真实余额）
+  # 跳过豆包的可用性探测（只查 DeepSeek 真实余额）
   python backend/scripts/llm_balance_monitor.py --no-probe
 
 设计约定
 --------
   - 与项目其他 cron 脚本一致，放在 backend/scripts/ 下，独立可运行。
-  - 三家逐家 try/except 隔离，单家失败绝不影响其他家。
+  - 两家逐家 try/except 隔离，单家失败绝不影响其他家。
   - 自带 `mkdir -p` 日志目录，日志写入 <backend>/logs/llm_balance_monitor.log，
     同时打到 stdout（cron 再重定向一份）。
   - 同种告警一天只推一次（文件去重，与 llm_quota_alert.py 相同的状态模式，
@@ -77,12 +76,6 @@ DOUBAO_API_BASE = os.environ.get(
 DOUBAO_API_KEY = os.environ.get("DOUBAO_API_KEY", "") or os.environ.get("ARK_API_KEY", "")
 # 探测用模型：复用 gateway 的 llm_light 档位（最便宜），可用 env 覆盖
 DOUBAO_PROBE_MODEL = os.environ.get("DOUBAO_PROBE_MODEL", "doubao-seed-2-0-lite-260215")
-
-DASHSCOPE_API_BASE = os.environ.get(
-    "DASHSCOPE_API_BASE", "https://dashscope.aliyuncs.com/compatible-mode/v1"
-)
-DASHSCOPE_API_KEY = os.environ.get("DASHSCOPE_API_KEY", "")
-QWEN_PROBE_MODEL = os.environ.get("QWEN_PROBE_MODEL", "qwen3.6-flash")
 
 _HTTP_TIMEOUT = float(os.environ.get("LLM_BALANCE_HTTP_TIMEOUT", "20.0"))
 
@@ -254,7 +247,7 @@ def _check_deepseek(threshold: float, *, do_push: bool) -> None:
             "deepseek_balance_low",
             "💳 DeepSeek 余额不足",
             f"当前余额 ¥{balance:.2f}，已低于阈值 ¥{threshold:.2f}。\n\n"
-            "影响：晨报/选基/AI 对话主路径可能中断或降级到千问。\n\n"
+            "影响：晨报/选基/AI 对话主路径可能中断或降级到豆包。\n\n"
             "建议：前往 https://platform.deepseek.com/ 充值。",
             do_push=do_push,
         )
@@ -294,7 +287,7 @@ def _to_float(value) -> Optional[float]:
 
 
 # ============================================================
-# 豆包 / 千问：可用性探测（无真实余额接口时的兜底）
+# 豆包：可用性探测（无真实余额接口时的兜底）
 # ============================================================
 def _probe_availability(name: str, api_key: str, api_base: str, model: str) -> tuple[int, str]:
     """发送一次最小化 chat 调用，返回 (status_code, 响应文本片段)。
@@ -324,7 +317,7 @@ def _check_by_probe(
     *,
     do_push: bool,
 ) -> None:
-    """豆包/千问的可用性探测入口（无余额接口，402/403 视为额度/余额耗尽）。"""
+    """豆包的可用性探测入口（无余额接口，402/403 视为额度/余额耗尽）。"""
     if not api_key:
         LOG.warning("[%s] 未配置 API Key，跳过可用性探测", provider)
         return
@@ -369,7 +362,7 @@ def _check_by_probe(
 def run(threshold: float, *, do_push: bool, do_probe: bool) -> None:
     LOG.info("===== LLM 余额监控启动 @ %s =====", date.today().isoformat())
 
-    # 三家逐家隔离：任何一家异常都不影响其它家
+    # 两家逐家隔离：任何一家异常都不影响其它家
     try:
         _check_deepseek(threshold, do_push=do_push)
     except Exception as e:  # noqa: BLE001
@@ -383,20 +376,13 @@ def run(threshold: float, *, do_push: bool, do_probe: bool) -> None:
         except Exception as e:  # noqa: BLE001
             LOG.exception("[doubao] 未捕获异常: %s", e)
 
-        try:
-            _check_by_probe(
-                "qwen", DASHSCOPE_API_KEY, DASHSCOPE_API_BASE, QWEN_PROBE_MODEL, do_push=do_push
-            )
-        except Exception as e:  # noqa: BLE001
-            LOG.exception("[qwen] 未捕获异常: %s", e)
-
     LOG.info("===== LLM 余额监控结束 =====")
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="钱袋子 LLM 供应商余额主动监控 cron")
     parser.add_argument("--alert", action="store_true", help="触发告警时推送企微（默认只打印+写日志）")
-    parser.add_argument("--no-probe", action="store_true", help="跳过豆包/千问可用性探测")
+    parser.add_argument("--no-probe", action="store_true", help="跳过豆包可用性探测")
     parser.add_argument(
         "--deepseek-threshold",
         type=float,

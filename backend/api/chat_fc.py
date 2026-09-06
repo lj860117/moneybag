@@ -613,9 +613,6 @@ def _fc_call_with_fallback(model: str, messages: list, max_tokens: int = 3000) -
     """
     def _route(m: str) -> tuple[str, str, str]:
         """返回 (api_key, api_base, provider)"""
-        if m.startswith("qwen"):
-            return (os.environ.get("DASHSCOPE_API_KEY", ""),
-                    os.environ.get("DASHSCOPE_API_BASE", "https://dashscope.aliyuncs.com/compatible-mode/v1"), "qwen")
         if m.startswith("doubao") or m.startswith("ep-"):
             return (os.environ.get("DOUBAO_API_KEY", "") or os.environ.get("ARK_API_KEY", ""),
                     os.environ.get("DOUBAO_API_BASE", os.environ.get("ARK_API_BASE", "https://ark.cn-beijing.volces.com/api/v3")), "doubao")
@@ -673,25 +670,7 @@ def _fc_call_with_fallback(model: str, messages: list, max_tokens: int = 3000) -
             except Exception as e:
                 print(f"[FC_AGENT] 豆包异常: {e}")
 
-    # L3: 千问（最终兜底）
-    qwen_key = os.environ.get("DASHSCOPE_API_KEY", "")
-    if qwen_key and not model.startswith("qwen"):
-        QWEN_MAP = {
-            "deepseek-reasoner": "qwen3.6-plus",
-            "deepseek-v4-pro": "qwen3.6-plus",
-            "deepseek-v4-flash": "qwen3.6-plus",  # FC 用 Plus 确保工具调用准确
-        }
-        l3_model = QWEN_MAP.get(model, "qwen3.6-plus")
-        print(f"[FC_AGENT] 降级路由(L3): → {l3_model}")
-        try:
-            status, payload = _do(l3_model, qwen_key, os.environ.get("DASHSCOPE_API_BASE", "https://dashscope.aliyuncs.com/compatible-mode/v1"))
-            if status == 200:
-                print(f"[FC_AGENT] ✅ 千问降级成功 ({l3_model})")
-                return payload, l3_model, True
-            print(f"[FC_AGENT] 千问失败 HTTP {status}: {str(payload)[:200]}")
-        except Exception as e:
-            print(f"[FC_AGENT] 千问异常: {e}")
-
+    # L3: 千问已下线（欠费移除），L2 豆包失败即整体失败
     raise RuntimeError(f"所有 provider 都失败，主错: {primary_err}")
 
 
@@ -713,14 +692,14 @@ def run_fc_agent_stream(
 
     自我纠正：工具返回"数据不可用/失败/无结果"时，自动注入提示让 LLM 用 search_web 补充。
 
-    v9.5.70: 接入三层降级 — DeepSeek 失败时自动降级到豆包 Lite/Pro，再失败到千问 Plus
+    v9.5.70: 接入三层降级 — DeepSeek 失败时自动降级到豆包 Lite/Pro（千问已下线）
     """
     if not model:
         from services.llm_gateway import resolve_default_model
         model = resolve_default_model("llm_light", module="chat_fc")
 
     # 至少要有一个 provider 的 key
-    if not (os.environ.get("LLM_API_KEY") or os.environ.get("DOUBAO_API_KEY") or os.environ.get("DASHSCOPE_API_KEY")):
+    if not (os.environ.get("LLM_API_KEY") or os.environ.get("DOUBAO_API_KEY")):
         yield {"delta": "AI 暂时不可用（所有 API Key 未配置）", "done": True, "source": "error"}
         return
 

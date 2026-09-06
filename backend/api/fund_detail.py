@@ -849,10 +849,10 @@ def _enrich_detail_with_holding(detail: dict, code: str, user_id: str) -> dict:
 # ──────────────────────────────────────────────────────────
 @router.get("/api/fund/ai-score/{code}")
 def fund_ai_score(code: str):
-    """三大模型并发评分：DeepSeek Pro + 豆包 Seed 2.0 + 千问 Qwen3.6
+    """两大模型并发评分：DeepSeek Pro + 豆包 Seed 2.0
 
     前端在详情弹窗中异步调用，展示各模型打分和综合评价。
-    缓存 12h，每天每只基金最多消耗 3 次 LLM 调用。
+    缓存 12h，每天每只基金最多消耗 2 次 LLM 调用。
     """
     # 先拿基金详情数据作为评分输入
     cache_key = f"fund_detail_{code}"

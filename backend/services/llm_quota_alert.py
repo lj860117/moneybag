@@ -2,7 +2,6 @@
 LLM 配额/余额告警
 - DeepSeek 余额不足 → 推送企微
 - 豆包(火山引擎 ARK) 余额耗尽 / API Key 异常 → 推送企微
-- 通义千问免费额度用完 → 推送企微
 - 同种告警一天只推一次（文件去重）
 - 没看见第二天会再推（次日重新允许推送）
 """
@@ -80,15 +79,6 @@ def classify_llm_error(provider: str, status_code: int, error_msg: str) -> str |
         if "arrearage" in err_lower or "arrears" in err_lower or "欠费" in error_msg:
             return "doubao_balance_exhausted"
 
-    # 千问: 403 AllocationQuota.FreeTierOnly / 余额不足
-    if provider == "qwen":
-        if "freetieronly" in err_lower or "allocationquota" in err_lower:
-            return "qwen_free_quota_exhausted"
-        if status_code == 403 and "quota" in err_lower:
-            return "qwen_free_quota_exhausted"
-        if "余额不足" in error_msg or "balance" in err_lower and "insufficient" in err_lower:
-            return "qwen_balance_exhausted"
-
     return None
 
 
@@ -111,25 +101,11 @@ def maybe_alert_quota(provider: str, status_code: int, error_msg: str):
             "deepseek_balance_exhausted": (
                 "💳 DeepSeek 余额提醒",
                 "**❗ DeepSeek API 余额已用尽或不足**\n\n"
-                "影响：晨报/选基/AI对话可能降级到通义千问免费额度\n\n"
+                "影响：晨报/选基/AI对话可能降级到豆包\n\n"
                 "建议处理：\n"
                 "• 前往 https://platform.deepseek.com/ 充值\n"
-                "• 或临时把 AI 对话切到「通义千问」备用\n\n"
-                "_系统已自动切换到千问继续运行_"
-            ),
-            "qwen_free_quota_exhausted": (
-                "🆓 通义千问免费额度告罄",
-                "**⚠️ 通义千问免费额度（100万 token）已用完**\n\n"
-                "影响：截图识别 / DeepSeek 降级备份暂不可用\n\n"
-                "建议处理：\n"
-                "• 检查百炼控制台 https://bailian.console.aliyun.com/\n"
-                "• 如需继续使用，可少量充值（个人用一年 5 元够用）\n\n"
-                "_DeepSeek 主路径正常工作中_"
-            ),
-            "qwen_balance_exhausted": (
-                "💳 通义千问余额告警",
-                "**❗ 通义千问账户余额不足**\n\n"
-                "前往百炼控制台充值：https://bailian.console.aliyun.com/"
+                "• 或临时把 AI 对话切到「豆包」备用\n\n"
+                "_系统已自动切换到豆包继续运行_"
             ),
             "doubao_balance_exhausted": (
                 "💳 豆包余额提醒",

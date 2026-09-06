@@ -150,7 +150,7 @@ TOKEN_BUDGET = {
 
 # 多 provider 定价（¥/百万token）
 # DeepSeek 官方 V4 价格分 flash/pro 两档，input 按缓存命中/未命中 + 峰谷时段分别计价
-# doubao/qwen 价目待查，None = 只记用量不计费
+# doubao 价目待查，None = 只记用量不计费
 PROVIDER_PRICING = {
     "deepseek-flash": {
         "input_cache_hit_valley": 0.05, "input_cache_hit_peak": 0.10,
@@ -163,7 +163,6 @@ PROVIDER_PRICING = {
         "output_peak": 27.0, "output_valley": 13.5,
     },
     "doubao": None,  # 价目待查，None = 只记用量不计费
-    "qwen": None,
 }
 DEEPSEEK_PRICING = PROVIDER_PRICING["deepseek-pro"]  # 兼容旧引用（指向 pro 价表）
 

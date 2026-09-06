@@ -89,7 +89,6 @@ def health():
     keys_status = {}
     keys_status["deepseek"] = "ok" if os.environ.get("LLM_API_KEY") else "missing"
     keys_status["doubao"] = "ok" if os.environ.get("DOUBAO_API_KEY") else "missing"
-    keys_status["qwen"] = "ok" if os.environ.get("DASHSCOPE_API_KEY") else "missing"
     keys_status["tushare"] = "ok" if os.environ.get("TUSHARE_TOKEN") else "missing"
     
     # v9.5.123: 数据源健康检测（前端据此显示降级提示）

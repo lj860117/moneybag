@@ -28,12 +28,12 @@ def test_resolve_default_model_peak_prefers_doubao_for_interactive(monkeypatch):
     assert model == "doubao-seed-2-0-lite-260215"
 
 
-def test_resolve_default_model_peak_falls_back_to_qwen_when_doubao_missing(monkeypatch):
+def test_resolve_default_model_peak_falls_back_to_deepseek_when_doubao_missing(monkeypatch):
     import services.llm_gateway as gw_mod
 
     monkeypatch.setenv("LLM_API_KEY", "ds")
     monkeypatch.delenv("DOUBAO_API_KEY", raising=False)
-    monkeypatch.setenv("DASHSCOPE_API_KEY", "qw")
+    monkeypatch.delenv("ARK_API_KEY", raising=False)
 
     model = gw_mod.resolve_default_model(
         "llm_light",
@@ -41,7 +41,7 @@ def test_resolve_default_model_peak_falls_back_to_qwen_when_doubao_missing(monke
         now=datetime(2026, 7, 6, 14, 1),
     )
 
-    assert model == "qwen3.6-flash"
+    assert model == "deepseek-v4-flash"
 
 
 def test_resolve_default_model_offpeak_prefers_deepseek(monkeypatch):
@@ -82,7 +82,6 @@ def test_resolve_model_candidates_switches_fallback_order_by_peak_window(monkeyp
 
     monkeypatch.setenv("LLM_API_KEY", "ds")
     monkeypatch.setenv("DOUBAO_API_KEY", "db")
-    monkeypatch.setenv("DASHSCOPE_API_KEY", "qw")
 
     peak_candidates = gw_mod.resolve_model_candidates(
         "llm_light",
@@ -97,13 +96,11 @@ def test_resolve_model_candidates_switches_fallback_order_by_peak_window(monkeyp
 
     assert peak_candidates == [
         "doubao-seed-2-0-lite-260215",
-        "qwen3.6-flash",
         "deepseek-v4-flash",
     ]
     assert offpeak_candidates == [
         "deepseek-v4-flash",
         "doubao-seed-2-0-mini-260215",
-        "qwen3.6-flash",
     ]
 
 
@@ -141,7 +138,6 @@ def test_call_sync_peak_falls_back_to_deepseek_when_alt_providers_exhausted(monk
     monkeypatch.setenv("DATA_DIR", str(tmp_path))
     monkeypatch.setenv("LLM_API_KEY", "ds")
     monkeypatch.setenv("DOUBAO_API_KEY", "db")
-    monkeypatch.setenv("DASHSCOPE_API_KEY", "qw")
     monkeypatch.setattr(gw_mod, "_is_deepseek_peak_window", lambda now=None: True)
 
     class _FakeResponse:
@@ -167,8 +163,6 @@ def test_call_sync_peak_falls_back_to_deepseek_when_alt_providers_exhausted(monk
             model = (json or {}).get("model")
             if model == "doubao-seed-2-0-lite-260215":
                 return _FakeResponse(402, {"error": "doubao quota exceeded"})
-            if model == "qwen3.6-flash":
-                return _FakeResponse(402, {"error": "qwen quota exceeded"})
             if model == "deepseek-v4-flash":
                 return _FakeResponse(200, {
                     "choices": [{"message": {"content": "deepseek still works"}}],
@@ -197,12 +191,11 @@ def test_list_models_returns_peak_aware_default(monkeypatch):
 
     monkeypatch.setenv("LLM_API_KEY", "ds")
     monkeypatch.setenv("DOUBAO_API_KEY", "db")
-    monkeypatch.setenv("DASHSCOPE_API_KEY", "qw")
 
     data = chat.list_models()
 
     assert data["default"] == "auto"
-    assert {item["provider"] for item in data["models"]} == {"deepseek", "doubao", "qwen", "auto"}
+    assert {item["provider"] for item in data["models"]} == {"deepseek", "doubao", "auto"}
 
 
 def test_chat_analysis_passes_explicit_model_to_gateway(monkeypatch):
@@ -245,9 +238,9 @@ def test_chat_analysis_passes_explicit_model_to_gateway(monkeypatch):
     monkeypatch.setattr(chat, "_check_preset_answer", lambda *args, **kwargs: None)
     monkeypatch.setenv("LLM_API_KEY", "ds")
 
-    result = asyncio.run(chat.chat_analysis(ChatRequest(message="现在市场怎么样", model="qwen3.6-flash")))
+    result = asyncio.run(chat.chat_analysis(ChatRequest(message="现在市场怎么样", model="doubao-seed-2-0-lite-260215")))
 
-    assert captured["explicit_model"] == "qwen3.6-flash"
+    assert captured["explicit_model"] == "doubao-seed-2-0-lite-260215"
     assert captured["module"] == "chat"
     assert result["source"] == "ai"
 
@@ -315,9 +308,9 @@ def test_chat_stream_done_event_preserves_model_and_fallback(monkeypatch):
 
         def get_api_config(self, model_tier="llm_light", module=""):
             return {
-                "api_key": "qw",
-                "api_base": "https://dashscope.aliyuncs.com/compatible-mode/v1",
-                "model": "qwen3.6-flash",
+                "api_key": "db",
+                "api_base": "https://ark.cn-beijing.volces.com/api/v3",
+                "model": "doubao-seed-2-0-lite-260215",
             }
 
         def pre_check(self):
@@ -325,10 +318,10 @@ def test_chat_stream_done_event_preserves_model_and_fallback(monkeypatch):
 
         def stream_sync(self, prompt, **kwargs):
             yield {"delta": "前端标签修复完成", "phase": "answering", "done": False}
-            yield {"delta": "", "done": True, "model": "qwen3.6-flash", "fallback_used": False}
+            yield {"delta": "", "done": True, "model": "doubao-seed-2-0-lite-260215", "fallback_used": False}
 
     fake_llm_gateway.LLMGateway = _FakeGateway
-    fake_llm_gateway.resolve_default_model = lambda model_tier="llm_light", module="": "qwen3.6-flash"
+    fake_llm_gateway.resolve_default_model = lambda model_tier="llm_light", module="": "doubao-seed-2-0-lite-260215"
     monkeypatch.setitem(sys.modules, "services.llm_gateway", fake_llm_gateway)
 
     import api.chat as chat
@@ -341,7 +334,7 @@ def test_chat_stream_done_event_preserves_model_and_fallback(monkeypatch):
     monkeypatch.setattr(chat, "_rule_based_reply", lambda *args, **kwargs: "rule")
 
     async def _collect_body():
-        response = await chat.chat_analysis_stream(ChatRequest(message="请只回答八个字", userId="LeiJiang", model="qwen3.6-flash", history=[]))
+        response = await chat.chat_analysis_stream(ChatRequest(message="请只回答八个字", userId="LeiJiang", model="doubao-seed-2-0-lite-260215", history=[]))
         body = []
         async for chunk in response.body_iterator:
             body.append(chunk.decode("utf-8") if isinstance(chunk, bytes) else chunk)
@@ -349,7 +342,7 @@ def test_chat_stream_done_event_preserves_model_and_fallback(monkeypatch):
 
     payload = asyncio.run(_collect_body())
 
-    assert '"model": "qwen3.6-flash"' in payload
+    assert '"model": "doubao-seed-2-0-lite-260215"' in payload
     assert '"fallback_used": false' in payload
     assert '"served_by": "llm"' in payload
 

@@ -180,7 +180,6 @@ def test_health_does_not_flag_missing_cfo_cache_as_degraded(tmp_path, monkeypatc
 
     assert result["keys_status"]["deepseek"] == "missing"
     assert result["keys_status"]["doubao"] == "missing"
-    assert result["keys_status"]["qwen"] == "missing"
     assert "CFO摘要(无缓存)" not in result["data_health"]["degraded"]
     assert result["data_health"]["overall"] == "ok"
 

@@ -84,7 +84,7 @@ async def callback_receive(
             # 模型切换指令
             # FIX 2026-08-09: DeepSeek 已于7/24停用deepseek-reasoner(R1)/deepseek-chat(V3)
             # 旧模型名，官方静默重定向到deepseek-v4-flash 且 content 为空，直接触发降级链，
-            # 用户选"R1"实际收到的是降级后的豆包/千问回复，体验割裂。已下架该选项。
+            # 用户选"R1"实际收到的是降级后的豆包回复，体验割裂。已下架该选项。
             MODEL_MAP = {
                 "deepseek-v4-flash": "DeepSeek V4",
                 "deepseek-v4-pro": "DeepSeek V4 Pro",

@@ -1,10 +1,10 @@
 """
 钱袋子 — 多模型 AI 评分引擎（v9.5.124）
 
-三家大模型各自独立对基金打分（0-10分+理由），综合加权排名。
+两家大模型各自独立对基金打分（0-10分+理由），综合加权排名。
 - DeepSeek V4 Pro：主力深度分析
 - 豆包 Seed 2.0 Pro：字节系视角
-- 千问 Qwen3.6-Plus：阿里系视角
+（千问 Qwen3.6 已于欠费后下线）
 
 复用已有的 API key 和 endpoint，不新建客户端。
 缓存策略：per-fund 文件缓存 12h（每天只消耗 1 次 LLM）。
@@ -17,7 +17,7 @@ from typing import Optional
 from pathlib import Path
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
-# 三家模型配置（复用 llm_gateway 的降级链 endpoint）
+# 两家模型配置（复用 llm_gateway 的降级链 endpoint）
 _MODELS = [
     {
         "id": "deepseek",
@@ -32,13 +32,6 @@ _MODELS = [
         "model": "doubao-seed-2-0-pro-260215",
         "key_env": "DOUBAO_API_KEY",
         "base_url": "https://ark.cn-beijing.volces.com/api/v3",
-    },
-    {
-        "id": "qwen",
-        "name": "千问 Qwen3.6",
-        "model": "qwen3.6-plus",
-        "key_env": "DASHSCOPE_API_KEY",
-        "base_url": "https://dashscope.aliyuncs.com/compatible-mode/v1",
     },
 ]
 
@@ -187,7 +180,6 @@ def score_fund_multi_model(fund_info: dict) -> dict:
         "scores": [
             {"id": "deepseek", "name": "DeepSeek Pro", "score": 7.5, "reason": "...", "risk": "..."},
             {"id": "doubao", "name": "豆包 Seed 2.0", "score": 8.0, "reason": "...", "risk": "..."},
-            {"id": "qwen", "name": "千问 Qwen3.6", "score": 7.0, "reason": "...", "risk": "..."},
         ],
         "avg_score": 7.5,
         "consensus": "推荐" / "分歧" / "谨慎",
@@ -205,9 +197,9 @@ def score_fund_multi_model(fund_info: dict) -> dict:
     # 2. 构建 prompt
     prompt = _build_prompt(fund_info)
 
-    # 3. 三模型并发调用
+    # 3. 两模型并发调用
     results = []
-    with ThreadPoolExecutor(max_workers=3) as executor:
+    with ThreadPoolExecutor(max_workers=2) as executor:
         futures = {executor.submit(_call_model, m, prompt): m for m in _MODELS}
         for future in as_completed(futures, timeout=35):
             try:

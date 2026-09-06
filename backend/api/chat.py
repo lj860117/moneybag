@@ -839,7 +839,7 @@ async def chat_analysis_stream(req: ChatRequest):
                 module="chat_stream",
                 max_tokens=1200,
                 history=[h.dict() for h in req.history] if req.history else None,
-                explicit_model=_normalize_explicit_model(req.model),  # 用户主动选择的模型（含千问），auto 哨兵交给峰谷调度
+                explicit_model=_normalize_explicit_model(req.model),  # 用户主动选择的模型，auto 哨兵交给峰谷调度
             ):
                 if chunk.get("fallback"):
                     # gateway 限流/错误 → 降级规则引擎

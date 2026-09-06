@@ -26,7 +26,6 @@ except Exception:  # pragma: no cover - py<3.9 fallback
 LLM_API_KEY = os.environ.get("LLM_API_KEY", "")
 LLM_API_BASE = os.environ.get("LLM_API_BASE", "https://api.deepseek.com/v1")
 DOUBAO_API_BASE = os.environ.get("DOUBAO_API_BASE", os.environ.get("ARK_API_BASE", "https://ark.cn-beijing.volces.com/api/v3"))
-DASHSCOPE_API_BASE = os.environ.get("DASHSCOPE_API_BASE", "https://dashscope.aliyuncs.com/compatible-mode/v1")
 
 # 模型路由
 MODEL_ROUTING = {
@@ -38,11 +37,6 @@ DOUBAO_MODEL_ROUTING = {
     "llm_light": "doubao-seed-2-0-lite-260215",
     "llm_heavy": "doubao-seed-2-0-pro-260215",
     "llm_reasoning": "doubao-seed-2-0-pro-260215",
-}
-QWEN_MODEL_ROUTING = {
-    "llm_light": "qwen3.6-flash",
-    "llm_heavy": "qwen3.6-plus",
-    "llm_reasoning": "qwen3.6-plus",
 }
 INTERACTIVE_AUTO_MODULES = {
     "chat",
@@ -82,8 +76,6 @@ def _is_deepseek_peak_window(now=None) -> bool:
 
 
 def _provider_from_model(model: str) -> str:
-    if model.startswith("qwen"):
-        return "qwen"
     if model.startswith("doubao") or model.startswith("ep-"):
         return "doubao"
     return "deepseek"
@@ -92,15 +84,13 @@ def _provider_from_model(model: str) -> str:
 def _pricing_key_from_model(model: str) -> str:
     """按具体模型名返回定价档位 key（区分 deepseek flash / pro 两档价表）。
 
-    返回 "deepseek-flash" / "deepseek-pro" / "doubao" / "qwen"。
+    返回 "deepseek-flash" / "deepseek-pro" / "doubao"。
     deepseek 档位判定：
       - 含 "flash" 或 "reasoner" → flash 价表（reasoner 是 flash 的思考模式）
       - 含 "pro" → pro 价表
       - 无法识别 → 保守按 pro 价表记账
     """
     lowered = (model or "").lower()
-    if lowered.startswith("qwen"):
-        return "qwen"
     if lowered.startswith("doubao") or lowered.startswith("ep-"):
         return "doubao"
     if "flash" in lowered or "reasoner" in lowered:
@@ -111,8 +101,6 @@ def _pricing_key_from_model(model: str) -> str:
 
 
 def _provider_has_key(provider: str) -> bool:
-    if provider == "qwen":
-        return bool(os.environ.get("DASHSCOPE_API_KEY", ""))
     if provider == "doubao":
         return bool(os.environ.get("DOUBAO_API_KEY", "") or os.environ.get("ARK_API_KEY", ""))
     return bool(os.environ.get("LLM_API_KEY", "") or os.environ.get("OPENAI_API_KEY", ""))
@@ -120,12 +108,6 @@ def _provider_has_key(provider: str) -> bool:
 
 def _resolve_provider_config(model: str) -> tuple[str, str, str]:
     provider = _provider_from_model(model)
-    if provider == "qwen":
-        return (
-            os.environ.get("DASHSCOPE_API_KEY", ""),
-            os.environ.get("DASHSCOPE_API_BASE", DASHSCOPE_API_BASE),
-            "qwen",
-        )
     if provider == "doubao":
         return (
             os.environ.get("DOUBAO_API_KEY", "") or os.environ.get("ARK_API_KEY", ""),
@@ -141,8 +123,8 @@ def _resolve_provider_config(model: str) -> tuple[str, str, str]:
 
 def _preferred_provider_order(module: str = "", now=None) -> list[str]:
     if _is_interactive_auto_module(module) and _is_deepseek_peak_window(now):
-        return ["doubao", "qwen", "deepseek"]
-    return ["deepseek", "doubao", "qwen"]
+        return ["doubao", "deepseek"]
+    return ["deepseek", "doubao"]
 
 
 def _resolve_provider_model(provider: str, model_tier: str = "llm_light", *, need_tools: bool = False, phase: str = "primary") -> str:
@@ -152,8 +134,6 @@ def _resolve_provider_model(provider: str, model_tier: str = "llm_light", *, nee
         if phase == "fallback" and not need_tools:
             return "doubao-seed-2-0-mini-260215"
         return "doubao-seed-2-0-lite-260215"
-    if provider == "qwen":
-        return QWEN_MODEL_ROUTING.get(model_tier, "qwen3.6-flash")
     return MODEL_ROUTING.get(model_tier, "deepseek-v4-flash")
 
 
@@ -339,20 +319,16 @@ class LLMGateway:
             # 关闭 thinking 的策略（reasoning_content 与 content 共享 max_tokens）：
             # 1) force_no_thinking=True：调用方显式要求（短输出点），强制关闭所有推理模型
             # 2) DeepSeek V4 轻量档：关闭（轻量任务不需要推理，避免截断，P0-1）
-            # 3) 豆包 Seed/千问 qwen3 非推理档：关闭（v9.5.130 既有逻辑）
+            # 3) 豆包 Seed 非推理档：关闭（v9.5.130 既有逻辑）
             # 其余（DeepSeek V4 重档/推理档）：保留推理，靠 call_sync 顶部提预算兜底
             if force_no_thinking:
                 if use_model.startswith("deepseek-v4") or "doubao-seed" in use_model:
                     body["thinking"] = {"type": "disabled"}
-                elif use_model.startswith("qwen3") or "qwen3" in use_model:
-                    body.setdefault("extra_body", {})["enable_thinking"] = False
             elif model_tier == "llm_light" and use_model.startswith("deepseek-v4"):
                 body["thinking"] = {"type": "disabled"}
             elif model_tier != "llm_reasoning":
                 if "doubao-seed" in use_model:
                     body["thinking"] = {"type": "disabled"}
-                elif use_model.startswith("qwen3") or "qwen3" in use_model:
-                    body.setdefault("extra_body", {})["enable_thinking"] = False
             with httpx.Client(timeout=timeout) as client:
                 resp = client.post(
                     f"{use_base}/chat/completions",
@@ -476,7 +452,7 @@ class LLMGateway:
         错误时: {"delta": "", "done": True, "error": str, "fallback": True}
 
         history: 多轮对话历史，格式 [{"role":"user"|"assistant","content":str}]
-        explicit_model: 用户指定的模型 ID（如 "qwen3.6-flash"），优先于 model_tier
+        explicit_model: 用户指定的模型 ID（如 "doubao-seed-2-0-lite-260215"），优先于 model_tier
         need_tools: 是否需要工具调用能力（Function Calling 场景，降级到豆包时优先选 Lite 而非 Mini）
         不走缓存（streaming 场景缓存无意义），但走限流和计费。
 
@@ -527,7 +503,7 @@ class LLMGateway:
             # 关闭 thinking 的策略（reasoning_content 与 content 共享 max_tokens）：
             # 1) force_no_thinking=True：调用方显式要求（短输出点），强制关闭所有推理模型
             # 2) DeepSeek V4 轻量档：关闭（轻量任务不需要推理，避免截断，P0-1）
-            # 3) 豆包 Seed/千问 qwen3 非推理档：关闭（v9.5.130 既有逻辑）
+            # 3) 豆包 Seed 非推理档：关闭（v9.5.130 既有逻辑）
             stream_body = {
                 "model": use_model,
                 "messages": messages,
@@ -538,15 +514,11 @@ class LLMGateway:
             if force_no_thinking:
                 if use_model.startswith("deepseek-v4") or "doubao-seed" in use_model:
                     stream_body["thinking"] = {"type": "disabled"}
-                elif use_model.startswith("qwen3") or "qwen3" in use_model:
-                    stream_body["extra_body"] = {"enable_thinking": False}
             elif model_tier == "llm_light" and use_model.startswith("deepseek-v4"):
                 stream_body["thinking"] = {"type": "disabled"}
             elif model_tier != "llm_reasoning":
                 if "doubao-seed" in use_model:
                     stream_body["thinking"] = {"type": "disabled"}
-                elif use_model.startswith("qwen3") or "qwen3" in use_model:
-                    stream_body["extra_body"] = {"enable_thinking": False}
             with httpx.Client(timeout=timeout) as client:
                 with client.stream(
                     "POST",
@@ -833,7 +805,7 @@ class LLMGateway:
 
         按具体模型选价目：
         - deepseek：分 flash/pro 两档，cache_hit/miss 与输出价都按峰谷窗口选值
-        - doubao/qwen：价目未知（PROVIDER_PRICING=None），只记用量不计费
+        - doubao：价目未知（PROVIDER_PRICING=None），只记用量不计费
         """
         try:
             from config import TOKEN_BUDGET, PROVIDER_PRICING
@@ -841,7 +813,7 @@ class LLMGateway:
             pricing_key = _pricing_key_from_model(model)
             pricing = PROVIDER_PRICING.get(pricing_key)
             if not pricing:
-                # 价目未知（doubao/qwen），跳过金额记账
+                # 价目未知（doubao），跳过金额记账
                 return
 
             # deepseek 输出价 + 输入缓存命中/未命中价都按峰谷窗口选择
