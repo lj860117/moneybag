@@ -256,6 +256,10 @@ class LLMGateway:
                   max_tokens: int = 800,
                   explicit_model: str = "") -> dict:
         """同步调用 LLM（大多数场景用这个）"""
+        # v9.5.140: 推理档（llm_heavy/llm_reasoning）保留 thinking，需要更大输出预算，
+        # 否则 reasoning_content 挤占 content 导致截断（P0-1 全局修复）。
+        if model_tier in ("llm_heavy", "llm_reasoning") and max_tokens < 3000:
+            max_tokens = 3000
         # 0. 日期重置
         self._check_daily_reset()
 
@@ -311,6 +315,11 @@ class LLMGateway:
                     body["thinking"] = {"type": "disabled"}
                 elif use_model.startswith("qwen3") or "qwen3" in use_model:
                     body.setdefault("extra_body", {})["enable_thinking"] = False
+            # v9.5.140: DeepSeek V4 也是推理模型，reasoning_content 与 content 共享
+            # max_tokens。轻量档不需要推理，关闭 thinking 避免推理挤占答案预算；
+            # 重档/推理档保留推理，改由 call_sync 顶部的 max_tokens 提升兜底。
+            if model_tier == "llm_light" and use_model.startswith("deepseek-v4"):
+                body["thinking"] = {"type": "disabled"}
             with httpx.Client(timeout=timeout) as client:
                 resp = client.post(
                     f"{use_base}/chat/completions",
@@ -437,6 +446,10 @@ class LLMGateway:
         need_tools: 是否需要工具调用能力（Function Calling 场景，降级到豆包时优先选 Lite 而非 Mini）
         不走缓存（streaming 场景缓存无意义），但走限流和计费。
         """
+        # v9.5.140: 推理档（llm_heavy/llm_reasoning）保留 thinking，需要更大输出预算，
+        # 否则 reasoning_content 挤占 content 导致截断（P0-1 全局修复）。
+        if model_tier in ("llm_heavy", "llm_reasoning") and max_tokens < 3000:
+            max_tokens = 3000
         # 0. 日期重置
         self._check_daily_reset()
 
@@ -486,6 +499,10 @@ class LLMGateway:
                     stream_body["thinking"] = {"type": "disabled"}
                 elif use_model.startswith("qwen3") or "qwen3" in use_model:
                     stream_body["extra_body"] = {"enable_thinking": False}
+            # v9.5.140: DeepSeek V4 推理模型轻量档关闭 thinking（reasoning 与 content
+            # 共享 max_tokens，轻量任务不需要推理，避免截断）
+            if model_tier == "llm_light" and use_model.startswith("deepseek-v4"):
+                stream_body["thinking"] = {"type": "disabled"}
             with httpx.Client(timeout=timeout) as client:
                 with client.stream(
                     "POST",

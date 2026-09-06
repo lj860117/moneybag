@@ -603,7 +603,7 @@ def _tool_get_weekly_report(user_id: str, weeks_ago: int = 1) -> str:
 # FC Agent 循环（流式）
 # ========================================================
 
-def _fc_call_with_fallback(model: str, messages: list, max_tokens: int = 1200) -> tuple[dict, str, bool]:
+def _fc_call_with_fallback(model: str, messages: list, max_tokens: int = 3000) -> tuple[dict, str, bool]:
     """v9.5.70: Function Calling 三层降级
     返回 (data, actual_model, fallback_used)
     - data: API 返回的 JSON（choices 等）
@@ -744,7 +744,7 @@ def run_fc_agent_stream(
         try:
             # v9.5.70: 用三层降级封装替代直接 httpx
             try:
-                data, actual_model, fallback_used = _fc_call_with_fallback(model, messages, max_tokens=1200)
+                data, actual_model, fallback_used = _fc_call_with_fallback(model, messages, max_tokens=3000)
                 _final_model = actual_model
                 if fallback_used:
                     _any_fallback = True
