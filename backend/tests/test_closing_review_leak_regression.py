@@ -74,7 +74,7 @@ from unittest import mock
 import pytest
 
 from services.decision_context import DecisionContext
-from services.llm_gateway import LLMGateway
+from infra.llm.gateway import LLMGateway
 from services.llm_output_guard import LLMOutputGuard
 from services.pipeline_runner import step_llm_arbitration
 from services.steward import _sanitize_reasoning_for_user

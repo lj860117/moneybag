@@ -45,7 +45,7 @@ _LLM_CACHE_TTL = 86400  # 24 小时
 
 def _call_llm(prompt: str, system: str = "") -> str:
     """调用 DeepSeek LLM（通过 gateway 统一管理）"""
-    from services.llm_gateway import LLMGateway
+    from infra.llm.gateway import LLMGateway
 
     try:
         gw = LLMGateway.instance()

@@ -1,7 +1,7 @@
 """
 LLMClientProtocol -- LLM gateway contract
 ===========================================
-Abstracts the 520-line LLMGateway singleton in services/llm_gateway.py.
+Abstracts the LLMGateway singleton in infra/llm/gateway.py.
 
 Current gateway provides: model routing, caching, rate limiting, cost tracking.
 This protocol exposes the calling interface; implementations handle the rest.

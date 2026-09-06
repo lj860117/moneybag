@@ -1097,7 +1097,7 @@ def policy_beneficiaries(topic: str = "数字基建"):
         return {"available": False, "reason": "LLM 不可用"}
 
     try:
-        from services.llm_gateway import LLMGateway
+        from infra.llm.gateway import LLMGateway
         gw = LLMGateway.instance()
 
         prompt = f"""你是 A 股行业分析师。用户想了解「{topic}」政策的受益标的。

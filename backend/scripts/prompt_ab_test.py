@@ -26,11 +26,11 @@ import time
 from datetime import datetime
 from pathlib import Path
 
-# 让脚本能直接 import backend.services.llm_gateway
+# 让脚本能直接 import backend.infra.llm.gateway
 ROOT = Path(__file__).resolve().parents[2]  # moneybag/
 sys.path.insert(0, str(ROOT))
 
-from backend.services.llm_gateway import LLMGateway  # noqa: E402
+from backend.infra.llm.gateway import LLMGateway  # noqa: E402
 
 
 # ==================== 配置 ====================

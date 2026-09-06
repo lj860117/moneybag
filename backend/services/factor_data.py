@@ -445,7 +445,7 @@ def get_news_sentiment_score() -> dict:
 只返回JSON，不要其他内容。"""
 
             # 同步调用（通过 gateway 管理）
-            from services.llm_gateway import LLMGateway
+            from infra.llm.gateway import LLMGateway
             gw = LLMGateway.instance()
             llm_result = gw.call_sync(
                 prompt,

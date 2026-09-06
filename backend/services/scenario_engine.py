@@ -29,7 +29,7 @@ import json
 from datetime import datetime
 
 from services.memory_cache import MemoryCache
-from services.llm_gateway import MODEL_ROUTING
+from infra.llm.gateway import MODEL_ROUTING
 
 _scenario_cache = MemoryCache("scenario_engine", ttl=1800, max_entries=30)
 
@@ -332,7 +332,7 @@ def _call_llm_for_scenario(prompt: str, use_r1: bool = True) -> dict:
 
     R1 用于深度推理（主），V3 用于快速降级。
     """
-    from services.llm_gateway import llm_call
+    from infra.llm.gateway import llm_call
 
     model_tier = "llm_heavy" if use_r1 else "llm_light"
     result = llm_call(

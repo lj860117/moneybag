@@ -150,3 +150,15 @@ class FileStore:
             if os.path.exists(tmp_path):
                 os.unlink(tmp_path)
             raise
+
+
+def atomic_write_json(filepath: Path, data: dict) -> None:
+    """Module-level atomic JSON write helper (function-style API).
+
+    Convenience wrapper for callers that hold an explicit ``(filepath, dict)``
+    pair instead of a ``(collection, key)`` document (e.g. infra/llm/gateway.py
+    persisting its daily usage files). Reuses :meth:`FileStore._atomic_write`
+    so the atomic-write algorithm (tempfile + fsync + os.replace) lives in a
+    single place — invariant #5: all file IO goes through infra/store.
+    """
+    FileStore._atomic_write(Path(filepath), data)

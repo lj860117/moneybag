@@ -835,7 +835,7 @@ def _generate_reasons(top_items: list) -> None:
 [{{"code":"600519","reason":"一句话理由"}}, ...]
 只输出 JSON，不要其他内容。"""
 
-        from services.llm_gateway import LLMGateway
+        from infra.llm.gateway import LLMGateway
         gw = LLMGateway.instance()
         llm_result = gw.call_sync(
             prompt,

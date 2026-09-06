@@ -188,7 +188,7 @@ def step_llm_arbitration(ctx: DecisionContext) -> DecisionContext:
         return ctx
 
     try:
-        from services.llm_gateway import LLMGateway
+        from infra.llm.gateway import LLMGateway
         gw = LLMGateway.instance()
 
         # 加载仲裁 prompt 文件

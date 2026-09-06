@@ -46,7 +46,7 @@ def _call_deepseek(prompt: str, system: str = "", max_tokens: int = 300, cache_k
             return _DS_CACHE[cache_key]["text"]
 
     try:
-        from services.llm_gateway import LLMGateway
+        from infra.llm.gateway import LLMGateway
         gw = LLMGateway.instance()
         result = gw.call_sync(
             prompt,

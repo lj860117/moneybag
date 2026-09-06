@@ -161,7 +161,7 @@ def run_for_user(user_id: str, dry_run: bool = False) -> dict:
     # 调 LLM（允许降级）
     reflection = ""
     try:
-        from services.llm_gateway import LLMGateway
+        from infra.llm.gateway import LLMGateway
         r = LLMGateway.instance().call_sync(
             prompt=prompt, system=system,
             model_tier="llm_light",

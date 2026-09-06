@@ -15,7 +15,7 @@ from fastapi import APIRouter, HTTPException
 
 from services.steward import get_steward
 from services.regime_engine import classify as classify_regime
-from services.llm_gateway import llm_usage
+from infra.llm.gateway import llm_usage
 from services.weekly_report import generate as generate_weekly, get_history as get_weekly_history
 from infra.cache import MemoryCache
 

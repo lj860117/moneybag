@@ -15,7 +15,7 @@ Responsibility:
 Storage: data/{userId}/memory/ directory, JSON files.
 
 Invariant #3: LLM calls go through infra/llm/gateway (summarize_archive_month,
-              _extract_one_pair_sync use services.llm_gateway via lazy import).
+              _extract_one_pair_sync use infra.llm.gateway via lazy import).
 Design doc: docs/design/02-code-audit.md section 4.2
             docs/design/03-rule-engine.md
 """
@@ -191,7 +191,7 @@ def summarize_archive_month(user_id: str, year_month: str) -> dict:
 
     summary_text = ""
     try:
-        from services.llm_gateway import LLMGateway
+        from infra.llm.gateway import LLMGateway
         result = LLMGateway.instance().call_sync(
             prompt=prompt, system=system,
             model_tier="llm_light",
@@ -470,7 +470,7 @@ def _extract_one_pair_sync(user_id: str, user_msg: str, ai_reply: str) -> dict:
     _extract_cooldown[user_id] = time.time()
 
     try:
-        from services.llm_gateway import LLMGateway
+        from infra.llm.gateway import LLMGateway
     except Exception as e:
         print(f"[AUTO_EXTRACT] llm_gateway unavailable: {e}")
         return {"extracted": False, "reason": "no_llm"}

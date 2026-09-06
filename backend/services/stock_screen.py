@@ -115,7 +115,7 @@ def _get_dynamic_weights() -> dict:
 {{"value":0.20,"growth":0.15,"quality":0.18,"momentum":0.15,"risk":0.12,"liquidity":0.10,"sentiment":0.10,"regime":"牛市/熊市/震荡","reason":"一句话说明"}}
 只返回 JSON。"""
 
-        from services.llm_gateway import LLMGateway
+        from infra.llm.gateway import LLMGateway
         gw = LLMGateway.instance()
         result = gw.call_sync(
             prompt,

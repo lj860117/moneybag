@@ -221,7 +221,7 @@ def _call_flash_llm(prompt: str, max_tokens: int = 200) -> str:
     if not LLM_API_KEY:
         return ""
     try:
-        from services.llm_gateway import LLMGateway
+        from infra.llm.gateway import LLMGateway
         gw = LLMGateway.instance()
         result = gw.call_sync(
             prompt,

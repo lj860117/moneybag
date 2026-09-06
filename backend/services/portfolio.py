@@ -328,7 +328,7 @@ def _ai_pick_funds(risk_profile: str, val_pct: float, fgi: float) -> list:
         # v9.5.140: 走 gateway 统一管理，模型由 MODEL_ROUTING 路由，
         # 根除直连废弃 LLM_MODEL/deepseek-chat（2026-07-24 停服，触发即 400）。
         # 结构化 JSON 抽取不需要深度推理，关 thinking 避免 reasoning 挤占输出预算。
-        from services.llm_gateway import LLMGateway
+        from infra.llm.gateway import LLMGateway
         gw = LLMGateway.instance()
         llm_result = gw.call_sync(
             prompt,

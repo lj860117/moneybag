@@ -535,7 +535,7 @@ class TestAutoExtractDeferred:
                 return {"content": '{"category":"irony","text":"不追涨"}',
                         "source": "ai"}
 
-        import services.llm_gateway as lg
+        import infra.llm.gateway as lg
         monkeypatch.setattr(lg, "LLMGateway", FakeGW)
 
         r = mem.auto_extract_insight(uid, "别追高", "好", sync=True)
@@ -553,7 +553,7 @@ class TestAutoExtractDeferred:
             def call_sync(self, **kwargs):
                 return {"content": "NONE", "source": "ai"}  # 都不提炼
 
-        import services.llm_gateway as lg
+        import infra.llm.gateway as lg
         monkeypatch.setattr(lg, "LLMGateway", FakeGW)
 
         # 入队 3 条

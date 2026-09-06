@@ -157,6 +157,11 @@ FRONTEND_DIR = Path(__file__).resolve().parent.parent  # moneybag/
 @app.on_event("startup")
 def _on_startup():
     """应用启动时初始化后台任务"""
+    # 依赖倒置：注入配额告警钩子，避免 infra/llm/gateway 反向依赖 services
+    from infra.llm.gateway import set_alert_hook
+    from services.llm_quota_alert import maybe_alert_quota
+    set_alert_hook(maybe_alert_quota)
+
     from services.cfo_dashboard import start_cfo_prewarm
     start_cfo_prewarm()
 

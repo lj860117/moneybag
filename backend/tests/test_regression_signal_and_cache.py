@@ -102,9 +102,9 @@ def test_cfo_summary_force_refresh_rewrites_fresh_file(tmp_path, monkeypatch):
     fake_regime_engine.classify = lambda: {"regime": "neutral"}
     monkeypatch.setitem(sys.modules, "services.regime_engine", fake_regime_engine)
 
-    fake_llm_gateway = types.ModuleType("services.llm_gateway")
+    fake_llm_gateway = types.ModuleType("infra.llm.gateway")
     fake_llm_gateway.llm_usage = lambda user_id="": {}
-    monkeypatch.setitem(sys.modules, "services.llm_gateway", fake_llm_gateway)
+    monkeypatch.setitem(sys.modules, "infra.llm.gateway", fake_llm_gateway)
 
     fake_weekly_report = types.ModuleType("services.weekly_report")
     fake_weekly_report.generate = lambda *args, **kwargs: {}
@@ -160,7 +160,7 @@ def test_health_does_not_flag_missing_cfo_cache_as_degraded(tmp_path, monkeypatc
         setattr(fake_data_layer, name, lambda *args, **kwargs: {})
     monkeypatch.setitem(sys.modules, "services.data_layer", fake_data_layer)
 
-    fake_llm_gateway = types.ModuleType("services.llm_gateway")
+    fake_llm_gateway = types.ModuleType("infra.llm.gateway")
 
     class _FakeGateway:
         @staticmethod
@@ -171,7 +171,7 @@ def test_health_does_not_flag_missing_cfo_cache_as_degraded(tmp_path, monkeypatc
             return {}
 
     fake_llm_gateway.LLMGateway = _FakeGateway
-    monkeypatch.setitem(sys.modules, "services.llm_gateway", fake_llm_gateway)
+    monkeypatch.setitem(sys.modules, "infra.llm.gateway", fake_llm_gateway)
 
     sys.modules.pop("api.dashboard", None)
     dashboard = importlib.import_module("api.dashboard")

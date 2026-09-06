@@ -24,7 +24,7 @@ class LLMResponse:
     """Structured response from any LLM call.
 
     Maps 1:1 to the dict returned by LLMGateway.call_sync() in
-    services/llm_gateway.py (lines 188-197).
+    infra/llm/gateway.py.
 
     Fields::
 

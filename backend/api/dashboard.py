@@ -83,7 +83,7 @@ def get_market_status():
 @router.get("/api/health")
 def health():
     from config import APP_VERSION
-    from services.llm_gateway import LLMGateway
+    from infra.llm.gateway import LLMGateway
     budget = LLMGateway.instance().check_budget()
     # Phase 0: API Key 状态检查
     keys_status = {}

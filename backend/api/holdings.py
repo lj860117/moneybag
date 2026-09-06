@@ -321,7 +321,7 @@ async def analyze_stock_holdings(req: dict = {}):
 4. 📌 **数据说明**（本次使用什么数据、有哪些缺失）"""
 
     try:
-        from services.llm_gateway import LLMGateway
+        from infra.llm.gateway import LLMGateway
         gw = LLMGateway.instance()
         result = gw.call_sync(
             user_prompt,
@@ -1294,7 +1294,7 @@ def _compute_ai_checkup(userId: str) -> dict:
 
     # 5. 调 LLM（Pro → Flash 降级）
     try:
-        from services.llm_gateway import LLMGateway
+        from infra.llm.gateway import LLMGateway
         gw = LLMGateway.instance()
         
         # 先用 Pro
@@ -1416,7 +1416,7 @@ async def analyze_fund_holdings(req: dict = {}):
 3. 🛡️ 风控经理总结（组合风险+配置调整建议）"""
 
     try:
-        from services.llm_gateway import LLMGateway
+        from infra.llm.gateway import LLMGateway
         gw = LLMGateway.instance()
         result = gw.call_sync(
             user_prompt,

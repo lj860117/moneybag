@@ -440,7 +440,7 @@ def analyze_global_impact_on_a_shares() -> dict:
 6. 用 emoji 标注利好/利空"""
 
     try:
-        from services.llm_gateway import LLMGateway
+        from infra.llm.gateway import LLMGateway
         gw = LLMGateway.instance()
         llm_result = gw.call_sync(
             prompt,

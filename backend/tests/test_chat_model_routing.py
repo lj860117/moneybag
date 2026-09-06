@@ -13,7 +13,7 @@ if str(BACKEND_DIR) not in sys.path:
 
 
 def test_resolve_default_model_peak_prefers_doubao_for_interactive(monkeypatch):
-    import services.llm_gateway as gw_mod
+    import infra.llm.gateway as gw_mod
 
     monkeypatch.setenv("LLM_API_KEY", "ds")
     monkeypatch.setenv("DOUBAO_API_KEY", "db")
@@ -29,7 +29,7 @@ def test_resolve_default_model_peak_prefers_doubao_for_interactive(monkeypatch):
 
 
 def test_resolve_default_model_peak_falls_back_to_deepseek_when_doubao_missing(monkeypatch):
-    import services.llm_gateway as gw_mod
+    import infra.llm.gateway as gw_mod
 
     monkeypatch.setenv("LLM_API_KEY", "ds")
     monkeypatch.delenv("DOUBAO_API_KEY", raising=False)
@@ -45,7 +45,7 @@ def test_resolve_default_model_peak_falls_back_to_deepseek_when_doubao_missing(m
 
 
 def test_resolve_default_model_offpeak_prefers_deepseek(monkeypatch):
-    import services.llm_gateway as gw_mod
+    import infra.llm.gateway as gw_mod
 
     monkeypatch.setenv("LLM_API_KEY", "ds")
     monkeypatch.setenv("DOUBAO_API_KEY", "db")
@@ -61,7 +61,7 @@ def test_resolve_default_model_offpeak_prefers_deepseek(monkeypatch):
 
 
 def test_resolve_default_model_peak_keeps_deepseek_when_alt_providers_missing(monkeypatch):
-    import services.llm_gateway as gw_mod
+    import infra.llm.gateway as gw_mod
 
     monkeypatch.setenv("LLM_API_KEY", "ds")
     monkeypatch.delenv("DOUBAO_API_KEY", raising=False)
@@ -78,7 +78,7 @@ def test_resolve_default_model_peak_keeps_deepseek_when_alt_providers_missing(mo
 
 
 def test_resolve_model_candidates_switches_fallback_order_by_peak_window(monkeypatch):
-    import services.llm_gateway as gw_mod
+    import infra.llm.gateway as gw_mod
 
     monkeypatch.setenv("LLM_API_KEY", "ds")
     monkeypatch.setenv("DOUBAO_API_KEY", "db")
@@ -105,7 +105,7 @@ def test_resolve_model_candidates_switches_fallback_order_by_peak_window(monkeyp
 
 
 def test_resolve_default_model_noninteractive_keeps_deepseek_during_peak(monkeypatch):
-    import services.llm_gateway as gw_mod
+    import infra.llm.gateway as gw_mod
 
     monkeypatch.setenv("LLM_API_KEY", "ds")
     monkeypatch.setenv("DOUBAO_API_KEY", "db")
@@ -121,7 +121,7 @@ def test_resolve_default_model_noninteractive_keeps_deepseek_during_peak(monkeyp
 
 
 def test_llm_cache_key_includes_model_to_avoid_cross_model_reuse(tmp_path, monkeypatch):
-    import services.llm_gateway as gw_mod
+    import infra.llm.gateway as gw_mod
 
     monkeypatch.setenv("DATA_DIR", str(tmp_path))
     gateway = gw_mod.LLMGateway()
@@ -134,7 +134,7 @@ def test_llm_cache_key_includes_model_to_avoid_cross_model_reuse(tmp_path, monke
 
 def test_call_sync_peak_falls_back_to_deepseek_when_alt_providers_exhausted(monkeypatch, tmp_path):
     import infra.llm.gateway as infra_gw
-    import services.llm_gateway as gw_mod
+    import infra.llm.gateway as gw_mod
 
     monkeypatch.setenv("DATA_DIR", str(tmp_path))
     monkeypatch.setenv("LLM_API_KEY", "ds")
@@ -186,9 +186,9 @@ def test_call_sync_peak_falls_back_to_deepseek_when_alt_providers_exhausted(monk
 
 
 def test_list_models_returns_peak_aware_default(monkeypatch):
-    fake_llm_gateway = types.ModuleType("services.llm_gateway")
+    fake_llm_gateway = types.ModuleType("infra.llm.gateway")
     fake_llm_gateway.resolve_default_model = lambda model_tier="llm_light", module="": "doubao-seed-2-0-lite-260215"
-    monkeypatch.setitem(sys.modules, "services.llm_gateway", fake_llm_gateway)
+    monkeypatch.setitem(sys.modules, "infra.llm.gateway", fake_llm_gateway)
 
     import api.chat as chat
 
@@ -203,7 +203,7 @@ def test_list_models_returns_peak_aware_default(monkeypatch):
 
 def test_chat_analysis_passes_explicit_model_to_gateway(monkeypatch):
     captured = {}
-    fake_llm_gateway = types.ModuleType("services.llm_gateway")
+    fake_llm_gateway = types.ModuleType("infra.llm.gateway")
 
     class _FakeGateway:
         @staticmethod
@@ -229,7 +229,7 @@ def test_chat_analysis_passes_explicit_model_to_gateway(monkeypatch):
 
     fake_llm_gateway.LLMGateway = _FakeGateway
     fake_llm_gateway.resolve_default_model = lambda model_tier="llm_light", module="": "doubao-seed-2-0-lite-260215"
-    monkeypatch.setitem(sys.modules, "services.llm_gateway", fake_llm_gateway)
+    monkeypatch.setitem(sys.modules, "infra.llm.gateway", fake_llm_gateway)
 
     import api.chat as chat
     from models.schemas import ChatRequest
@@ -250,7 +250,7 @@ def test_chat_analysis_passes_explicit_model_to_gateway(monkeypatch):
 
 def test_chat_stream_fc_uses_peak_aware_default_model(monkeypatch):
     captured = {}
-    fake_llm_gateway = types.ModuleType("services.llm_gateway")
+    fake_llm_gateway = types.ModuleType("infra.llm.gateway")
 
     class _FakeGateway:
         @staticmethod
@@ -269,7 +269,7 @@ def test_chat_stream_fc_uses_peak_aware_default_model(monkeypatch):
 
     fake_llm_gateway.LLMGateway = _FakeGateway
     fake_llm_gateway.resolve_default_model = lambda model_tier="llm_light", module="": "doubao-seed-2-0-lite-260215"
-    monkeypatch.setitem(sys.modules, "services.llm_gateway", fake_llm_gateway)
+    monkeypatch.setitem(sys.modules, "infra.llm.gateway", fake_llm_gateway)
 
     import api.chat as chat
     import api.chat_fc as chat_fc
@@ -302,7 +302,7 @@ def test_chat_stream_fc_uses_peak_aware_default_model(monkeypatch):
 
 
 def test_chat_stream_done_event_preserves_model_and_fallback(monkeypatch):
-    fake_llm_gateway = types.ModuleType("services.llm_gateway")
+    fake_llm_gateway = types.ModuleType("infra.llm.gateway")
 
     class _FakeGateway:
         @staticmethod
@@ -325,7 +325,7 @@ def test_chat_stream_done_event_preserves_model_and_fallback(monkeypatch):
 
     fake_llm_gateway.LLMGateway = _FakeGateway
     fake_llm_gateway.resolve_default_model = lambda model_tier="llm_light", module="": "doubao-seed-2-0-lite-260215"
-    monkeypatch.setitem(sys.modules, "services.llm_gateway", fake_llm_gateway)
+    monkeypatch.setitem(sys.modules, "infra.llm.gateway", fake_llm_gateway)
 
     import api.chat as chat
     from models.schemas import ChatRequest
@@ -351,7 +351,7 @@ def test_chat_stream_done_event_preserves_model_and_fallback(monkeypatch):
 
 
 def test_chat_stream_fc_hard_failure_falls_back_to_normal_chat(monkeypatch):
-    fake_llm_gateway = types.ModuleType("services.llm_gateway")
+    fake_llm_gateway = types.ModuleType("infra.llm.gateway")
 
     class _FakeGateway:
         @staticmethod
@@ -373,7 +373,7 @@ def test_chat_stream_fc_hard_failure_falls_back_to_normal_chat(monkeypatch):
             yield {"delta": "", "done": True, "model": "deepseek-v4-flash", "fallback_used": False}
 
     fake_llm_gateway.LLMGateway = _FakeGateway
-    monkeypatch.setitem(sys.modules, "services.llm_gateway", fake_llm_gateway)
+    monkeypatch.setitem(sys.modules, "infra.llm.gateway", fake_llm_gateway)
 
     import api.chat as chat
     import api.chat_fc as chat_fc

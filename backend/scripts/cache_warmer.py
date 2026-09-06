@@ -1776,7 +1776,7 @@ def _warm_preset_answers():
     
     try:
         from api.shared_helpers import _build_market_context, _build_portfolio_context, _build_system_prompt
-        from services.llm_gateway import LLMGateway
+        from infra.llm.gateway import LLMGateway
         gw = LLMGateway.instance()
         market_ctx = _build_market_context()
     except Exception as e:

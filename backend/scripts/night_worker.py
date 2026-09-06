@@ -73,7 +73,7 @@ def _call_v3(prompt, max_tokens=500, system="", force_no_thinking=False):
     try:
         import sys, os
         sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
-        from services.llm_gateway import LLMGateway
+        from infra.llm.gateway import LLMGateway
         gw = LLMGateway.instance()
         result = gw.call_sync(
             prompt,

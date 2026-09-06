@@ -186,7 +186,7 @@ def run_analysis_cycle(
 
     # Step 4: 通过 LLMGateway 调用（统一计费+缓存+熔断）
     try:
-        from services.llm_gateway import LLMGateway
+        from infra.llm.gateway import LLMGateway
         # 模型名 → Gateway tier（deepseek-v4-pro → llm_heavy）
         tier = "llm_heavy" if model == "deepseek-v4-pro" else "llm_light"
         gw_result = LLMGateway.instance().call_sync(

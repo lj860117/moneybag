@@ -184,7 +184,7 @@ async def callback_receive(
                 full_system = f"{base_prompt}\n\n## 当前日期\n{_today_str2}" + search_ctx
 
             # 走 LLMGateway（统一计费+缓存+熔断）
-            from services.llm_gateway import LLMGateway
+            from infra.llm.gateway import LLMGateway
             # 模型映射：偏好模型名 → Gateway tier（deepseek-v4-pro → llm_heavy）
             tier = "llm_heavy" if user_model == "deepseek-v4-pro" else "llm_light"
             gw_result = LLMGateway.instance().call_sync(

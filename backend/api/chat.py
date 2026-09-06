@@ -29,7 +29,7 @@ def _resolve_chat_model(requested_model: str | None, *, model_tier: str = "llm_l
         return requested_model
 
     try:
-        from services.llm_gateway import LLMGateway
+        from infra.llm.gateway import LLMGateway
 
         gw = LLMGateway.instance()
         api_cfg = gw.get_api_config(model_tier=model_tier, module=module)
@@ -39,7 +39,7 @@ def _resolve_chat_model(requested_model: str | None, *, model_tier: str = "llm_l
         pass
 
     try:
-        from services.llm_gateway import resolve_default_model
+        from infra.llm.gateway import resolve_default_model
 
         return resolve_default_model(model_tier, module=module)
     except Exception:
@@ -59,7 +59,7 @@ async def _fallback_chat_stream(user_msg: str, system_prompt: str, market_ctx: s
     逻辑与 chat_analysis_stream 的 stream_gen 对齐：显式选模优先，否则走 gateway 峰谷调度；
     流式过程中限流/错误降级规则引擎，成功则透传 done 事件（含 served_by/model/fallback_used）。
     """
-    from services.llm_gateway import LLMGateway
+    from infra.llm.gateway import LLMGateway
     gw = LLMGateway.instance()
     model = _resolve_chat_model(req.model, model_tier="llm_light", module="chat_stream")
     explicit = _normalize_explicit_model(req.model)
@@ -111,7 +111,7 @@ def _extract_and_save_memory(user_id: str, user_msg: str, reply: str) -> None:
     失败时静默，不影响主流程。
     """
     try:
-        from services.llm_gateway import LLMGateway
+        from infra.llm.gateway import LLMGateway
         from domain.services.user_preference_service import add_pending_insight
 
         extract_prompt = (
@@ -361,7 +361,7 @@ async def chat_analysis(req: ChatRequest):
             print(f"[CHAT] memory inject failed: {e}")
 
     # 尝试调用 LLM（显式选模优先，默认模型走 gateway 的峰谷路由）
-    from services.llm_gateway import LLMGateway
+    from infra.llm.gateway import LLMGateway
     gw = LLMGateway.instance()
     model = _resolve_chat_model(req.model, model_tier="llm_light", module="chat")
     api_cfg = gw.get_api_config(model_tier="llm_light", module="chat")
@@ -612,7 +612,7 @@ async def chat_analysis_stream(req: ChatRequest):
 
                 # 2. 流式发送 AI 综合判断
                 try:
-                    from services.llm_gateway import LLMGateway
+                    from infra.llm.gateway import LLMGateway
                     gw = LLMGateway.instance()
                     for chunk in gw.stream_sync(
                         user_msg,
@@ -810,7 +810,7 @@ async def chat_analysis_stream(req: ChatRequest):
         print(f"[CHAT-STREAM] 闲聊模式, search={'有' if search_ctx else '无'}, msg={user_msg[:30]}")
 
     # API key + 模型选择（通过 gateway 统一获取配置）
-    from services.llm_gateway import LLMGateway
+    from infra.llm.gateway import LLMGateway
     gw = LLMGateway.instance()
     model = _resolve_chat_model(req.model, model_tier="llm_light", module="chat_stream")
     api_cfg = gw.get_api_config(model_tier="llm_light", module="chat_stream")

@@ -1072,7 +1072,7 @@ def run_close_review():
             
             if has_stocks or has_funds:
                 print(f"  [诊断] {name}: R1 深度诊断...")
-                from services.llm_gateway import LLMGateway
+                from infra.llm.gateway import LLMGateway
                 from services.news_data import get_holdings_news, format_holdings_news_for_prompt
                 gw = LLMGateway()
                 

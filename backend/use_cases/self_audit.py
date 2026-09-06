@@ -608,7 +608,7 @@ def run_llm_audit(probe_results: list[dict[str, Any]], smoke_results: list[dict[
 }}"""
 
     try:
-        from services.llm_gateway import LLMGateway
+        from infra.llm.gateway import LLMGateway
         gw = LLMGateway.instance()
         llm_result = gw.call_sync(
             prompt,

@@ -140,7 +140,7 @@ def _call_model(model_cfg: dict, prompt: str) -> dict:
             usage = resp.json().get("usage", {})
             # v9.9.11: 复用 gateway 计费（绕过 gateway 直连导致的成本盲区）
             try:
-                from services.llm_gateway import LLMGateway
+                from infra.llm.gateway import LLMGateway
                 gw = LLMGateway.instance()
                 gw.record_external_call(
                     user_id="",

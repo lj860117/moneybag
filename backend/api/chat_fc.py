@@ -641,7 +641,7 @@ def _fc_call_with_fallback(model: str, messages: list, max_tokens: int = 3000) -
         这里在调用成功后把 token 用量回填到 gateway 的 cost 记录。
         """
         try:
-            from services.llm_gateway import LLMGateway
+            from infra.llm.gateway import LLMGateway
             usage = payload.get("usage", {}) if isinstance(payload, dict) else {}
             LLMGateway.instance().record_external_call(
                 user_id="",
@@ -717,7 +717,7 @@ def run_fc_agent_stream(
     v9.5.70: 接入三层降级 — DeepSeek 失败时自动降级到豆包 Lite/Pro（千问已下线）
     """
     if not model:
-        from services.llm_gateway import resolve_default_model
+        from infra.llm.gateway import resolve_default_model
         model = resolve_default_model("llm_light", module="chat_fc")
 
     # 至少要有一个 provider 的 key

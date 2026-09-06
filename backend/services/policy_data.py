@@ -255,7 +255,7 @@ def analyze_policy_impact_ds() -> dict:
 2. 利好板块和利空板块
 3. 对普通投资者的操作建议"""
 
-        from services.llm_gateway import LLMGateway
+        from infra.llm.gateway import LLMGateway
         gw = LLMGateway.instance()
         llm_result = gw.call_sync(
             prompt,

@@ -54,6 +54,43 @@ INTERACTIVE_AUTO_MODULES = {
     "panel_synthesis",
 }
 
+# ---- 依赖倒置钩子 ----
+# infra 不得反向依赖 services（不变式 #10）。配额/余额告警逻辑在
+# services.llm_quota_alert，由组合根（main.py 启动时）通过 set_alert_hook 注入。
+# 未注入时（如独立 cron 进程不经 main.py 启动）在 _maybe_alert 内回退 lazy import，
+# 保证配额告警不因迁移而静默丢失。
+_alert_hook = None
+
+
+def set_alert_hook(fn) -> None:
+    """注入配额告警函数（services.llm_quota_alert.maybe_alert_quota）。
+
+    由组合根调用一次，避免 infra/llm/gateway 反向 import services。
+    """
+    global _alert_hook
+    _alert_hook = fn
+
+
+def _maybe_alert(provider, status_code, error_msg):
+    """触发配额/余额告警，注入钩子优先，未注入时回退 lazy import。
+
+    独立进程（night_worker.py 等 6 个 cron 脚本）不经过 main.py 的启动注入，
+    钩子为 None，故在此回退到 services.llm_quota_alert.maybe_alert_quota。
+    任何环节异常均静默吞掉，不影响主流程（含 raise RuntimeError 流程）。
+    """
+    global _alert_hook
+    fn = _alert_hook
+    if fn is None:
+        try:
+            from services.llm_quota_alert import maybe_alert_quota
+            fn = maybe_alert_quota
+        except Exception:
+            return
+    try:
+        fn(provider, status_code, error_msg)
+    except Exception:
+        pass
+
 
 def _china_now(now=None):
     if now is None:
@@ -245,9 +282,8 @@ class LLMGateway:
             print(f"[LLM_GATEWAY] ⚠️ 缓存恢复失败（不影响运行）: {e}")
 
     def _persist_cache_to_disk(self):
-        """将内存缓存写入磁盘（原子写）"""
+        """将内存缓存写入磁盘（原子写，复用 infra/store）"""
         try:
-            import tempfile
             self.CACHE_FILE.parent.mkdir(parents=True, exist_ok=True)
             # 只持久化未过期的条目（访问 MemoryCache 内部 _data）
             now = time.time()
@@ -256,13 +292,9 @@ class LLMGateway:
                 for k, entry in self._cache._data.items():
                     if entry.expires_at > now:
                         valid[k] = {"result": entry.value, "ts": now}
-            # 原子写：tmp + rename
-            fd, tmp_path = tempfile.mkstemp(dir=str(self.CACHE_FILE.parent), suffix=".tmp")
-            with os.fdopen(fd, "w", encoding="utf-8") as f:
-                json.dump(valid, f, ensure_ascii=False)
-                f.flush()
-                os.fsync(f.fileno())
-            os.replace(tmp_path, str(self.CACHE_FILE))
+            # 原子写：复用 infra.store.atomic_write_json（消除内联重复 R3）
+            from infra.store import atomic_write_json
+            atomic_write_json(self.CACHE_FILE, valid)
         except Exception as e:
             print(f"[LLM_GATEWAY] ⚠️ 缓存持久化失败: {e}")
 
@@ -374,11 +406,7 @@ class LLMGateway:
                         print(f"[LLM_GATEWAY] 降级候选({idx + 1}/{len(candidate_models)}) → {candidate_model}")
                     status, payload = _do_call(candidate_model, api_key, api_base)
                     if status != 200:
-                        try:
-                            from services.llm_quota_alert import maybe_alert_quota
-                            maybe_alert_quota(provider, status, payload if isinstance(payload, str) else "")
-                        except Exception:
-                            pass
+                        _maybe_alert(provider, status, payload if isinstance(payload, str) else "")
                         raise RuntimeError(f"HTTP {status}: {payload}")
                     _msg0 = payload.get("choices", [{}])[0].get("message", {})
                     if not (_msg0.get("content") or "").strip() and (_msg0.get("reasoning_content") or "").strip():
@@ -549,11 +577,7 @@ class LLMGateway:
                             err_body = resp.read().decode("utf-8", errors="ignore")[:500]
                         except Exception:
                             err_body = ""
-                        try:
-                            from services.llm_quota_alert import maybe_alert_quota
-                            maybe_alert_quota(_provider_from_model(use_model), resp.status_code, err_body)
-                        except Exception:
-                            pass
+                        _maybe_alert(_provider_from_model(use_model), resp.status_code, err_body)
                         yield {"_http_error": resp.status_code, "_err_body": err_body}
                         return
                     for line in resp.iter_lines():
@@ -896,8 +920,8 @@ class LLMGateway:
             daily["cost_rmb"] = round(daily["cost_rmb"] + cost, 4)
             daily["calls"] += 1
 
-            # 原子写
-            from services.persistence import atomic_write_json
+            # 原子写（复用 infra/store，不变式 #5：文件 IO 走 infra/store）
+            from infra.store import atomic_write_json
             atomic_write_json(usage_file, daily)
 
             # 按用户记录
