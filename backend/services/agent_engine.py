@@ -73,7 +73,9 @@ def _classify_alerts(alerts: list) -> str:
 
     types = set()
     for a in alerts:
-        msg = a.get("msg", "").lower()
+        # v9.9.10: 兼容 message / msg 两种契约（基金侧 message，股票侧 msg）。
+        # 旧实现只读 msg，基金侧 alert 的文案永远扫不到，风控类关键词识别会漏。
+        msg = (a.get("message") or a.get("msg") or "").lower()
         level = a.get("level", "")
         atype = a.get("type", "")
 
@@ -156,7 +158,11 @@ def run_analysis_cycle(
     # 组装预警数据
     alerts_text = ""
     if alerts:
-        alert_lines = [f"  [{a.get('level','info')}] {a.get('msg','')}" for a in alerts[:10]]
+        # v9.9.10: 兼容 message / msg 两种契约，并兜底避免出现空描述
+        alert_lines = [
+            f"  [{a.get('level','info')}] {a.get('message') or a.get('msg') or '（无详情）'}"
+            for a in alerts[:10]
+        ]
         alerts_text = f"\n\n## ⚠️ 触发的预警信号\n" + "\n".join(alert_lines)
 
     # 组装记忆

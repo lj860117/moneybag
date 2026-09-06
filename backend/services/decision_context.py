@@ -18,6 +18,8 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any, Optional
 
+from services.llm_output_guard import looks_like_json_leak
+
 
 @dataclass
 class DecisionContext:
@@ -172,7 +174,9 @@ class DecisionContext:
         if self.risk_alerts:
             lines.append(f"\n## ⚠️ 风控预警 ({len(self.risk_alerts)}条)")
             for a in self.risk_alerts:
-                lines.append(f"  [{a.get('level', 'info')}] {a.get('msg', '')}")
+                # v9.9.10: 兼容 message / msg 两种契约（基金侧 message，股票侧 msg）
+                lines.append(f"  [{a.get('level', 'info')}] "
+                             f"{a.get('message') or a.get('msg') or '（无详情）'}")
             if self.risk_override:
                 lines.append(f"🔴 风控一票否决")
 
@@ -204,9 +208,17 @@ class DecisionContext:
         if not self.conclusion:
             self.conclusion = self.final_conclusion
         
-        # 检查 JSON 泄露
-        if self.conclusion and ("{" in self.conclusion or "}" in self.conclusion):
-            # 可能的 JSON 泄露，提取纯文本
+        # v9.9.10: 检查 JSON 泄露
+        # 旧判定是 `if "{" in text`，但 leaked 片段常常已无花括号（被截断或被上游
+        # 清理掉 "{"），于是整段漏网。改为按「键值形态 + 字段名白名单」判定，
+        # 与花括号无关；命中则整段丢弃，交由下游按 direction 生成默认文案，
+        # 而不是只删花括号（只删花括号会留下 '"direction": "bearish", ...'）。
+        if self.conclusion and looks_like_json_leak(self.conclusion):
+            print("[WARN] conclusion 命中 JSON 键值泄漏，整段丢弃")
+            self.conclusion = ""
+            self.final_conclusion = ""
+        elif self.conclusion and ("{" in self.conclusion or "}" in self.conclusion):
+            # 无键值形态但有游离花括号 → 只做字符级清理（低风险路径）
             self.conclusion = re.sub(r'\{[^}]*?\}', '', self.conclusion)
             self.conclusion = re.sub(r'[{}\[\]]', '', self.conclusion)
             self.conclusion = ' '.join(self.conclusion.split()).strip()
@@ -222,8 +234,14 @@ class DecisionContext:
         
         # 5. 推理过程验证
         if self.final_reasoning:
-            # 检测明确的 JSON 残留（{"key": 格式），避免误杀含冒号的正常文本
-            if re.search(r'\{\s*"[a-z_]+":', self.final_reasoning):
+            # v9.9.10: 键值形态（含无花括号截断片段）→ 整段丢弃。
+            # 旧正则同样要求字面 "{"，对线上那种裸片段失明。
+            if looks_like_json_leak(self.final_reasoning):
+                print("[WARN] final_reasoning 命中 JSON 键值泄漏，整段丢弃")
+                self.final_reasoning = ""
+                self.llm_reasoning = ""
+            elif re.search(r'\{\s*"[a-z_]+":', self.final_reasoning):
+                # 检测明确的 JSON 残留（{"key": 格式），避免误杀含冒号的正常文本
                 self.final_reasoning = re.sub(r'\{[^}]*?\}', '', self.final_reasoning)
             # 截断过长
             if len(self.final_reasoning) > 1000:

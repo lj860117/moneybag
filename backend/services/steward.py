@@ -18,6 +18,7 @@ from services.decision_context import DecisionContext
 from services.pipeline_runner import PipelineRunner, PIPELINES
 from services.module_registry import ModuleRegistry
 from services.regime_engine import classify as classify_regime, get_pipeline_for_regime
+from services.llm_output_guard import strip_json_leak, strip_prompt_echo
 
 MODULE_META = {
     "name": "steward",
@@ -88,8 +89,15 @@ def _sanitize_reasoning_for_user(reasoning: str) -> str:
     reasoning = re.sub(r'(?:gate_decision|gate_reason|divergence|confidence_score)[^。；\n]*[。；]?', '', reasoning)
 
     # 4. 去掉 JSON 结构
+    # v9.9.10: 旧正则要求字面 "{"，对无花括号的裸键值片段（输出被截断场景）失明。
+    # 先按旧逻辑清带花括号的结构，再清无花括号的键值串。
     reasoning = re.sub(r'\{[^}]*?["\':].*?\}', '', reasoning)
     reasoning = re.sub(r'\[[^\]]*?\]', '', reasoning)
+    reasoning = strip_json_leak(reasoning)
+    # 3.5 v9.9.10: 整句剔除模型复述的 prompt 原文 / 内部状态枚举。
+    # 与 stock_monitor_cron._sanitize_reasoning_for_extraction 共用同一套契约
+    # （以前两份实现各自演进，导致"修了一处漏了六处"）。
+    reasoning = strip_prompt_echo(reasoning)
 
     # 5. 清理单独的 key=value
     reasoning = re.sub(r'\b[a-z_]+\s*=\s*(?:[0-9.]+|["\'`].*?["\'`]|\w+)', '', reasoning, flags=re.IGNORECASE)

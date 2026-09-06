@@ -15,8 +15,13 @@ v3.0 底座 #3
 """
 import time
 import asyncio
+from collections import Counter
 from typing import Callable, Optional
 from services.decision_context import DecisionContext
+
+# v9.9.10: LLM 仲裁失败（解析失败 / 输出被截断 / 调用异常）时的安全占位文案。
+# 绝不回退成 LLM 原文 —— 那正是线上把裸 JSON 片段推给用户的根因。
+_SAFE_ARBITRATION_FALLBACK = "模块综合判断，详情请打开钱袋子查看"
 
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -229,7 +234,9 @@ Regime: {ctx.regime} ({ctx.regime_description})
             model_tier="llm_light",  # V3 仲裁：JSON服从性好+快（R1的content常为空，不适合结构化输出）
             user_id=ctx.user_id,
             module="steward_arbitrate",
-            max_tokens=500,
+            # v9.9.10: 500 → 1000。500 会把仲裁 JSON 截断成半截字符串，
+            # 解析必然失败，进而触发"把原文当结论"的泄漏路径。
+            max_tokens=1000,
         )
 
         ctx.llm_called = True
@@ -238,6 +245,13 @@ Regime: {ctx.regime} ({ctx.regime_description})
 
         content = result.get("content", "")
         ctx.llm_reasoning = result.get("reasoning", "") or ""  # R1 的思考过程
+
+        # v9.9.10: 输出被 max_tokens 截断 → 半截 JSON 无法安全抢救，
+        # 按"解析失败"处理（content 置空，走下面的降级路径）
+        if result.get("finish_reason") == "length":
+            print("[PIPELINE] LLM仲裁: 输出被 max_tokens 截断，按解析失败降级")
+            content = ""
+
         if content and not result.get("fallback"):
             # 解析 JSON 返回
             import json as _json
@@ -280,27 +294,28 @@ Regime: {ctx.regime} ({ctx.regime_description})
                 ctx.llm_reasoning = parsed.get("reasoning", "")
                 print(f"[PIPELINE] LLM仲裁: {ctx.direction} {ctx.confidence_score*100:.0f}% — {ctx.conclusion}")
             else:
-                # 没找到 JSON，直接用文本
-                ctx.conclusion = content[:200]
-                # 尝试从文本推断方向
-                if "看多" in content or "bullish" in content.lower():
-                    ctx.direction = "bullish"
-                elif "看空" in content or "bearish" in content.lower():
-                    ctx.direction = "bearish"
-                print(f"[PIPELINE] LLM仲裁: 无JSON，文本提取 {ctx.direction}")
+                # v9.9.10: 解析失败（或被 max_tokens 截断）时，绝不把 LLM 原文当结论。
+                # 旧实现 `ctx.conclusion = content[:200]` 会把未闭合的裸 JSON
+                # （'"direction": "bearish", ...'）直接推给用户 —— 这是线上泄漏的根因。
+                # 改为降级到模块多数投票，与 step_output 的降级分支保持一致。
+                dirs = [r.get("direction", "neutral") for r in ctx.modules_results.values()]
+                if dirs:
+                    ctx.direction = Counter(dirs).most_common(1)[0][0]
+                ctx.conclusion = _SAFE_ARBITRATION_FALLBACK
+                print(f"[PIPELINE] LLM仲裁: 无有效JSON，降级模块投票→{ctx.direction}")
         else:
             # LLM 不可用，降级：用模块多数投票
             directions = [r.get("direction", "neutral") for r in ctx.modules_results.values()]
-            from collections import Counter
             if directions:
                 most_common = Counter(directions).most_common(1)[0][0]
                 ctx.direction = most_common
-            ctx.conclusion = "LLM不可用，使用模块多数投票"
+            ctx.conclusion = _SAFE_ARBITRATION_FALLBACK
             print(f"[PIPELINE] LLM仲裁降级: 多数投票→{ctx.direction}")
 
     except Exception as e:
+        # v9.9.10: 异常原文可能含文件路径/接口报错，同样不能透出给用户
         print(f"[PIPELINE] LLM仲裁异常: {e}")
-        ctx.conclusion = f"仲裁异常: {e}"
+        ctx.conclusion = _SAFE_ARBITRATION_FALLBACK
 
     ctx.pipeline_steps.append("llm_arbitration")
     return ctx

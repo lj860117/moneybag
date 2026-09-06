@@ -51,6 +51,17 @@ _COMMON_LEAK_KEYWORDS = [
     '可以指出', '看基金名称', '看股票名称',
     '不太确定', '暂时不评论', '需要更多信息',
     '思考：', '分析：我', '首先我', '接下来我',
+
+    # v9.9.10: prompt 指令复读（明确无歧义的元话术，正常面向用户文案不会出现）
+    '我们需要输出', '我们要输出', '必须输出', '严格 JSON',
+    '请输出', '不要输出任何', '只输出 JSON',
+
+    # v9.9.10: 内部状态枚举 / 内部字段名。
+    # 这些是系统内部标识，中文用户文案里不会出现，命中即可安全丢弃。
+    # （"输入："、"用户问题："这类可能与正常中文共存的词不进这里，
+    #   由推送侧 _PROMPT_ECHO_MARKERS 按场景处理，避免误伤对话场景）
+    'high_vol_bear', 'high_vol_bull', 'trending_bull', 'trending_bear',
+    'oscillating', 'rotation', 'modules_results', 'gate_decision', 'market_data',
 ]
 
 # 晨报/分析场景里常见的 prompt 复述模式（整段文本级）
@@ -75,6 +86,124 @@ _RAW_HOLDINGS_PATTERN = re.compile(
     r'\([0-9]{6}\)\s*(?:盈亏[+\-\d.%]+\s*)?\[\s*\]'
 )
 
+# ============================================================
+# v9.9.10: JSON 键值形态泄漏检测
+# ============================================================
+# 背景：线上出现过 LLM 输出被 max_tokens 截断 → 解析失败 → 未闭合的
+#   {"direction": "bearish", "confidence": 58, "conclusion": "...", "reasoning": "
+# 被当成结论文本。旧防线一律以字面 "{" 为触发条件，而清理逻辑又会把 "{" 删掉，
+# 导致泄漏片段变成「无花括号的裸键值串」，从此所有下游正则全部失明。
+#
+# 因此改为按「键值形态」判定，不再依赖花括号；字段名采用白名单，
+# 避免误伤中文正常文本（如 "某政策"：全面落地 —— 字段名不匹配白名单）。
+_JSON_LEAK_FIELDS = (
+    'direction', 'confidence', 'conclusion', 'reasoning',
+    'regime', 'action', 'summary', 'signal',
+)
+_JSON_KV_LEAK_PATTERN = re.compile(
+    r'"(?:{})"\s*:\s*(?:"[^"]*"|\d+(?:\.\d+)?|[a-z_]+)'.format('|'.join(_JSON_LEAK_FIELDS))
+)
+
+
+def looks_like_json_leak(text: str) -> bool:
+    """判断文本是否含泄漏的 JSON 键值片段（含无花括号的截断形态）。
+
+    与花括号无关，只看 key: value 形态 + 字段名白名单，用于替代
+    `if "{" in text` / `r'\\{\\s*"[a-z_]+":'` 这两类失明的判定。
+
+    Args:
+        text: 待检测文本。
+
+    Returns:
+        True 表示命中 JSON 泄漏特征，应整段丢弃或降级。
+    """
+    if not text:
+        return False
+    return bool(_JSON_KV_LEAK_PATTERN.search(text))
+
+
+# ============================================================
+# v9.9.10: prompt 复述 / 思维链残留特征词
+# ============================================================
+# 背景：模型会把喂给它的 system prompt 原文复述进 reasoning（如
+# "我们需要输出严格 JSON"、"输入：用户问题收盘复盘，市场状态 high_vol_bear"），
+# 而 bullet 兜底分支会按标点切片把这些原文直接当要点推给用户。
+#
+# 这里做成共享常量，是因为 services/steward.py 与
+# scripts/stock_monitor_cron.py 各有一份几乎相同的 sanitizer ——
+# 之前就是因为两份实现各自演进，才出现"修了一处漏了六处"。
+PROMPT_ECHO_MARKERS = [
+    # 指令复述
+    '我们需要输出', '我们要输出', '必须输出', '严格 JSON', '请输出',
+    '不要输出任何', '只输出 JSON', '按以下格式', '输出格式',
+    '用户让我', '用户提供了', '现在分析数据', '首先理解', '首先，理解',
+    '输入：', '输入:', '用户问题：', '用户问题:',
+    # 内部状态枚举（regime 值，用户不该看到原始枚举名）
+    'high_vol_bear', 'high_vol_bull', 'trending_bull', 'trending_bear',
+    'oscillating', 'rotation',
+    'market_data', 'modules_results', 'gate_decision',
+]
+
+
+def looks_like_prompt_echo(segment: str) -> bool:
+    """判断一个片段是否是模型复述的 prompt / 内部状态，而非面向用户的人话。
+
+    Args:
+        segment: 单个 bullet 候选片段或句子。
+
+    Returns:
+        True 表示应丢弃该片段。
+    """
+    if not segment:
+        return False
+    return any(marker in segment for marker in PROMPT_ECHO_MARKERS)
+
+
+def strip_prompt_echo(text: str) -> str:
+    """按句剔除含 prompt 复述 / 内部状态枚举的句子。
+
+    整句切掉比逐词替换更干净，不会留下半句话。保留原标点，
+    因此不会破坏 1.406% / 0.856% 这类小数（防误杀要求）。
+
+    Args:
+        text: 待清理文本。
+
+    Returns:
+        剔除命中句子后的文本。
+    """
+    if not text:
+        return text or ""
+    import re as _re
+    sentences = _re.split(r'(?<=[。；;])', text)
+    return ''.join(s for s in sentences if not looks_like_prompt_echo(s))
+
+
+def strip_json_leak(text: str) -> str:
+    """移除文本中泄漏的 JSON 键值片段（含无花括号的截断形态）。
+
+    先清掉带花括号的完整/残缺结构，再整段切除无花括号的裸键值串。
+    无法安全裁剪时返回原文本，由调用方按 looks_like_json_leak 决定降级。
+
+    Args:
+        text: 待清理文本。
+
+    Returns:
+        清理后的文本。
+    """
+    if not text:
+        return text or ""
+
+    # 1) 带花括号的结构（保持旧行为）
+    cleaned = re.sub(r'\{[^{}]*?["\'][^}]*?\}', '', text)
+    # 2) 未闭合的开头花括号（截断场景）
+    cleaned = re.sub(r'\{\s*"[a-z_]+"\s*:\s*["\']?[^"\']*$', '', cleaned)
+    # 3) 无花括号的裸键值串：从首个命中切到末个命中
+    matches = list(_JSON_KV_LEAK_PATTERN.finditer(cleaned))
+    if matches:
+        cleaned = cleaned[:matches[0].start()] + cleaned[matches[-1].end():]
+
+    return ' '.join(cleaned.split()).strip()
+
 
 # ============================================================
 # 核心过滤函数
@@ -93,6 +222,9 @@ def _filter_lines(text: str, extra_keywords: list[str] = None) -> str:
         if any(kw in stripped for kw in keywords):
             continue
         if _RAW_HOLDINGS_PATTERN.search(stripped):
+            continue
+        # v9.9.10: 整行是泄漏的 JSON 键值片段（无花括号截断形态也能命中）
+        if looks_like_json_leak(stripped):
             continue
         cleaned.append(line)
     result = '\n'.join(cleaned).strip()
@@ -161,11 +293,17 @@ class LLMOutputGuard:
         return cleaned
 
     @staticmethod
-    def filter_analysis(text: str, fallback: str = "", min_len: int = 20) -> str:
+    def filter_analysis(text: str, fallback: str = "", min_len: int = 10) -> str:
         """
         分析/解读输出过滤（中等）
         适用：新闻解读、信号解读、策略建议、policy 场景
         过滤 + prompt 复读检测 + 最短长度检查
+
+        min_len 默认 10（v9.9.10 由 20 下调）：20 会把 LLM 合法的短结论
+        整段降级成兜底文案，例如"高波震荡偏弱，防御为上，控制仓位。"（17 字）
+        就是仲裁 JSON 里 conclusion 字段的正常取值。长度阈值的作用是拦
+        "被过滤后只剩残渣"，不是判断"内容是否有价值"，10 字足以挡住残渣。
+        调高此值前请先确认不会再次吃掉正常的中文短结论。
         """
         if not text:
             return fallback or text
@@ -179,6 +317,26 @@ class LLMOutputGuard:
             return fallback or "（分析暂时不可用）"
 
         return cleaned
+
+    @staticmethod
+    def filter_push(text: str, extra_keywords: list = None) -> str:
+        """
+        整条推送文本过滤（宽松，仅删行，不做整段降级）
+
+        适用：已拼装完成的整条消息（如收盘复盘 msg_parts 合并后的正文）。
+        与 filter_analysis 的区别：不做 prompt 复读/思考链的"整段替换"，
+        否则一条误判会让整条推送变成占位文案，损失远大于泄漏本身。
+
+        Args:
+            text: 已拼装的推送正文。
+            extra_keywords: 调用方附加的行级黑名单。
+
+        Returns:
+            删除命中行之后的文本；无命中时原样返回。
+        """
+        if not text:
+            return text or ""
+        return _filter_lines(text, extra_keywords=extra_keywords)
 
     @staticmethod
     def filter_diagnosis(text: str, retry_fallback: str = None) -> str:

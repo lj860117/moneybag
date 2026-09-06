@@ -384,6 +384,9 @@ class LLMGateway:
             cache_hit_tk = usage.get("prompt_cache_hit_tokens", 0)
             cache_miss_tk = usage.get("prompt_cache_miss_tokens", 0)
 
+            # v9.9.10: 透出 finish_reason，供调用方识别输出被 max_tokens 截断
+            # （截断的 JSON 是半截字符串，解析必然失败，绝不应当作结论文本使用）
+            finish_reason = data.get("choices", [{}])[0].get("finish_reason", "")
             result = {
                 "content": content,
                 "reasoning": reasoning,
@@ -394,6 +397,7 @@ class LLMGateway:
                 "cache_miss_tokens": cache_miss_tk,
                 "fallback": False,
                 "fallback_used": fallback_used,
+                "finish_reason": finish_reason,
             }
             self._set_cache(cache_key, result)
             self._record_usage(user_id, module, actual_model, total_tokens)

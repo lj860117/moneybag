@@ -224,7 +224,9 @@ def send_stock_alert(signals: list) -> dict:
     for sig in signals[:10]:  # 最多 10 条
         emoji = "🔴" if sig.get("level") == "warning" else "🟡"
         lines.append(f"{emoji} **{sig.get('name', '')}**({sig.get('code', '')})")
-        lines.append(f"> {sig.get('message', '')}\n")
+        # v9.9.10: 兼容 message / msg 两种契约。基金侧 alert 用 message，
+        # 股票侧用 msg；旧实现只读 message，会让股票侧异动渲染成空行。
+        lines.append(f"> {sig.get('message') or sig.get('msg') or '（无详情）'}\n")
 
     lines.append(f"⏰ {time.strftime('%H:%M:%S')}")
     content = "\n".join(lines)

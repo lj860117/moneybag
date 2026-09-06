@@ -25,6 +25,20 @@ if _env_file.exists():
 
 from services.stock_monitor import scan_all_holdings, load_stock_holdings
 from services.fund_monitor import scan_all_fund_holdings, load_fund_holdings
+# v9.9.10: 收盘复盘推送接入 LLM 输出守卫（此前这条链路从未接守卫）
+from services.llm_output_guard import (
+    LLMOutputGuard,
+    looks_like_json_leak,
+    # prompt 复述特征词与判定函数放在守卫模块里共享：
+    # services/steward.py 与本文件各有一份几乎相同的 sanitizer，
+    # 之前就是因为两份实现各自演进，才出现"修了一处漏了六处"。
+    looks_like_prompt_echo as _looks_like_prompt_echo,
+    PROMPT_ECHO_MARKERS as _PROMPT_ECHO_MARKERS,
+    strip_prompt_echo as _strip_prompt_echo,
+)
+
+# v9.9.10: 复盘/诊断文本被守卫判定为不可用时的统一兜底文案
+_SAFE_PUSH_FALLBACK = "今日复盘已生成，请打开钱袋子查看"
 
 MONITOR_DIR = Path(os.environ.get("MONITOR_DIR",
     Path(__file__).parent.parent.parent / "data" / "monitor"))
@@ -468,6 +482,24 @@ def push_daily_summary():
             print(f"[DAILY_SUMMARY] {uid} 推送异常: {e}")
 
 
+def _alert_text(a: dict) -> str:
+    """取异动条目的描述文案，兼容 message / msg 两种字段契约。
+
+    背景：基金侧 detect_fund_alerts() 产出 `message`（v9.5.124 统一改名），
+    股票侧 stock_monitor 产出 `msg`。渲染处只认 msg 时，所有基金异动都会
+    渲染成"名字(代码)："后面空空如也。
+
+    Args:
+        a: 单条 alert 字典。
+
+    Returns:
+        描述文案；两者都缺失时返回兜底占位，避免出现"冒号后为空"。
+    """
+    if not isinstance(a, dict):
+        return "（无详情）"
+    return a.get("message") or a.get("msg") or "（无详情）"
+
+
 def build_daily_summary_text() -> dict:
     """v9.5.74: 构建当日异动汇总文本，返回 {user_id: text}
 
@@ -497,27 +529,27 @@ def build_daily_summary_text() -> dict:
         if groups["drawdown"]:
             lines.append(f"🔻 回撤类（{len(groups['drawdown'])} 条）")
             for a in groups["drawdown"]:
-                lines.append(f"• {a.get('fund') or a.get('code', '?')}：{a.get('msg', '')}")
+                lines.append(f"• {a.get('fund') or a.get('code', '?')}：{_alert_text(a)}")
         if groups["consecutive_drop"]:
             lines.append(f"📉 连跌（{len(groups['consecutive_drop'])} 条）")
             for a in groups["consecutive_drop"]:
-                lines.append(f"• {a.get('fund') or a.get('code', '?')}：{a.get('msg', '')}")
+                lines.append(f"• {a.get('fund') or a.get('code', '?')}：{_alert_text(a)}")
         if groups["drop"] or groups["surge"]:
             n = len(groups["drop"]) + len(groups["surge"])
             lines.append(f"⚡ 单日异动（{n} 条）")
             for a in groups["drop"] + groups["surge"]:
-                lines.append(f"• {a.get('fund') or a.get('code', '?')}：{a.get('msg', '')}")
+                lines.append(f"• {a.get('fund') or a.get('code', '?')}：{_alert_text(a)}")
         if groups["hot"]:
             lines.append(f"🔥 周热点（{len(groups['hot'])} 条）")
             for a in groups["hot"]:
-                lines.append(f"• {a.get('fund') or a.get('code', '?')}：{a.get('msg', '')}")
+                lines.append(f"• {a.get('fund') or a.get('code', '?')}：{_alert_text(a)}")
         if groups["deviation"]:
             lines.append(f"⚠️ 估算偏差（{len(groups['deviation'])} 条）")
             for a in groups["deviation"]:
-                lines.append(f"• {a.get('fund') or a.get('code', '?')}：{a.get('msg', '')}")
+                lines.append(f"• {a.get('fund') or a.get('code', '?')}：{_alert_text(a)}")
         if groups["_other"]:
             for a in groups["_other"]:
-                lines.append(f"• {a.get('msg', '')}")
+                lines.append(f"• {_alert_text(a)}")
 
         out[uid] = "\n".join(lines)
 
@@ -613,6 +645,12 @@ def _sanitize_reasoning_for_extraction(reasoning: str) -> str:
     reasoning = re.sub(r'我们被问到[^。]*?。', '', reasoning)
     reasoning = re.sub(r'用户提问[^。]*?。', '', reasoning)
     reasoning = re.sub(r'Pipeline[^。]*?。', '', reasoning)
+
+    # 1.5 v9.9.10: 整句剔除含 prompt 复述 / 内部状态枚举的句子。
+    # 模型会把喂给它的 system prompt 原文复述进 reasoning（如
+    # "我们需要输出严格 JSON"、"输入：用户问题收盘复盘，市场状态 high_vol_bear"）。
+    # 实现放在 llm_output_guard 里，与 steward.py 共用同一套契约，避免两处漂移。
+    reasoning = _strip_prompt_echo(reasoning)
 
     # 2. 先清括号内的技术指标（整体移除，避免残留 =value）
     reasoning = re.sub(r'[（(]Layer\d+[^）)]*?[）)]', '', reasoning)
@@ -733,12 +771,15 @@ def _format_review_for_push(review_input) -> str:
     
     result = "\n".join(parts)
 
-    # 最终检查：防止 JSON 泄露（仅检测明确的 JSON 结构，避免误杀正常文本）
+    # 最终检查：防止 JSON 泄露
+    # v9.9.10: 旧判定只认字面 "{"（startswith / r'\{\s*"[a-z_]+":'），而泄漏片段
+    # 常常已无花括号（截断 + 上游清理），导致防线失明。补上键值形态检测。
     import re as _re
-    if result.strip().startswith("{") or _re.search(r'\{\s*"[a-z_]+":', result):
-        # 检测到明确的 JSON 泄露（{"key": 格式）
+    if (looks_like_json_leak(result)
+            or result.strip().startswith("{")
+            or _re.search(r'\{\s*"[a-z_]+":', result)):
         print(f"[ALERT] Detected JSON leak in formatted result: {result[:100]}")
-        return "📊 收盘复盘完成，请打开钱袋子查看详情"
+        return _SAFE_PUSH_FALLBACK
 
     return result
 
@@ -746,6 +787,12 @@ def _format_review_for_push(review_input) -> str:
 
 def _humanize_conclusion(conclusion: str, direction: str) -> str:
     """把 LLM 仲裁的结论翻译成口语化的一句话"""
+    # v9.9.10: 命中 JSON 键值泄漏（含无花括号的截断片段）时按"无结论"处理，
+    # 复用下面已有的按 direction 生成默认文案的分支，绝不把裸 JSON 推给用户。
+    if conclusion and looks_like_json_leak(conclusion):
+        print("[ALERT] _humanize_conclusion 命中 JSON 键值泄漏，降级为默认文案")
+        conclusion = ""
+
     if not conclusion:
         if direction == "bullish":
             return "今天市场偏强，氛围不错"
@@ -821,8 +868,19 @@ def _extract_human_points(reasoning: str, review: dict) -> list:
             if len(seg) > 8 and seg not in points and len(points) < 3:
                 # 去掉括号里的数字噪音
                 seg = re.sub(r'[（(][^）)]*?\d[^）)]*?[）)]', '', seg).strip()
+                # v9.9.10: 逐条过 prompt 复述检测 —— 旧实现会把模型复述的
+                # prompt 原文（"我们需要输出严格 JSON"）和内部状态枚举
+                # （"市场状态 high_vol_bear"）原样变成 bullet 推给用户。
+                if seg and _looks_like_prompt_echo(seg):
+                    print(f"[ALERT] _extract_human_points 丢弃 prompt 复述片段: {seg[:40]}")
+                    continue
                 if seg:
                     points.append(seg)
+
+    # v9.9.10: 过滤后不足 2 条 → 返回空列表让上游降级，
+    # 不要硬凑条数，更不要把原文补进去。
+    if len(points) < 2:
+        return []
 
     return points[:3]
 
@@ -905,6 +963,43 @@ def _build_portfolio_thermometer_oneliner(uid: str) -> str:
         return ""
 
 
+# v9.9.10: 由 _format_review_for_push 生成的 bullet 小标题。
+# 只按白名单精确匹配 —— 不能用"以冒号结尾"这种通用规则，
+# 否则会误删 "🔔 持仓预警:"（后面跟的是 🔴 行，不是 bullet）。
+_BULLET_SECTION_HEADERS = ("🔍 怎么回事：", "🔍 怎么回事:")
+
+
+def _drop_empty_sections(text: str) -> str:
+    """删除守卫按行过滤后残留的空 bullet 小标题。
+
+    LLMOutputGuard.filter_push 按行删命中行，可能把某小节下的 bullet 全部删掉，
+    只留下 "🔍 怎么回事：" 这个孤零零的标题。这里在标题后找不到 bullet 时
+    把标题一并删掉。
+
+    Args:
+        text: 已过滤的推送正文。
+
+    Returns:
+        删除空标题后的文本。
+    """
+    if not text:
+        return text or ""
+
+    lines = text.split("\n")
+    out = []
+    for i, line in enumerate(lines):
+        if line.strip() in _BULLET_SECTION_HEADERS:
+            nxt = ""
+            for j in range(i + 1, len(lines)):
+                if lines[j].strip():
+                    nxt = lines[j].strip()
+                    break
+            if not nxt.startswith("•"):
+                continue
+        out.append(line)
+    return "\n".join(out)
+
+
 def _sanitize_push_text(text: str) -> str:
     """检测文本是否为原始 JSON，如果是则提取关键信息格式化"""
     stripped = text.strip()
@@ -915,6 +1010,11 @@ def _sanitize_push_text(text: str) -> str:
                 return _format_review_for_push(data)
         except (json.JSONDecodeError, ValueError):
             pass
+    # v9.9.10: 无花括号的裸键值片段（截断场景）此前完全漏网，
+    # 原样 return text 会把半截 JSON 直接推给用户。命中即降级。
+    if looks_like_json_leak(stripped):
+        print(f"[ALERT] _sanitize_push_text 命中 JSON 键值泄漏，降级: {stripped[:80]}")
+        return _SAFE_PUSH_FALLBACK
     return text
 
 
@@ -1066,6 +1166,12 @@ def run_close_review():
                     
                     # 2. 市场方向（review）
                     if review_text:
+                        # v9.9.10: 复盘文本过 LLM 输出守卫 —— 这条链路此前从未接守卫，
+                        # 裸 JSON 片段和 prompt 复述都由此直接流向用户。
+                        # min_len 用默认值（v9.9.10 已由 20 下调到 10），不再显式传参：
+                        # 显式传参等于把阈值分叉到调用点，是"改一处漏六处"的老路。
+                        review_text = LLMOutputGuard.filter_analysis(
+                            review_text, fallback=_SAFE_PUSH_FALLBACK)
                         msg_parts.append(f"\n{review_text}")
 
                     # 3. AI诊断（完整版）
@@ -1146,26 +1252,39 @@ def run_close_review():
                         from infra.data_source.macro.indicators import get_global_futures_snapshot
                         futures = get_global_futures_snapshot()
                         if futures and futures.get("available") and futures.get("a50"):
-                            a50_pct = futures["a50"].get("change_pct", 0)
+                            a50_pct = futures["a50"].get("change_pct", 0) or 0
+                            # v9.9.10: -0.04 之类会被 :+.1f 格式化成 "-0.0%" 这种负零，
+                            # 用户会误读成"下跌"。绝对值小于半个显示单位时归零。
+                            if abs(a50_pct) < 0.05:
+                                a50_pct = 0.0
                             msg_parts.append(f"\n📡 A50期货: {a50_pct:+.1f}% (预判明日方向)")
                     except Exception:
                         pass
 
                     msg_parts.append("\n⚠️ 仅供参考")
                     
+                    # v9.9.10: 发送前最后一道守卫。
+                    # 用 filter_push（只删命中行）而不是 filter_analysis：
+                    # 后者一旦触发 prompt 复读/思考链判定会把整段替换成占位文案，
+                    # 一次误判就会让整条推送消失，损失远大于泄漏本身。
+                    final_text = LLMOutputGuard.filter_push(
+                        "\n".join(msg_parts), extra_keywords=_PROMPT_ECHO_MARKERS)
+                    # 守卫按行删除后，可能留下"🔍 怎么回事："这类没了 bullet 的空标题
+                    final_text = _drop_empty_sections(final_text)
+
                     # v9.8.10: 存档推送内容（用于质量评估）
                     try:
                         from services.wxwork_push import archive_push
                         archive_push(
                             user_id=uid,
                             push_type="closing_review",
-                            content="\n".join(msg_parts),
+                            content=final_text,
                             timestamp=datetime.now().strftime("%Y-%m-%d %H:%M:%S")
                         )
                     except Exception as e:
                         print(f"  [存档] 失败: {e}")
-                    
-                    send_daily_report_to(wxwork_uid, "\n".join(msg_parts), title="📊 钱袋子收盘复盘")
+
+                    send_daily_report_to(wxwork_uid, final_text, title="📊 钱袋子收盘复盘")
                     print(f"  [推送] {name}: 复盘+诊断+异动已推企微")
             except Exception as e:
                 print(f"  [推送] {name}: 失败: {e}")
