@@ -32,7 +32,7 @@ class LLMResponse:
         reasoning        -- chain-of-thought from R1 (empty for V3)
         source           -- "ai" | "cache" | "rate_limited" | "no_key"
                             | "api_error" | "error"
-        model            -- "deepseek-v4-flash" | "deepseek-reasoner"
+        model            -- "deepseek-v4-flash" | "deepseek-v4-pro"
         tokens           -- total tokens consumed
         cache_hit_tokens -- prompt tokens served from provider cache
         cache_miss_tokens-- prompt tokens NOT in provider cache

@@ -31,12 +31,10 @@ DOUBAO_API_BASE = os.environ.get("DOUBAO_API_BASE", os.environ.get("ARK_API_BASE
 MODEL_ROUTING = {
     "llm_light": "deepseek-v4-flash",     # V4 Flash: 聊天/点评/解读/信号
     "llm_heavy": "deepseek-v4-pro",       # V4 Pro: 仲裁/诊断/因子生成（快且质量高）
-    "llm_reasoning": "deepseek-reasoner", # R1: 仅用于情景分析等深度推理
 }
 DOUBAO_MODEL_ROUTING = {
     "llm_light": "doubao-seed-2-0-lite-260215",
     "llm_heavy": "doubao-seed-2-0-pro-260215",
-    "llm_reasoning": "doubao-seed-2-0-pro-260215",
 }
 INTERACTIVE_AUTO_MODULES = {
     "chat",
@@ -129,7 +127,7 @@ def _preferred_provider_order(module: str = "", now=None) -> list[str]:
 
 def _resolve_provider_model(provider: str, model_tier: str = "llm_light", *, need_tools: bool = False, phase: str = "primary") -> str:
     if provider == "doubao":
-        if model_tier in {"llm_heavy", "llm_reasoning"}:
+        if model_tier == "llm_heavy":
             return "doubao-seed-2-0-pro-260215"
         if phase == "fallback" and not need_tools:
             return "doubao-seed-2-0-mini-260215"
@@ -264,10 +262,10 @@ class LLMGateway:
         force_no_thinking: 显式关闭推理模型 thinking（短输出场景）。
             置 True 时不提升 max_tokens 预算，按调用方给定值走。
         """
-        # v9.5.140: 推理档（llm_heavy/llm_reasoning）保留 thinking，需要更大输出预算，
+        # v9.5.140: 推理档（llm_heavy）保留 thinking，需要更大输出预算，
         # 否则 reasoning_content 挤占 content 导致截断（P0-1 全局修复）。
         # force_no_thinking=True 时调用方已明确要求关推理，预算不提升。
-        if model_tier in ("llm_heavy", "llm_reasoning") and max_tokens < 3000 and not force_no_thinking:
+        if model_tier == "llm_heavy" and max_tokens < 3000 and not force_no_thinking:
             max_tokens = 3000
         # 0. 日期重置
         self._check_daily_reset()
@@ -309,7 +307,7 @@ class LLMGateway:
         def _do_call(use_model: str, use_key: str, use_base: str):
             """实际执行 POST，返回 (status_code, data_or_err_text)"""
             import httpx
-            timeout = 120 if use_model == "deepseek-reasoner" else 60
+            timeout = 60
             body = {
                 "model": use_model,
                 "messages": messages,
@@ -326,7 +324,7 @@ class LLMGateway:
                     body["thinking"] = {"type": "disabled"}
             elif model_tier == "llm_light" and use_model.startswith("deepseek-v4"):
                 body["thinking"] = {"type": "disabled"}
-            elif model_tier != "llm_reasoning":
+            elif model_tier != "llm_light":
                 if "doubao-seed" in use_model:
                     body["thinking"] = {"type": "disabled"}
             with httpx.Client(timeout=timeout) as client:
@@ -459,10 +457,10 @@ class LLMGateway:
         force_no_thinking: 显式关闭推理模型 thinking（短输出场景）。
             置 True 时不提升 max_tokens 预算，按调用方给定值走。
         """
-        # v9.5.140: 推理档（llm_heavy/llm_reasoning）保留 thinking，需要更大输出预算，
+        # v9.5.140: 推理档（llm_heavy）保留 thinking，需要更大输出预算，
         # 否则 reasoning_content 挤占 content 导致截断（P0-1 全局修复）。
         # force_no_thinking=True 时调用方已明确要求关推理，预算不提升。
-        if model_tier in ("llm_heavy", "llm_reasoning") and max_tokens < 3000 and not force_no_thinking:
+        if model_tier == "llm_heavy" and max_tokens < 3000 and not force_no_thinking:
             max_tokens = 3000
         # 0. 日期重置
         self._check_daily_reset()
@@ -499,7 +497,7 @@ class LLMGateway:
         def _do_stream(use_model: str, use_key: str, use_base: str):
             """实际执行流式调用，yield chunk"""
             import httpx
-            timeout = 120 if use_model == "deepseek-reasoner" else 60
+            timeout = 60
             # 关闭 thinking 的策略（reasoning_content 与 content 共享 max_tokens）：
             # 1) force_no_thinking=True：调用方显式要求（短输出点），强制关闭所有推理模型
             # 2) DeepSeek V4 轻量档：关闭（轻量任务不需要推理，避免截断，P0-1）
@@ -516,7 +514,7 @@ class LLMGateway:
                     stream_body["thinking"] = {"type": "disabled"}
             elif model_tier == "llm_light" and use_model.startswith("deepseek-v4"):
                 stream_body["thinking"] = {"type": "disabled"}
-            elif model_tier != "llm_reasoning":
+            elif model_tier != "llm_light":
                 if "doubao-seed" in use_model:
                     stream_body["thinking"] = {"type": "disabled"}
             with httpx.Client(timeout=timeout) as client:

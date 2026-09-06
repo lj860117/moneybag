@@ -244,7 +244,7 @@ Regime: {ctx.regime} ({ctx.regime_description})
         ctx.llm_calls_count += 1
 
         content = result.get("content", "")
-        ctx.llm_reasoning = result.get("reasoning", "") or ""  # R1 的思考过程
+        ctx.llm_reasoning = result.get("reasoning", "") or ""  # LLM 的思考过程
 
         # v9.9.10: 输出被 max_tokens 截断 → 半截 JSON 无法安全抢救，
         # 按"解析失败"处理（content 置空，走下面的降级路径）

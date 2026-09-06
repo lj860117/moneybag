@@ -655,7 +655,6 @@ def _fc_call_with_fallback(model: str, messages: list, max_tokens: int = 3000) -
         if doubao_key:
             # FC 场景永远用 Lite 或 Pro（Mini 工具调用准确率低）
             DOUBAO_MAP = {
-                "deepseek-reasoner": "doubao-seed-2-0-pro-260215",
                 "deepseek-v4-pro": "doubao-seed-2-0-pro-260215",
                 "deepseek-v4-flash": "doubao-seed-2-0-lite-260215",   # FC 必须用 Lite
             }

@@ -188,8 +188,7 @@ def run_analysis_cycle(
     try:
         from services.llm_gateway import LLMGateway
         # 模型名 → Gateway tier（deepseek-v4-pro → llm_heavy）
-        # FIX 2026-08-09: DeepSeek 7/24已停用deepseek-reasoner(R1)，改判deepseek-v4-pro
-        tier = "llm_heavy" if model in ("deepseek-v4-pro", "deepseek-reasoner") else "llm_light"
+        tier = "llm_heavy" if model == "deepseek-v4-pro" else "llm_light"
         gw_result = LLMGateway.instance().call_sync(
             prompt=user_msg,
             system=full_system,
