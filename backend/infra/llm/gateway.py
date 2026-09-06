@@ -24,12 +24,13 @@ import json
 import hashlib
 from datetime import datetime, date
 from pathlib import Path
+from typing import Any, Callable, Iterator, Optional, cast
 from infra.cache import MemoryCache
 
 try:
     from zoneinfo import ZoneInfo
 except Exception:  # pragma: no cover - py<3.9 fallback
-    ZoneInfo = None
+    ZoneInfo = None  # type: ignore[misc, assignment]
 
 # ---- 配置 ----
 LLM_API_KEY = os.environ.get("LLM_API_KEY", "")
@@ -62,7 +63,7 @@ INTERACTIVE_AUTO_MODULES = {
 _alert_hook = None
 
 
-def set_alert_hook(fn) -> None:
+def set_alert_hook(fn: Callable[..., None]) -> None:
     """注入配额告警函数（services.llm_quota_alert.maybe_alert_quota）。
 
     由组合根调用一次，避免 infra/llm/gateway 反向 import services。
@@ -71,7 +72,7 @@ def set_alert_hook(fn) -> None:
     _alert_hook = fn
 
 
-def _maybe_alert(provider, status_code, error_msg):
+def _maybe_alert(provider: str, status_code: int, error_msg: str) -> None:
     """触发配额/余额告警，注入钩子优先，未注入时回退 lazy import。
 
     独立进程（night_worker.py 等 6 个 cron 脚本）不经过 main.py 的启动注入，
@@ -92,7 +93,7 @@ def _maybe_alert(provider, status_code, error_msg):
         pass
 
 
-def _china_now(now=None):
+def _china_now(now: Optional[datetime] = None) -> datetime:
     if now is None:
         if ZoneInfo is not None:
             return datetime.now(ZoneInfo("Asia/Shanghai"))
@@ -111,7 +112,7 @@ def _is_interactive_auto_module(module: str = "") -> bool:
     return module.startswith("chat") or module.startswith("panel_")
 
 
-def _is_deepseek_peak_window(now=None) -> bool:
+def _is_deepseek_peak_window(now: Optional[datetime] = None) -> bool:
     now = _china_now(now)
     if now.weekday() >= 5:   # 周六=5, 周日=6，DeepSeek 周末全天平价
         return False
@@ -170,7 +171,7 @@ def _resolve_provider_config(model: str) -> tuple[str, str, str]:
     )
 
 
-def _preferred_provider_order(module: str = "", now=None) -> list[str]:
+def _preferred_provider_order(module: str = "", now: Optional[datetime] = None) -> list[str]:
     if _is_interactive_auto_module(module) and _is_deepseek_peak_window(now):
         return ["doubao", "deepseek"]
     return ["deepseek", "doubao"]
@@ -186,7 +187,7 @@ def _resolve_provider_model(provider: str, model_tier: str = "llm_light", *, nee
     return MODEL_ROUTING.get(model_tier, "deepseek-v4-flash")
 
 
-def resolve_model_candidates(model_tier: str = "llm_light", module: str = "", explicit_model: str = "", need_tools: bool = False, now=None) -> list[str]:
+def resolve_model_candidates(model_tier: str = "llm_light", module: str = "", explicit_model: str = "", need_tools: bool = False, now: Optional[datetime] = None) -> list[str]:
     preferred = _preferred_provider_order(module, now=now)
     candidates: list[str] = []
     remaining = preferred[:]
@@ -210,7 +211,7 @@ def resolve_model_candidates(model_tier: str = "llm_light", module: str = "", ex
     return deduped
 
 
-def resolve_default_model(model_tier: str = "llm_light", module: str = "", now=None) -> str:
+def resolve_default_model(model_tier: str = "llm_light", module: str = "", now: Optional[datetime] = None) -> str:
     candidates = resolve_model_candidates(model_tier, module=module, now=now)
     for model in candidates:
         if _provider_has_key(_provider_from_model(model)):
@@ -242,17 +243,17 @@ class LLMGateway:
     _instance = None
 
     @classmethod
-    def instance(cls):
+    def instance(cls) -> "LLMGateway":
         if cls._instance is None:
             cls._instance = cls()
         return cls._instance
 
-    def __init__(self):
+    def __init__(self) -> None:
         self._cache = MemoryCache(default_ttl=CACHE_TTL)  # LLM response cache
-        self._usage = {}           # {user_id: {module: {calls, tokens, cost}}}
+        self._usage: dict[str, dict[str, dict[str, Any]]] = {}  # {user_id: {module: {calls, tokens, cost}}}
         self._daily_count = 0
         self._daily_date = date.today()
-        self._burst_window = []    # 时间戳列表
+        self._burst_window: list[float] = []  # 时间戳列表
         self._cache_dirty = 0      # 脏缓存计数，每 5 次写磁盘
         self._load_cache_from_disk()  # 启动时从磁盘恢复缓存
 
@@ -260,7 +261,7 @@ class LLMGateway:
 
     CACHE_FILE = Path(os.environ.get("DATA_DIR", "./data")) / "cache" / "llm_cache.json"
 
-    def _load_cache_from_disk(self):
+    def _load_cache_from_disk(self) -> None:
         """启动时从磁盘恢复 LLM 缓存（忽略已过期的条目）"""
         try:
             if self.CACHE_FILE.exists():
@@ -278,7 +279,7 @@ class LLMGateway:
         except Exception as e:
             print(f"[LLM_GATEWAY] ⚠️ 缓存恢复失败（不影响运行）: {e}")
 
-    def _persist_cache_to_disk(self):
+    def _persist_cache_to_disk(self) -> None:
         """将内存缓存写入磁盘（原子写，复用 infra/store）"""
         try:
             self.CACHE_FILE.parent.mkdir(parents=True, exist_ok=True)
@@ -302,7 +303,7 @@ class LLMGateway:
                   user_id: str = "", module: str = "",
                   max_tokens: int = 800,
                   explicit_model: str = "",
-                  force_no_thinking: bool = False) -> dict:
+                  force_no_thinking: bool = False) -> dict[str, Any]:
         """同步调用 LLM（大多数场景用这个）
 
         force_no_thinking: 显式关闭推理模型 thinking（短输出场景）。
@@ -350,7 +351,7 @@ class LLMGateway:
         messages.append({"role": "user", "content": prompt})
 
         # 6. 调用（峰谷默认与降级顺序共用同一套候选链）
-        def _do_call(use_model: str, use_key: str, use_base: str):
+        def _do_call(use_model: str, use_key: str, use_base: str) -> tuple[int, Any]:
             """实际执行 POST，返回 (status_code, data_or_err_text)"""
             import httpx
             timeout = 60
@@ -480,10 +481,10 @@ class LLMGateway:
                     model_tier: str = "llm_light",
                     user_id: str = "", module: str = "",
                     max_tokens: int = 1200,
-                    history: list | None = None,
+                    history: list[Any] | None = None,
                     explicit_model: str = "",
                     need_tools: bool = False,
-                    force_no_thinking: bool = False):
+                    force_no_thinking: bool = False) -> Iterator[dict[str, Any]]:
         """流式调用 LLM，yield 标准化的 chunk dict。
 
         返回同步 Generator[dict, None, None]。
@@ -536,7 +537,7 @@ class LLMGateway:
         messages.append({"role": "user", "content": prompt})
 
         # 5. 流式调用（主模型失败后按候选链继续降级）
-        def _do_stream(use_model: str, use_key: str, use_base: str):
+        def _do_stream(use_model: str, use_key: str, use_base: str) -> Iterator[dict[str, Any]]:
             """实际执行流式调用，yield chunk"""
             import httpx
             timeout = 60
@@ -601,7 +602,7 @@ class LLMGateway:
             actual_model = model
             last_error = ""
 
-            def _consume(it):
+            def _consume(it: Iterator[dict[str, Any]]) -> Iterator[dict[str, Any]]:
                 """处理流式 chunks 并 yield 外部格式"""
                 nonlocal total_content, total_reasoning, usage
                 for c in it:
@@ -671,9 +672,9 @@ class LLMGateway:
             print(f"[LLM_GATEWAY] stream 调用失败: {e}")
             yield {"delta": "", "done": True, "error": str(e), "fallback": True}
 
-    def call_multimodal(self, messages: list, *, model: str = "",
+    def call_multimodal(self, messages: list[Any], *, model: str = "",
                         user_id: str = "", module: str = "",
-                        max_tokens: int = 800) -> dict:
+                        max_tokens: int = 800) -> dict[str, Any]:
         """多模态调用（视觉/图片识别等），接受预组装的 messages。
 
         与 call_sync 的区别：
@@ -792,10 +793,10 @@ class LLMGateway:
         raw = f"{user_id}:{module}:{model}:{system[:100]}:{prompt[:500]}"
         return hashlib.md5(raw.encode()).hexdigest()
 
-    def _get_cache(self, key: str):
+    def _get_cache(self, key: str) -> Any:
         return self._cache.get(key)
 
-    def _set_cache(self, key: str, result: dict):
+    def _set_cache(self, key: str, result: dict[str, Any]) -> None:
         self._cache.set(key, result)
         # 清理过期缓存（超过 200 条时）
         if self._cache.size() > 200:
@@ -808,7 +809,7 @@ class LLMGateway:
 
     # ---- 熔断 ----
 
-    def _check_daily_reset(self):
+    def _check_daily_reset(self) -> None:
         today = date.today()
         if self._daily_date != today:
             self._daily_count = 0
@@ -840,7 +841,7 @@ class LLMGateway:
 
     # ---- 计费 ----
 
-    def _record_usage(self, user_id: str, module: str, model: str, tokens: int):
+    def _record_usage(self, user_id: str, module: str, model: str, tokens: int) -> None:
         if not user_id:
             user_id = "_anonymous"
         if not module:
@@ -859,7 +860,7 @@ class LLMGateway:
     def _record_token_cost(self, user_id: str, model: str,
                            input_tokens: int, output_tokens: int,
                            cache_hit_tokens: int = 0,
-                           cache_miss_tokens: int = 0):
+                           cache_miss_tokens: int = 0) -> None:
         """记录本次调用的金额成本到磁盘（按天+按用户双维度）
 
         按具体模型选价目：
@@ -934,9 +935,9 @@ class LLMGateway:
             atomic_write_json(user_file, user_daily)
 
             # 预警检查
-            budget = TOKEN_BUDGET.get("daily_budget_rmb", 3.0)
-            alert_pct = TOKEN_BUDGET.get("alert_threshold", 0.7)
-            critical_pct = TOKEN_BUDGET.get("critical_threshold", 0.9)
+            budget = cast(float, TOKEN_BUDGET.get("daily_budget_rmb", 3.0))
+            alert_pct = cast(float, TOKEN_BUDGET.get("alert_threshold", 0.7))
+            critical_pct = cast(float, TOKEN_BUDGET.get("critical_threshold", 0.9))
 
             if daily["cost_rmb"] >= budget * critical_pct:
                 print(f"[LLM_GATEWAY] 🔴 日预算 90%！¥{daily['cost_rmb']:.2f} / ¥{budget}")
@@ -968,13 +969,13 @@ class LLMGateway:
         self._record_token_cost(user_id, model, input_tokens, output_tokens,
                                 cache_hit_tokens, cache_miss_tokens)
 
-    def get_api_config(self, model_tier: str = "llm_light", module: str = "") -> dict:
+    def get_api_config(self, model_tier: str = "llm_light", module: str = "") -> dict[str, Any]:
         """返回当前默认模型对应的 API 配置。"""
         model = resolve_default_model(model_tier, module=module)
         api_key, api_base, _provider = _resolve_provider_config(model)
         return {"api_key": api_key, "api_base": api_base, "model": model}
 
-    def check_budget(self) -> dict:
+    def check_budget(self) -> dict[str, Any]:
         """检查预算状态（供 /api/health 调用）"""
         try:
             from config import TOKEN_BUDGET
@@ -986,12 +987,12 @@ class LLMGateway:
             else:
                 daily = {"cost_rmb": 0.0, "calls": 0}
 
-            budget = TOKEN_BUDGET.get("daily_budget_rmb", 3.0)
+            budget = cast(float, TOKEN_BUDGET.get("daily_budget_rmb", 3.0))
             pct = daily["cost_rmb"] / budget if budget > 0 else 0
 
-            if pct >= TOKEN_BUDGET.get("critical_threshold", 0.9):
+            if pct >= cast(float, TOKEN_BUDGET.get("critical_threshold", 0.9)):
                 status = "critical"
-            elif pct >= TOKEN_BUDGET.get("alert_threshold", 0.7):
+            elif pct >= cast(float, TOKEN_BUDGET.get("alert_threshold", 0.7)):
                 status = "warning"
             else:
                 status = "ok"
@@ -1006,7 +1007,7 @@ class LLMGateway:
         except Exception:
             return {"status": "unknown"}
 
-    def get_usage(self, user_id: str = "") -> dict:
+    def get_usage(self, user_id: str = "") -> dict[str, Any]:
         """获取用量统计"""
         if user_id:
             return {
@@ -1028,7 +1029,7 @@ class LLMGateway:
         self._check_daily_reset()
         return max(0, DAILY_LIMIT - self._daily_count)
 
-    def get_cache_stats(self, days: int = 7) -> dict:
+    def get_cache_stats(self, days: int = 7) -> dict[str, Any]:
         """获取近 N 天的 DeepSeek 官方缓存命中率统计（V7.6）"""
         from datetime import timedelta
         usage_dir = Path(os.environ.get("DATA_DIR", "./data")) / "llm_usage"
@@ -1093,12 +1094,12 @@ class LLMGateway:
 
 # ---- 全局便捷函数 ----
 
-def llm_call(prompt: str, **kwargs) -> dict:
+def llm_call(prompt: str, **kwargs: Any) -> dict[str, Any]:
     """全局便捷调用（给 ds_enhance 等迁移用）"""
     return LLMGateway.instance().call_sync(prompt, **kwargs)
 
 
-def llm_usage(user_id: str = "") -> dict:
+def llm_usage(user_id: str = "") -> dict[str, Any]:
     """获取用量"""
     return LLMGateway.instance().get_usage(user_id)
 
@@ -1112,30 +1113,30 @@ class LLMClient:
     保留此类以兼容 infra.llm.LLMClient 的既有导出契约。
     """
 
-    def call(self, prompt, *, system="", model_tier="llm_light",
-             user_id="", module="", max_tokens=800):
+    def call(self, prompt: str, *, system: str = "", model_tier: str = "llm_light",
+             user_id: str = "", module: str = "", max_tokens: int = 800) -> dict[str, Any]:
         raw = LLMGateway.instance().call_sync(
             prompt, system=system, model_tier=model_tier,
             user_id=user_id, module=module, max_tokens=max_tokens,
         )
         return raw
 
-    def stream(self, prompt, *, system="", model_tier="llm_light",
-               user_id="", module="", max_tokens=1200):
+    def stream(self, prompt: str, *, system: str = "", model_tier: str = "llm_light",
+               user_id: str = "", module: str = "", max_tokens: int = 1200) -> Iterator[dict[str, Any]]:
         yield from LLMGateway.instance().stream_sync(
             prompt, system=system, model_tier=model_tier,
             user_id=user_id, module=module, max_tokens=max_tokens,
         )
 
-    def call_multimodal(self, messages, *, model="", user_id="",
-                        module="", max_tokens=800):
+    def call_multimodal(self, messages: list[Any], *, model: str = "", user_id: str = "",
+                        module: str = "", max_tokens: int = 800) -> dict[str, Any]:
         return LLMGateway.instance().call_multimodal(
             messages, model=model, user_id=user_id,
             module=module, max_tokens=max_tokens,
         )
 
-    def get_usage(self, user_id=""):
+    def get_usage(self, user_id: str = "") -> dict[str, Any]:
         return LLMGateway.instance().get_usage(user_id)
 
-    def get_daily_remaining(self):
+    def get_daily_remaining(self) -> int:
         return LLMGateway.instance().get_daily_remaining()

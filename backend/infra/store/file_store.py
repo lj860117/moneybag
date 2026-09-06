@@ -22,7 +22,7 @@ import os
 import shutil
 import tempfile
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Optional
 
 _JsonDict = Dict[str, object]
 
@@ -152,7 +152,7 @@ class FileStore:
             raise
 
 
-def atomic_write_json(filepath: Path, data: dict) -> None:
+def atomic_write_json(filepath: Path, data: dict[str, Any]) -> None:
     """Module-level atomic JSON write helper (function-style API).
 
     Convenience wrapper for callers that hold an explicit ``(filepath, dict)``
