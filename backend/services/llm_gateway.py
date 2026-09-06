@@ -89,6 +89,27 @@ def _provider_from_model(model: str) -> str:
     return "deepseek"
 
 
+def _pricing_key_from_model(model: str) -> str:
+    """按具体模型名返回定价档位 key（区分 deepseek flash / pro 两档价表）。
+
+    返回 "deepseek-flash" / "deepseek-pro" / "doubao" / "qwen"。
+    deepseek 档位判定：
+      - 含 "flash" 或 "reasoner" → flash 价表（reasoner 是 flash 的思考模式）
+      - 含 "pro" → pro 价表
+      - 无法识别 → 保守按 pro 价表记账
+    """
+    lowered = (model or "").lower()
+    if lowered.startswith("qwen"):
+        return "qwen"
+    if lowered.startswith("doubao") or lowered.startswith("ep-"):
+        return "doubao"
+    if "flash" in lowered or "reasoner" in lowered:
+        return "deepseek-flash"
+    if "pro" in lowered:
+        return "deepseek-pro"
+    return "deepseek-pro"
+
+
 def _provider_has_key(provider: str) -> bool:
     if provider == "qwen":
         return bool(os.environ.get("DASHSCOPE_API_KEY", ""))
@@ -804,33 +825,36 @@ class LLMGateway:
                            cache_miss_tokens: int = 0):
         """记录本次调用的金额成本到磁盘（按天+按用户双维度）
 
-        按 provider 选价目：
-        - deepseek：cache_hit/miss + 输出价（峰值/谷值按 _is_deepseek_peak_window 选）
+        按具体模型选价目：
+        - deepseek：分 flash/pro 两档，cache_hit/miss 与输出价都按峰谷窗口选值
         - doubao/qwen：价目未知（PROVIDER_PRICING=None），只记用量不计费
         """
         try:
             from config import TOKEN_BUDGET, PROVIDER_PRICING
 
-            provider = _provider_from_model(model)
-            pricing = PROVIDER_PRICING.get(provider)
+            pricing_key = _pricing_key_from_model(model)
+            pricing = PROVIDER_PRICING.get(pricing_key)
             if not pricing:
                 # 价目未知（doubao/qwen），跳过金额记账
                 return
 
-            # deepseek 输出价按峰谷窗口选择
-            output_rate = pricing["output_peak"] if _is_deepseek_peak_window() else pricing["output_valley"]
+            # deepseek 输出价 + 输入缓存命中/未命中价都按峰谷窗口选择
+            is_peak = _is_deepseek_peak_window()
+            output_rate = pricing["output_peak"] if is_peak else pricing["output_valley"]
+            hit_rate = pricing["input_cache_hit_peak"] if is_peak else pricing["input_cache_hit_valley"]
+            miss_rate = pricing["input_cache_miss_peak"] if is_peak else pricing["input_cache_miss_valley"]
 
             # 用真实命中/未命中 token 算真实成本
             # 若没返回这俩字段（老 API），回退到 hit/miss 平均估算
             if cache_hit_tokens + cache_miss_tokens > 0:
                 cost = (
-                    cache_hit_tokens * pricing["input_cache_hit"]
-                    + cache_miss_tokens * pricing["input_cache_miss"]
+                    cache_hit_tokens * hit_rate
+                    + cache_miss_tokens * miss_rate
                     + output_tokens * output_rate
                 ) / 1_000_000
                 cache_ratio = cache_hit_tokens / (cache_hit_tokens + cache_miss_tokens)
             else:
-                input_rate = (pricing["input_cache_hit"] + pricing["input_cache_miss"]) / 2
+                input_rate = (hit_rate + miss_rate) / 2
                 cost = (input_tokens * input_rate + output_tokens * output_rate) / 1_000_000
                 cache_ratio = None
 
@@ -1009,10 +1033,11 @@ class LLMGateway:
         avg_ratio = (total_hit / total_in) if total_in > 0 else None
 
         # 估算"满命中"能省多少钱（假设全部 miss 变 hit）
+        # 日用量文件未按模型/峰谷拆分，这里用 pro 档谷值(平价)做保守估算
         try:
             from config import DEEPSEEK_PRICING
             potential_save = total_miss * (
-                DEEPSEEK_PRICING["input_cache_miss"] - DEEPSEEK_PRICING["input_cache_hit"]
+                DEEPSEEK_PRICING["input_cache_miss_valley"] - DEEPSEEK_PRICING["input_cache_hit_valley"]
             ) / 1_000_000
         except Exception:
             potential_save = None
