@@ -32,7 +32,7 @@ import json
 import traceback
 import numpy as np
 import re
-from config import LLM_API_URL, LLM_API_KEY, LLM_MODEL
+from config import LLM_API_KEY
 from infra.cache import MemoryCache
 
 _llm_factor_cache = MemoryCache(default_ttl=3600)

@@ -56,7 +56,7 @@ def _get_dynamic_weights() -> dict:
         return cached
 
     try:
-        from config import LLM_API_URL, LLM_API_KEY, LLM_MODEL
+        from config import LLM_API_KEY
         if not LLM_API_KEY:
             return DEFAULT_DIM_WEIGHTS
 
