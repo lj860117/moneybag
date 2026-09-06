@@ -391,6 +391,10 @@ def test_deliver_blocks_unrelated_unlock_end_to_end(ss, monkeypatch):
         _unlock_signal("301563", "云汉芯城", 181.77),
         _unlock_signal("920222", "某公司", 7.4623),
     ])
+    # 纯基金账户的 match() 走 build_signal_pool() → _collect_public()，
+    # 不调 collect()，而是真实拉取新闻/技术面；必须离线打桩（见文件头承诺）。
+    monkeypatch.setattr(ss, "_collect_news_signals", lambda: [])
+    monkeypatch.setattr(ss, "_collect_technical_signals", lambda: [])
 
     result = ss.deliver("u_noholding")
 
@@ -424,6 +428,10 @@ def test_fund_only_holding_does_not_match_stock_unlock(ss, monkeypatch):
     """002163 只持基金 → 股票解禁不得命中，不得推送。"""
     _set_holdings(monkeypatch, stocks=[], funds=[("002163", "东方惠新灵活配置混合C")])
     monkeypatch.setattr(ss, "collect", lambda: [_unlock_signal("002163", "海南发展", 20.0)])
+    # 纯基金账户的 match() 走 build_signal_pool() → _collect_public()，
+    # 不调 collect()，而是真实拉取新闻/技术面；必须离线打桩（见文件头承诺）。
+    monkeypatch.setattr(ss, "_collect_news_signals", lambda: [])
+    monkeypatch.setattr(ss, "_collect_technical_signals", lambda: [])
 
     matched = ss.match("u_fund_only")
     result = ss.deliver("u_fund_only", matched)
@@ -618,6 +626,10 @@ def test_fund_flow_stock_code_must_not_match_fund_holding(ss, monkeypatch):
     """BUG-01 反例：北向活跃个股 002163（股票）不得命中基金 002163 持仓。"""
     _set_holdings(monkeypatch, stocks=[], funds=[("002163", "东方惠新灵活配置混合C")])
     monkeypatch.setattr(ss, "collect", lambda: [_fund_flow_signal()])
+    # 纯基金账户的 match() 走 build_signal_pool() → _collect_public()，
+    # 不调 collect()，而是真实拉取新闻/技术面；必须离线打桩（见文件头承诺）。
+    monkeypatch.setattr(ss, "_collect_news_signals", lambda: [])
+    monkeypatch.setattr(ss, "_collect_technical_signals", lambda: [])
 
     matched = ss.match("u_fund_only")
     result = ss.deliver("u_fund_only", matched)
