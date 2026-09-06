@@ -1021,6 +1021,9 @@ function _buildFundTagPool(f){
   if(r3y!=null && r3y > 50){
     tags.push({kind:'style', label:'⭐ 长跑优秀', color:'#FBBF24', bg:'rgba(245,158,11,.15)', title:`近3年涨${r3y.toFixed(0)}%`});
   }
+  // 注：性价比（风险调整收益）5 指标在详情弹窗（_components.js）展示；
+  // /api/fund-screen 及 enrichment 管线不返回 sharpe_ratio，故此处不再以
+  // sharpe_ratio 驱动「高性价比」标签（原为死代码，已移除）。
   // v9.5.89: 规模警戒线 — 过大/过小都标注
   if(f.scale_billion != null){
     if(f.scale_billion < 2){

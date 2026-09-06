@@ -85,6 +85,16 @@ RISK_TAKE_PROFIT = 0.40          # 止盈阈值 → 收益≥40%减半
 RISK_MAX_DRAWDOWN_LIMIT = -0.20  # 最大允许回撤 -20%（绝不突破）
 RISK_REBALANCE_THRESHOLD = 0.08  # 再平衡触发偏离度 ±8%
 
+# ---- 基金性价比（风险调整收益）指标 ----
+# v9.9.x: 5 项风险调整收益指标（Sharpe/Sortino/Calmar/IR/Treynor）统一口径：
+#   近 3 年窗口、日频、年化因子 252、无风险利率 2%（可配置）
+RISK_FREE_RATE_ANNUAL = 0.02          # 年化无风险利率（近 3 年性价比口径）
+RISK_ADJUSTED_WINDOW_DAYS = 1095      # 近 3 年窗口（自然日，约 3 年交易日）
+ANNUALIZATION_FACTOR = 252            # 日频年化因子（一年交易日数）
+RISK_ADJUSTED_BENCHMARK = "000300.SH"  # 股票/混合型基准：沪深300
+RISK_ADJUSTED_MAR_ANNUAL = 0.0        # Sortino 最低可接受收益 MAR（年化）。默认 0；
+                                      # 如需用 Rf 作为 MAR，可改为 RISK_FREE_RATE_ANNUAL。
+
 # ---- 股票持仓纪律阈值 ----
 STOCK_SINGLE_MAX = 0.20          # 单只股票最大仓位占比 20%
 STOCK_MIN_COUNT = 5              # 最低持仓只数（低于此数警告分散不足）
@@ -120,7 +130,7 @@ LLM_MODEL = os.environ.get("LLM_MODEL", "deepseek-v4-flash")
 TUSHARE_TOKEN = os.environ.get("TUSHARE_TOKEN", "")
 
 # ---- 版本号（Phase 1 更新）----
-APP_VERSION = "9.9.12"
+APP_VERSION = "9.9.13"
 
 # ---- v9.5.123: API 鉴权 ----
 # 每个用户一个token，格式: userId:token（环境变量或data/auth_tokens.json）

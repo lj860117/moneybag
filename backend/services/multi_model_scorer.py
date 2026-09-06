@@ -72,6 +72,11 @@ def _build_prompt(fund_info: dict) -> str:
     fee = fund_info.get("fee", "")
     max_dd = fund_info.get("max_drawdown")
     sharpe = fund_info.get("sharpe_ratio")
+    sortino = fund_info.get("sortino_ratio")
+    calmar = fund_info.get("calmar_ratio")
+    ir = fund_info.get("information_ratio")
+    treynor = fund_info.get("treynor_ratio")
+    beta = fund_info.get("beta")
     scale = fund_info.get("scale_billion")
     nav_pct = fund_info.get("nav_percentile")
     trend = fund_info.get("trend_label", "")
@@ -86,7 +91,12 @@ def _build_prompt(fund_info: dict) -> str:
         f"费率: {fee}" if fee else "",
         f"规模: {scale}亿" if scale else "",
         f"最大回撤: {max_dd}%" if max_dd else "",
-        f"夏普比率: {sharpe}" if sharpe else "",
+        f"夏普比率: {sharpe}" if sharpe is not None else "",
+        f"索提诺比率: {sortino}" if sortino is not None else "",
+        f"卡玛比率: {calmar}" if calmar is not None else "",
+        f"信息比率: {ir}" if ir is not None else "",
+        f"特雷诺比率: {treynor}" if treynor is not None else "",
+        f"Beta: {beta}" if beta is not None else "",
         f"净值百分位: {nav_pct}%" if nav_pct is not None else "",
         f"走势预估: {trend} ({trend_score}分)" if trend else "",
     ]

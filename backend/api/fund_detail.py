@@ -549,13 +549,18 @@ def fund_detail(code: str, userId: str = ""):
     # v9.5.39 P6: 分红/拆分检测（1 年内）
     dividend_info = _get_fund_dividend_recent(code)
 
-    # v9.5.123: 最大回撤 + 同类排名 + 成立以来年化 + 夏普/Sortino/Alpha
+    # v9.9.x: 最大回撤(近1年，展示字段) + 5项风险调整收益指标(近3年/Rf=2%)
     max_drawdown = None
     category_rank = None
     annual_since = None
     sharpe = None
     sortino = None
-    alpha_annualized = None
+    calmar = None
+    information_ratio = None
+    treynor = None
+    beta = None
+    sortino_reason = None
+    risk_adjusted = None
     try:
         # 最大回撤: 从净值历史计算(近1年)
         # 优先Tushare, fallback天天基金API
@@ -568,13 +573,13 @@ def fund_detail(code: str, userId: str = ""):
                     navs_for_dd = [float(n.get("unit_nav", 0)) for n in nav_data["navs"] if n.get("unit_nav")]
         except Exception:
             pass
-        
-        # Tushare数据不足60条时用天天基金补充(60条以上才能算夏普/Sortino)
+
+        # Tushare数据不足时用天天基金补充
         if len(navs_for_dd) < 60:
             cached_navs = _get_nav_history_cached(code)
             if len(cached_navs) > len(navs_for_dd):
                 navs_for_dd = cached_navs
-        
+
         if len(navs_for_dd) > 20:
             peak = navs_for_dd[0]
             max_dd = 0
@@ -585,57 +590,24 @@ def fund_detail(code: str, userId: str = ""):
                 if dd > max_dd:
                     max_dd = dd
             max_drawdown = round(max_dd, 1)
-            
-            # v9.5.123 P3-4: 夏普+Sortino+Alpha(用同一份净值数据)
-            if len(navs_for_dd) >= 60:
-                import math
-                rf = 0.015  # 无风险利率1.5%(货币基金水平)
-                rf_daily = rf / 252
-                
-                # 日收益率序列
-                daily_returns = [(navs_for_dd[i] - navs_for_dd[i-1]) / navs_for_dd[i-1] 
-                                for i in range(1, len(navs_for_dd)) if navs_for_dd[i-1] > 0]
-                if daily_returns:
-                    avg_daily = sum(daily_returns) / len(daily_returns)
-                    std_daily = math.sqrt(sum((r - avg_daily)**2 for r in daily_returns) / len(daily_returns))
-                    
-                    # 夏普比率
-                    if std_daily > 0:
-                        ann_return = avg_daily * 252
-                        ann_vol = std_daily * math.sqrt(252)
-                        sharpe = round((ann_return - rf) / ann_vol, 2)
-                    
-                    # Sortino比率(只用下行波动率)
-                    downside_returns = [r for r in daily_returns if r < rf_daily]
-                    if len(downside_returns) > 10:
-                        downside_dev = math.sqrt(sum((r - rf_daily)**2 for r in downside_returns) / len(downside_returns))
-                        if downside_dev > 0:
-                            ann_downside = downside_dev * math.sqrt(252)
-                            sortino = round((ann_return - rf) / ann_downside, 2)
-                    
-                    # 阿尔法系数(vs沪深300基准)
-                    try:
-                        # 拉沪深300同期净值做基准
-                        bench_navs = _get_nav_history_cached("110020")  # 沪深300ETF联接
-                        if len(bench_navs) >= len(navs_for_dd) * 0.8:
-                            # 截取同等长度
-                            bn = bench_navs[-len(daily_returns)-1:]
-                            bench_returns = [(bn[i] - bn[i-1]) / bn[i-1] 
-                                           for i in range(1, min(len(bn), len(daily_returns)+1)) if bn[i-1] > 0]
-                            if len(bench_returns) >= 30:
-                                # Alpha = 基金年化收益 - Beta × 基准年化收益
-                                avg_bench = sum(bench_returns[:len(daily_returns)]) / len(bench_returns[:len(daily_returns)])
-                                ann_bench = avg_bench * 252
-                                # Beta = Cov(fund, bench) / Var(bench)
-                                n = min(len(daily_returns), len(bench_returns))
-                                cov_sum = sum((daily_returns[i] - avg_daily) * (bench_returns[i] - avg_bench) for i in range(n))
-                                var_bench = sum((bench_returns[i] - avg_bench)**2 for i in range(n))
-                                if var_bench > 0:
-                                    beta = cov_sum / var_bench
-                                    alpha = round((ann_return - rf) - beta * (ann_bench - rf), 4)
-                                    alpha_annualized = round(alpha * 100, 2)  # 转为百分比
-                    except Exception:
-                        pass
+    except Exception:
+        pass
+
+    # v9.9.x: 5项风险调整收益指标（Sharpe/Sortino/Calmar/IR/Treynor + β），
+    # 统一近3年/Rf=2%口径，替换旧的 1年/Rf=1.5% 内联 Sharpe/Sortino/Alpha。
+    # 仅股票型/混合型基金可计算，其余类型返回 available=False（fail-open，不抛异常）。
+    try:
+        from services.fund_risk_adjusted import compute_risk_adjusted_metrics
+        _ft = ak_extra.get("基金类型", "") or info.get("fund_type", "")
+        risk_adjusted = compute_risk_adjusted_metrics(code, name=info.get("name", ""), fund_type=_ft)
+        if risk_adjusted:
+            sharpe = risk_adjusted.get("sharpe_ratio")
+            sortino = risk_adjusted.get("sortino_ratio")
+            calmar = risk_adjusted.get("calmar_ratio")
+            information_ratio = risk_adjusted.get("information_ratio")
+            treynor = risk_adjusted.get("treynor_ratio")
+            beta = risk_adjusted.get("beta")
+            sortino_reason = risk_adjusted.get("sortino_reason")
     except Exception:
         pass
     
@@ -736,12 +708,17 @@ def fund_detail(code: str, userId: str = ""):
         "founded": ak_extra.get("成立时间", ""),
         "company": ak_extra.get("基金公司", ""),
         "returns": info.get("returns", {}),
-        "max_drawdown": max_drawdown,         # v9.5.123: 近1年最大回撤%
+        "max_drawdown": max_drawdown,         # v9.9.x: 近1年最大回撤%（展示字段）
         "category_rank": category_rank,       # v9.5.123: 同类排名百分位
         "annual_since_inception": annual_since,  # v9.5.123: 成立以来年化%
-        "sharpe_ratio": sharpe,                   # v9.5.123 P3-4: 夏普比率
-        "sortino_ratio": sortino,                 # v9.5.123: Sortino(只算下行风险)
-        "alpha_pct": alpha_annualized,            # v9.5.123: 年化Alpha%(vs沪深300)
+        "sharpe_ratio": sharpe,                   # v9.9.x: 近3年/Rf=2% 夏普比率
+        "sortino_ratio": sortino,                 # v9.9.x: 近3年 Sortino(只算下行风险，MAR=0)
+        "calmar_ratio": calmar,                   # v9.9.x: 近3年 Calmar(卡玛比率)
+        "information_ratio": information_ratio,   # v9.9.x: 近3年 信息比率
+        "treynor_ratio": treynor,                 # v9.9.x: 近3年 Treynor(特雷诺比率)
+        "beta": beta,                             # v9.9.x: 近3年 β(vs沪深300)
+        "sortino_reason": sortino_reason,         # v9.9.x: Sortino 缺失原因(no_downside/insufficient/None)
+        "risk_adjusted": risk_adjusted,           # v9.9.x: 完整性价比契约(available/degraded/data_quality等)
         "manager": manager,
         "purchase": purchase_info,
         "dividend": dividend_info,  # v9.5.39
@@ -863,6 +840,23 @@ def fund_ai_score(code: str):
         fund_info = get_fund_dynamic_info(code)
         if not fund_info:
             return {"error": "基金数据不可用", "code": code}
+
+    # v9.9.x: 注入5项风险调整收益指标（详情缓存可能为旧版/缺失，实时补算兜底）
+    _ra_keys = ("sharpe_ratio", "sortino_ratio", "calmar_ratio",
+                "information_ratio", "treynor_ratio", "beta")
+    if not all(fund_info.get(k) is not None for k in _ra_keys):
+        try:
+            from services.fund_risk_adjusted import compute_risk_adjusted_metrics
+            _ra = compute_risk_adjusted_metrics(
+                code,
+                name=fund_info.get("name", ""),
+                fund_type=fund_info.get("fund_type", ""),
+            )
+            for _k in _ra_keys:
+                if fund_info.get(_k) is None:
+                    fund_info[_k] = _ra.get(_k)
+        except Exception:
+            pass
 
     try:
         from services.multi_model_scorer import score_fund_multi_model

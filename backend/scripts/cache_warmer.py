@@ -805,7 +805,10 @@ def warm_morning():
     except Exception as e:
         print(f"  ❌ 选基预热失败: {e}")
 
-    # 8. v9.5.123: TOP基金详情预热(夏普/Sortino/Alpha首次计算慢)
+    # 8. v9.5.123/v9.9.x: TOP基金详情预热
+    # v9.9.x: 5项风险调整收益指标（Sharpe/Sortino/Calmar/IR/Treynor）已在
+    # /api/fund/detail 内部实时计算（见 services.fund_risk_adjusted），随详情
+    # 一并写入缓存，故此处无需单独预热性价比指标——预热详情即覆盖。
     # 预热选基TOP10的详情,用户点进去秒开
     print("  📊 基金详情预热(TOP10)...")
     try:

@@ -559,19 +559,33 @@ window.showFundDetailModal = async function(code, name) {
       <div class="mb-card--ghost" style="padding:10px;text-align:center" onclick="alert('${d.sharpe_ratio!=null?"夏普比率(Sharpe)\\n\\n每承受1份风险能赚多少钱。\\n\\n通俗说：性价比。同样冒险,谁赚得更多。\\n\\n怎么看：\\n• >1.5 = 优秀(高性价比)\\n• 1.0~1.5 = 良好\\n• 0.5~1.0 = 一般\\n• <0.5 = 不值得冒这个险":"成立以来年化\\n\\n基金从成立到现在,平均每年赚多少。\\n\\n怎么看：\\n• >15% = 很厉害\\n• 8%-15% = 不错\\n• <5% = 还不如买货币基金"}')"><div style="font-size:10px;color:var(--text-tertiary)">${d.sharpe_ratio!=null?'夏普比率':'成立年化'}</div><div style="font-size:16px;font-weight:700;color:${d.sharpe_ratio!=null?(d.sharpe_ratio>=1.5?'#86EFAC':d.sharpe_ratio>=0.8?'#00E5A0':'#F59E0B'):((_annual||0)>=0?'#00E5A0':'#FF6B6B')}">${d.sharpe_ratio!=null?d.sharpe_ratio:(_annual!=null?(_annual>0?'+':'')+_annual+'%':'—')}</div></div>
     </div>`;
 
-    // v9.5.123: Sortino + Alpha 风险指标行(带点击说明)
-    if(d.sortino_ratio!=null || d.alpha_pct!=null){
+    // v9.9.x: 5项风险调整收益指标行(近3年/Rf=2%：Sharpe/Sortino/Calmar/IR/Treynor + Beta)
+    if(d.sharpe_ratio!=null || d.sortino_ratio!=null || d.calmar_ratio!=null || d.information_ratio!=null || d.treynor_ratio!=null || d.beta!=null){
       let _riskHtml='<div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:10px;font-size:11px">';
+      if(d.sharpe_ratio!=null){
+        _riskHtml+=`<span style="padding:3px 8px;border-radius:6px;background:rgba(148,163,184,.05);cursor:pointer" onclick="alert('夏普比率(Sharpe)\\n\\n每承受1份风险能赚多少钱。\\n\\n通俗说：你冒了这么大风险(波动),值不值?夏普越高说明同样冒险赚得越多。\\n\\n口径：近3年、无风险利率2%。\\n\\n怎么看：\\n• >1.5 = 优秀\\n• 1.0~1.5 = 良好\\n• 0.5~1.0 = 一般\\n• <0.5 = 性价比差')">Sharpe <b style="color:${d.sharpe_ratio>=1.5?'#86EFAC':d.sharpe_ratio>=0.8?'#00E5A0':'#F59E0B'}">${d.sharpe_ratio}</b></span>`;
+      }
       if(d.sortino_ratio!=null){
         const stColor=d.sortino_ratio>=2?'#86EFAC':d.sortino_ratio>=1?'#00E5A0':'#F59E0B';
-        _riskHtml+=`<span style="padding:3px 8px;border-radius:6px;background:rgba(148,163,184,.05);cursor:pointer" onclick="alert('Sortino比率(索提诺)\\n\\n和夏普类似,但更聪明——只看亏钱的波动,不管赚钱的波动。\\n\\n怎么看:\\n• >2.0 = 非常优秀\\n• 1.0~2.0 = 良好\\n• <1.0 = 下行风险偏大\\n\\n对比夏普：Sortino只算亏损的风险,更适合评估基金。')">Sortino <b style="color:${stColor}">${d.sortino_ratio}</b></span>`;
+        _riskHtml+=`<span style="padding:3px 8px;border-radius:6px;background:rgba(148,163,184,.05);cursor:pointer" onclick="alert('Sortino比率(索提诺)\\n\\n和夏普类似,但更聪明——只看亏钱的波动,不管赚钱的波动。\\n\\n口径：近3年、MAR=0（只统计低于0%的日收益波动）。\\n\\n怎么看:\\n• >2.0 = 非常优秀\\n• 1.0~2.0 = 良好\\n• <1.0 = 下行风险偏大\\n\\n对比夏普：Sortino只算亏损的风险,更适合评估基金。')">Sortino <b style="color:${stColor}">${d.sortino_ratio}</b></span>`;
+      } else if(d.sortino_reason==='no_downside'){
+        _riskHtml+=`<span style="padding:3px 8px;border-radius:6px;background:rgba(148,163,184,.05);cursor:pointer" onclick="alert('Sortino比率(索提诺)\\n\\n近3年无下行波动（无单日负收益），Sortino 无定义，暂无数据。\\n\\n口径：MAR=0，只统计低于0%的日收益波动。')">Sortino <b style="color:#9CA3AF">暂无数据</b></span>`;
       }
-      if(d.alpha_pct!=null){
-        const alColor=d.alpha_pct>0?'#86EFAC':'#FCA5A5';
-        _riskHtml+=`<span style="padding:3px 8px;border-radius:6px;background:rgba(148,163,184,.05);cursor:pointer" onclick="alert('Alpha(阿尔法/超额收益)\\n\\n基金经理到底有没有真本事?Alpha就是答案。\\n\\n通俗说：大盘涨了30%,你的基金涨了40%,多出来的10%就是Alpha。说明经理确实有两把刷子,不是靠运气。\\n\\n怎么看：\\n• >10% = 经理很厉害(选股能力强)\\n• 0~10% = 有点本事\\n• <0% = 不如直接买指数基金(经理拖后腿了)\\n\\n注意：Alpha用的基准是沪深300,不同类型基金的Alpha不能直接对比。')">Alpha <b style="color:${alColor}">${d.alpha_pct>0?'+':''}${d.alpha_pct}%</b></span>`;
+      if(d.calmar_ratio!=null){
+        const caColor=d.calmar_ratio>=1.5?'#86EFAC':d.calmar_ratio>=0.5?'#00E5A0':'#F59E0B';
+        _riskHtml+=`<span style="padding:3px 8px;border-radius:6px;background:rgba(148,163,184,.05);cursor:pointer" onclick="alert('卡玛比率(Calmar)\\n\\n年化收益 ÷ 最大回撤。\\n\\n通俗说：每承担1%的最大回撤，能换来多少年化收益。\\n\\n怎么看：\\n• >1.5 = 抗跌又能赚\\n• 0.5~1.5 = 一般\\n• <0.5 = 回撤太狠、收益不够补')">Calmar <b style="color:${caColor}">${d.calmar_ratio}</b></span>`;
       }
-      if(d.sharpe_ratio!=null){
-        _riskHtml+=`<span style="padding:3px 8px;border-radius:6px;background:rgba(148,163,184,.05);cursor:pointer" onclick="alert('夏普比率(Sharpe)\\n\\n每承受1份风险能赚多少钱。\\n\\n通俗说：你冒了这么大风险(波动),值不值?夏普越高说明同样冒险赚得越多。\\n\\n怎么看：\\n• >1.5 = 优秀\\n• 1.0~1.5 = 良好\\n• 0.5~1.0 = 一般\\n• <0.5 = 性价比差')">Sharpe <b>${d.sharpe_ratio}</b></span>`;
+      if(d.information_ratio!=null){
+        const irColor=d.information_ratio>=0.5?'#86EFAC':d.information_ratio>=0.25?'#00E5A0':'#F59E0B';
+        _riskHtml+=`<span style="padding:3px 8px;border-radius:6px;background:rgba(148,163,184,.05);cursor:pointer" onclick="alert('信息比率(IR)\\n\\n跑赢基准的稳定性。\\n\\n通俗说：不止要跑赢沪深300，还要稳定地跑赢(超额收益波动越小越好)。\\n\\n怎么看：\\n• >0.5 = 稳定跑赢\\n• 0.25~0.5 = 一般\\n• <0.25 = 跑赢靠运气')">IR <b style="color:${irColor}">${d.information_ratio}</b></span>`;
+      }
+      if(d.treynor_ratio!=null){
+        const trColor=d.treynor_ratio>=1.5?'#86EFAC':d.treynor_ratio>=0.8?'#00E5A0':'#F59E0B';
+        _riskHtml+=`<span style="padding:3px 8px;border-radius:6px;background:rgba(148,163,184,.05);cursor:pointer" onclick="alert('特雷诺比率(Treynor)\\n\\n每承担1单位系统性风险(β)能赚多少。\\n\\n通俗说：这只基金跟着大盘波动(β)，每份「跟大盘」的风险换来的超额收益。\\n\\n怎么看：\\n• >1.5 = 优秀\\n• 0.8~1.5 = 良好\\n• <0.8 = 一般')">Treynor <b style="color:${trColor}">${d.treynor_ratio}</b></span>`;
+      }
+      if(d.beta!=null){
+        const btColor=d.beta>=0.9&&d.beta<=1.1?'#86EFAC':'#F59E0B';
+        _riskHtml+=`<span style="padding:3px 8px;border-radius:6px;background:rgba(148,163,184,.05);cursor:pointer" onclick="alert('贝塔(β)\\n\\n基金对沪深300的敏感度。\\n\\n怎么看：\\n• β=1 = 跟大盘同步\\n• β>1 = 比大盘更波动(涨跌都放大)\\n• β<1 = 比大盘更稳健')">β <b style="color:${btColor}">${d.beta}</b></span>`;
       }
       _riskHtml+='</div>';
       html+=_riskHtml;
