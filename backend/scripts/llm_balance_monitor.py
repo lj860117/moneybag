@@ -74,8 +74,8 @@ DOUBAO_API_BASE = os.environ.get(
     "DOUBAO_API_BASE", os.environ.get("ARK_API_BASE", "https://ark.cn-beijing.volces.com/api/v3")
 )
 DOUBAO_API_KEY = os.environ.get("DOUBAO_API_KEY", "") or os.environ.get("ARK_API_KEY", "")
-# 探测用模型：复用 gateway 的 llm_light 档位（最便宜），可用 env 覆盖
-DOUBAO_PROBE_MODEL = os.environ.get("DOUBAO_PROBE_MODEL", "doubao-seed-2-0-lite-260215")
+# 探测用模型：复用 gateway 的 llm_light 档位（turbo），可用 env 覆盖
+DOUBAO_PROBE_MODEL = os.environ.get("DOUBAO_PROBE_MODEL", "doubao-seed-2-1-turbo-260628")
 
 _HTTP_TIMEOUT = float(os.environ.get("LLM_BALANCE_HTTP_TIMEOUT", "20.0"))
 

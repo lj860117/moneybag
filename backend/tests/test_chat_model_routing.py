@@ -25,7 +25,7 @@ def test_resolve_default_model_peak_prefers_doubao_for_interactive(monkeypatch):
         now=datetime(2026, 7, 6, 9, 30),
     )
 
-    assert model == "doubao-seed-2-0-lite-260215"
+    assert model == "doubao-seed-2-1-turbo-260628"
 
 
 def test_resolve_default_model_peak_falls_back_to_deepseek_when_doubao_missing(monkeypatch):
@@ -95,12 +95,12 @@ def test_resolve_model_candidates_switches_fallback_order_by_peak_window(monkeyp
     )
 
     assert peak_candidates == [
-        "doubao-seed-2-0-lite-260215",
+        "doubao-seed-2-1-turbo-260628",
         "deepseek-v4-flash",
     ]
     assert offpeak_candidates == [
         "deepseek-v4-flash",
-        "doubao-seed-2-0-mini-260215",
+        "doubao-seed-2-1-turbo-260628",
     ]
 
 
@@ -127,7 +127,7 @@ def test_llm_cache_key_includes_model_to_avoid_cross_model_reuse(tmp_path, monke
     gateway = gw_mod.LLMGateway()
 
     deepseek_key = gateway._cache_key("LeiJiang", "chat", "现在市场怎么样", "sys", "deepseek-v4-flash")
-    doubao_key = gateway._cache_key("LeiJiang", "chat", "现在市场怎么样", "sys", "doubao-seed-2-0-lite-260215")
+    doubao_key = gateway._cache_key("LeiJiang", "chat", "现在市场怎么样", "sys", "doubao-seed-2-1-turbo-260628")
 
     assert deepseek_key != doubao_key
 
@@ -164,7 +164,7 @@ def test_call_sync_peak_falls_back_to_deepseek_when_alt_providers_exhausted(monk
 
         def post(self, url, headers=None, json=None):
             model = (json or {}).get("model")
-            if model == "doubao-seed-2-0-lite-260215":
+            if model == "doubao-seed-2-1-turbo-260628":
                 return _FakeResponse(402, {"error": "doubao quota exceeded"})
             if model == "deepseek-v4-flash":
                 return _FakeResponse(200, {
@@ -187,7 +187,7 @@ def test_call_sync_peak_falls_back_to_deepseek_when_alt_providers_exhausted(monk
 
 def test_list_models_returns_peak_aware_default(monkeypatch):
     fake_llm_gateway = types.ModuleType("infra.llm.gateway")
-    fake_llm_gateway.resolve_default_model = lambda model_tier="llm_light", module="": "doubao-seed-2-0-lite-260215"
+    fake_llm_gateway.resolve_default_model = lambda model_tier="llm_light", module="": "doubao-seed-2-1-turbo-260628"
     monkeypatch.setitem(sys.modules, "infra.llm.gateway", fake_llm_gateway)
 
     import api.chat as chat
@@ -214,7 +214,7 @@ def test_chat_analysis_passes_explicit_model_to_gateway(monkeypatch):
             return {
                 "api_key": "ds",
                 "api_base": "https://api.deepseek.com/v1",
-                "model": "doubao-seed-2-0-lite-260215",
+                "model": "doubao-seed-2-1-turbo-260628",
             }
 
         def call_sync(self, prompt, **kwargs):
@@ -228,7 +228,7 @@ def test_chat_analysis_passes_explicit_model_to_gateway(monkeypatch):
             }
 
     fake_llm_gateway.LLMGateway = _FakeGateway
-    fake_llm_gateway.resolve_default_model = lambda model_tier="llm_light", module="": "doubao-seed-2-0-lite-260215"
+    fake_llm_gateway.resolve_default_model = lambda model_tier="llm_light", module="": "doubao-seed-2-1-turbo-260628"
     monkeypatch.setitem(sys.modules, "infra.llm.gateway", fake_llm_gateway)
 
     import api.chat as chat
@@ -241,9 +241,9 @@ def test_chat_analysis_passes_explicit_model_to_gateway(monkeypatch):
     monkeypatch.setattr(chat, "_check_preset_answer", lambda *args, **kwargs: None)
     monkeypatch.setenv("LLM_API_KEY", "ds")
 
-    result = asyncio.run(chat.chat_analysis(ChatRequest(message="现在市场怎么样", model="doubao-seed-2-0-lite-260215")))
+    result = asyncio.run(chat.chat_analysis(ChatRequest(message="现在市场怎么样", model="doubao-seed-2-1-turbo-260628")))
 
-    assert captured["explicit_model"] == "doubao-seed-2-0-lite-260215"
+    assert captured["explicit_model"] == "doubao-seed-2-1-turbo-260628"
     assert captured["module"] == "chat"
     assert result["source"] == "ai"
 
@@ -261,14 +261,14 @@ def test_chat_stream_fc_uses_peak_aware_default_model(monkeypatch):
             return {
                 "api_key": "db",
                 "api_base": "https://ark.cn-beijing.volces.com/api/v3",
-                "model": "doubao-seed-2-0-lite-260215",
+                "model": "doubao-seed-2-1-turbo-260628",
             }
 
         def pre_check(self):
             return True
 
     fake_llm_gateway.LLMGateway = _FakeGateway
-    fake_llm_gateway.resolve_default_model = lambda model_tier="llm_light", module="": "doubao-seed-2-0-lite-260215"
+    fake_llm_gateway.resolve_default_model = lambda model_tier="llm_light", module="": "doubao-seed-2-1-turbo-260628"
     monkeypatch.setitem(sys.modules, "infra.llm.gateway", fake_llm_gateway)
 
     import api.chat as chat
@@ -313,7 +313,7 @@ def test_chat_stream_done_event_preserves_model_and_fallback(monkeypatch):
             return {
                 "api_key": "db",
                 "api_base": "https://ark.cn-beijing.volces.com/api/v3",
-                "model": "doubao-seed-2-0-lite-260215",
+                "model": "doubao-seed-2-1-turbo-260628",
             }
 
         def pre_check(self):
@@ -321,10 +321,10 @@ def test_chat_stream_done_event_preserves_model_and_fallback(monkeypatch):
 
         def stream_sync(self, prompt, **kwargs):
             yield {"delta": "前端标签修复完成", "phase": "answering", "done": False}
-            yield {"delta": "", "done": True, "model": "doubao-seed-2-0-lite-260215", "fallback_used": False}
+            yield {"delta": "", "done": True, "model": "doubao-seed-2-1-turbo-260628", "fallback_used": False}
 
     fake_llm_gateway.LLMGateway = _FakeGateway
-    fake_llm_gateway.resolve_default_model = lambda model_tier="llm_light", module="": "doubao-seed-2-0-lite-260215"
+    fake_llm_gateway.resolve_default_model = lambda model_tier="llm_light", module="": "doubao-seed-2-1-turbo-260628"
     monkeypatch.setitem(sys.modules, "infra.llm.gateway", fake_llm_gateway)
 
     import api.chat as chat
@@ -337,7 +337,7 @@ def test_chat_stream_done_event_preserves_model_and_fallback(monkeypatch):
     monkeypatch.setattr(chat, "_rule_based_reply", lambda *args, **kwargs: "rule")
 
     async def _collect_body():
-        response = await chat.chat_analysis_stream(ChatRequest(message="请只回答八个字", userId="LeiJiang", model="doubao-seed-2-0-lite-260215", history=[]))
+        response = await chat.chat_analysis_stream(ChatRequest(message="请只回答八个字", userId="LeiJiang", model="doubao-seed-2-1-turbo-260628", history=[]))
         body = []
         async for chunk in response.body_iterator:
             body.append(chunk.decode("utf-8") if isinstance(chunk, bytes) else chunk)
@@ -345,7 +345,7 @@ def test_chat_stream_done_event_preserves_model_and_fallback(monkeypatch):
 
     payload = asyncio.run(_collect_body())
 
-    assert '"model": "doubao-seed-2-0-lite-260215"' in payload
+    assert '"model": "doubao-seed-2-1-turbo-260628"' in payload
     assert '"fallback_used": false' in payload
     assert '"served_by": "llm"' in payload
 

@@ -1,7 +1,7 @@
 """回归测试：LLM 定价识别 + 视觉降级链 + 外部直连计费回填。
 
 覆盖 322b04d 提交引入的 3 类逻辑（此前无测试覆盖）：
-1. _pricing_key_from_model 豆包三档判定（pro/lite/mini）
+1. _pricing_key_from_model 豆包两档判定（pro/turbo）
 2. call_multimodal 视觉降级链（DeepSeek vision → 豆包视觉）
 3. record_external_call 计费回填（FC / multi_model_scorer 直连路径）
 
@@ -22,15 +22,14 @@ if str(BACKEND_DIR) not in sys.path:
 
 
 # ============================================================
-# 1. _pricing_key_from_model 豆包三档判定
+# 1. _pricing_key_from_model 豆包两档判定
 # ============================================================
 
-def test_pricing_key_doubao_three_tiers(monkeypatch):
+def test_pricing_key_doubao_two_tiers(monkeypatch):
     import infra.llm.gateway as gw_mod
 
-    assert gw_mod._pricing_key_from_model("doubao-seed-2-0-pro-260215") == "doubao-pro"
-    assert gw_mod._pricing_key_from_model("doubao-seed-2-0-lite-260215") == "doubao-lite"
-    assert gw_mod._pricing_key_from_model("doubao-seed-2-0-mini-260215") == "doubao-mini"
+    assert gw_mod._pricing_key_from_model("doubao-seed-2-1-pro-260628") == "doubao-pro"
+    assert gw_mod._pricing_key_from_model("doubao-seed-2-1-turbo-260628") == "doubao-turbo"
 
 
 def test_pricing_key_doubao_ep_prefix_and_unknown(monkeypatch):
@@ -43,14 +42,12 @@ def test_pricing_key_doubao_ep_prefix_and_unknown(monkeypatch):
     assert gw_mod._pricing_key_from_model("doubao-some-future-model") == "doubao-pro"
 
 
-def test_pricing_key_doubao_tier_priority_mini_over_lite_over_pro(monkeypatch):
-    """含多个关键词时按 mini > lite > pro 优先级判定。"""
+def test_pricing_key_doubao_tier_priority_turbo_over_pro(monkeypatch):
+    """名字同时含 turbo 和 pro 时按 turbo > pro 优先级判定。"""
     import infra.llm.gateway as gw_mod
 
-    # 名字同时含 lite 和 mini（不现实但验证优先级）
-    assert gw_mod._pricing_key_from_model("doubao-mini-lite-x") == "doubao-mini"
-    # 名字含 pro 和 lite → lite 优先
-    assert gw_mod._pricing_key_from_model("doubao-lite-pro-x") == "doubao-lite"
+    # 名字含 pro 和 turbo → turbo 优先
+    assert gw_mod._pricing_key_from_model("doubao-turbo-pro-x") == "doubao-turbo"
 
 
 def test_pricing_key_deepseek_flash_and_pro(monkeypatch):
@@ -105,7 +102,7 @@ def test_call_multimodal_deepseek_success_no_fallback(monkeypatch, tmp_path):
     monkeypatch.setenv("LLM_API_KEY", "ds")
     monkeypatch.setenv("DOUBAO_API_KEY", "db")
     monkeypatch.setenv("LLM_VISION_MODEL", "deepseek-v4-flash-vision-exp")
-    monkeypatch.setenv("LLM_VISION_MODEL_DOUBAO", "doubao-seed-2-0-pro-260215")
+    monkeypatch.setenv("LLM_VISION_MODEL_DOUBAO", "doubao-seed-2-1-pro-260628")
 
     calls = []
 
@@ -142,7 +139,7 @@ def test_call_multimodal_deepseek_fails_falls_back_to_doubao(monkeypatch, tmp_pa
     monkeypatch.setenv("LLM_API_KEY", "ds")
     monkeypatch.setenv("DOUBAO_API_KEY", "db")
     monkeypatch.setenv("LLM_VISION_MODEL", "deepseek-v4-flash-vision-exp")
-    monkeypatch.setenv("LLM_VISION_MODEL_DOUBAO", "doubao-seed-2-0-pro-260215")
+    monkeypatch.setenv("LLM_VISION_MODEL_DOUBAO", "doubao-seed-2-1-pro-260628")
 
     calls = []
 
@@ -150,7 +147,7 @@ def test_call_multimodal_deepseek_fails_falls_back_to_doubao(monkeypatch, tmp_pa
         calls.append(model)
         if model == "deepseek-v4-flash-vision-exp":
             return 500, {"error": "vision model down"}
-        if model == "doubao-seed-2-0-pro-260215":
+        if model == "doubao-seed-2-1-pro-260628":
             return 200, {
                 "choices": [{"message": {"content": "豆包识别：金额 888.88"}}],
                 "usage": {"total_tokens": 9, "prompt_tokens": 7, "completion_tokens": 2},
@@ -168,10 +165,10 @@ def test_call_multimodal_deepseek_fails_falls_back_to_doubao(monkeypatch, tmp_pa
     )
 
     assert result["source"] == "ai"
-    assert result["model"] == "doubao-seed-2-0-pro-260215"
+    assert result["model"] == "doubao-seed-2-1-pro-260628"
     assert result["fallback_used"] is True
     assert "888.88" in result["content"]
-    assert calls == ["deepseek-v4-flash-vision-exp", "doubao-seed-2-0-pro-260215"]
+    assert calls == ["deepseek-v4-flash-vision-exp", "doubao-seed-2-1-pro-260628"]
 
 
 def test_call_multimodal_no_key_returns_no_key(monkeypatch, tmp_path):
@@ -200,7 +197,7 @@ def test_call_multimodal_all_fail_returns_api_error(monkeypatch, tmp_path):
     monkeypatch.setenv("LLM_API_KEY", "ds")
     monkeypatch.setenv("DOUBAO_API_KEY", "db")
     monkeypatch.setenv("LLM_VISION_MODEL", "deepseek-v4-flash-vision-exp")
-    monkeypatch.setenv("LLM_VISION_MODEL_DOUBAO", "doubao-seed-2-0-pro-260215")
+    monkeypatch.setenv("LLM_VISION_MODEL_DOUBAO", "doubao-seed-2-1-pro-260628")
 
     def dispatch(model):
         return 500, {"error": "all down"}
@@ -226,7 +223,7 @@ def test_call_multimodal_doubao_as_primary_dedup(monkeypatch, tmp_path):
 
     monkeypatch.setenv("DATA_DIR", str(tmp_path))
     monkeypatch.setenv("DOUBAO_API_KEY", "db")
-    monkeypatch.setenv("LLM_VISION_MODEL_DOUBAO", "doubao-seed-2-0-pro-260215")
+    monkeypatch.setenv("LLM_VISION_MODEL_DOUBAO", "doubao-seed-2-1-pro-260628")
 
     calls = []
 
@@ -242,16 +239,16 @@ def test_call_multimodal_doubao_as_primary_dedup(monkeypatch, tmp_path):
     gw = gw_mod.LLMGateway()
     result = gw.call_multimodal(
         [{"role": "user", "content": [{"type": "text", "text": "识别"}]}],
-        model="doubao-seed-2-0-pro-260215",
+        model="doubao-seed-2-1-pro-260628",
         user_id="LeiJiang",
         module="ocr",
     )
 
     assert result["source"] == "ai"
-    assert result["model"] == "doubao-seed-2-0-pro-260215"
+    assert result["model"] == "doubao-seed-2-1-pro-260628"
     assert result["fallback_used"] is False
     # 去重后只请求一次
-    assert calls == ["doubao-seed-2-0-pro-260215"]
+    assert calls == ["doubao-seed-2-1-pro-260628"]
 
 
 # ============================================================
@@ -281,23 +278,22 @@ def test_record_external_call_records_usage_and_cost(monkeypatch, tmp_path):
 
 
 def test_record_external_call_doubao_unknown_price_skips_cost(monkeypatch, tmp_path):
-    """豆包价目存在（三档已配置），应正常记账而非跳过。验证 doubao 档位命中价表。"""
+    """豆包价目存在（两档已配置），应正常记账而非跳过。验证 doubao 档位命中价表。"""
     import infra.llm.gateway as gw_mod
     from config import PROVIDER_PRICING
 
     monkeypatch.setenv("DATA_DIR", str(tmp_path))
 
-    # 三档价表都应存在
+    # 两档价表都应存在
     assert "doubao-pro" in PROVIDER_PRICING
-    assert "doubao-lite" in PROVIDER_PRICING
-    assert "doubao-mini" in PROVIDER_PRICING
+    assert "doubao-turbo" in PROVIDER_PRICING
 
     gw = gw_mod.LLMGateway()
     # doubao pro 有价表 → record_external_call 不抛异常，usage 记录正常
     gw.record_external_call(
         user_id="LeiJiang",
         module="multi_model_score",
-        model="doubao-seed-2-0-pro-260215",
+        model="doubao-seed-2-1-pro-260628",
         input_tokens=10,
         output_tokens=5,
     )

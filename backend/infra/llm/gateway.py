@@ -2,9 +2,9 @@
 LLM Gateway -- 统一 LLM 调用入口（实现本体，原 services/llm_gateway.py 迁入）
 =============================================================================
 职责：
-  1. 模型路由（DeepSeek V4 Flash/Pro + 豆包 Seed 2.0 Pro/Lite/Mini）
+  1. 模型路由（DeepSeek V4 Flash/Pro + 豆包 Seed 2.1 Pro/Turbo）
   2. 缓存（相同请求 1 小时内复用）
-  3. 计费（按 user_id + module 双标签记账，豆包三档 + DeepSeek 两档价目）
+  3. 计费（按 user_id + module 双标签记账，豆包两档 + DeepSeek 两档价目）
   4. 熔断（日限 + 突发限）
   5. 降级（DeepSeek 主、豆包兜底；多模态视觉降级链）
 
@@ -42,8 +42,8 @@ MODEL_ROUTING = {
     "llm_heavy": "deepseek-v4-pro",       # V4 Pro: 仲裁/诊断/因子生成（快且质量高）
 }
 DOUBAO_MODEL_ROUTING = {
-    "llm_light": "doubao-seed-2-0-lite-260215",
-    "llm_heavy": "doubao-seed-2-0-pro-260215",
+    "llm_light": "doubao-seed-2-1-turbo-260628",
+    "llm_heavy": "doubao-seed-2-1-pro-260628",
 }
 INTERACTIVE_AUTO_MODULES = {
     "chat",
@@ -126,24 +126,21 @@ def _provider_from_model(model: str) -> str:
 
 
 def _pricing_key_from_model(model: str) -> str:
-    """按具体模型名返回定价档位 key（区分 deepseek flash/pro、doubao pro/lite/mini）。
+    """按具体模型名返回定价档位 key（区分 deepseek flash/pro、doubao pro/turbo）。
 
-    返回 "deepseek-flash" / "deepseek-pro" / "doubao-pro" / "doubao-lite" / "doubao-mini"。
+    返回 "deepseek-flash" / "deepseek-pro" / "doubao-pro" / "doubao-turbo"。
     deepseek 档位判定：
       - 含 "flash" 或 "reasoner" → flash 价表（reasoner 是 flash 的思考模式）
       - 含 "pro" → pro 价表
       - 无法识别 → 保守按 pro 价表记账
     doubao 档位判定：
-      - 含 "mini" → mini 价表
-      - 含 "lite" → lite 价表
+      - 含 "turbo" → turbo 价表
       - 含 "pro" 或无法识别 → pro 价表（保守）
     """
     lowered = (model or "").lower()
     if lowered.startswith("doubao") or lowered.startswith("ep-"):
-        if "mini" in lowered:
-            return "doubao-mini"
-        if "lite" in lowered:
-            return "doubao-lite"
+        if "turbo" in lowered:
+            return "doubao-turbo"
         return "doubao-pro"
     if "flash" in lowered or "reasoner" in lowered:
         return "deepseek-flash"
@@ -180,12 +177,12 @@ def _preferred_provider_order(module: str = "", now=None) -> list[str]:
 
 
 def _resolve_provider_model(provider: str, model_tier: str = "llm_light", *, need_tools: bool = False, phase: str = "primary") -> str:
+    # need_tools / phase 保留为兼容参数：Seed 2.1 收敛为 pro/turbo 两档后，
+    # 豆包 fallback 不再有 mini 兜底档，统一用 turbo，故二者不再参与路由决策。
     if provider == "doubao":
         if model_tier == "llm_heavy":
-            return "doubao-seed-2-0-pro-260215"
-        if phase == "fallback" and not need_tools:
-            return "doubao-seed-2-0-mini-260215"
-        return "doubao-seed-2-0-lite-260215"
+            return "doubao-seed-2-1-pro-260628"
+        return "doubao-seed-2-1-turbo-260628"
     return MODEL_ROUTING.get(model_tier, "deepseek-v4-flash")
 
 
@@ -495,8 +492,8 @@ class LLMGateway:
         错误时: {"delta": "", "done": True, "error": str, "fallback": True}
 
         history: 多轮对话历史，格式 [{"role":"user"|"assistant","content":str}]
-        explicit_model: 用户指定的模型 ID（如 "doubao-seed-2-0-lite-260215"），优先于 model_tier
-        need_tools: 是否需要工具调用能力（Function Calling 场景，降级到豆包时优先选 Lite 而非 Mini）
+        explicit_model: 用户指定的模型 ID（如 "doubao-seed-2-1-turbo-260628"），优先于 model_tier
+        need_tools: 是否需要工具调用能力（Function Calling 场景，降级到豆包时优先选 Turbo）
         不走缓存（streaming 场景缓存无意义），但走限流和计费。
 
         force_no_thinking: 显式关闭推理模型 thinking（短输出场景）。
@@ -687,7 +684,7 @@ class LLMGateway:
         返回格式与 call_sync 一致。
 
         v9.9.11: 补视觉降级链 —— DeepSeek vision 失败时降级到豆包视觉模型
-        （`LLM_VISION_MODEL_DOUBAO`，默认 doubao-seed-2-0-pro-260215，其支持图片输入）。
+        （`LLM_VISION_MODEL_DOUBAO`，默认 doubao-seed-2-1-pro-260628，其支持图片输入）。
         """
         # 0. 日期重置
         self._check_daily_reset()
@@ -702,7 +699,7 @@ class LLMGateway:
             model = os.environ.get("LLM_VISION_MODEL", "deepseek-v4-flash-vision-exp")
         fallback_model = os.environ.get(
             "LLM_VISION_MODEL_DOUBAO",
-            os.environ.get("DOUBAO_VISION_MODEL", "doubao-seed-2-0-pro-260215"),
+            os.environ.get("DOUBAO_VISION_MODEL", "doubao-seed-2-1-pro-260628"),
         )
 
         # 构建候选链：主模型 + 豆包备胎（去重，避免主模型本身已是豆包时重复）

@@ -675,12 +675,12 @@ def _fc_call_with_fallback(model: str, messages: list, max_tokens: int = 3000) -
     if provider == "deepseek":
         doubao_key = os.environ.get("DOUBAO_API_KEY", "")
         if doubao_key:
-            # FC 场景永远用 Lite 或 Pro（Mini 工具调用准确率低）
+            # FC 场景永远用 Turbo 或 Pro（Turbo 工具调用准确率优于轻量档）
             DOUBAO_MAP = {
-                "deepseek-v4-pro": "doubao-seed-2-0-pro-260215",
-                "deepseek-v4-flash": "doubao-seed-2-0-lite-260215",   # FC 必须用 Lite
+                "deepseek-v4-pro": "doubao-seed-2-1-pro-260628",
+                "deepseek-v4-flash": "doubao-seed-2-1-turbo-260628",   # FC 必须用 Turbo
             }
-            l2_model = DOUBAO_MAP.get(model, "doubao-seed-2-0-lite-260215")
+            l2_model = DOUBAO_MAP.get(model, "doubao-seed-2-1-turbo-260628")
             print(f"[FC_AGENT] 降级路由(L2): {model} → {l2_model}")
             try:
                 status, payload = _do(l2_model, doubao_key, os.environ.get("DOUBAO_API_BASE", os.environ.get("ARK_API_BASE", "https://ark.cn-beijing.volces.com/api/v3")))

@@ -1577,8 +1577,8 @@ NICKNAMES = {"LeiJiang": "厉害了哥", "BuLuoGeLi": "部落格里"}
 AVAILABLE_MODELS = [
     {"id": "deepseek-v4-flash", "name": "DeepSeek V4 (快速·主力)", "provider": "deepseek", "base": "https://api.deepseek.com/v1", "env_key": "LLM_API_KEY"},
     {"id": "deepseek-v4-pro", "name": "DeepSeek V4 Pro (高质量·仲裁)", "provider": "deepseek", "base": "https://api.deepseek.com/v1", "env_key": "LLM_API_KEY"},
-    {"id": "doubao-seed-2-0-pro-260215", "name": "豆包 Seed 2.0 Pro (字节·旗舰)", "provider": "doubao", "base": "https://ark.cn-beijing.volces.com/api/v3", "env_key": "DOUBAO_API_KEY"},
-    {"id": "doubao-seed-2-0-lite-260215", "name": "豆包 Seed 2.0 Lite (字节·通用)", "provider": "doubao", "base": "https://ark.cn-beijing.volces.com/api/v3", "env_key": "DOUBAO_API_KEY"},
+    {"id": "doubao-seed-2-1-pro-260628", "name": "豆包 Seed 2.1 Pro (字节·旗舰)", "provider": "doubao", "base": "https://ark.cn-beijing.volces.com/api/v3", "env_key": "DOUBAO_API_KEY"},
+    {"id": "doubao-seed-2-1-turbo-260628", "name": "豆包 Seed 2.1 Turbo (字节·通用)", "provider": "doubao", "base": "https://ark.cn-beijing.volces.com/api/v3", "env_key": "DOUBAO_API_KEY"},
 ]
 
 

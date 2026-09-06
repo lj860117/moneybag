@@ -3,7 +3,7 @@
 
 两家大模型各自独立对基金打分（0-10分+理由），综合加权排名。
 - DeepSeek V4 Pro：主力深度分析
-- 豆包 Seed 2.0 Pro：字节系视角
+- 豆包 Seed 2.1 Pro：字节系视角
 （千问 Qwen3.6 已于欠费后下线）
 
 复用已有的 API key 和 endpoint，不新建客户端。
@@ -28,8 +28,8 @@ _MODELS = [
     },
     {
         "id": "doubao",
-        "name": "豆包 Seed 2.0",
-        "model": "doubao-seed-2-0-pro-260215",
+        "name": "豆包 Seed 2.1",
+        "model": "doubao-seed-2-1-pro-260628",
         "key_env": "DOUBAO_API_KEY",
         "base_url": "https://ark.cn-beijing.volces.com/api/v3",
     },
