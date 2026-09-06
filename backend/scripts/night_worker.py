@@ -56,7 +56,7 @@ def _load_profiles():
                 {"id": "BuLuoGeLi", "name": "BuLuoGeLi", "wxworkUserId": "BuLuoGeLi"}]
 
 
-def _call_v3(prompt, max_tokens=500, system=""):
+def _call_v3(prompt, max_tokens=500, system="", force_no_thinking=False):
     """调用 DeepSeek V4 Pro（通过 gateway 统一管理）
 
     晨报场景默认走 V4 Pro：5/23 永久降价后比 Flash 只贵一点，但幻觉更少、质量更好
@@ -66,6 +66,7 @@ def _call_v3(prompt, max_tokens=500, system=""):
         prompt: 用户 prompt
         max_tokens: 最大输出 token 数
         system: system prompt（用于注入角色设定和硬性约束）
+        force_no_thinking: 显式关闭推理模型 thinking（短输出点用，保持小预算防成本膨胀）
     """
     if not LLM_API_KEY:
         return ""
@@ -81,6 +82,7 @@ def _call_v3(prompt, max_tokens=500, system=""):
             user_id="",
             module="night_worker",
             max_tokens=max_tokens,
+            force_no_thinking=force_no_thinking,
         )
         # v9.5.66: 追踪本次调用用了哪个模型（用于晨报底部显示来源）
         # ⚠️ 网关返回的 key 是 "fallback"，不是 "fallback_used"
@@ -732,7 +734,7 @@ def step_r1_phase1():
         f"({north.get('turnover_trend') or '净买入方向数据已停止披露'}), "
         f"热点:{sector_text}"
     )
-    analysis = _call_v3(prompt, 800, system=ANTI_HALLUCINATION_SYSTEM)
+    analysis = _call_v3(prompt, 800, system=ANTI_HALLUCINATION_SYSTEM, force_no_thinking=True)
     if analysis:
         # v9.5.124: 过滤 prompt 泄漏和思考链
         try:
@@ -1052,7 +1054,8 @@ def step_r1_phase2():
 1. 只能提及以下持仓中的基金/股票名称：{', '.join([f.get('name','') or f.get('code','') for f in funds[:10]])}，禁止编造或提及任何其他名称
 2. 禁止复述任何指令或括号说明
 3. 只输出总评/风险/建议三段，合计200字以内
-4. 禁止使用"南嘉""远景""xxx智能"等未在列表中的基金名""")
+4. 禁止使用"南嘉""远景""xxx智能"等未在列表中的基金名""",
+                                 force_no_thinking=True)
 
             # v9.5.43 后处理：过滤 prompt 泄漏（即使 prompt 被复读也兜底）
             diagnosis = _filter_prompt_leak(diagnosis)
@@ -1066,7 +1069,8 @@ def step_r1_phase2():
 风险：（具体基金/股票名称的集中风险）
 建议：（针对持仓的可执行操作）"""
                 diagnosis2 = _call_v3(retry_prompt, 300,
-                                      system="你是持仓诊断师。直接输出'总评/风险/建议'三段，每段一句话，禁止任何思考过程或前置说明。")
+                                      system="你是持仓诊断师。直接输出'总评/风险/建议'三段，每段一句话，禁止任何思考过程或前置说明。",
+                                      force_no_thinking=True)
                 diagnosis2 = _filter_prompt_leak(diagnosis2)
                 if "异常" not in diagnosis2 or len(diagnosis2) > len(diagnosis):
                     diagnosis = diagnosis2
@@ -1855,7 +1859,7 @@ def step_overnight_check():
 4. 禁止使用 ** 粗体格式，输出纯文本"""
 
         system = "你是市场数据播报员，只转述已有数据，严禁编造任何未提供的数据点。"
-        llm_summary = _call_v3(prompt, 350, system=system)  # v9.5.75: 200→350 防止截断
+        llm_summary = _call_v3(prompt, 350, system=system, force_no_thinking=True)  # v9.5.75: 200→350 防止截断
 
         if llm_summary:
             # v9.5.75: 外盘速览也过滤 prompt 泄露（之前漏掉了）
@@ -1994,7 +1998,7 @@ def step_morning_briefing(products, overnight):
             prompt = f"""把以下投资报告改写成大白话，给不懂金融的人看，150字以内，亲切友好：
 
 {full_product[:400]}"""
-            llm_simple = _call_v3(prompt, 250)
+            llm_simple = _call_v3(prompt, 250, force_no_thinking=True)
             if llm_simple:
                 simple += llm_simple
             else:

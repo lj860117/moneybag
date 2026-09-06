@@ -254,11 +254,17 @@ class LLMGateway:
                   model_tier: str = "llm_light",
                   user_id: str = "", module: str = "",
                   max_tokens: int = 800,
-                  explicit_model: str = "") -> dict:
-        """同步调用 LLM（大多数场景用这个）"""
+                  explicit_model: str = "",
+                  force_no_thinking: bool = False) -> dict:
+        """同步调用 LLM（大多数场景用这个）
+
+        force_no_thinking: 显式关闭推理模型 thinking（短输出场景）。
+            置 True 时不提升 max_tokens 预算，按调用方给定值走。
+        """
         # v9.5.140: 推理档（llm_heavy/llm_reasoning）保留 thinking，需要更大输出预算，
         # 否则 reasoning_content 挤占 content 导致截断（P0-1 全局修复）。
-        if model_tier in ("llm_heavy", "llm_reasoning") and max_tokens < 3000:
+        # force_no_thinking=True 时调用方已明确要求关推理，预算不提升。
+        if model_tier in ("llm_heavy", "llm_reasoning") and max_tokens < 3000 and not force_no_thinking:
             max_tokens = 3000
         # 0. 日期重置
         self._check_daily_reset()
@@ -307,19 +313,23 @@ class LLMGateway:
                 "max_tokens": max_tokens,
                 "temperature": 0.7,
             }
-            # v9.5.130: 各家思考模型非推理场景均强制关闭 thinking
-            # 豆包 Seed 2.0: 顶层 thinking 字段
-            # 千问 qwen3.x: extra_body.enable_thinking=false
-            if model_tier != "llm_reasoning":
+            # 关闭 thinking 的策略（reasoning_content 与 content 共享 max_tokens）：
+            # 1) force_no_thinking=True：调用方显式要求（短输出点），强制关闭所有推理模型
+            # 2) DeepSeek V4 轻量档：关闭（轻量任务不需要推理，避免截断，P0-1）
+            # 3) 豆包 Seed/千问 qwen3 非推理档：关闭（v9.5.130 既有逻辑）
+            # 其余（DeepSeek V4 重档/推理档）：保留推理，靠 call_sync 顶部提预算兜底
+            if force_no_thinking:
+                if use_model.startswith("deepseek-v4") or "doubao-seed" in use_model:
+                    body["thinking"] = {"type": "disabled"}
+                elif use_model.startswith("qwen3") or "qwen3" in use_model:
+                    body.setdefault("extra_body", {})["enable_thinking"] = False
+            elif model_tier == "llm_light" and use_model.startswith("deepseek-v4"):
+                body["thinking"] = {"type": "disabled"}
+            elif model_tier != "llm_reasoning":
                 if "doubao-seed" in use_model:
                     body["thinking"] = {"type": "disabled"}
                 elif use_model.startswith("qwen3") or "qwen3" in use_model:
                     body.setdefault("extra_body", {})["enable_thinking"] = False
-            # v9.5.140: DeepSeek V4 也是推理模型，reasoning_content 与 content 共享
-            # max_tokens。轻量档不需要推理，关闭 thinking 避免推理挤占答案预算；
-            # 重档/推理档保留推理，改由 call_sync 顶部的 max_tokens 提升兜底。
-            if model_tier == "llm_light" and use_model.startswith("deepseek-v4"):
-                body["thinking"] = {"type": "disabled"}
             with httpx.Client(timeout=timeout) as client:
                 resp = client.post(
                     f"{use_base}/chat/completions",
@@ -433,7 +443,8 @@ class LLMGateway:
                     max_tokens: int = 1200,
                     history: list | None = None,
                     explicit_model: str = "",
-                    need_tools: bool = False):
+                    need_tools: bool = False,
+                    force_no_thinking: bool = False):
         """流式调用 LLM，yield 标准化的 chunk dict。
 
         返回同步 Generator[dict, None, None]。
@@ -445,10 +456,14 @@ class LLMGateway:
         explicit_model: 用户指定的模型 ID（如 "qwen3.6-flash"），优先于 model_tier
         need_tools: 是否需要工具调用能力（Function Calling 场景，降级到豆包时优先选 Lite 而非 Mini）
         不走缓存（streaming 场景缓存无意义），但走限流和计费。
+
+        force_no_thinking: 显式关闭推理模型 thinking（短输出场景）。
+            置 True 时不提升 max_tokens 预算，按调用方给定值走。
         """
         # v9.5.140: 推理档（llm_heavy/llm_reasoning）保留 thinking，需要更大输出预算，
         # 否则 reasoning_content 挤占 content 导致截断（P0-1 全局修复）。
-        if model_tier in ("llm_heavy", "llm_reasoning") and max_tokens < 3000:
+        # force_no_thinking=True 时调用方已明确要求关推理，预算不提升。
+        if model_tier in ("llm_heavy", "llm_reasoning") and max_tokens < 3000 and not force_no_thinking:
             max_tokens = 3000
         # 0. 日期重置
         self._check_daily_reset()
@@ -486,7 +501,10 @@ class LLMGateway:
             """实际执行流式调用，yield chunk"""
             import httpx
             timeout = 120 if use_model == "deepseek-reasoner" else 60
-            # v9.5.130: 非推理场景对豆包/千问关闭 thinking，避免流式推思维链而无最终答案
+            # 关闭 thinking 的策略（reasoning_content 与 content 共享 max_tokens）：
+            # 1) force_no_thinking=True：调用方显式要求（短输出点），强制关闭所有推理模型
+            # 2) DeepSeek V4 轻量档：关闭（轻量任务不需要推理，避免截断，P0-1）
+            # 3) 豆包 Seed/千问 qwen3 非推理档：关闭（v9.5.130 既有逻辑）
             stream_body = {
                 "model": use_model,
                 "messages": messages,
@@ -494,15 +512,18 @@ class LLMGateway:
                 "temperature": 0.7,
                 "stream": True,
             }
-            if model_tier != "llm_reasoning":
+            if force_no_thinking:
+                if use_model.startswith("deepseek-v4") or "doubao-seed" in use_model:
+                    stream_body["thinking"] = {"type": "disabled"}
+                elif use_model.startswith("qwen3") or "qwen3" in use_model:
+                    stream_body["extra_body"] = {"enable_thinking": False}
+            elif model_tier == "llm_light" and use_model.startswith("deepseek-v4"):
+                stream_body["thinking"] = {"type": "disabled"}
+            elif model_tier != "llm_reasoning":
                 if "doubao-seed" in use_model:
                     stream_body["thinking"] = {"type": "disabled"}
                 elif use_model.startswith("qwen3") or "qwen3" in use_model:
                     stream_body["extra_body"] = {"enable_thinking": False}
-            # v9.5.140: DeepSeek V4 推理模型轻量档关闭 thinking（reasoning 与 content
-            # 共享 max_tokens，轻量任务不需要推理，避免截断）
-            if model_tier == "llm_light" and use_model.startswith("deepseek-v4"):
-                stream_body["thinking"] = {"type": "disabled"}
             with httpx.Client(timeout=timeout) as client:
                 with client.stream(
                     "POST",
