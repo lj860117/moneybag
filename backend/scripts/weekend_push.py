@@ -44,7 +44,7 @@ try:
 except Exception:
     pass
 
-from config import DATA_DIR, LLM_API_URL, LLM_API_KEY
+from config import DATA_DIR, LLM_API_KEY
 
 LOG_DIR = DATA_DIR / "night_worker"
 LOG_DIR.mkdir(parents=True, exist_ok=True)

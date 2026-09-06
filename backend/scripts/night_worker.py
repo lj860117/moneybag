@@ -29,7 +29,7 @@ from datetime import datetime, date
 # 确保 import 路径
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from config import DATA_DIR, LLM_API_URL, LLM_API_KEY
+from config import DATA_DIR, LLM_API_KEY
 
 NIGHT_LOG_DIR = DATA_DIR / "night_worker"
 NIGHT_LOG_DIR.mkdir(parents=True, exist_ok=True)

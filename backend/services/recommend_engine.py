@@ -814,15 +814,8 @@ def _score_theme(stock: dict) -> int:
 
 
 def _generate_reasons(top_items: list) -> None:
-    """用 R1 批量生成推荐理由"""
+    """用 LLM 批量生成推荐理由（走 gateway 统一管理）"""
     try:
-        from config import LLM_API_URL, LLM_API_KEY
-        if not LLM_API_KEY:
-            for item in top_items:
-                item["reason"] = _rule_reason(item)
-            return
-
-        import httpx
         stocks_text = "\n".join(
             f"{i+1}. {item['name']}({item['code']}) 综合{item['total_score']}分 "
             f"估值={item['dimension_scores']['valuation']} "
@@ -842,30 +835,28 @@ def _generate_reasons(top_items: list) -> None:
 [{{"code":"600519","reason":"一句话理由"}}, ...]
 只输出 JSON，不要其他内容。"""
 
-        with httpx.Client(timeout=30) as client:
-            resp = client.post(
-                LLM_API_URL,
-                headers={"Authorization": f"Bearer {LLM_API_KEY}", "Content-Type": "application/json"},
-                json={
-                    "model": "deepseek-v4-flash",
-                    "messages": [{"role": "user", "content": prompt}],
-                    "max_tokens": 500,
-                    "temperature": 0.5,
-                },
-            )
-            if resp.status_code == 200:
-                import re
-                text = resp.json()["choices"][0]["message"]["content"]
-                json_match = re.search(r'\[[\s\S]*\]', text)
-                if json_match:
-                    reasons = json.loads(json_match.group())
-                    reason_map = {r.get("code", ""): r.get("reason", "") for r in reasons}
-                    for item in top_items:
-                        item["reason"] = reason_map.get(item.get("code", ""), _rule_reason(item))
-                    return
-
+        from services.llm_gateway import LLMGateway
+        gw = LLMGateway.instance()
+        llm_result = gw.call_sync(
+            prompt,
+            system="",
+            model_tier="llm_light",
+            user_id="",
+            module="recommend_reasons",
+            max_tokens=800,
+        )
+        if not llm_result.get("fallback") and llm_result.get("content"):
+            text = llm_result["content"]
+            import re
+            json_match = re.search(r'\[[\s\S]*\]', text)
+            if json_match:
+                reasons = json.loads(json_match.group())
+                reason_map = {r.get("code", ""): r.get("reason", "") for r in reasons}
+                for item in top_items:
+                    item["reason"] = reason_map.get(item.get("code", ""), _rule_reason(item))
+                return
     except Exception as e:
-        print(f"[RECOMMEND] R1 理由生成失败: {e}")
+        print(f"[RECOMMEND] 理由生成失败: {e}")
 
     # 降级：规则理由
     for item in top_items:

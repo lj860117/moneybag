@@ -1,14 +1,11 @@
 """
 通义千问（DashScope/百炼）客户端
-两个用途：
-1. 视觉理解（qwen-vl-max-latest）— DeepSeek 做不了的截图OCR
-2. 文本降级（qwen-turbo）— DeepSeek 失败时的备份
+视觉理解（qwen-vl）— DeepSeek 做不了的截图 OCR（基金凭证识别）
 """
 import os
 import base64
 import json
 import re
-from typing import Optional
 
 DASHSCOPE_API_KEY = os.getenv("DASHSCOPE_API_KEY", "")
 DASHSCOPE_BASE_URL = "https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions"
@@ -16,49 +13,6 @@ DASHSCOPE_BASE_URL = "https://dashscope.aliyuncs.com/compatible-mode/v1/chat/com
 
 def is_qwen_available() -> bool:
     return bool(DASHSCOPE_API_KEY)
-
-
-def call_qwen_text(
-    prompt: str,
-    max_tokens: int = 500,
-    system: Optional[str] = None,
-    model: str = "qwen3.6-flash",
-    timeout: int = 30,
-) -> Optional[str]:
-    """通义千问文本模型调用（DeepSeek 降级用）
-
-    默认 qwen3.6-flash：新一代，速度快、价格低
-    可选 qwen-turbo（更便宜）、qwen3.7-max（最强）
-    """
-    if not DASHSCOPE_API_KEY:
-        return None
-    import httpx
-    messages = []
-    if system:
-        messages.append({"role": "system", "content": system})
-    messages.append({"role": "user", "content": prompt})
-    try:
-        with httpx.Client(timeout=timeout) as client:
-            r = client.post(
-                DASHSCOPE_BASE_URL,
-                headers={
-                    "Authorization": f"Bearer {DASHSCOPE_API_KEY}",
-                    "Content-Type": "application/json",
-                },
-                json={
-                    "model": model,
-                    "messages": messages,
-                    "max_tokens": max_tokens,
-                    "temperature": 0.3,
-                },
-            )
-            if r.status_code == 200:
-                return r.json()["choices"][0]["message"]["content"]
-            print(f"[QWEN_TEXT] HTTP {r.status_code}: {r.text[:200]}")
-            return None
-    except Exception as e:
-        print(f"[QWEN_TEXT] err: {e}")
-        return None
 
 
 def parse_receipt_image(image_bytes: bytes, image_format: str = "jpeg") -> dict:
