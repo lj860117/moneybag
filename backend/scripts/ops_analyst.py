@@ -648,11 +648,12 @@ class OpsAnalyst:
             report = self.fallback_report(rule, today)
         report["date"] = today.get("date") or report.get("date") or date.today().isoformat()
 
+        # 先推送、后落盘：确保落盘时 push 字段已含真实推送结果（而非初始 False）
+        self.push_report(report)
+
         report_file = self.ops_dir / f"report_{date.today().isoformat()}.json"
         atomic_write_json(report_file, report)
         print(f"[OPS_ANALYST] 报告已落盘: {report_file}（{report['overall_verdict']}）")
-
-        self.push_report(report)
         return 0
 
     def run_critical_only(self) -> int:
