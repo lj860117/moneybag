@@ -30,13 +30,14 @@
 结构性重构，风险 > 收益。动了它等于动所有 LLM 调用路径（chat、计费、降级、多模态），需要全量回归。
 
 ### 交接提示（CRITICAL）
-做之前**必先读** `docs/design/12-framework-refactor.md`，其中 **Invariant #3：所有 LLM 调用经 `infra/llm/gateway`**。
+- 权威不变式 #3 出处：`docs/design/00-ANCHOR.md:63`（"所有 LLM 调用走 `infra/llm/gateway`"）+ `docs/design/04-ai-interface.md:30`。
+- 绞杀者策略见 `docs/design/12-framework-refactor.md` §四（迁移方法论，不含不变式 #3 的权威定义）。
+- ⚠️ 已产出精确迁移地图：`docs/design/14-llm-gateway-migration-map.md`（含全部调用点清单 + 5 阶段迁移顺序 + 风险清单）。
 
 ### 建议实施步骤（后续）
-1. 先读 12-framework-refactor.md 全量迁移设计。
-2. 盘点 `services/llm_gateway.py` 的调用方清单（`grep "llm_gateway" backend/ --include="*.py"`）。
-3. 按「无状态纯函数 → 有状态实例」分层迁移，每迁一个调用方跑一次回归。
-4. 全部迁完后，`services/llm_gateway.py` 转为 deprecated 薄壳（转发到 infra），观察一个版本周期再删除。
+1. 先读 `14-llm-gateway-migration-map.md` 的调用点清单与迁移顺序。
+2. 按 5 阶段推进：实现本体搬进 infra → 业务调用点改路径 → 修 A 层模块级 import + domain 越界 → 测试 mock 同步 → 退休旧 gateway。
+3. 每迁一批跑一次全量回归（`test_chat_model_routing.py` + `test_llm_pricing_vision_fc.py`）。
 
 ---
 
