@@ -25,7 +25,7 @@ router = APIRouter()
 
 
 def _resolve_chat_model(requested_model: str | None, *, model_tier: str = "llm_light", module: str = "chat") -> str:
-    if requested_model:
+    if requested_model and requested_model != "auto":
         return requested_model
 
     try:
@@ -44,6 +44,64 @@ def _resolve_chat_model(requested_model: str | None, *, model_tier: str = "llm_l
         return resolve_default_model(model_tier, module=module)
     except Exception:
         return "deepseek-v4-flash"
+
+
+def _normalize_explicit_model(requested_model: str | None) -> str:
+    """前端 'auto' 哨兵 / 空值 → ''，交给 gateway 峰谷调度；其余原样透传。"""
+    if not requested_model or requested_model == "auto":
+        return ""
+    return requested_model
+
+
+async def _fallback_chat_stream(user_msg: str, system_prompt: str, market_ctx: str, portfolio_ctx: str, uid: str, req: ChatRequest):
+    """普通流式（无搜索横幅/记忆增强的精简版），供 FC 硬失败回退复用。
+
+    逻辑与 chat_analysis_stream 的 stream_gen 对齐：显式选模优先，否则走 gateway 峰谷调度；
+    流式过程中限流/错误降级规则引擎，成功则透传 done 事件（含 served_by/model/fallback_used）。
+    """
+    from services.llm_gateway import LLMGateway
+    gw = LLMGateway.instance()
+    model = _resolve_chat_model(req.model, model_tier="llm_light", module="chat_stream")
+    explicit = _normalize_explicit_model(req.model)
+    if not gw.pre_check():
+        yield f"data: {json.dumps({'delta': _rule_based_reply(user_msg, market_ctx, portfolio_ctx), 'source': 'rules', 'done': True}, ensure_ascii=False)}\n\n"
+        return
+    _full = []
+    try:
+        for chunk in gw.stream_sync(
+            user_msg,
+            system=system_prompt,
+            model_tier="llm_light" if "reasoner" not in model else "llm_heavy",
+            user_id=uid,
+            module="chat_stream",
+            max_tokens=1200,
+            history=[h.dict() for h in req.history] if req.history else None,
+            explicit_model=explicit,
+        ):
+            if chunk.get("fallback"):
+                reply = _rule_based_reply(user_msg, market_ctx, portfolio_ctx)
+                yield f"data: {json.dumps({'delta': reply, 'source': 'rules', 'done': True}, ensure_ascii=False)}\n\n"
+                return
+            if chunk.get("done"):
+                yield f"data: {json.dumps({'delta': '', 'source': 'ai', 'done': True, 'served_by': 'llm', 'model': chunk.get('model', ''), 'fallback_used': chunk.get('fallback_used', False)}, ensure_ascii=False)}\n\n"
+                _t = "".join(_full)
+                if uid and uid != "default" and _t and len(user_msg) > 6:
+                    import threading
+                    threading.Thread(target=_extract_and_save_memory, args=(uid, user_msg, _t), daemon=True).start()
+                return
+            delta = chunk.get("delta", "")
+            phase = chunk.get("phase", "answering")
+            if phase == "thinking":
+                continue
+            if delta:
+                delta = delta.replace("我无法访问你的账户", "当前系统记录显示")
+                delta = delta.replace("我无法查看你的", "当前系统记录的")
+                _full.append(delta)
+                yield f"data: {json.dumps({'delta': delta, 'source': 'ai', 'done': False, 'phase': phase}, ensure_ascii=False)}\n\n"
+    except Exception as e:
+        print(f"[CHAT-STREAM] fallback stream failed: {e}")
+        reply = _rule_based_reply(user_msg, market_ctx, portfolio_ctx)
+        yield f"data: {json.dumps({'delta': reply, 'source': 'rules', 'done': True}, ensure_ascii=False)}\n\n"
 
 
 def _extract_and_save_memory(user_id: str, user_msg: str, reply: str) -> None:
@@ -230,7 +288,8 @@ def list_models():
         key = os.environ.get(m["env_key"], "")
         if key:
             result.append({"id": m["id"], "name": m["name"], "provider": m["provider"]})
-    return {"models": result, "default": _resolve_chat_model(None, model_tier="llm_light", module="chat_ui")}
+    result = [{"id": "auto", "name": "智能调度（峰谷自动）", "provider": "auto"}] + result
+    return {"models": result, "default": "auto"}
 
 
 @router.post("/api/chat")
@@ -348,7 +407,7 @@ async def chat_analysis(req: ChatRequest):
                 user_id=uid,
                 module="chat",
                 max_tokens=800,
-                explicit_model=model,
+                explicit_model=_normalize_explicit_model(req.model),
             )
             print(f"[CHAT] Gateway result source={gw_result.get('source')}")
             if gw_result.get("content") and not gw_result.get("fallback"):
@@ -491,7 +550,8 @@ async def chat_analysis_stream(req: ChatRequest):
             history_dicts = [h.dict() for h in req.history] if req.history else None
 
             async def fc_stream_gen():
-                default_model = _resolve_chat_model(req.model, model_tier="llm_light", module="chat_stream")
+                default_model = _normalize_explicit_model(req.model)
+                fc_failed = False
                 for chunk in run_fc_agent_stream(
                     user_msg,
                     system_prompt=system_prompt,
@@ -499,7 +559,14 @@ async def chat_analysis_stream(req: ChatRequest):
                     model=default_model,
                     history=history_dicts,
                 ):
+                    if chunk.get("source") == "error" and chunk.get("done"):
+                        print(f"[FC_AGENT] 硬失败回退普通聊天: {str(chunk.get('delta', ''))[:40]}")
+                        fc_failed = True
+                        break
                     yield f"data: {json.dumps(chunk, ensure_ascii=False)}\n\n"
+                if fc_failed:
+                    async for piece in _fallback_chat_stream(user_msg, system_prompt, market_ctx, portfolio_ctx, uid, req):
+                        yield piece
 
             return StreamingResponse(fc_stream_gen(), media_type="text/event-stream",
                                      headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
@@ -772,7 +839,7 @@ async def chat_analysis_stream(req: ChatRequest):
                 module="chat_stream",
                 max_tokens=1200,
                 history=[h.dict() for h in req.history] if req.history else None,
-                explicit_model=model,  # 用户主动选择的模型（含千问）
+                explicit_model=_normalize_explicit_model(req.model),  # 用户主动选择的模型（含千问），auto 哨兵交给峰谷调度
             ):
                 if chunk.get("fallback"):
                     # gateway 限流/错误 → 降级规则引擎

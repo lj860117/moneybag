@@ -18,9 +18,9 @@ function _md(text){
   text=text.replace(/\x00LINK(\d+)\x00/g,(_,i)=>{const l=links[+i];return`<a href="${l.u}" target="_blank" style="color:#F59E0B;text-decoration:underline">${l.t}</a>`});
   return text;
 }
-let chatModel='deepseek-v4-flash';
+let chatModel='auto';
 let chatModelList=[];
-async function loadModelList(){try{const r=await fetch(API_BASE+'/models',{signal:AbortSignal.timeout(5000)});if(r.ok){const d=await r.json();chatModelList=d.models||[];if(d.default)chatModel=localStorage.getItem('chatModel')||d.default}}catch{chatModelList=[{id:'deepseek-v4-flash',name:'DeepSeek V4',provider:'deepseek'}]}}
+async function loadModelList(){try{const r=await fetch(API_BASE+'/models',{signal:AbortSignal.timeout(5000)});if(r.ok){const d=await r.json();chatModelList=d.models||[];if(d.default){const sticky=localStorage.getItem('chatModel');chatModel=(sticky&&sticky!=='auto')?sticky:'auto';}}}catch{chatModelList=[{id:'deepseek-v4-flash',name:'DeepSeek V4',provider:'deepseek'}]}}
 
 // v9.5.65: 模型名 → 显示名映射（含降级标识）
 function _formatModelName(model, fallbackUsed){
@@ -139,13 +139,16 @@ setTimeout(()=>{
   }
 },80);}
 
+// 模型选择：auto 不落盘（每次默认智能调度），其余持久化到 localStorage
+function _setChatModel(id){chatModel=id;if(id==='auto'){try{localStorage.removeItem('chatModel')}catch(e){}}else{try{localStorage.setItem('chatModel',id)}catch(e){}}}
+
 // 模型选择弹窗
 function showModelPicker(){
   const o=document.createElement('div');o.className='modal-overlay';o.onclick=e=>{if(e.target===o)o.remove()};
   o.innerHTML=`<div class="modal-sheet" onclick="event.stopPropagation()"><div class="modal-handle"></div>
   <div class="modal-title">选择 AI 模型</div>
   <div style="margin-top:12px;display:flex;flex-direction:column;gap:8px">
-  ${chatModelList.map(m=>`<button style="padding:12px;border-radius:var(--radius-md,10px);border:1px solid ${m.id===chatModel?'var(--color-brand-500,#FFB755)':'var(--border-default,rgba(255,255,255,.08))'};background:var(--bg-elevated,#10131C);color:var(--text-primary,#F0F2F7);font-size:13px;cursor:pointer;text-align:left" onclick="chatModel='${m.id}';localStorage.setItem('chatModel','${m.id}');document.querySelector('.modal-overlay')?.remove();renderChat()">${m.name} <span style="font-size:11px;color:var(--text-tertiary)">${m.provider||''}</span></button>`).join('')}
+  ${chatModelList.map(m=>`<button style="padding:12px;border-radius:var(--radius-md,10px);border:1px solid ${m.id===chatModel?'var(--color-brand-500,#FFB755)':'var(--border-default,rgba(255,255,255,.08))'};background:var(--bg-elevated,#10131C);color:var(--text-primary,#F0F2F7);font-size:13px;cursor:pointer;text-align:left" onclick="_setChatModel('${m.id}');document.querySelector('.modal-overlay')?.remove();renderChat()">${m.name} <span style="font-size:11px;color:var(--text-tertiary)">${m.provider||''}</span></button>`).join('')}
   </div></div>`;
   document.body.appendChild(o);
 }

@@ -162,7 +162,7 @@ def resolve_model_candidates(model_tier: str = "llm_light", module: str = "", ex
     candidates: list[str] = []
     remaining = preferred[:]
 
-    if explicit_model:
+    if explicit_model and explicit_model != "auto":
         explicit_provider = _provider_from_model(explicit_model)
         candidates.append(explicit_model)
         remaining = [provider for provider in preferred if provider != explicit_provider]
@@ -690,7 +690,7 @@ class LLMGateway:
 
         # 3. 模型（vision 模型不在 MODEL_ROUTING 中，直接用参数或环境变量）
         if not model:
-            model = os.environ.get("LLM_VISION_MODEL", "gpt-4o-mini")
+            model = os.environ.get("LLM_VISION_MODEL", "deepseek-v4-flash-vision-exp")
         api_base = os.environ.get("LLM_API_BASE", "https://api.deepseek.com/v1")
 
         # 4. 调用
@@ -711,7 +711,13 @@ class LLMGateway:
                 )
                 if resp.status_code == 200:
                     data = resp.json()
-                    content = data["choices"][0]["message"].get("content", "")
+                    msg = data["choices"][0]["message"]
+                    content = msg.get("content") or ""
+                    reasoning = msg.get("reasoning_content") or ""
+                    # DeepSeek 视觉可能只返回 reasoning_content 而没有最终 content
+                    # 此时取 reasoning 最后一段作为输出（尽力而为，避免 OCR 拿空 content 失败）
+                    if not content.strip() and reasoning.strip():
+                        content = reasoning.strip().split('\n')[-1][:800]
                     usage = data.get("usage", {})
                     total_tokens = usage.get("total_tokens", 0)
                     input_tk = usage.get("prompt_tokens", 0)

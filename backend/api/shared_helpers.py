@@ -1397,7 +1397,7 @@ async def _do_ocr(file_path: Path, content: bytes) -> dict:
     """执行 OCR，优先用 LLM 多模态（通过 gateway），降级用本地 OCR"""
     from services.llm_gateway import LLMGateway
     gw = LLMGateway.instance()
-    vision_model = os.environ.get("LLM_VISION_MODEL", "gpt-4o-mini")
+    vision_model = os.environ.get("LLM_VISION_MODEL", "deepseek-v4-flash-vision-exp")
 
     try:
         import base64

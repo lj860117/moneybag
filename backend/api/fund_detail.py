@@ -14,7 +14,7 @@ from typing import Optional
 
 from fastapi import APIRouter
 
-from config import DATA_DIR
+from config import DATA_DIR, RECEIPTS_DIR
 
 router = APIRouter()
 
@@ -1720,31 +1720,46 @@ async def parse_fund_receipt(request: dict):
     if not text and not image_b64:
         return {"ok": False, "reason": "请提供文字内容或图片"}
 
-    # 图片优先用通义千问 qwen-vl-max 识别
+    # 图片优先走 DeepSeek 视觉 OCR（_do_ocr）
     if image_b64:
         try:
-            from services.qwen_client import parse_receipt_image, is_qwen_available
-            if is_qwen_available():
-                # 去掉 data URI 前缀
-                if image_b64.startswith("data:"):
-                    image_b64 = image_b64.split(",", 1)[1]
-                import base64 as _b64
-                try:
-                    img_bytes = _b64.b64decode(image_b64)
-                except Exception as e:
-                    return {"ok": False, "reason": f"图片解码失败: {e}"}
+            # 去掉 data URI 前缀
+            if image_b64.startswith("data:"):
+                image_b64 = image_b64.split(",", 1)[1]
+            import base64 as _b64
+            import uuid as _uuid
+            try:
+                img_bytes = _b64.b64decode(image_b64)
+            except Exception as e:
+                return {"ok": False, "reason": f"图片解码失败: {e}"}
 
-                result = parse_receipt_image(img_bytes, image_format="jpeg")
-                if result.get("ok"):
-                    # 基金名反查代码（如果VL没识别出代码）
-                    if not result.get("fund_code") and result.get("fund_name"):
-                        result["fund_code"] = _get_fund_code_by_name(result["fund_name"])
-                    return result
-                else:
-                    print(f"[RECEIPT] qwen-vl failed: {result.get('reason')}")
-                    # 降级到文字解析（如果有 text）
-                    if not text:
-                        return result
+            tmp = RECEIPTS_DIR / f"parse_{int(time.time() * 1000)}_{_uuid.uuid4().hex[:8]}.jpg"
+            tmp.write_bytes(img_bytes)
+            try:
+                from api.shared_helpers import _do_ocr
+                ocr = await _do_ocr(tmp, img_bytes)
+            finally:
+                try:
+                    tmp.unlink(missing_ok=True)
+                except Exception:
+                    pass
+
+            if ocr.get("fund_name") or ocr.get("fund_code"):
+                # 基金名反查代码（如果视觉没识别出代码）
+                fund_code = ocr.get("fund_code", "")
+                if not fund_code and ocr.get("fund_name"):
+                    fund_code = _get_fund_code_by_name(ocr["fund_name"]) or ""
+                return {
+                    "ok": True,
+                    "fund_name": ocr.get("fund_name", ""),
+                    "fund_code": fund_code,
+                    "nav": ocr.get("nav"),
+                    "shares": ocr.get("shares"),
+                    "amount": ocr.get("amount"),
+                    "date": ocr.get("date"),
+                    "source": ocr.get("source", "llm_vision"),
+                }
+            print(f"[RECEIPT] deepseek vision 未识别到基金字段, 落 text 解析")
         except Exception as e:
             print(f"[RECEIPT] vision exception: {e}")
 

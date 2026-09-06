@@ -22,7 +22,7 @@ def test_resolve_default_model_peak_prefers_doubao_for_interactive(monkeypatch):
     model = gw_mod.resolve_default_model(
         "llm_light",
         module="chat",
-        now=datetime(2026, 7, 5, 9, 30),
+        now=datetime(2026, 7, 6, 9, 30),
     )
 
     assert model == "doubao-seed-2-0-lite-260215"
@@ -38,7 +38,7 @@ def test_resolve_default_model_peak_falls_back_to_qwen_when_doubao_missing(monke
     model = gw_mod.resolve_default_model(
         "llm_light",
         module="chat",
-        now=datetime(2026, 7, 5, 14, 1),
+        now=datetime(2026, 7, 6, 14, 1),
     )
 
     assert model == "qwen3.6-flash"
@@ -71,7 +71,7 @@ def test_resolve_default_model_peak_keeps_deepseek_when_alt_providers_missing(mo
     model = gw_mod.resolve_default_model(
         "llm_light",
         module="chat",
-        now=datetime(2026, 7, 5, 9, 35),
+        now=datetime(2026, 7, 6, 9, 35),
     )
 
     assert model == "deepseek-v4-flash"
@@ -87,12 +87,12 @@ def test_resolve_model_candidates_switches_fallback_order_by_peak_window(monkeyp
     peak_candidates = gw_mod.resolve_model_candidates(
         "llm_light",
         module="chat",
-        now=datetime(2026, 7, 5, 9, 35),
+        now=datetime(2026, 7, 6, 9, 35),
     )
     offpeak_candidates = gw_mod.resolve_model_candidates(
         "llm_light",
         module="chat",
-        now=datetime(2026, 7, 5, 20, 5),
+        now=datetime(2026, 7, 6, 20, 5),
     )
 
     assert peak_candidates == [
@@ -117,7 +117,7 @@ def test_resolve_default_model_noninteractive_keeps_deepseek_during_peak(monkeyp
     model = gw_mod.resolve_default_model(
         "llm_heavy",
         module="night_worker",
-        now=datetime(2026, 7, 5, 10, 15),
+        now=datetime(2026, 7, 6, 10, 15),
     )
 
     assert model == "deepseek-v4-pro"
@@ -201,8 +201,8 @@ def test_list_models_returns_peak_aware_default(monkeypatch):
 
     data = chat.list_models()
 
-    assert data["default"] == "doubao-seed-2-0-lite-260215"
-    assert {item["provider"] for item in data["models"]} == {"deepseek", "doubao", "qwen"}
+    assert data["default"] == "auto"
+    assert {item["provider"] for item in data["models"]} == {"deepseek", "doubao", "qwen", "auto"}
 
 
 def test_chat_analysis_passes_explicit_model_to_gateway(monkeypatch):
@@ -300,7 +300,8 @@ def test_chat_stream_fc_uses_peak_aware_default_model(monkeypatch):
 
     payload = asyncio.run(_collect_first_chunk())
 
-    assert captured["model"] == "doubao-seed-2-0-lite-260215"
+    # auto 哨兵归一化后传给 FC 的是空串，由 chat_fc 内部按峰谷解析默认模型
+    assert captured["model"] == ""
     assert "done" in payload
 
 
@@ -351,3 +352,59 @@ def test_chat_stream_done_event_preserves_model_and_fallback(monkeypatch):
     assert '"model": "qwen3.6-flash"' in payload
     assert '"fallback_used": false' in payload
     assert '"served_by": "llm"' in payload
+
+
+def test_chat_stream_fc_hard_failure_falls_back_to_normal_chat(monkeypatch):
+    fake_llm_gateway = types.ModuleType("services.llm_gateway")
+
+    class _FakeGateway:
+        @staticmethod
+        def instance():
+            return _FakeGateway()
+
+        def get_api_config(self, model_tier="llm_light", module=""):
+            return {
+                "api_key": "ds",
+                "api_base": "https://api.deepseek.com/v1",
+                "model": "deepseek-v4-flash",
+            }
+
+        def pre_check(self):
+            return True
+
+        def stream_sync(self, prompt, **kwargs):
+            yield {"delta": "回退成功", "phase": "answering", "done": False}
+            yield {"delta": "", "done": True, "model": "deepseek-v4-flash", "fallback_used": False}
+
+    fake_llm_gateway.LLMGateway = _FakeGateway
+    monkeypatch.setitem(sys.modules, "services.llm_gateway", fake_llm_gateway)
+
+    import api.chat as chat
+    import api.chat_fc as chat_fc
+    from models.schemas import ChatRequest
+
+    monkeypatch.setattr(chat, "_build_market_context", lambda: "")
+    monkeypatch.setattr(chat, "_build_portfolio_context", lambda *args, **kwargs: "")
+    monkeypatch.setattr(chat, "_build_system_prompt", lambda *args, **kwargs: "sys")
+    monkeypatch.setattr(chat, "classify_chat_intent", lambda *_args, **_kwargs: {"intent": "general"})
+    monkeypatch.setattr(chat, "_rule_based_reply", lambda *args, **kwargs: "rule")
+    monkeypatch.setattr(chat_fc, "should_use_fc", lambda *_args, **_kwargs: True)
+
+    def _fake_fc_hard_fail(user_msg, system_prompt, user_id, model="", history=None, max_rounds=4):
+        yield {"delta": "AI 暂时不可用（所有模型都失败）", "done": True, "source": "error"}
+
+    monkeypatch.setattr(chat_fc, "run_fc_agent_stream", _fake_fc_hard_fail)
+
+    async def _collect_body():
+        response = await chat.chat_analysis_stream(
+            ChatRequest(message="帮我比较沪深300和中证1000", userId="LeiJiang", model="auto")
+        )
+        body = []
+        async for chunk in response.body_iterator:
+            body.append(chunk.decode("utf-8") if isinstance(chunk, bytes) else chunk)
+        return "".join(body)
+
+    payload = asyncio.run(_collect_body())
+
+    assert '"served_by": "llm"' in payload
+    assert "所有模型都失败" not in payload
