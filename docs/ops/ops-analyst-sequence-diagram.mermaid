@@ -1,0 +1,34 @@
+sequenceDiagram
+    participant CRON as crontab (08:05)
+    participant A as ops_analyst.py
+    participant FS as 文件系统 data/ops
+    participant G as LLMGateway(llm_heavy)
+    participant J as json_extract
+    participant W as wxwork_push
+
+    CRON->>A: python scripts/ops_analyst.py
+    A->>FS: 读 snapshot_{today}.json
+    FS-->>A: Snapshot
+    A->>FS: glob snapshot_*.json（近30天）
+    FS-->>A: 历史快照列表
+    A->>A: build_history() → DailyPoint[]
+    A->>A: compute_context(today, history) → Context
+    A->>A: rule_triage(today, context) → RuleTriage
+    A->>G: call_sync(prompt=context, system=ops_analyst.md, llm_heavy, module=ops_analyst)
+    G-->>A: {content, source, model}
+    A->>J: extract_json_object(content)
+    J-->>A: dict | None
+    alt LLM 成功
+        A->>A: merge_verdict(rule, llm) 一票否决
+    else LLM 失败/熔断/解析失败
+        A->>A: fallback_report(rule) 规则降级
+    end
+    A->>A: render_report(final) → report_text
+    A->>FS: atomic_write_json(report_{date}.json)
+    A->>FS: atomic_write_json(baseline.json)
+    alt overall == critical
+        A->>W: send_markdown(致命告警, user_id="LeiJiang")
+    end
+    A->>W: send_daily_report_to("LeiJiang", report_text, title="🔍 运维巡检日报")
+    W-->>A: {ok: true}
+    A-->>CRON: exit 0

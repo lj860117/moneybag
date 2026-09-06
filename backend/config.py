@@ -330,3 +330,18 @@ RISK_ALLOC_PCTS = {
     "进取型":  [35, 25, 10, 10, 15, 5],
     "激进型":  [40, 30, 5, 5, 15, 5],
 }
+
+# ---- 二期 AI 运维巡检日报（ops_analyst.py）----
+OPS_DIR_NAME = "ops"                     # DATA_DIR 下子目录名
+OPS_REPORT_USER_ID = os.environ.get("OPS_REPORT_USER_ID", "LeiJiang")  # 日报只推 LeiJiang
+OPS_BASELINE_FILE = "baseline.json"      # 滚动基线
+OPS_CRITICAL_STATE_FILE = "critical_state.json"  # 实时 critical 去重
+OPS_WINDOW_7D = 7                        # 7 天异常检测窗口
+OPS_WINDOW_30D = 30                      # 30 天趋势窗口（也是基线最多保留天数）
+OPS_DISK_CRITICAL_GB = 5.0               # 磁盘 critical 阈值（与 ops_summary.DISK_WARN_GB 对齐）
+OPS_DISK_WARN_GB = 10.0                  # 磁盘 warn 阈值
+OPS_ERROR_CRITICAL_COUNT = 10            # 24h 错误日志 critical 条数
+OPS_ERROR_WARN_COUNT = 3                 # 24h 错误日志 warn 条数
+OPS_ROUTED_PROVIDERS = ("deepseek", "doubao")  # 主路由模型（欠费=critical）
+OPS_LLM_MODEL_TIER = "llm_heavy"         # 分析用重档（DeepSeek V4 Pro，豆包 Seed 2.1 Pro 兜底）
+OPS_LLM_MAX_TOKENS = 3000

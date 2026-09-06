@@ -1,0 +1,80 @@
+classDiagram
+    class Snapshot {
+        +str date
+        +str generated_at
+        +list freshness
+        +dict summary
+        +dict disk
+        +dict llm_balance
+        +dict error_logs_24h
+    }
+    class DailyPoint {
+        +str date
+        +int stale_count
+        +bool overall_ok
+        +float disk_free_gb
+        +bool disk_ok
+        +list arrears
+        +int error_count_24h
+    }
+    class Baseline {
+        +str updated_at
+        +list~DailyPoint~ days
+    }
+    class Context {
+        +Snapshot today
+        +list~DailyPoint~ days_7
+        +list~DailyPoint~ days_30
+        +dict derived
+        +dict rule
+    }
+    class RuleTriage {
+        +str overall
+        +dict per_dim
+        +list reasons
+    }
+    class DimensionCheck {
+        +str dimension
+        +str verdict
+        +str headline
+        +str detail
+        +str trend
+    }
+    class AnalysisReport {
+        +str date
+        +str generated_at
+        +str source
+        +str model
+        +str overall_verdict
+        +str summary
+        +list~DimensionCheck~ dimensions
+        +list critical_items
+        +list warn_items
+        +str report_text
+        +RuleTriage rule
+        +dict push
+    }
+    class OpsAnalyst {
+        +run_report() int
+        +run_critical_only() int
+        +load_latest_snapshot() Snapshot
+        +build_history() list~DailyPoint~
+        +load_baseline() Baseline
+        +save_baseline(Baseline) None
+        +compute_context(Snapshot, list) Context
+        +rule_triage(Snapshot, Context) RuleTriage
+        +call_llm(Context) dict
+        +merge_verdict(RuleTriage, dict) AnalysisReport
+        +render_report(AnalysisReport) str
+        +fallback_report(RuleTriage, Snapshot) AnalysisReport
+        +push_report(AnalysisReport) None
+    }
+    OpsAnalyst --> Snapshot : 读取
+    OpsAnalyst --> Baseline : 读写(原子写)
+    OpsAnalyst --> Context : 构建
+    OpsAnalyst --> RuleTriage : 产出
+    OpsAnalyst --> AnalysisReport : 产出
+    Context *-- DailyPoint : 聚合
+    Baseline *-- DailyPoint : 包含
+    AnalysisReport *-- DimensionCheck : 包含
+    AnalysisReport *-- RuleTriage : 留痕
