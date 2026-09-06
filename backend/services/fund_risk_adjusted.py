@@ -87,7 +87,9 @@ _RA_CACHE: dict = {}
 _RA_CACHE_LOCK = threading.Lock()
 
 # 预热队列 + 守卫（防止并发 drain 打爆 Tushare）
-_PENDING_WARMUP: set = set()
+# {code: name}——name 供 compute_risk_adjusted_metrics → classify_fund 兜底识别类型，
+# 避免新基金（代码不在 code_pattern 库）因缺 name 被误判 unknown → 错误落负缓存。
+_PENDING_WARMUP: dict = {}
 _WARMUP_LOCK = threading.Lock()
 _WARMUP_RUNNING = False
 # 预热并发上限 / 单只超时（秒）——超时只代表「不等」，底层线程自行结束
@@ -153,21 +155,46 @@ def set_risk_adjusted_cache(code: str, metrics: dict) -> None:
                 pass
 
 
-def enqueue_risk_adjusted_warmup(codes) -> None:
-    """将未命中缓存的 code 加入预热队列，并按需启动后台 worker。
+def invalidate_risk_adjusted_cache(code: str) -> None:
+    """删除指定 code 的共享缓存（内存 + 文件），使 get 回到「未命中」状态。
 
-    去重由 set 保证；「过滤已缓存」在入队处粗过滤（含负缓存：算过即跳过），
+    用于选基列表自愈「缺 name 被 classify_fund 误判 unknown 的历史坏负缓存」：
+    先删掉坏负缓存，再重新入队补算——否则 enqueue 的粗过滤会把「负缓存也算已
+    缓存」而跳过，永远无法覆盖该错误负缓存。
+    """
+    with _RA_CACHE_LOCK:
+        _RA_CACHE.pop(code, None)
+        path = _risk_adjusted_cache_path(code)
+        try:
+            if path.exists():
+                path.unlink()
+        except Exception:
+            pass
+
+
+def enqueue_risk_adjusted_warmup(code_name_map) -> None:
+    """将未命中缓存的 code（携带 name）加入预热队列，并按需启动后台 worker。
+
+    入参支持（向后兼容）：
+      - dict: {code: name}（推荐；name 供 classify_fund 兜底识别类型，避免新基金
+              因代码不在 code_pattern 库而被误判 unknown → 落错误负缓存）
+      - list/set/tuple of str: 仅 code，name 视为空
+    去重由 dict key 保证；「过滤已缓存」在入队处粗过滤（含负缓存：算过即跳过），
     worker 弹出时再做一次精确过滤（避免入队后又被详情回填/预热补算）。
     """
     global _WARMUP_RUNNING
-    if not codes:
+    if not code_name_map:
         return
-    code_list = [c for c in codes if c]
-    if not code_list:
+
+    if isinstance(code_name_map, dict):
+        normalized = {str(c): (n or "") for c, n in code_name_map.items() if c}
+    else:
+        normalized = {str(c): "" for c in code_name_map if c}
+    if not normalized:
         return
 
     # 粗过滤：只在当前无有效缓存时才入队（负缓存也算已缓存，跳过）
-    to_add = [c for c in code_list if get_risk_adjusted_cache(c) is None]
+    to_add = {c: n for c, n in normalized.items() if get_risk_adjusted_cache(c) is None}
     if not to_add:
         return
 
@@ -184,21 +211,22 @@ def _warm_risk_adjusted_worker() -> None:
     """后台预热 worker：循环取队列直到空，算完落正/负缓存。
 
     串行取批（每批最多 _WARMUP_MAX_WORKERS 只）+ 限并发计算。
+    队列元素为 (code, name)，name 传给 compute_risk_adjusted_metrics 做类型兜底。
     _WARMUP_RUNNING 只在「队列已确认为空」时于锁内复位一次，避免与
     并发入队（spawn 新 worker）的守卫状态互相覆盖。
     """
     global _WARMUP_RUNNING
     while True:
         with _WARMUP_LOCK:
-            batch: List[str] = []
+            batch: List[Tuple[str, str]] = []
             while _PENDING_WARMUP and len(batch) < _WARMUP_MAX_WORKERS:
-                batch.append(_PENDING_WARMUP.pop())
+                batch.append(_PENDING_WARMUP.popitem())
             if not batch:
                 _WARMUP_RUNNING = False
                 return
 
         # 锁外精确过滤已缓存（避免阻塞入队，且不把网络计算放锁内）
-        batch = [c for c in batch if get_risk_adjusted_cache(c) is None]
+        batch = [(code, name) for code, name in batch if get_risk_adjusted_cache(code) is None]
         if not batch:
             continue
         try:
@@ -209,26 +237,41 @@ def _warm_risk_adjusted_worker() -> None:
             pass
 
 
-def _compute_batch(codes: List[str]) -> None:
+def _compute_batch(items) -> None:
     """限并发补算一批基金性价比指标并落缓存（含负缓存）。
 
+    items 支持 [(code, name), ...]（worker 传入）或 [code, ...]（向后兼容）。
+    name 传给 compute_risk_adjusted_metrics 做类型兜底，修复「只传 code 不传 name」
+    导致新基金被 classify_fund 误判 unknown → 错误落负缓存的 bug。
     ThreadPoolExecutor(max_workers=_WARMUP_MAX_WORKERS)；单只
     future.result(timeout=_WARMUP_SINGLE_TIMEOUT)。超时只代表「不等」，
     底层线程自行结束后落缓存（shutdown(wait=False) 不阻塞 worker）。
     """
     from concurrent.futures import ThreadPoolExecutor
 
-    def _one(code: str) -> None:
+    def _one(code: str, name: str = "") -> None:
         try:
-            metrics = compute_risk_adjusted_metrics(code)
+            metrics = compute_risk_adjusted_metrics(code, name=name)
             set_risk_adjusted_cache(code, metrics)
         except Exception:
             # 单只失败不拖垮整批；失败不落缓存，下次请求会重试
             pass
 
+    # 归一化 items：兼容 [(code, name), ...] 与 [code, ...]
+    jobs: List[Tuple[str, str]] = []
+    for it in items:
+        if isinstance(it, (tuple, list)):
+            code = str(it[0]) if it else ""
+            name = str(it[1]) if len(it) > 1 and it[1] else ""
+        else:
+            code = str(it)
+            name = ""
+        if code:
+            jobs.append((code, name))
+
     ex = ThreadPoolExecutor(max_workers=_WARMUP_MAX_WORKERS)
     try:
-        futures = [ex.submit(_one, c) for c in codes]
+        futures = [ex.submit(_one, code, name) for code, name in jobs]
         for fut in futures:
             try:
                 fut.result(timeout=_WARMUP_SINGLE_TIMEOUT)
@@ -522,6 +565,10 @@ def compute_risk_adjusted_metrics(code: str, name: str = "", fund_type: str = ""
 
     result = {
         "code": code,
+        # 记录本次计算是否携带 name：用于选基列表自愈「缺 name 被误判 unknown 的
+        # 历史坏负缓存」——name_provided=False 且 fund_type=unknown 的负缓存，
+        # 在后续拿到 name 时会被重新入队补算覆盖，无需人工清理缓存目录。
+        "name_provided": bool(name),
         "available": False,
         "degraded": False,
         "fund_type": "",

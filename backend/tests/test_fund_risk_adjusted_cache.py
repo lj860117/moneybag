@@ -7,6 +7,9 @@
   - TTL 过期返回 None
   - 原子写不残留 .tmp、文件为合法 JSON
   - 入队去重 + 跳过已缓存（正/负缓存）
+  - 入队携带 name（dict 形式）供 worker 类型识别兜底
+  - worker 把 name 传给 compute_risk_adjusted_metrics（核心 bug 回归）
+  - invalidate 删除内存+文件缓存（自愈坏负缓存的原语）
   - 并发守卫（_WARMUP_RUNNING 阻止重复起 worker）
   - worker 跳过已缓存、不可计算基金落负缓存
   - 单只计算异常被吞掉不拖垮整批、超时不抛
@@ -209,6 +212,20 @@ def test_atomic_write_concurrent_read_never_sees_partial_file():
     assert errors == []
 
 
+def test_invalidate_removes_memory_and_file():
+    """自愈原语：删除指定 code 的内存 + 文件缓存，使 get 回到「未命中」。"""
+    fra.set_risk_adjusted_cache("DEL1", {"code": "DEL1", "available": False, "fund_type": "unknown"})
+    assert fra.get_risk_adjusted_cache("DEL1") is not None
+    path = fra._risk_adjusted_cache_path("DEL1")
+    assert path.exists()
+
+    fra.invalidate_risk_adjusted_cache("DEL1")
+
+    assert fra.get_risk_adjusted_cache("DEL1") is None
+    assert "DEL1" not in fra._RA_CACHE
+    assert not path.exists()
+
+
 # ──────────────────────────────────────────────────────────
 # 入队去重 / 跳过已缓存 / 并发守卫
 # ──────────────────────────────────────────────────────────
@@ -222,7 +239,20 @@ def test_enqueue_warmup_dedup_and_skip_cached():
 
     fra.enqueue_risk_adjusted_warmup(["H", "I", "J", "J", "K"])
 
-    assert fra._PENDING_WARMUP == {"J", "K"}  # H/I 跳过，J 去重
+    assert fra._PENDING_WARMUP == {"J": "", "K": ""}  # H/I 跳过，J 去重（list 向后兼容，name 空）
+
+    fra._WARMUP_RUNNING = False
+
+
+def test_enqueue_warmup_carries_name():
+    fra._WARMUP_RUNNING = True  # 假装已有 worker，enqueue 只入队不起线程
+
+    fra.enqueue_risk_adjusted_warmup({"017849": "东方红先进制造混合C", "001112": "某债基"})
+
+    assert fra._PENDING_WARMUP == {
+        "017849": "东方红先进制造混合C",
+        "001112": "某债基",
+    }  # name 随 code 一起入队，供 worker 类型识别兜底
 
     fra._WARMUP_RUNNING = False
 
@@ -251,7 +281,7 @@ def test_worker_skips_already_cached(monkeypatch):
         lambda code, name="", fund_type="": computed.append(code) or {"code": code, "available": True},
     )
 
-    fra._PENDING_WARMUP.add("P")
+    fra._PENDING_WARMUP["P"] = ""
     fra._warm_risk_adjusted_worker()
 
     assert computed == []  # 已缓存（TTL 内）→ 弹出后精确过滤跳过
@@ -265,7 +295,7 @@ def test_worker_writes_negative_cache_for_noncomputable(monkeypatch):
         lambda code, name="", fund_type="": {"code": code, "available": False, "reason": "债券型"},
     )
 
-    fra._PENDING_WARMUP.add("M")
+    fra._PENDING_WARMUP["M"] = ""
     fra._warm_risk_adjusted_worker()
 
     got = fra.get_risk_adjusted_cache("M")
@@ -274,8 +304,32 @@ def test_worker_writes_negative_cache_for_noncomputable(monkeypatch):
     assert fra._WARMUP_RUNNING is False
 
 
+def test_worker_passes_name_to_compute(monkeypatch):
+    """核心回归：worker 弹出 (code, name) 后必须把 name 传给 compute_risk_adjusted_metrics。
+
+    修复「只传 code 不传 name」导致新基金被 classify_fund 误判 unknown → 落错误负缓存。
+    """
+    received = {}
+
+    def _fake(code, name="", fund_type=""):
+        received["code"] = code
+        received["name"] = name
+        return {"code": code, "name_provided": bool(name), "available": True, "sharpe_ratio": 1.5}
+
+    monkeypatch.setattr(fra, "compute_risk_adjusted_metrics", _fake)
+
+    fra._PENDING_WARMUP["017849"] = "东方红先进制造混合C"
+    fra._warm_risk_adjusted_worker()
+
+    assert received == {"code": "017849", "name": "东方红先进制造混合C"}
+    got = fra.get_risk_adjusted_cache("017849")
+    assert got is not None
+    assert got["available"] is True
+    assert fra._WARMUP_RUNNING is False
+
+
 def test_compute_batch_swallows_compute_errors(monkeypatch):
-    def _boom(code):
+    def _boom(code, name=""):
         raise RuntimeError("network down")
 
     monkeypatch.setattr(fra, "compute_risk_adjusted_metrics", _boom)
@@ -286,7 +340,7 @@ def test_compute_batch_swallows_compute_errors(monkeypatch):
 def test_compute_batch_timeout_does_not_raise(monkeypatch):
     monkeypatch.setattr(fra, "_WARMUP_SINGLE_TIMEOUT", 0.05)
 
-    def _slow(code):
+    def _slow(code, name=""):
         time.sleep(0.2)
         return {"code": code, "available": True, "sharpe_ratio": 1.0}
 
@@ -307,10 +361,13 @@ if __name__ == "__main__":
         test_atomic_write_no_tmp_leftover_and_valid_json,
         test_concurrent_get_set_no_race_corruption,
         test_atomic_write_concurrent_read_never_sees_partial_file,
+        test_invalidate_removes_memory_and_file,
         test_enqueue_warmup_dedup_and_skip_cached,
+        test_enqueue_warmup_carries_name,
         test_enqueue_does_not_start_second_worker,
         test_worker_skips_already_cached,
         test_worker_writes_negative_cache_for_noncomputable,
+        test_worker_passes_name_to_compute,
         test_compute_batch_swallows_compute_errors,
         test_compute_batch_timeout_does_not_raise,
     ]
@@ -320,6 +377,7 @@ if __name__ == "__main__":
             # 手动跑时用 pytest 的 monkeypatch 不方便，跳过需要 monkeypatch 的用例
             if t.__name__ in ("test_ttl_expiry_returns_none", "test_enqueue_does_not_start_second_worker",
                               "test_worker_skips_already_cached", "test_worker_writes_negative_cache_for_noncomputable",
+                              "test_worker_passes_name_to_compute",
                               "test_compute_batch_swallows_compute_errors", "test_compute_batch_timeout_does_not_raise"):
                 continue
             fra._RA_CACHE.clear()
