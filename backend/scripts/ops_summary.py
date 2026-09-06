@@ -209,7 +209,12 @@ def collect_llm_balance() -> dict[str, Any]:
 
 
 def collect_error_logs() -> dict[str, Any]:
-    """扫描核心 cron 日志里 24h 内的错误/异常关键字。"""
+    """扫描核心 cron 日志里 24h 内的错误/异常关键字。
+
+    排除「正常容错重试」：`fetch attempt N failed: timed out, retry in Xs` 这类
+    网络超时后自动重试是正常容错（重试成功即无碍），不应统计为错误。按行匹配，
+    命中 failed/Failed 时若同行还含 retry/timeout/重试/超时 等容错标志则跳过。
+    """
     log_dirs = [
         Path("/var/log/moneybag"),
         DATA_DIR / "logs",
@@ -218,6 +223,8 @@ def collect_error_logs() -> dict[str, Any]:
         _LEGACY_DATA_DIR / "night_worker",
     ]
     keywords = ("Traceback", "ERROR", "❌", "Exception", "failed", "Failed")
+    # 容错重试标志：failed 行若同时含这些词，属正常超时重试，不记为错误
+    retry_markers = ("retry", "timed out", "timeout", "重试", "超时")
     cutoff = datetime.now() - timedelta(hours=24)
     findings: list[dict[str, Any]] = []
     for log_dir in log_dirs:
@@ -228,10 +235,16 @@ def collect_error_logs() -> dict[str, Any]:
                 if f.stat().st_mtime < cutoff.timestamp():
                     continue
                 text = f.read_text(encoding="utf-8", errors="ignore")
-                for kw in keywords:
-                    if kw in text:
-                        findings.append({"file": str(f), "keyword": kw})
-                        break
+                # 按行匹配，才能精确排除「failed 但带 retry」的容错行
+                lines = text.splitlines()
+                for line in lines:
+                    for kw in keywords:
+                        if kw in line:
+                            # failed/Failed 且同行含容错重试标志 → 跳过
+                            if kw.lower() == "failed" and any(m in line.lower() for m in retry_markers):
+                                continue
+                            findings.append({"file": str(f), "keyword": kw})
+                            break
             except Exception:
                 continue
     return {"count_24h": len(findings), "files": findings[:20]}
