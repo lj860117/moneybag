@@ -459,6 +459,8 @@ def _compute_fund_screen(fund_type, sort_by, top_n, userId):
         _enrich_with_dna_match(result["funds"], userId)
         # v9.5.123: 实时净值估算(盘中今日涨跌)
         _enrich_realtime_estimate(result["funds"])
+        # v9.9.x T02: 性价比标签注入（读共享缓存；未命中入队后台补算）
+        _enrich_risk_adjusted(result["funds"])
         result["my_holdings_summary"] = _get_my_fund_holdings_summary(userId, get_fund_industry)
 
     result["market_timing"] = _get_market_timing_summary()
@@ -1550,6 +1552,49 @@ def _enrich_realtime_estimate(funds: list):
                     break
     except Exception as e:
         print(f"[REALTIME_EST] enrich failed: {e}")
+
+
+def _enrich_risk_adjusted(funds: list) -> None:
+    """v9.9.x T02: 从共享性价比缓存为选基列表注入 sharpe_ratio / sortino_ratio。
+
+    - 命中且 available 且 sharpe_ratio is not None → 注入 f.sharpe_ratio / f.sortino_ratio
+    - 未命中（None）→ 收集入 missed，统一 enqueue_risk_adjusted_warmup 后台补算
+    - 负缓存（available=False）→ 跳过，不入队不注入（债/QDII/货币等不可计算）
+
+    只注入 sharpe_ratio + sortino_ratio（Calmar/IR/Treynor/β 不注入列表）。
+    未命中不写字段（等价前端不显示），不引入 value_label 字段。
+    """
+    if not funds:
+        return
+    try:
+        from services.fund_risk_adjusted import (
+            get_risk_adjusted_cache,
+            enqueue_risk_adjusted_warmup,
+        )
+    except Exception:
+        return
+
+    missed: list = []
+    for f in funds:
+        code = f.get("code", "")
+        if not code:
+            continue
+        metrics = get_risk_adjusted_cache(code)
+        if metrics is None:
+            # 没算过 → 收集，稍后统一入队后台补算
+            missed.append(code)
+            continue
+        # 负缓存：算过但不可用（债/QDII/货币）→ 不入队不注入
+        if not metrics.get("available"):
+            continue
+        if metrics.get("sharpe_ratio") is not None:
+            f["sharpe_ratio"] = metrics["sharpe_ratio"]
+            # sortino 可能为 None（近3年无下行波动），有则注入
+            if metrics.get("sortino_ratio") is not None:
+                f["sortino_ratio"] = metrics["sortino_ratio"]
+
+    if missed:
+        enqueue_risk_adjusted_warmup(missed)
 
 
 def _check_qdii_purchase_status(funds: list):

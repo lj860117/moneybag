@@ -27,15 +27,22 @@
 """
 from __future__ import annotations
 
+import json
 import math
+import os
+import threading
+import time
+from pathlib import Path
 from typing import List, Optional, Sequence, Tuple
 
 from config import (
+    DATA_DIR,
     RISK_FREE_RATE_ANNUAL,
     RISK_ADJUSTED_WINDOW_DAYS,
     ANNUALIZATION_FACTOR,
     RISK_ADJUSTED_BENCHMARK,
     RISK_ADJUSTED_MAR_ANNUAL,
+    RISK_ADJUSTED_CACHE_TTL,
 )
 
 # 浮点判零阈值（避免 β≈0 / 方差≈0 时的除零）
@@ -60,6 +67,175 @@ _TYPE_LABEL_MAP = {
 _QDII_NAME_KEYWORDS = (
     "QDII", "海外", "美元", "港币", "纳斯达克", "纳指", "标普", "日经", "环球", "全球",
 )
+
+
+# ══════════════════════════════════════════════════════════
+# 共享性价比缓存 + 后台预热队列（T01/T03）
+# ══════════════════════════════════════════════════════════
+# 单一真值来源：选基列表注入只读这里，详情计算完成 + 预热 worker 写这里。
+# 正缓存（available=True）与负缓存（available=False，债/QDII/货币）都落盘，
+# 使列表注入能区分「没算过 → 入队补算」vs「算过但不可用 → 不入队不注入」。
+_RA_CACHE_DIR = DATA_DIR / "_cache" / "fund_risk_adjusted"
+try:
+    _RA_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+except Exception:
+    pass
+
+# 内存缓存：{code: {"v": metrics, "t": epoch}}
+_RA_CACHE: dict = {}
+# 单把锁保护内存 + 文件读写（写不频繁、对象小，无需读写锁）
+_RA_CACHE_LOCK = threading.Lock()
+
+# 预热队列 + 守卫（防止并发 drain 打爆 Tushare）
+_PENDING_WARMUP: set = set()
+_WARMUP_LOCK = threading.Lock()
+_WARMUP_RUNNING = False
+# 预热并发上限 / 单只超时（秒）——超时只代表「不等」，底层线程自行结束
+_WARMUP_MAX_WORKERS = 2
+_WARMUP_SINGLE_TIMEOUT = 25
+
+
+def _risk_adjusted_cache_path(code: str) -> Path:
+    """返回 code 对应的共享缓存文件路径。"""
+    return _RA_CACHE_DIR / f"{code}.json"
+
+
+def get_risk_adjusted_cache(code: str) -> Optional[dict]:
+    """读取共享性价比缓存（内存 → 文件 → 回填内存）。
+
+    TTL 由 config.RISK_ADJUSTED_CACHE_TTL 控制（默认 24h）。
+    命中返回 metrics 契约 dict；未命中/过期返回 None。
+    负缓存（available=False）也会返回其 dict，调用方据此区分
+    「没算过」vs「算过但不可用」。网络计算绝不放在锁内。
+    """
+    now = time.time()
+    with _RA_CACHE_LOCK:
+        entry = _RA_CACHE.get(code)
+        if entry is not None and now - entry["t"] < RISK_ADJUSTED_CACHE_TTL:
+            return entry["v"]
+
+        # 内存未命中/过期 → 读文件并回填内存
+        path = _risk_adjusted_cache_path(code)
+        if path.exists():
+            try:
+                data = json.loads(path.read_text(encoding="utf-8"))
+                t = data.get("t", 0)
+                if now - t < RISK_ADJUSTED_CACHE_TTL and "v" in data:
+                    _RA_CACHE[code] = data
+                    return data["v"]
+            except Exception:
+                pass
+    return None
+
+
+def set_risk_adjusted_cache(code: str, metrics: dict) -> None:
+    """写入共享性价比缓存（内存 + 文件原子替换）。
+
+    幂等 last-write-wins：同一 code 两次写内容等价（同口径同数据）。
+    先写 `{code}.json.tmp` 再 os.replace 原子替换，避免并发读到半截文件。
+    负缓存（available=False）同样落盘。
+    """
+    rec = {"v": metrics, "t": time.time()}
+    with _RA_CACHE_LOCK:
+        _RA_CACHE[code] = rec
+        path = _risk_adjusted_cache_path(code)
+        tmp_path = path.with_name(f"{code}.json.tmp")
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            tmp_path.write_text(json.dumps(rec, ensure_ascii=False), encoding="utf-8")
+            os.replace(tmp_path, path)
+        except Exception:
+            # 文件写失败不影响内存命中；清理可能残留的 .tmp
+            try:
+                if tmp_path.exists():
+                    tmp_path.unlink()
+            except Exception:
+                pass
+
+
+def enqueue_risk_adjusted_warmup(codes) -> None:
+    """将未命中缓存的 code 加入预热队列，并按需启动后台 worker。
+
+    去重由 set 保证；「过滤已缓存」在入队处粗过滤（含负缓存：算过即跳过），
+    worker 弹出时再做一次精确过滤（避免入队后又被详情回填/预热补算）。
+    """
+    global _WARMUP_RUNNING
+    if not codes:
+        return
+    code_list = [c for c in codes if c]
+    if not code_list:
+        return
+
+    # 粗过滤：只在当前无有效缓存时才入队（负缓存也算已缓存，跳过）
+    to_add = [c for c in code_list if get_risk_adjusted_cache(c) is None]
+    if not to_add:
+        return
+
+    with _WARMUP_LOCK:
+        _PENDING_WARMUP.update(to_add)
+        if _WARMUP_RUNNING:
+            return
+        _WARMUP_RUNNING = True
+
+    threading.Thread(target=_warm_risk_adjusted_worker, daemon=True).start()
+
+
+def _warm_risk_adjusted_worker() -> None:
+    """后台预热 worker：循环取队列直到空，算完落正/负缓存。
+
+    串行取批（每批最多 _WARMUP_MAX_WORKERS 只）+ 限并发计算。
+    _WARMUP_RUNNING 只在「队列已确认为空」时于锁内复位一次，避免与
+    并发入队（spawn 新 worker）的守卫状态互相覆盖。
+    """
+    global _WARMUP_RUNNING
+    while True:
+        with _WARMUP_LOCK:
+            batch: List[str] = []
+            while _PENDING_WARMUP and len(batch) < _WARMUP_MAX_WORKERS:
+                batch.append(_PENDING_WARMUP.pop())
+            if not batch:
+                _WARMUP_RUNNING = False
+                return
+
+        # 锁外精确过滤已缓存（避免阻塞入队，且不把网络计算放锁内）
+        batch = [c for c in batch if get_risk_adjusted_cache(c) is None]
+        if not batch:
+            continue
+        try:
+            _compute_batch(batch)
+        except Exception:
+            # _compute_batch 内部已吞单只异常；这里兜底防整批级异常中断循环，
+            # 保证 worker 能继续 drain 剩余队列、最终复位守卫。
+            pass
+
+
+def _compute_batch(codes: List[str]) -> None:
+    """限并发补算一批基金性价比指标并落缓存（含负缓存）。
+
+    ThreadPoolExecutor(max_workers=_WARMUP_MAX_WORKERS)；单只
+    future.result(timeout=_WARMUP_SINGLE_TIMEOUT)。超时只代表「不等」，
+    底层线程自行结束后落缓存（shutdown(wait=False) 不阻塞 worker）。
+    """
+    from concurrent.futures import ThreadPoolExecutor
+
+    def _one(code: str) -> None:
+        try:
+            metrics = compute_risk_adjusted_metrics(code)
+            set_risk_adjusted_cache(code, metrics)
+        except Exception:
+            # 单只失败不拖垮整批；失败不落缓存，下次请求会重试
+            pass
+
+    ex = ThreadPoolExecutor(max_workers=_WARMUP_MAX_WORKERS)
+    try:
+        futures = [ex.submit(_one, c) for c in codes]
+        for fut in futures:
+            try:
+                fut.result(timeout=_WARMUP_SINGLE_TIMEOUT)
+            except Exception:
+                pass
+    finally:
+        ex.shutdown(wait=False)
 
 
 def _to_float(value) -> Optional[float]:

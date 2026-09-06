@@ -1,0 +1,62 @@
+classDiagram
+    class Config {
+        +float RISK_FREE_RATE_ANNUAL = 0.02
+        +int RISK_ADJUSTED_WINDOW_DAYS = 1095
+        +int ANNUALIZATION_FACTOR = 252
+        +str RISK_ADJUSTED_BENCHMARK = "000300.SH"
+        +float RISK_ADJUSTED_MAR_ANNUAL = 0.0
+        +int RISK_ADJUSTED_CACHE_TTL = 86400
+    }
+
+    class FundRiskAdjusted {
+        +dict _RA_CACHE
+        +Lock _RA_CACHE_LOCK
+        +set _PENDING_WARMUP
+        +bool _WARMUP_RUNNING
+        +Lock _WARMUP_LOCK
+        +int _WARM_MAX_WORKERS = 2
+        +float _WARM_PER_CODE_TIMEOUT = 25.0
+        +get_risk_adjusted_cache(code str) Optional~dict~
+        +set_risk_adjusted_cache(code str, metrics dict) None
+        +_risk_adjusted_cache_path(code str) Path
+        +enqueue_risk_adjusted_warmup(codes Sequence) None
+        +_warm_risk_adjusted_worker() None
+        +_compute_batch(codes list) None
+        +compute_risk_adjusted_metrics(code, name, fund_type) dict
+        +_resolve_fund_type(code, name, fund_type) tuple
+        +compute_sharpe(daily_returns, rf_annual, af) Optional~float~
+        +compute_sortino(daily_returns, mar_daily, af) Optional~float~
+        +compute_calmar(daily_returns, navs, af) Optional~float~
+        +compute_beta(fund_returns, bench_returns) Optional~float~
+        +compute_information_ratio(fund_returns, bench_returns, af) Optional~float~
+        +compute_treynor(daily_returns, beta, rf_annual, af) Optional~float~
+    }
+
+    class FundScreenAPI {
+        +_compute_fund_screen(fund_type, sort_by, top_n, userId) dict
+        +_enrich_risk_adjusted(funds list) None
+        +_enrich_style_tag(funds list) None
+        +_enrich_trend_forecast(funds list) None
+        +_enrich_manager_stability(funds list) None
+        +_enrich_with_dna_match(funds list, userId) None
+        +_enrich_realtime_estimate(funds list) None
+    }
+
+    class FundDetailAPI {
+        +fund_detail(code str, userId str) dict
+    }
+
+    class FrontendTagPool {
+        +_buildFundTagPool(f dict) list
+    }
+
+    class FrontendComponents {
+        +RA_THRESHOLDS dict
+        +renderDetailChips(d dict) html
+    }
+
+    Config <.. FundRiskAdjusted : 读取常量
+    FundRiskAdjusted <.. FundDetailAPI : compute + set
+    FundRiskAdjusted <.. FundScreenAPI : get + enqueue
+    FundScreenAPI ..> FrontendTagPool : 注入 f.sharpe_ratio / f.sortino_ratio
+    FrontendTagPool ..> FrontendComponents : 引用 RA_THRESHOLDS

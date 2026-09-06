@@ -92,8 +92,10 @@ RISK_FREE_RATE_ANNUAL = 0.02          # 年化无风险利率（近 3 年性价�
 RISK_ADJUSTED_WINDOW_DAYS = 1095      # 近 3 年窗口（自然日，约 3 年交易日）
 ANNUALIZATION_FACTOR = 252            # 日频年化因子（一年交易日数）
 RISK_ADJUSTED_BENCHMARK = "000300.SH"  # 股票/混合型基准：沪深300
-RISK_ADJUSTED_MAR_ANNUAL = 0.0        # Sortino 最低可接受收益 MAR（年化）。默认 0；
-                                      # 如需用 Rf 作为 MAR，可改为 RISK_FREE_RATE_ANNUAL。
+RISK_ADJUSTED_MAR_ANNUAL = 0.0        # Sortino 最低可接受收益 MAR（年化）。
+                                      # 决策：默认 0，与 empyrical.sortino_ratio(returns, required_return=0) 对齐；
+                                      # 如改 0.02，需同步改 pages/_components.js 568-572 行 Sortino 文案的 MAR=0 说明。
+RISK_ADJUSTED_CACHE_TTL = 86400       # 共享性价比缓存 TTL（秒），24h（选基列表注入 + 详情回填共用）
 
 # ---- 股票持仓纪律阈值 ----
 STOCK_SINGLE_MAX = 0.20          # 单只股票最大仓位占比 20%
@@ -130,7 +132,7 @@ LLM_MODEL = os.environ.get("LLM_MODEL", "deepseek-v4-flash")
 TUSHARE_TOKEN = os.environ.get("TUSHARE_TOKEN", "")
 
 # ---- 版本号（Phase 1 更新）----
-APP_VERSION = "9.9.13"
+APP_VERSION = "9.9.14"
 
 # ---- v9.5.123: API 鉴权 ----
 # 每个用户一个token，格式: userId:token（环境变量或data/auth_tokens.json）

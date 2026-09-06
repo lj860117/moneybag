@@ -14,6 +14,9 @@
 window.MB = window.MB || {};
 window.MB.components = {};
 
+// v9.9.x T04: 性价比阈值单一来源（列表标签 + 详情 chip 统一引用）
+window.RA_THRESHOLDS = { sharpe_excellent: 1.5, sharpe_good: 1.0 };
+
 /* ──────────────────────────────────────────────────────────
  * 1. renderTopBar(user)
  *    顶部条：头像 + 问候语 + 主题切换 + 专业模式入口
@@ -556,14 +559,14 @@ window.showFundDetailModal = async function(code, name) {
       <div class="mb-card--ghost" style="padding:10px;text-align:center" onclick="alert('基金规模\\n\\n这只基金管理的总资金量。\\n\\n怎么看：\\n• 10-200亿 = 最佳区间(太小有清盘风险,太大船大难掉头)\\n• <5亿 = 小心!可能被清盘\\n• >500亿 = 规模太大,收益可能受限')"><div style="font-size:10px;color:var(--text-tertiary)">规模</div><div style="font-size:16px;font-weight:700">${d.scale_billion?d.scale_billion+'亿':'—'}</div></div>
       <div class="mb-card--ghost" style="padding:10px;text-align:center" onclick="alert('最大回撤\\n\\n过去1年里,从最高点到最低点最多亏过多少。\\n\\n通俗说：你买在最高点卖在最低点,最惨会亏多少。\\n\\n怎么看：\\n• <10% = 很稳(适合保守型)\\n• 10%-20% = 正常波动\\n• >20% = 波动大(心脏不好慎入)\\n• >30% = 过山车级别')"><div style="font-size:10px;color:var(--text-tertiary)">最大回撤</div><div style="font-size:16px;font-weight:700;color:${_dd&&_dd>20?'#F87171':_dd&&_dd>10?'#F59E0B':'#86EFAC'}">${_dd!=null?'-'+_dd+'%':'—'}</div></div>
       <div class="mb-card--ghost" style="padding:10px;text-align:center" onclick="alert('同类排名\\n\\n在所有同类型基金里,这只排第几。\\n\\n通俗说：全班考试排名。\\n\\n怎么看：\\n• 前10% = 学霸(同类最优秀)\\n• 前30% = 优等生\\n• 前50% = 中等\\n• 后50% = 不及格(不建议买)')"><div style="font-size:10px;color:var(--text-tertiary)">同类排名</div><div style="font-size:16px;font-weight:700;color:${_rank&&_rank.percentile>=80?'#86EFAC':_rank&&_rank.percentile>=50?'#F59E0B':'#F87171'}">${_rank?'前'+Math.round(100-_rank.percentile)+'%':'—'}</div></div>
-      <div class="mb-card--ghost" style="padding:10px;text-align:center" onclick="alert('${d.sharpe_ratio!=null?"夏普比率(Sharpe)\\n\\n每承受1份风险能赚多少钱。\\n\\n通俗说：性价比。同样冒险,谁赚得更多。\\n\\n怎么看：\\n• >1.5 = 优秀(高性价比)\\n• 1.0~1.5 = 良好\\n• 0.5~1.0 = 一般\\n• <0.5 = 不值得冒这个险":"成立以来年化\\n\\n基金从成立到现在,平均每年赚多少。\\n\\n怎么看：\\n• >15% = 很厉害\\n• 8%-15% = 不错\\n• <5% = 还不如买货币基金"}')"><div style="font-size:10px;color:var(--text-tertiary)">${d.sharpe_ratio!=null?'夏普比率':'成立年化'}</div><div style="font-size:16px;font-weight:700;color:${d.sharpe_ratio!=null?(d.sharpe_ratio>=1.5?'#86EFAC':d.sharpe_ratio>=0.8?'#00E5A0':'#F59E0B'):((_annual||0)>=0?'#00E5A0':'#FF6B6B')}">${d.sharpe_ratio!=null?d.sharpe_ratio:(_annual!=null?(_annual>0?'+':'')+_annual+'%':'—')}</div></div>
+      <div class="mb-card--ghost" style="padding:10px;text-align:center" onclick="alert('${d.sharpe_ratio!=null?"夏普比率(Sharpe)\\n\\n每承受1份风险能赚多少钱。\\n\\n通俗说：性价比。同样冒险,谁赚得更多。\\n\\n怎么看：\\n• >1.5 = 优秀(高性价比)\\n• 1.0~1.5 = 良好\\n• 0.5~1.0 = 一般\\n• <0.5 = 不值得冒这个险":"成立以来年化\\n\\n基金从成立到现在,平均每年赚多少。\\n\\n怎么看：\\n• >15% = 很厉害\\n• 8%-15% = 不错\\n• <5% = 还不如买货币基金"}')"><div style="font-size:10px;color:var(--text-tertiary)">${d.sharpe_ratio!=null?'夏普比率':'成立年化'}</div><div style="font-size:16px;font-weight:700;color:${d.sharpe_ratio!=null?(d.sharpe_ratio>=window.RA_THRESHOLDS.sharpe_excellent?'#86EFAC':d.sharpe_ratio>=window.RA_THRESHOLDS.sharpe_good?'#00E5A0':'#F59E0B'):((_annual||0)>=0?'#00E5A0':'#FF6B6B')}">${d.sharpe_ratio!=null?d.sharpe_ratio:(_annual!=null?(_annual>0?'+':'')+_annual+'%':'—')}</div></div>
     </div>`;
 
     // v9.9.x: 5项风险调整收益指标行(近3年/Rf=2%：Sharpe/Sortino/Calmar/IR/Treynor + Beta)
     if(d.sharpe_ratio!=null || d.sortino_ratio!=null || d.calmar_ratio!=null || d.information_ratio!=null || d.treynor_ratio!=null || d.beta!=null){
       let _riskHtml='<div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:10px;font-size:11px">';
       if(d.sharpe_ratio!=null){
-        _riskHtml+=`<span style="padding:3px 8px;border-radius:6px;background:rgba(148,163,184,.05);cursor:pointer" onclick="alert('夏普比率(Sharpe)\\n\\n每承受1份风险能赚多少钱。\\n\\n通俗说：你冒了这么大风险(波动),值不值?夏普越高说明同样冒险赚得越多。\\n\\n口径：近3年、无风险利率2%。\\n\\n怎么看：\\n• >1.5 = 优秀\\n• 1.0~1.5 = 良好\\n• 0.5~1.0 = 一般\\n• <0.5 = 性价比差')">Sharpe <b style="color:${d.sharpe_ratio>=1.5?'#86EFAC':d.sharpe_ratio>=0.8?'#00E5A0':'#F59E0B'}">${d.sharpe_ratio}</b></span>`;
+        _riskHtml+=`<span style="padding:3px 8px;border-radius:6px;background:rgba(148,163,184,.05);cursor:pointer" onclick="alert('夏普比率(Sharpe)\\n\\n每承受1份风险能赚多少钱。\\n\\n通俗说：你冒了这么大风险(波动),值不值?夏普越高说明同样冒险赚得越多。\\n\\n口径：近3年、无风险利率2%。\\n\\n怎么看：\\n• >1.5 = 优秀\\n• 1.0~1.5 = 良好\\n• 0.5~1.0 = 一般\\n• <0.5 = 性价比差')">Sharpe <b style="color:${d.sharpe_ratio>=window.RA_THRESHOLDS.sharpe_excellent?'#86EFAC':d.sharpe_ratio>=window.RA_THRESHOLDS.sharpe_good?'#00E5A0':'#F59E0B'}">${d.sharpe_ratio}</b></span>`;
       }
       if(d.sortino_ratio!=null){
         const stColor=d.sortino_ratio>=2?'#86EFAC':d.sortino_ratio>=1?'#00E5A0':'#F59E0B';

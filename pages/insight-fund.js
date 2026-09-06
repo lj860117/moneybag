@@ -1021,9 +1021,16 @@ function _buildFundTagPool(f){
   if(r3y!=null && r3y > 50){
     tags.push({kind:'style', label:'⭐ 长跑优秀', color:'#FBBF24', bg:'rgba(245,158,11,.15)', title:`近3年涨${r3y.toFixed(0)}%`});
   }
-  // 注：性价比（风险调整收益）5 指标在详情弹窗（_components.js）展示；
-  // /api/fund-screen 及 enrichment 管线不返回 sharpe_ratio，故此处不再以
-  // sharpe_ratio 驱动「高性价比」标签（原为死代码，已移除）。
+  // v9.9.x T04: 性价比标签（后端注入 f.sharpe_ratio，近3年/Rf=2%口径）
+  // 阈值统一引用 window.RA_THRESHOLDS（与详情 chip 同一来源）
+  const _t = (window.RA_THRESHOLDS||{sharpe_excellent:1.5,sharpe_good:1.0});
+  if(f.sharpe_ratio != null){
+    if(f.sharpe_ratio >= _t.sharpe_excellent){
+      tags.push({kind:'value', label:'🏆 高性价比', color:'#86EFAC', bg:'rgba(34,197,94,.18)', title:`近3年夏普${f.sharpe_ratio}，风险调整后收益优秀`});
+    } else if(f.sharpe_ratio >= _t.sharpe_good){
+      tags.push({kind:'value', label:'✨ 性价比较好', color:'#00E5A0', bg:'rgba(16,185,129,.15)', title:`近3年夏普${f.sharpe_ratio}，风险调整后收益良好`});
+    }
+  }
   // v9.5.89: 规模警戒线 — 过大/过小都标注
   if(f.scale_billion != null){
     if(f.scale_billion < 2){
@@ -1066,8 +1073,9 @@ function _buildFundTagPool(f){
   tags.push({kind:'risk', label:rk.label, color:rk.color, bg:rk.bg, title:rk.title});
 
   // 优先级排序（v9.5.58 调整：事件警示前置，style 降级，risk 最低）
-  // 排序：hold/industry/theme/region/event/policy/risk/style
-  const priority = {hold:0, industry:1, theme:2, region:3, event:4, scale_warn:4, mgr_change:4, policy:5, risk:6, style:7};
+  // v9.9.x T04: 性价比标签(value)靠前，保证能进 slice(0,4)
+  // 排序：hold/value/industry/theme/region/event/policy/risk/style
+  const priority = {hold:0, value:1, industry:2, theme:3, region:4, event:5, scale_warn:5, mgr_change:5, policy:6, risk:7, style:8};
   tags.sort((a,b)=> (priority[a.kind]||9) - (priority[b.kind]||9));
 
   return tags;

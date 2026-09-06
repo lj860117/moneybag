@@ -1,0 +1,55 @@
+sequenceDiagram
+    autonumber
+    participant U as 用户
+    participant FE as insight-fund.js
+    participant SC as signals._compute_fund_screen
+    participant EN as _enrich_risk_adjusted
+    participant RA as fund_risk_adjusted
+    participant FD as fund_detail
+    participant Q as enqueue_risk_adjusted_warmup
+    participant W as _warm_risk_adjusted_worker
+    participant EX as ThreadPoolExecutor(2)
+    participant F as 文件缓存 _cache/fund_risk_adjusted
+
+    %% ---------- 流程 1：选基列表首屏 ----------
+    U->>FE: 打开选基页
+    FE->>SC: GET /api/fund-screen?top_n=30
+    SC->>SC: screen_funds + _enrich_* 富化
+    SC->>EN: _enrich_risk_adjusted(funds)
+    loop 每只 top-N 基金
+        EN->>RA: get_risk_adjusted_cache(code)
+        RA->>F: 内存 miss 则读 {code}.json（TTL 24h）
+        alt 命中 & available & sharpe_ratio != null
+            RA-->>EN: metrics dict
+            EN->>EN: f.sharpe_ratio / f.sortino_ratio 注入
+        else 未命中（None）
+            EN->>EN: 收集 code 进 missed[]
+        else 命中但 available=false / sharpe=None
+            EN->>EN: 不注入、不再入队（负缓存）
+        end
+    end
+    EN->>Q: enqueue_risk_adjusted_warmup(missed)
+    SC-->>FE: funds（含/不含 sharpe 字段）
+    FE->>FE: _buildFundTagPool 读 f.sharpe_ratio
+    FE-->>U: 渲染「高性价比 / 性价比较好」
+
+    %% ---------- 流程 2：详情回填 ----------
+    U->>FD: GET /api/fund/detail/{code}
+    FD->>RA: compute_risk_adjusted_metrics(code, name, fund_type)
+    RA-->>FD: risk_adjusted dict（含 sharpe/sortino/available）
+    FD->>RA: set_risk_adjusted_cache(code, risk_adjusted)
+    RA->>F: 原子写 {code}.json + 更新内存
+    FD-->>U: 详情结果（内联 sharpe/sortino）
+
+    %% ---------- 流程 3：后台批量预热 ----------
+    Q->>Q: _PENDING_WARMUP.update(missed)
+    alt _WARMUP_RUNNING == False
+        Q->>W: 起 daemon 线程
+    end
+    W->>W: 循环取队列（去重）→ 过滤已缓存
+    W->>EX: submit 每只（max_workers=2 限并发）
+    EX->>RA: compute_risk_adjusted_metrics(code)
+    RA-->>EX: metrics（正/负结果）
+    EX-->>W: future.result(timeout=25)
+    W->>RA: set_risk_adjusted_cache(code, metrics)
+    W->>W: 队列空 → _WARMUP_RUNNING=False 退出

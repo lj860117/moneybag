@@ -597,10 +597,13 @@ def fund_detail(code: str, userId: str = ""):
     # 统一近3年/Rf=2%口径，替换旧的 1年/Rf=1.5% 内联 Sharpe/Sortino/Alpha。
     # 仅股票型/混合型基金可计算，其余类型返回 available=False（fail-open，不抛异常）。
     try:
-        from services.fund_risk_adjusted import compute_risk_adjusted_metrics
+        from services.fund_risk_adjusted import compute_risk_adjusted_metrics, set_risk_adjusted_cache
         _ft = ak_extra.get("基金类型", "") or info.get("fund_type", "")
         risk_adjusted = compute_risk_adjusted_metrics(code, name=info.get("name", ""), fund_type=_ft)
         if risk_adjusted:
+            # T02: 计算完成后同步回填共享性价比缓存（正/负缓存都落盘），
+            # 供选基列表注入使用——列表只读共享缓存，绝不重复计算。
+            set_risk_adjusted_cache(code, risk_adjusted)
             sharpe = risk_adjusted.get("sharpe_ratio")
             sortino = risk_adjusted.get("sortino_ratio")
             calmar = risk_adjusted.get("calmar_ratio")
@@ -846,12 +849,17 @@ def fund_ai_score(code: str):
                 "information_ratio", "treynor_ratio", "beta")
     if not all(fund_info.get(k) is not None for k in _ra_keys):
         try:
-            from services.fund_risk_adjusted import compute_risk_adjusted_metrics
+            from services.fund_risk_adjusted import compute_risk_adjusted_metrics, set_risk_adjusted_cache
             _ra = compute_risk_adjusted_metrics(
                 code,
                 name=fund_info.get("name", ""),
                 fund_type=fund_info.get("fund_type", ""),
             )
+            if _ra:
+                # P3-1: 实时补算成功后回填共享性价比缓存（正/负缓存都落盘），
+                # 与详情回填（本文件约 606 行）口径一致：列表注入只读共享缓存，
+                # 避免后续选基列表再等 daemon 预热重算，浪费一次已算好的缓存机会。
+                set_risk_adjusted_cache(code, _ra)
             for _k in _ra_keys:
                 if fund_info.get(_k) is None:
                     fund_info[_k] = _ra.get(_k)
