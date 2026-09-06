@@ -133,12 +133,15 @@ def test_llm_cache_key_includes_model_to_avoid_cross_model_reuse(tmp_path, monke
 
 
 def test_call_sync_peak_falls_back_to_deepseek_when_alt_providers_exhausted(monkeypatch, tmp_path):
+    import infra.llm.gateway as infra_gw
     import services.llm_gateway as gw_mod
 
     monkeypatch.setenv("DATA_DIR", str(tmp_path))
     monkeypatch.setenv("LLM_API_KEY", "ds")
     monkeypatch.setenv("DOUBAO_API_KEY", "db")
-    monkeypatch.setattr(gw_mod, "_is_deepseek_peak_window", lambda now=None: True)
+    # 阶段 1 迁移后，实现本体在 infra/llm/gateway.py；services 壳只转发公共符号，
+    # 私有函数 `_is_deepseek_peak_window` 需在实现本体模块上 monkeypatch 才会生效。
+    monkeypatch.setattr(infra_gw, "_is_deepseek_peak_window", lambda now=None: True)
 
     class _FakeResponse:
         def __init__(self, status_code, payload):
