@@ -117,12 +117,10 @@ def _reset_model_stats():
 def _format_model_display_name(model: str) -> str:
     """模型 ID → 中文展示名"""
     lc = (model or "").lower()
-    if "seed-2-0-pro" in lc or "seed-2.0-pro" in lc: return "豆包 Seed 2.0 Pro"
-    if "seed-2-0-lite" in lc or "seed-2.0-lite" in lc: return "豆包 Seed 2.0 Lite"
-    if "seed-2-0-mini" in lc or "seed-2.0-mini" in lc: return "豆包 Seed 2.0 Mini"
+    if "seed-2-1-pro" in lc or "seed-2.1-pro" in lc: return "豆包 Seed 2.1 Pro"
+    if "seed-2-1-turbo" in lc or "seed-2.1-turbo" in lc: return "豆包 Seed 2.1 Turbo"
     if "doubao-seed-1-6" in lc or "seed-1-6" in lc or "seed-1.6" in lc: return "豆包 Seed 1.6"
     if "doubao-1-5-pro" in lc or "doubao-pro" in lc: return "豆包 Pro"
-    if "doubao-1-5-lite" in lc or "doubao-lite" in lc: return "豆包 Lite"
     if "doubao" in lc or lc.startswith("ep-"): return "豆包"
     if "reasoner" in lc: return "DeepSeek R1"
     if "v4-pro" in lc or "deepseek-v4-pro" in lc: return "DeepSeek V4 Pro"

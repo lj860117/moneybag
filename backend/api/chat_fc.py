@@ -879,7 +879,7 @@ def run_fc_agent_stream(
 
 # 这些问题用现有管道模式完全够，不走 FC（避免浪费 token）
 _FC_BLACKLIST_KW = [
-    "你好", "帮我", "谢谢", "现在能进场吗", "入场时机",
+    "你好", "谢谢", "现在能进场吗", "入场时机",
     "什么时候买", "定投", "止盈", "止损",
 ]
 
@@ -918,6 +918,10 @@ def should_use_fc(user_msg: str, intent: str) -> bool:
     # 问到不在持仓里的具体基金/股票（6位数字代码 pattern）
     import re
     if re.search(r'\b\d{6}\b', user_msg):
+        return True
+
+    # 方案A：规则引擎已判出金融意图（非 general 非安全拒绝）→ 放行 FC，让模型自主判断是否搜索
+    if intent and intent not in ("general", "safety_refusal"):
         return True
 
     return False

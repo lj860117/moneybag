@@ -30,12 +30,10 @@ function _formatModelName(model, fallbackUsed){
   if(lc.includes('qwen3.6-plus') || lc.includes('qwen-plus')) name = '通义千问 Plus';
   else if(lc.includes('qwen3.6-flash') || lc.includes('qwen-flash')) name = '通义千问 Flash';
   else if(lc.includes('qwen')) name = '通义千问';
-  else if(lc.includes('seed-2-0-pro') || lc.includes('seed-2.0-pro')) name = '豆包 Seed 2.0 Pro';
-  else if(lc.includes('seed-2-0-lite') || lc.includes('seed-2.0-lite')) name = '豆包 Seed 2.0 Lite';
-  else if(lc.includes('seed-2-0-mini') || lc.includes('seed-2.0-mini')) name = '豆包 Seed 2.0 Mini';
+  else if(lc.includes('seed-2-1-pro') || lc.includes('seed-2.1-pro')) name = '豆包 Seed 2.1 Pro';
+  else if(lc.includes('seed-2-1-turbo') || lc.includes('seed-2.1-turbo')) name = '豆包 Seed 2.1 Turbo';
   else if(lc.includes('doubao-seed-1-6') || lc.includes('seed-1-6') || lc.includes('seed-1.6')) name = '豆包 Seed 1.6';
   else if(lc.includes('doubao-1-5-pro') || lc.includes('doubao-pro')) name = '豆包 Pro';
-  else if(lc.includes('doubao-1-5-lite') || lc.includes('doubao-lite')) name = '豆包 Lite';
   else if(lc.includes('doubao') || lc.startsWith('ep-')) name = '豆包';
   else if(lc.includes('reasoner')) name = 'DeepSeek R1';
   else if(lc.includes('v4-pro') || lc.includes('deepseek-v4-pro')) name = 'DeepSeek V4 Pro';
