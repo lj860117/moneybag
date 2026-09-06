@@ -634,6 +634,27 @@ def _fc_call_with_fallback(model: str, messages: list, max_tokens: int = 3000) -
                 return r.status_code, r.json()
             return r.status_code, r.text[:500]
 
+    def _record_usage(use_model: str, payload: dict) -> None:
+        """v9.9.11: 复用 gateway 计费，统一 FC 场景的成本口径。
+
+        FC 直连 httpx 绕过 gateway，之前调用完全不进成本账，导致「用量有、钱没记」。
+        这里在调用成功后把 token 用量回填到 gateway 的 cost 记录。
+        """
+        try:
+            from services.llm_gateway import LLMGateway
+            usage = payload.get("usage", {}) if isinstance(payload, dict) else {}
+            LLMGateway.instance().record_external_call(
+                user_id="",
+                module="chat_fc",
+                model=use_model,
+                input_tokens=usage.get("prompt_tokens", usage.get("input_tokens", 0)),
+                output_tokens=usage.get("completion_tokens", usage.get("output_tokens", 0)),
+                cache_hit_tokens=usage.get("prompt_cache_hit_tokens", 0),
+                cache_miss_tokens=usage.get("prompt_cache_miss_tokens", 0),
+            )
+        except Exception as _e:
+            print(f"[FC_AGENT] 计费失败（不影响调用）: {_e}")
+
     # L1: 主模型
     api_key, api_base, provider = _route(model)
     if not api_key:
@@ -643,6 +664,7 @@ def _fc_call_with_fallback(model: str, messages: list, max_tokens: int = 3000) -
         try:
             status, payload = _do(model, api_key, api_base)
             if status == 200:
+                _record_usage(model, payload)
                 return payload, model, False
             primary_err = f"HTTP {status}: {str(payload)[:200]}"
         except Exception as e:
@@ -663,6 +685,7 @@ def _fc_call_with_fallback(model: str, messages: list, max_tokens: int = 3000) -
             try:
                 status, payload = _do(l2_model, doubao_key, os.environ.get("DOUBAO_API_BASE", os.environ.get("ARK_API_BASE", "https://ark.cn-beijing.volces.com/api/v3")))
                 if status == 200:
+                    _record_usage(l2_model, payload)
                     print(f"[FC_AGENT] ✅ 豆包降级成功 ({l2_model})")
                     return payload, l2_model, True
                 print(f"[FC_AGENT] 豆包失败 HTTP {status}: {str(payload)[:200]}")

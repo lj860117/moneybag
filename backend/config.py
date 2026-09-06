@@ -120,7 +120,7 @@ LLM_MODEL = os.environ.get("LLM_MODEL", "deepseek-v4-flash")
 TUSHARE_TOKEN = os.environ.get("TUSHARE_TOKEN", "")
 
 # ---- 版本号（Phase 1 更新）----
-APP_VERSION = "9.9.10"
+APP_VERSION = "9.9.11"
 
 # ---- v9.5.123: API 鉴权 ----
 # 每个用户一个token，格式: userId:token（环境变量或data/auth_tokens.json）
@@ -150,7 +150,9 @@ TOKEN_BUDGET = {
 
 # 多 provider 定价（¥/百万token）
 # DeepSeek 官方 V4 价格分 flash/pro 两档，input 按缓存命中/未命中 + 峰谷时段分别计价
-# doubao 价目待查，None = 只记用量不计费
+# doubao（火山引擎 Seed 2.0，2026-02 官方价，元/百万 token）：
+#   Pro 输入 3.2 / 输出 16 / 缓存命中 0.64；Lite 输入 0.6 / 输出 3.6 / 缓存命中 0.12；Mini 输入 0.2 / 输出 2 / 缓存命中 0.04
+#   豆包无峰谷时段差价，故 input_cache_hit_peak == input_cache_hit_valley，output_peak == output_valley
 PROVIDER_PRICING = {
     "deepseek-flash": {
         "input_cache_hit_valley": 0.05, "input_cache_hit_peak": 0.10,
@@ -162,7 +164,22 @@ PROVIDER_PRICING = {
         "input_cache_miss_valley": 4.5, "input_cache_miss_peak": 9.0,
         "output_peak": 27.0, "output_valley": 13.5,
     },
-    "doubao": None,  # 价目待查，None = 只记用量不计费
+    # 豆包按 pro/lite/mini 三档计价（保守：无法识别具体档位时归入 pro）
+    "doubao-pro": {
+        "input_cache_hit_valley": 0.64, "input_cache_hit_peak": 0.64,
+        "input_cache_miss_valley": 3.2, "input_cache_miss_peak": 3.2,
+        "output_peak": 16.0, "output_valley": 16.0,
+    },
+    "doubao-lite": {
+        "input_cache_hit_valley": 0.12, "input_cache_hit_peak": 0.12,
+        "input_cache_miss_valley": 0.6, "input_cache_miss_peak": 0.6,
+        "output_peak": 3.6, "output_valley": 3.6,
+    },
+    "doubao-mini": {
+        "input_cache_hit_valley": 0.04, "input_cache_hit_peak": 0.04,
+        "input_cache_miss_valley": 0.2, "input_cache_miss_peak": 0.2,
+        "output_peak": 2.0, "output_valley": 2.0,
+    },
 }
 DEEPSEEK_PRICING = PROVIDER_PRICING["deepseek-pro"]  # 兼容旧引用（指向 pro 价表）
 

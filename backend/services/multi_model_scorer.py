@@ -137,6 +137,22 @@ def _call_model(model_cfg: dict, prompt: str) -> dict:
                 return {"id": model_cfg["id"], "name": model_cfg["name"], "score": None, "reason": f"HTTP {resp.status_code}", "error": True}
 
             content = resp.json().get("choices", [{}])[0].get("message", {}).get("content", "")
+            usage = resp.json().get("usage", {})
+            # v9.9.11: 复用 gateway 计费（绕过 gateway 直连导致的成本盲区）
+            try:
+                from services.llm_gateway import LLMGateway
+                gw = LLMGateway.instance()
+                gw.record_external_call(
+                    user_id="",
+                    module="multi_model_score",
+                    model=model_cfg["model"],
+                    input_tokens=usage.get("prompt_tokens", usage.get("input_tokens", 0)),
+                    output_tokens=usage.get("completion_tokens", usage.get("output_tokens", 0)),
+                    cache_hit_tokens=usage.get("prompt_cache_hit_tokens", 0),
+                    cache_miss_tokens=usage.get("prompt_cache_miss_tokens", 0),
+                )
+            except Exception as _e:
+                print(f"[MULTI_MODEL] 计费失败（不影响打分）: {_e}")
             # 解析 JSON（兼容 markdown code block + 截断修复）
             import re
             from services.json_extract import extract_json_object

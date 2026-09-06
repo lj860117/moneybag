@@ -80,17 +80,25 @@ def _provider_from_model(model: str) -> str:
 
 
 def _pricing_key_from_model(model: str) -> str:
-    """按具体模型名返回定价档位 key（区分 deepseek flash / pro 两档价表）。
+    """按具体模型名返回定价档位 key（区分 deepseek flash/pro、doubao pro/lite/mini）。
 
-    返回 "deepseek-flash" / "deepseek-pro" / "doubao"。
+    返回 "deepseek-flash" / "deepseek-pro" / "doubao-pro" / "doubao-lite" / "doubao-mini"。
     deepseek 档位判定：
       - 含 "flash" 或 "reasoner" → flash 价表（reasoner 是 flash 的思考模式）
       - 含 "pro" → pro 价表
       - 无法识别 → 保守按 pro 价表记账
+    doubao 档位判定：
+      - 含 "mini" → mini 价表
+      - 含 "lite" → lite 价表
+      - 含 "pro" 或无法识别 → pro 价表（保守）
     """
     lowered = (model or "").lower()
     if lowered.startswith("doubao") or lowered.startswith("ep-"):
-        return "doubao"
+        if "mini" in lowered:
+            return "doubao-mini"
+        if "lite" in lowered:
+            return "doubao-lite"
+        return "doubao-pro"
     if "flash" in lowered or "reasoner" in lowered:
         return "deepseek-flash"
     if "pro" in lowered:
@@ -644,6 +652,9 @@ class LLMGateway:
         3. 不走缓存（图片内容无法稳定 hash）
 
         返回格式与 call_sync 一致。
+
+        v9.9.11: 补视觉降级链 —— DeepSeek vision 失败时降级到豆包视觉模型
+        （`LLM_VISION_MODEL_DOUBAO`，默认 doubao-seed-2-0-pro-260215，其支持图片输入）。
         """
         # 0. 日期重置
         self._check_daily_reset()
@@ -653,77 +664,97 @@ class LLMGateway:
             print(f"[LLM_GATEWAY] ⚠️ multimodal 熔断！daily={self._daily_count}/{DAILY_LIMIT}")
             return {"content": "", "source": "rate_limited", "fallback": True, "model": "", "tokens": 0}
 
-        # 2. API key
-        api_key = os.environ.get("LLM_API_KEY", "") or os.environ.get("OPENAI_API_KEY", "")
-        if not api_key:
-            return {"content": "", "source": "no_key", "fallback": True, "model": "", "tokens": 0}
-
-        # 3. 模型（vision 模型不在 MODEL_ROUTING 中，直接用参数或环境变量）
+        # 2. 视觉模型降级链（主：DeepSeek vision，备：豆包视觉）
         if not model:
             model = os.environ.get("LLM_VISION_MODEL", "deepseek-v4-flash-vision-exp")
-        api_base = os.environ.get("LLM_API_BASE", "https://api.deepseek.com/v1")
+        fallback_model = os.environ.get(
+            "LLM_VISION_MODEL_DOUBAO",
+            os.environ.get("DOUBAO_VISION_MODEL", "doubao-seed-2-0-pro-260215"),
+        )
 
-        # 4. 调用
-        try:
-            import httpx
-            with httpx.Client(timeout=30) as client:
-                resp = client.post(
-                    f"{api_base}/chat/completions",
-                    headers={
-                        "Authorization": f"Bearer {api_key}",
-                        "Content-Type": "application/json",
-                    },
-                    json={
-                        "model": model,
-                        "messages": messages,
-                        "max_tokens": max_tokens,
-                    },
-                )
-                if resp.status_code == 200:
-                    data = resp.json()
-                    msg = data["choices"][0]["message"]
-                    content = msg.get("content") or ""
-                    reasoning = msg.get("reasoning_content") or ""
-                    # DeepSeek 视觉可能只返回 reasoning_content 而没有最终 content
-                    # 此时取 reasoning 最后一段作为输出（尽力而为，避免 OCR 拿空 content 失败）
-                    if not content.strip() and reasoning.strip():
-                        content = reasoning.strip().split('\n')[-1][:800]
-                    usage = data.get("usage", {})
-                    total_tokens = usage.get("total_tokens", 0)
-                    input_tk = usage.get("prompt_tokens", 0)
-                    output_tk = usage.get("completion_tokens", 0)
+        # 构建候选链：主模型 + 豆包备胎（去重，避免主模型本身已是豆包时重复）
+        candidates: list[tuple[str, str, str]] = []  # (model, key, base)
+        for cand_model in dict.fromkeys([model, fallback_model]):
+            key, base = self._resolve_vision_config(cand_model)
+            if key:
+                candidates.append((cand_model, key, base))
 
-                    # 计费
-                    self._record_usage(user_id, module, model, total_tokens)
-                    self._record_token_cost(user_id, model, input_tk, output_tk)
+        if not candidates:
+            return {"content": "", "source": "no_key", "fallback": True, "model": model, "tokens": 0}
 
-                    return {
-                        "content": content,
-                        "source": "ai",
-                        "model": model,
-                        "tokens": total_tokens,
-                        "fallback": False,
-                    }
-                else:
-                    print(f"[LLM_GATEWAY] multimodal API error: {resp.status_code} {resp.text[:200]}")
-                    return {
-                        "content": "",
-                        "source": "api_error",
-                        "fallback": True,
-                        "model": model,
-                        "tokens": 0,
-                        "error": f"HTTP {resp.status_code}",
-                    }
-        except Exception as e:
-            print(f"[LLM_GATEWAY] multimodal 调用失败: {e}")
-            return {
-                "content": "",
-                "source": "error",
-                "fallback": True,
-                "model": model,
-                "tokens": 0,
-                "error": str(e),
-            }
+        # 3. 依次尝试
+        last_error = ""
+        for cand_model, api_key, api_base in candidates:
+            try:
+                import httpx
+                with httpx.Client(timeout=30) as client:
+                    resp = client.post(
+                        f"{api_base}/chat/completions",
+                        headers={
+                            "Authorization": f"Bearer {api_key}",
+                            "Content-Type": "application/json",
+                        },
+                        json={
+                            "model": cand_model,
+                            "messages": messages,
+                            "max_tokens": max_tokens,
+                        },
+                    )
+                    if resp.status_code == 200:
+                        data = resp.json()
+                        msg = data["choices"][0]["message"]
+                        content = msg.get("content") or ""
+                        reasoning = msg.get("reasoning_content") or ""
+                        # 视觉模型可能只返回 reasoning_content 而没有最终 content
+                        if not content.strip() and reasoning.strip():
+                            content = reasoning.strip().split('\n')[-1][:800]
+                        usage = data.get("usage", {})
+                        total_tokens = usage.get("total_tokens", 0)
+                        input_tk = usage.get("prompt_tokens", 0)
+                        output_tk = usage.get("completion_tokens", 0)
+
+                        # 计费
+                        self._record_usage(user_id, module, cand_model, total_tokens)
+                        self._record_token_cost(user_id, cand_model, input_tk, output_tk)
+
+                        return {
+                            "content": content,
+                            "source": "ai",
+                            "model": cand_model,
+                            "tokens": total_tokens,
+                            "fallback": False,
+                            "fallback_used": cand_model != model,
+                        }
+                    else:
+                        last_error = f"HTTP {resp.status_code}"
+                        print(f"[LLM_GATEWAY] multimodal {cand_model} API error: {resp.status_code} {resp.text[:200]}")
+                        continue
+            except Exception as e:
+                last_error = str(e)
+                print(f"[LLM_GATEWAY] multimodal {cand_model} 调用失败: {e}")
+                continue
+
+        return {
+            "content": "",
+            "source": "api_error",
+            "fallback": True,
+            "model": model,
+            "tokens": 0,
+            "error": last_error or "all_vision_candidates_failed",
+        }
+
+    def _resolve_vision_config(self, model: str) -> tuple[str, str]:
+        """解析视觉模型对应的 (api_key, api_base)。
+
+        豆包模型走豆包 key/base，其余走 DeepSeek。
+        """
+        if model.startswith("doubao") or model.startswith("ep-"):
+            key = os.environ.get("DOUBAO_API_KEY", "") or os.environ.get("ARK_API_KEY", "")
+            base = os.environ.get("DOUBAO_API_BASE", os.environ.get("ARK_API_BASE", DOUBAO_API_BASE))
+            return key, base
+        key = os.environ.get("LLM_API_KEY", "") or os.environ.get("OPENAI_API_KEY", "")
+        base = os.environ.get("LLM_API_BASE", "https://api.deepseek.com/v1")
+        return key, base
 
     # ---- 缓存 ----
 
