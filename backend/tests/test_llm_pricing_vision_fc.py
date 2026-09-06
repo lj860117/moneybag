@@ -26,7 +26,7 @@ if str(BACKEND_DIR) not in sys.path:
 # ============================================================
 
 def test_pricing_key_doubao_three_tiers(monkeypatch):
-    import services.llm_gateway as gw_mod
+    import infra.llm.gateway as gw_mod
 
     assert gw_mod._pricing_key_from_model("doubao-seed-2-0-pro-260215") == "doubao-pro"
     assert gw_mod._pricing_key_from_model("doubao-seed-2-0-lite-260215") == "doubao-lite"
@@ -34,7 +34,7 @@ def test_pricing_key_doubao_three_tiers(monkeypatch):
 
 
 def test_pricing_key_doubao_ep_prefix_and_unknown(monkeypatch):
-    import services.llm_gateway as gw_mod
+    import infra.llm.gateway as gw_mod
 
     # ep- 前缀（ARK 接入点模型）同样走豆包档位
     assert gw_mod._pricing_key_from_model("ep-20250101-abcde") == "doubao-pro"
@@ -45,7 +45,7 @@ def test_pricing_key_doubao_ep_prefix_and_unknown(monkeypatch):
 
 def test_pricing_key_doubao_tier_priority_mini_over_lite_over_pro(monkeypatch):
     """含多个关键词时按 mini > lite > pro 优先级判定。"""
-    import services.llm_gateway as gw_mod
+    import infra.llm.gateway as gw_mod
 
     # 名字同时含 lite 和 mini（不现实但验证优先级）
     assert gw_mod._pricing_key_from_model("doubao-mini-lite-x") == "doubao-mini"
@@ -54,7 +54,7 @@ def test_pricing_key_doubao_tier_priority_mini_over_lite_over_pro(monkeypatch):
 
 
 def test_pricing_key_deepseek_flash_and_pro(monkeypatch):
-    import services.llm_gateway as gw_mod
+    import infra.llm.gateway as gw_mod
 
     assert gw_mod._pricing_key_from_model("deepseek-v4-flash") == "deepseek-flash"
     assert gw_mod._pricing_key_from_model("deepseek-v4-pro") == "deepseek-pro"
@@ -99,7 +99,7 @@ def _make_fake_httpx(dispatch):
 
 
 def test_call_multimodal_deepseek_success_no_fallback(monkeypatch, tmp_path):
-    import services.llm_gateway as gw_mod
+    import infra.llm.gateway as gw_mod
 
     monkeypatch.setenv("DATA_DIR", str(tmp_path))
     monkeypatch.setenv("LLM_API_KEY", "ds")
@@ -136,7 +136,7 @@ def test_call_multimodal_deepseek_success_no_fallback(monkeypatch, tmp_path):
 
 
 def test_call_multimodal_deepseek_fails_falls_back_to_doubao(monkeypatch, tmp_path):
-    import services.llm_gateway as gw_mod
+    import infra.llm.gateway as gw_mod
 
     monkeypatch.setenv("DATA_DIR", str(tmp_path))
     monkeypatch.setenv("LLM_API_KEY", "ds")
@@ -175,7 +175,7 @@ def test_call_multimodal_deepseek_fails_falls_back_to_doubao(monkeypatch, tmp_pa
 
 
 def test_call_multimodal_no_key_returns_no_key(monkeypatch, tmp_path):
-    import services.llm_gateway as gw_mod
+    import infra.llm.gateway as gw_mod
 
     monkeypatch.setenv("DATA_DIR", str(tmp_path))
     monkeypatch.delenv("LLM_API_KEY", raising=False)
@@ -194,7 +194,7 @@ def test_call_multimodal_no_key_returns_no_key(monkeypatch, tmp_path):
 
 
 def test_call_multimodal_all_fail_returns_api_error(monkeypatch, tmp_path):
-    import services.llm_gateway as gw_mod
+    import infra.llm.gateway as gw_mod
 
     monkeypatch.setenv("DATA_DIR", str(tmp_path))
     monkeypatch.setenv("LLM_API_KEY", "ds")
@@ -222,7 +222,7 @@ def test_call_multimodal_all_fail_returns_api_error(monkeypatch, tmp_path):
 
 def test_call_multimodal_doubao_as_primary_dedup(monkeypatch, tmp_path):
     """主模型本身就是豆包时，降级链去重，不重复请求。"""
-    import services.llm_gateway as gw_mod
+    import infra.llm.gateway as gw_mod
 
     monkeypatch.setenv("DATA_DIR", str(tmp_path))
     monkeypatch.setenv("DOUBAO_API_KEY", "db")
@@ -259,7 +259,7 @@ def test_call_multimodal_doubao_as_primary_dedup(monkeypatch, tmp_path):
 # ============================================================
 
 def test_record_external_call_records_usage_and_cost(monkeypatch, tmp_path):
-    import services.llm_gateway as gw_mod
+    import infra.llm.gateway as gw_mod
 
     monkeypatch.setenv("DATA_DIR", str(tmp_path))
 
@@ -282,7 +282,7 @@ def test_record_external_call_records_usage_and_cost(monkeypatch, tmp_path):
 
 def test_record_external_call_doubao_unknown_price_skips_cost(monkeypatch, tmp_path):
     """豆包价目存在（三档已配置），应正常记账而非跳过。验证 doubao 档位命中价表。"""
-    import services.llm_gateway as gw_mod
+    import infra.llm.gateway as gw_mod
     from config import PROVIDER_PRICING
 
     monkeypatch.setenv("DATA_DIR", str(tmp_path))
@@ -308,7 +308,7 @@ def test_record_external_call_doubao_unknown_price_skips_cost(monkeypatch, tmp_p
 
 
 def test_record_external_call_anonymous_user_and_empty_module(monkeypatch, tmp_path):
-    import services.llm_gateway as gw_mod
+    import infra.llm.gateway as gw_mod
 
     monkeypatch.setenv("DATA_DIR", str(tmp_path))
 
