@@ -46,6 +46,18 @@ CACHE_DIR = Path(os.environ.get("DATA_DIR",
     Path(__file__).parent.parent.parent / "data")) / "_cache"
 CACHE_DIR.mkdir(parents=True, exist_ok=True)
 
+# v9.9.x P7: 模块级 DATA_DIR 绑定。
+# 此前本文件只有 os.environ.get("DATA_DIR", ...) 的【字符串字面量】，全文件无任何 DATA_DIR 名字绑定，
+# 于是 :1271 / :1306 的 DATA_DIR.parent 必抛 NameError，被 except 吞成
+# 「⚠️ precomputed 清理失败: name 'DATA_DIR' is not defined」（线上日志实证 30 次）。
+# 与 CACHE_DIR 用同一套解析规则，保证 cron 与 API 落在同一目录。
+DATA_DIR = Path(os.environ.get("DATA_DIR",
+    Path(__file__).parent.parent.parent / "data"))
+# v9.9.x P4: 启动期路径自检 —— 与 config.py 里的同一行输出可直接比对，
+# 两侧不一致即说明 cron 与 API 写的不是同一棵目录树（预热白做）。
+print(f"[CACHE-WARMER] DATA_DIR = {DATA_DIR} "
+      f"(source={'env' if os.environ.get('DATA_DIR') else 'default'})", flush=True)
+
 
 # ============================================================
 # 北向资金：写入缓存前的诚实降级过滤
@@ -361,7 +373,7 @@ def warm_after_close():
     try:
         import json as _json
         from pathlib import Path as _P
-        _cache_fp = _P(os.environ.get("DATA_DIR", "data")) / "_cache" / "stock_screen_50.json"
+        _cache_fp = DATA_DIR / "_cache" / "stock_screen_50.json"
         if _cache_fp.exists():
             _stocks = _json.loads(_cache_fp.read_text()).get("data", {}).get("stocks", [])
             if _stocks:
@@ -815,7 +827,7 @@ def warm_morning():
         import requests as _rq_det
         # 读选基缓存获取TOP代码
         import json as _j_det, glob as _g_det
-        cache_dir = Path(os.environ.get("DATA_DIR", "data")) / "_cache"
+        cache_dir = DATA_DIR / "_cache"
         fs_files = _g_det.glob(str(cache_dir / "fund_screen_all_score_*.json"))
         top_codes = []
         for fp in sorted(fs_files, key=os.path.getmtime, reverse=True)[:1]:
@@ -927,32 +939,42 @@ def warm_nav_confirmed():
         print("[CACHE] 非交易日，跳过")
         return
     
-    # 清除旧的选基缓存(强制用确认净值重算)
-    import glob
-    cache_dir = Path(os.environ.get("DATA_DIR", "data")) / "_cache"
-    for f in glob.glob(str(cache_dir / "fund_screen_*.json")):
-        try:
-            os.remove(f)
-        except Exception:
-            pass
-    
-    # 全量预热选基(6核心组合×2用户=12组)
+    # v9.9.x P5: 热组合预热 —— 覆盖 5 类型 × 4 排序 × 2 用户 = 40 组。
+    #
+    # 旧逻辑先 glob 删光全部 fund_screen_*.json、再只补 12 组；未覆盖组合会在
+    # 用户切 tab 时冷启动。新逻辑先逐组刷新；若某组请求失败，保留其旧缓存，
+    # 让 API 在 72h stale 窗口内秒回并后台刷新，绝不因一次预热失败制造冷启动。
+    # 不再删除任何 fund_screen 缓存：成功请求会原子覆盖目标键，过期键由周末清理规则管理。
     try:
-        import requests as _rq
-        _combos = [
-            ("all", "score"), ("all", "1y"),
-            ("stock", "score"), ("index", "score"),
-            ("bond", "score"), ("qdii", "score"),
-        ]
-        ok = 0
-        for uid in ["LeiJiang", "BuLuoGeLi"]:
-            for ft, sb in _combos:
-                try:
-                    _rq.get(f"http://127.0.0.1:8000/api/fund-screen?fund_type={ft}&sort_by={sb}&top_n=30&userId={uid}", timeout=60)
-                    ok += 1
-                except Exception:
-                    pass
-        print(f"  ✅ 选基(确认净值): {ok}/{len(_combos)*2} 组合")
+        import requests as _rq_nc
+        _nc_types = ["all", "stock", "bond", "index", "qdii"]   # 与早盘预热 :219-221 完全一致
+        _nc_sorts = ["score", "1y", "3y", "ytd"]
+        _nc_users = ["LeiJiang", "BuLuoGeLi"]
+        _nc_target = len(_nc_users) * len(_nc_types) * len(_nc_sorts)
+        _nc_refreshed = set()   # 成功刷新的缓存键（不含 .json 后缀）
+        _nc_failed = []
+
+        for _uid in _nc_users:
+            for _ft in _nc_types:
+                for _sb in _nc_sorts:
+                    _key = f"fund_screen_{_ft}_{_sb}_{_uid}"
+                    try:
+                        _r = _rq_nc.get(
+                            f"http://127.0.0.1:8000/api/fund-screen?fund_type={_ft}"
+                            f"&sort_by={_sb}&top_n=30&userId={_uid}",
+                            timeout=60,
+                        )
+                        if _r.ok:
+                            _nc_refreshed.add(_key)
+                        else:
+                            _nc_failed.append(f"{_key}(HTTP {_r.status_code})")
+                    except Exception as _e:
+                        _nc_failed.append(f"{_key}({type(_e).__name__})")
+
+        print(f"  ✅ 选基(确认净值): {len(_nc_refreshed)}/{_nc_target} 组合")
+        if _nc_failed:
+            print(f"  ⚠️ 未刷新: {', '.join(_nc_failed)}")
+
     except Exception as e:
         print(f"  ❌ 选基预热失败: {e}")
     
@@ -1177,7 +1199,7 @@ def warm_weekend():
     try:
         import json as _json
         from pathlib import Path as _P
-        _cache_fp = _P(os.environ.get("DATA_DIR", "data")) / "_cache" / "stock_screen_50.json"
+        _cache_fp = DATA_DIR / "_cache" / "stock_screen_50.json"
         if _cache_fp.exists():
             _stocks = _json.loads(_cache_fp.read_text()).get("data", {}).get("stocks", [])
             if _stocks:
@@ -1230,15 +1252,13 @@ def warm_weekend():
     except Exception as e:
         print(f"  ❌ {e}")
     
-    # 2. 基金筛选（周更够了）
-    print("  🔍 基金筛选...")
-    try:
-        from services.fund_screen import screen_funds
-        for ftype in ["all", "stock", "bond", "index"]:
-            result = screen_funds(ftype, "score", 20)
-            _save_cache(f"fund_screen_{ftype}", result, ttl)
-    except Exception as e:
-        print(f"  ❌ {e}")
+    # 2. （v9.9.x P6 已删除）原「基金筛选（周更）」段按 2 段键写入
+    #    fund_screen_{all,bond,index,stock}.json，而 API（signals.py:380）读的是
+    #    4 段键 fund_screen_{type}_{sort}_{userId}.json → 这 4 个文件【永远读不到】，
+    #    属孤儿键死代码。v9.5.120 已删除通用缓存 fallback，加回读取方的方案已否决，
+    #    故整段删除（线上现存的 4 个孤儿文件需另行清理）。
+    #    ⚠️ 副作用：这段原承担「周末预热选基」，删除后周末选基覆盖归零，
+    #       由 P4(DATA_DIR) + P5(精确失效) 之后的 HTTP 预热承担——见待办。
     
     # 3. 因子IC（周更，计算量大）
     print("  🔬 因子IC...")
@@ -1253,10 +1273,24 @@ def warm_weekend():
     print("  🧹 清理过期缓存...")
     now = time.time()
     cleaned = 0
+    # v9.9.x P8: 必须与 api/signals.py:19 的 FUND_SCREEN_STALE_SECONDS 保持一致。
+    # （这里不直接 import api.signals，是为了避免在周末预热早期引入模块级依赖）
+    _FUND_SCREEN_STALE_SECONDS = 72 * 3600
     for fp in CACHE_DIR.glob("*.json"):
         try:
             data = json.loads(fp.read_text(encoding="utf-8"))
-            if data.get("expires_at", 0) < now:
+            # v9.9.x P8: 清理判据从 expires_at 改为 created_at + stale 窗口。
+            # 原判据在缓存刚过 fresh 期（10h）就物理删除，而此时它仍处在 72h stale
+            # 窗口内、本可「先返旧数据 + 后台刷新」——删掉等于摧毁 stale 兜底，
+            # 周末/节假日后首次打开必然全量重算（用户抱怨的直接来源）。
+            # 兼容分支：没有 created_at 字段的缓存（factor_ic / stock_screen_* 等）
+            # 若套用 created_at=0 会得到 1970 年时间戳 → 被无条件删除，故回退原判据。
+            _created = data.get("created_at")
+            if _created:
+                _expired = float(_created) + _FUND_SCREEN_STALE_SECONDS < now
+            else:
+                _expired = data.get("expires_at", 0) < now
+            if _expired:
                 fp.unlink()
                 cleaned += 1
         except Exception:
@@ -1268,7 +1302,7 @@ def warm_weekend():
     print("  🧹 清理 precomputed 旧文件...")
     try:
         from datetime import date, timedelta
-        precomputed_dir = DATA_DIR.parent / "data" / "precomputed"
+        precomputed_dir = DATA_DIR / "precomputed"
         if not precomputed_dir.exists():
             precomputed_dir = Path("/opt/moneybag/data/precomputed")
         if precomputed_dir.exists():
@@ -1303,7 +1337,7 @@ def warm_weekend():
         from services.fund_monitor import get_fund_nav_history, load_fund_holdings
         from services.tushare_data import is_configured as ts_ok
 
-        profiles_file = DATA_DIR.parent / "data" / "profiles.json"
+        profiles_file = DATA_DIR / "profiles.json"
         if not profiles_file.exists():
             profiles_file = Path("/opt/moneybag/data/profiles.json")
 
@@ -1766,7 +1800,7 @@ def _warm_preset_answers():
     from pathlib import Path
     import time as _time
     
-    cache_dir = Path(os.environ.get("DATA_DIR", "data")) / "_cache" / "preset_answers"
+    cache_dir = DATA_DIR / "_cache" / "preset_answers"
     cache_dir.mkdir(parents=True, exist_ok=True)
     
     PRESETS = [

@@ -18,6 +18,16 @@ RECEIPTS_DIR.mkdir(exist_ok=True)
 PUSH_ARCHIVE_DIR = DATA_DIR / "logs" / "pushes"
 PUSH_ARCHIVE_DIR.mkdir(parents=True, exist_ok=True)
 
+# ---- 启动期路径自检（v9.9.x P4）----
+# 事故根因：API 由 systemd 注入 DATA_DIR=/opt/moneybag/data，cron 侧没有这个变量，
+# 两侧把同名缓存写进互不可见的两棵目录树（预热白做）。启动期把解析结果打出来，
+# 便于用一条命令比对两侧是否一致；环境变量缺失时显式告警，不再静默回落。
+print(f"[CONFIG] DATA_DIR = {DATA_DIR} "
+      f"(source={'env' if os.environ.get('DATA_DIR') else 'default'})", flush=True)
+if not os.environ.get("DATA_DIR"):
+    print(f"[CONFIG] ⚠️ 环境变量 DATA_DIR 未设置，已回落到默认值 {DATA_DIR}；"
+          f"cron 侧请与 API 进程保持一致，否则缓存会写进另一棵目录树", flush=True)
+
 # ---- 缓存 TTL（秒）----
 NAV_CACHE_TTL = 3600        # 基金净值 1小时
 NEWS_CACHE_TTL = 1800       # 新闻 30分钟

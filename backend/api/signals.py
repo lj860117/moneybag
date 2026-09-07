@@ -7,6 +7,7 @@ Design doc: docs/design/12-framework-refactor.md §四
 """
 import json
 import os
+import threading
 import time
 from datetime import datetime
 from pathlib import Path
@@ -17,6 +18,7 @@ router = APIRouter(tags=["信号与策略"])
 
 FUND_SCREEN_FRESH_SECONDS = 10 * 3600
 FUND_SCREEN_STALE_SECONDS = 72 * 3600
+_DEFAULT_DATA_DIR = Path(__file__).resolve().parent.parent.parent / "data"
 
 from models.schemas import Portfolio
 from services.data_layer import (
@@ -430,12 +432,26 @@ def _screen_codes_fast(code_list: list, user_id: str = "") -> dict:
     }
 
 
+# v9.9.x P3-③: 同一 key 只允许一个后台刷新在跑。
+# 现状无锁：多个 stale 请求会并发起 N 个完整重算线程，同时打爆上游数据源。
+_bg_refresh_lock = threading.Lock()
+_bg_refresh_inflight = set()
+
+
 def _bg_refresh_fund_screen(fund_type, sort_by, top_n, userId):
-    """后台线程刷新个人化缓存"""
+    """后台线程刷新个人化缓存（同一 key 去重，重复调用直接返回）"""
+    key = f"{fund_type}_{sort_by}_{top_n}_{userId or 'anon'}"
+    with _bg_refresh_lock:
+        if key in _bg_refresh_inflight:
+            return
+        _bg_refresh_inflight.add(key)
     try:
         _compute_fund_screen(fund_type, sort_by, top_n, userId)
     except Exception as e:
         print(f"[FUND_SCREEN] bg refresh error: {e}")
+    finally:
+        with _bg_refresh_lock:
+            _bg_refresh_inflight.discard(key)
 
 
 def _compute_fund_screen(fund_type, sort_by, top_n, userId):
@@ -470,11 +486,16 @@ def _compute_fund_screen(fund_type, sort_by, top_n, userId):
     # v9.5.124: top_n < 20 不写缓存（避免 cache_warmer top_n=1 污染正常结果）
     if top_n >= 20:
         try:
-            cache_dir = Path(os.environ.get("DATA_DIR", "data")) / "_cache"
+            cache_dir = Path(os.environ.get("DATA_DIR", str(_DEFAULT_DATA_DIR))) / "_cache"
             user_cache_key = f"fund_screen_{fund_type}_{sort_by}_{userId or 'anon'}"
             user_cache_fp = cache_dir / f"{user_cache_key}.json"
-            # v9.5.121: TTL 10h（cache_warmer 每天早盘+收盘刷新，中间不过期）
-            payload = {"data": result, "expires_at": time.time() + 36000, "created_at": time.time()}
+            # v9.9.x P8: 裸 36000 → 具名常量 FUND_SCREEN_FRESH_SECONDS（:18，10h）。
+            # 注意：这里必须用 FRESH 而不是 STALE。若写成 now + 72h，则 :386 的
+            # `time.time() < expires_at` 在 72h 内恒真 → 永远走 fresh 分支直接 return，
+            # 而 :392 的 stale 分支要求「已过期 且 age < 72h」→ 两个条件互相矛盾、永不成立，
+            # stale-while-revalidate 会被改废（用户 72h 内一直拿旧数据且不刷新）。
+            # 预热空档（周末 46.75h）由【stale 分支】兜底，不由 fresh 窗口兜底。
+            payload = {"data": result, "expires_at": time.time() + FUND_SCREEN_FRESH_SECONDS, "created_at": time.time()}
             user_cache_fp.write_text(json.dumps(payload, ensure_ascii=False, default=str), encoding="utf-8")
         except Exception as e:
             print(f"[FUND_SCREEN] cache write error: {e}")
@@ -612,8 +633,11 @@ def _load_nav_series_cache():
 def _save_nav_series_cache():
     try:
         __os_ns.makedirs(__os_ns.path.dirname(_NAV_SERIES_FILE), exist_ok=True)
-        with open(_NAV_SERIES_FILE, "w", encoding="utf-8") as f:
-            __json_ns.dump({"date": _nav_series_cache_date, "data": _nav_series_cache}, f)
+        # 原子写 + default=str：与 _nav_pct_cache 同一类缺陷（dump 中途抛错会截断文件）
+        _tmp = _NAV_SERIES_FILE + ".tmp"
+        with open(_tmp, "w", encoding="utf-8") as f:
+            __json_ns.dump({"date": _nav_series_cache_date, "data": _nav_series_cache}, f, default=str)
+        __os_ns.replace(_tmp, _NAV_SERIES_FILE)
     except Exception:
         pass
 
@@ -621,12 +645,118 @@ def _save_nav_series_cache():
 _load_nav_series_cache()
 
 
+# v9.9.x: 净值全序列统一入口 —— Tushare 优先 → AKShare 降级 → EM 兜底。
+# 项目数据源铁律：Tushare 是主数据源，AKShare 仅作降级。
+# 此前 net_value 百分位直接翻天天基金 15 页（30 只 × 15 = 450 次串行 HTTP，
+# 实测 1.79s/只，合计 ~54s），是 /api/fund-screen 带 userId 慢 60 倍的主因。
+_NAV_FULL_WINDOW_DAYS = 430   # ≈300 个交易日，对齐原 EM「15 页 × 20 条」的 300 条口径
+_NAV_FULL_MIN = 20            # 低于此条数视为该数据源未命中，继续降级
+_nav_full_cache: dict = {}    # {code: [nav,...]} 升序，按天失效
+_nav_full_date = ""
+
+
+def _fetch_nav_full_em(code: str) -> list:
+    """L3 兜底：天天基金 f10/lsjz 翻页。
+
+    用户环境该域名存在间歇性连接 reset，因此这里超时收紧到 3s/页、不重试、
+    整体预算 6s，失败即放弃返回空——绝不让兜底路径反过来成为新的卡点。
+    """
+    import time as _t
+    import requests, re, json as _json
+    url = "https://api.fund.eastmoney.com/f10/lsjz"
+    headers = {"Referer": "https://fund.eastmoney.com/", "User-Agent": "Mozilla/5.0"}
+    deadline = _t.time() + 6
+    all_navs = []
+    for page in range(1, 16):  # 15 页 × 20 条 = 300 条（~15 个月）
+        if _t.time() > deadline:
+            break
+        try:
+            r = requests.get(url, params={"callback": "x", "fundCode": code,
+                                          "pageIndex": page, "pageSize": 20},
+                             headers=headers, timeout=3)
+            body = re.sub(r"^x\(", "", r.text.strip()).rstrip(")")
+            items = _json.loads(body).get("Data", {}).get("LSJZList", [])
+            if not items:
+                break
+            for item in items:
+                nav = float(item.get("LJJZ") or item.get("DWJZ") or 0)
+                if nav > 0:
+                    all_navs.append(nav)
+        except Exception:
+            break
+    all_navs.reverse()  # EM 返回新→旧，翻转成升序与 L1/L2 对齐
+    return all_navs
+
+
+def _fetch_nav_full(code: str) -> list:
+    """取最近 ~300 个交易日的累计净值（升序）。实测（线上 20 只真实基金代码）：
+      L1 Tushare fund_nav(430d)  19/20 命中，均 309 行，0.09s/只 → 30 只 ≈ 2.7s
+      L2 AKShare 全量           20/20 命中，均 1744 行，0.30s/只 → 30 只 ≈ 10s
+      L3 EM f10/lsjz × 15 页      300 行，1.79s/只 → 30 只 ≈ 54s
+    """
+    # L1 Tushare（主数据源）。注意：必须走 services.tushare_data 封装，它会把
+    # 代码补成 .OF；Infra 的 tushare_provider._normalize_code 对场外基金没有
+    # .OF 分支（实测命中率仅 5%），本轮不碰它，已在待办里单独立项。
+    try:
+        from services.tushare_data import is_configured, get_fund_nav as ts_nav
+        if is_configured():
+            r = ts_nav(code, days=_NAV_FULL_WINDOW_DAYS)
+            vals = []
+            for row in (r.get("navs") or []):
+                v = row.get("accum_nav") or row.get("unit_nav")
+                try:
+                    v = float(v)
+                except (TypeError, ValueError):
+                    continue
+                if v > 0:
+                    vals.append(v)
+            if len(vals) >= _NAV_FULL_MIN:
+                return vals  # Tushare 已按 nav_date 升序
+    except Exception:
+        pass
+    # L2 AKShare（fund_monitor 内部仍有 Tushare → EM 的自身降级链）
+    try:
+        from services.fund_monitor import get_fund_nav_history
+        hist = get_fund_nav_history(code, days=_NAV_FULL_WINDOW_DAYS) or []
+        vals = []
+        for n in hist:
+            try:
+                v = float(n.get("nav") or 0)
+            except (TypeError, ValueError):
+                continue
+            if v > 0:
+                vals.append(v)
+        if len(vals) >= _NAV_FULL_MIN:
+            return vals
+    except Exception:
+        pass
+    # L3 EM 兜底
+    return _fetch_nav_full_em(code)
+
+
+def _get_nav_full(code: str) -> list:
+    """带按天进程内缓存的净值全序列入口（相关性与百分位共用一次拉取）。"""
+    global _nav_full_cache, _nav_full_date
+    from datetime import date
+    today_str = date.today().isoformat()
+    if _nav_full_date != today_str:
+        _nav_full_cache = {}
+        _nav_full_date = today_str
+    cached = _nav_full_cache.get(code)
+    if cached is not None:
+        return cached
+    vals = _fetch_nav_full(code)
+    _nav_full_cache[code] = vals
+    return vals
+
+
 def _get_nav_series(code: str, days: int = 60) -> list:
     """获取基金净值日收益率序列（%），用于相关系数计算。
 
-    从 get_fund_nav_history 取净值，转成日涨跌幅，长度≥20才返回。
-    结果缓存进进程内 dict，同一进程多次调用不重复拉数据。
+    从 _get_nav_full() 取净值（Tushare 优先 → AKShare → EM），转成日涨跌幅，
+    长度≥20才返回。结果缓存进进程内 dict，同一进程多次调用不重复拉数据。
     v9.5.77: 加日期 TTL，每天凌晨自动失效，避免用隔天陈旧数据。
+    v9.9.x: 与净值百分位共用 _get_nav_full()，30 只基金只需拉取一次。
     """
     global _nav_series_cache, _nav_series_cache_date
     from datetime import date
@@ -637,9 +767,7 @@ def _get_nav_series(code: str, days: int = 60) -> list:
     if code in _nav_series_cache:
         return _nav_series_cache[code]
     try:
-        from services.fund_monitor import get_fund_nav_history
-        navs = get_fund_nav_history(code, days=days)
-        vals = [n["nav"] for n in navs if n.get("nav") and n["nav"] > 0]
+        vals = _get_nav_full(code)[-days:]
         if len(vals) < 20:
             _nav_series_cache[code] = []
             return []
@@ -688,15 +816,27 @@ def _load_nav_pct_cache():
         if _os.path.exists(_NAV_PCT_FILE):
             with open(_NAV_PCT_FILE, "r", encoding="utf-8") as f:
                 _nav_pct_cache = _json_pct.load(f) or {}
-    except Exception:
+    except Exception as e:
+        # v9.9.x: 损坏时不能静默清空——先备份留证再重置。
+        # 此前因缺少 default=str，datetime.date 序列化抛 TypeError，而 open("w")
+        # 已把文件截断成 146 字节的半截 JSON，下次启动必然解析失败 →
+        # 每次进程重启都全量重拉净值百分位（30 只 × 15 页 EM = 450 次 HTTP）。
+        try:
+            _os.replace(_NAV_PCT_FILE, _NAV_PCT_FILE + ".corrupt")
+            print(f"[NAV_PCT] ⚠️ 缓存文件损坏已备份为 .corrupt，将重新拉取: {e}")
+        except Exception:
+            pass
         _nav_pct_cache = {}
 
 
 def _save_nav_pct_cache():
     try:
         _os.makedirs(_os.path.dirname(_NAV_PCT_FILE), exist_ok=True)
-        with open(_NAV_PCT_FILE, "w", encoding="utf-8") as f:
-            _json_pct.dump(_nav_pct_cache, f, ensure_ascii=False)
+        # 先写临时文件再原子替换：避免 dump 中途抛错把原文件截断成半截 JSON
+        _tmp = _NAV_PCT_FILE + ".tmp"
+        with open(_tmp, "w", encoding="utf-8") as f:
+            _json_pct.dump(_nav_pct_cache, f, ensure_ascii=False, default=str)
+        _os.replace(_tmp, _NAV_PCT_FILE)
     except Exception:
         pass
 
@@ -705,12 +845,14 @@ _load_nav_pct_cache()  # 模块加载时即恢复
 
 
 def _get_fund_nav_percentile(code: str) -> dict:
-    """v9.5.78: 用天天基金 API 拉 ~15个月净值历史，计算当前净值的历史百分位。
-    
+    """v9.5.78: 用 ~300 个交易日的净值历史计算当前净值的历史百分位。
+
     返回 {nav_pct: int, nav_pct_label: str, nav_cur: float, nav_low: float, nav_high: float}
     v9.5.118: 缓存放宽到3天有效（净值百分位短期不会剧变，减少API请求）
+    v9.9.x: 数据源改为 Tushare 优先 → AKShare 降级 → EM 兜底（见 _fetch_nav_full）。
+            原先是直连天天基金翻 15 页，30 只 × 15 = 450 次串行 HTTP（实测 ~54s）。
     """
-    from datetime import date, timedelta
+    from datetime import date
     global _nav_pct_cache
     today = date.today()
     if code in _nav_pct_cache:
@@ -721,28 +863,10 @@ def _get_fund_nav_percentile(code: str) -> dict:
         except (ValueError, TypeError):
             pass
     try:
-        import requests, re, json as _json
-        url = "https://api.fund.eastmoney.com/f10/lsjz"
-        headers = {"Referer": "https://fund.eastmoney.com/", "User-Agent": "Mozilla/5.0"}
-        all_navs = []
-        for page in range(1, 16):  # 最多15页 × 20条 = 300条（~15个月）
-            try:
-                r = requests.get(url, params={"callback": "x", "fundCode": code,
-                                              "pageIndex": page, "pageSize": 20},
-                                 headers=headers, timeout=8)
-                body = re.sub(r"^x\(", "", r.text.strip()).rstrip(")")
-                items = _json.loads(body).get("Data", {}).get("LSJZList", [])
-                if not items:
-                    break
-                for item in items:
-                    nav = float(item.get("LJJZ") or item.get("DWJZ") or 0)
-                    if nav > 0:
-                        all_navs.append(nav)
-            except Exception:
-                break
+        all_navs = _get_nav_full(code)  # 升序
         if len(all_navs) < 20:
             return {}
-        cur = all_navs[0]  # 最新在前
+        cur = all_navs[-1]  # 最新在最后
         nav_pct = round(sum(1 for v in all_navs if v <= cur) / len(all_navs) * 100)
         if nav_pct <= 20:
             label = f"历史低位 {nav_pct}% 🟢"
@@ -760,7 +884,7 @@ def _get_fund_nav_percentile(code: str) -> dict:
             "nav_low": round(min(all_navs), 4),
             "nav_high": round(max(all_navs), 4),
             "hist_count": len(all_navs),
-            "updated": today,
+            "updated": today.isoformat(),
         }
         _nav_pct_cache[code] = result
         # v9.5.108: 同步写文件（异步 batch 优化可后续做，先用直写保证正确性）
@@ -1610,7 +1734,7 @@ def _enrich_risk_adjusted(funds: list) -> None:
 def _check_qdii_purchase_status(funds: list):
     """对QDII基金检查申购状态,标注限购/暂停(批量,用缓存)"""
     try:
-        from api.fund_detail import get_fund_purchase_info
+        from api.fund_detail import _get_fund_purchase_info
         qdii_keywords = ["QDII", "纳指", "标普", "纳斯达克", "S&P", "海外", "美股", "日经", "印度", "全球", "港股"]
         checked = 0
         for f in funds:
@@ -1623,7 +1747,7 @@ def _check_qdii_purchase_status(funds: list):
             if not code:
                 continue
             try:
-                info = get_fund_purchase_info(code)
+                info = _get_fund_purchase_info(code)
                 if info and info.get("available"):
                     status = info.get("purchase_status", "")
                     limit = info.get("daily_limit")

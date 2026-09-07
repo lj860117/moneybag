@@ -387,7 +387,19 @@ def _build_portfolio_context(p=None, user_id: str = "default") -> str:
 
     # 1. 基本持仓信息
     if p and p.holdings:
-        lines.append(f"【用户画像】风险类型：{p.profile}，总投入：¥{p.amount:,.0f}")
+        # v9.9.x P3-①: p.profile 常为 None（渲染成「风险类型：None」），
+        # 回退到 :428 同一份后端真实画像的 risk_level，避免把 None 喂给 LLM
+        _risk_label = getattr(p, "profile", None)
+        if not _risk_label and user_id and user_id != "default":
+            try:
+                from domain.services.user_preference_service import get_profile as _get_profile
+                _prof = _get_profile(user_id) or {}
+                if isinstance(_prof, dict):
+                    _risk_label = (_prof.get("risk_level") or _prof.get("riskLevel")
+                                   or _prof.get("risk_tolerance"))
+            except Exception:
+                _risk_label = None
+        lines.append(f"【用户画像】风险类型：{_risk_label or '未设置'}，总投入：¥{p.amount:,.0f}")
         lines.append("【持仓明细】")
         for h in p.holdings:
             lines.append(f"  - {h.name}({h.code})：¥{h.amount:,.0f}，目标占比 {h.targetPct}%")
