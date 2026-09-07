@@ -19,7 +19,6 @@ router = APIRouter(tags=["信号与策略"])
 
 FUND_SCREEN_FRESH_SECONDS = 10 * 3600
 FUND_SCREEN_STALE_SECONDS = 72 * 3600
-_DEFAULT_DATA_DIR = Path(__file__).resolve().parent.parent.parent / "data"
 
 from models.schemas import Portfolio
 from services.data_layer import (
@@ -487,7 +486,7 @@ def _compute_fund_screen(fund_type, sort_by, top_n, userId):
     # v9.5.124: top_n < 20 不写缓存（避免 cache_warmer top_n=1 污染正常结果）
     if top_n >= 20:
         try:
-            cache_dir = Path(os.environ.get("DATA_DIR", str(_DEFAULT_DATA_DIR))) / "_cache"
+            cache_dir = Path(config.DATA_DIR) / "_cache"
             user_cache_key = f"fund_screen_{fund_type}_{sort_by}_{userId or 'anon'}"
             user_cache_fp = cache_dir / f"{user_cache_key}.json"
             # v9.9.x P8: 裸 36000 → 具名常量 FUND_SCREEN_FRESH_SECONDS（:18，10h）。

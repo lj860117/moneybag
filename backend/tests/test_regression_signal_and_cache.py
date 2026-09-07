@@ -112,8 +112,11 @@ def test_cfo_summary_force_refresh_rewrites_fresh_file(tmp_path, monkeypatch):
     monkeypatch.setitem(sys.modules, "services.weekly_report", fake_weekly_report)
 
     import api.steward as steward
+    import config
 
-    monkeypatch.setenv("DATA_DIR", str(tmp_path))
+    # FIX 2026-09-07: DATA_DIR 收敛到 config.DATA_DIR 后，steward 用 config.DATA_DIR
+    # （import 时已绑定），monkeypatch.setenv 不再生效，需直接改 config.DATA_DIR
+    monkeypatch.setattr(config, "DATA_DIR", Path(tmp_path))
     cache_dir = tmp_path / "_cache"
     cache_dir.mkdir(parents=True, exist_ok=True)
     cache_fp = cache_dir / "cfo_summary_LeiJiang.json"
@@ -870,8 +873,11 @@ def test_fund_screen_weekend_stale_cache_survives_beyond_24_hours(tmp_path, monk
     import threading
     from datetime import datetime as real_datetime
     import api.signals as signals
+    import config
 
-    monkeypatch.setenv("DATA_DIR", str(tmp_path))
+    # FIX 2026-09-07: signals 用 config.DATA_DIR（import 时已绑定），
+    # monkeypatch.setenv 不再生效，需直接改 config.DATA_DIR
+    monkeypatch.setattr(config, "DATA_DIR", Path(tmp_path))
     cache_dir = tmp_path / "_cache"
     cache_dir.mkdir(parents=True, exist_ok=True)
 
