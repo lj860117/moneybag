@@ -616,6 +616,7 @@ class TushareProvider:
             "399001" + "index" → "399001.SZ"
             "sh000300" + "index" → "000300.SH"
             "sz399001" + "index" → "399001.SZ"
+            "006547" + "fund"  → "006547.OF"  (场外基金，fund_nav 接口)
 
         Args:
             code: 6-digit code, sh/sz prefixed code, or already-formatted code
@@ -657,11 +658,10 @@ class TushareProvider:
                 else:
                     return f"{code}.SZ"  # default
             elif asset_type == "fund":
-                # Fund codes typically start with 1 or 5
-                if code.startswith("1"):
-                    return f"{code}.SZ"
-                elif code.startswith("5"):
-                    return f"{code}.SH"
+                # 场外基金（Tushare fund_nav 接口只接受 .OF 代码）。
+                # 原实现把 1xxx/5xxx 映射成 .SZ/.SH，是场内 ETF/LOF 的规则，
+                # 与 fund_nav 接口错配（实测命中率仅 5%），已改为默认 .OF。
+                return f"{code}.OF"
 
         # Already formatted or unknown - use exchange hint if available
         if exchange_hint:

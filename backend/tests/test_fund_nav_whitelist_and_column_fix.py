@@ -59,6 +59,21 @@ from infra.data_source.providers.akshare_provider import (
 from infra.data_source.providers.tushare_provider import TushareProvider
 
 
+def test_normalize_code_fund_returns_of_suffix():
+    """回归锁定 .OF 修复（2026-09-07）：_normalize_code(code, "fund") 必须
+    统一补 .OF 后缀，与 services/tushare_data.py 的约定一致。修复前的实现把
+    1xxx/5xxx 映射成 .SZ/.SH（场内 ETF/LOF 规则），与 Tushare fund_nav 接口
+    错配（该接口只接受 .OF 场外基金代码），实测命中率仅 5%。"""
+    provider = TushareProvider()
+    # 场外基金代码（6位数字）→ 补 .OF
+    assert provider._normalize_code("006547", "fund") == "006547.OF"
+    assert provider._normalize_code("000001", "fund") == "000001.OF"
+    # 场内 LOF 代码（1 开头）在 fund 类型下也应补 .OF（fund_nav 接口语义）
+    assert provider._normalize_code("161725", "fund") == "161725.OF"
+    # 已经带 .OF 的代码原样返回
+    assert provider._normalize_code("006547.OF", "fund") == "006547.OF"
+
+
 def test_fund_nav_in_akshare_supported_metrics():
     """fund_nav 必须在白名单里——这是本次修复的核心断言，回归锁定
     "AKShare 从未真正参与 fund_nav 降级链" 这个 bug 不再复现。"""
