@@ -145,9 +145,11 @@ def extract_sector_mentions(text: str) -> list:
 def fetch_real_fund_data(user_id: str) -> dict:
     """获取用户持仓基金的实际数据"""
     try:
-        from services.fund_monitor import load_fund_holdings
-        from infra.data_source.fund_realtime import get_fund_realtime
-        
+        # infra.data_source.fund_realtime 模块全仓不存在，ImportError 会被下面的
+        # except Exception 吞掉 -> fetch_real_fund_data 恒返回 {} -> 幻觉自检静默失效。
+        # 真实实现在 services.fund_monitor.get_fund_realtime。
+        from services.fund_monitor import load_fund_holdings, get_fund_realtime
+
         holdings = load_fund_holdings(user_id)
         if not holdings:
             return {}
@@ -164,9 +166,13 @@ def fetch_real_fund_data(user_id: str) -> dict:
                 if realtime:
                     real_data[code] = {
                         "name": name,
-                        "est_change": realtime.get("est_change_pct"),
-                        "nav_change": realtime.get("nav_change_pct"),
-                        "last_nav": realtime.get("last_nav"),
+                        # 对齐 services.fund_monitor.get_fund_realtime 的真实返回字段。
+                        # 原 est_change_pct / nav_change_pct / last_nav 三个 key 全部不存在，
+                        # 且与 cross_check_diagnosis 读取的 est_change / nav_change 不一致，
+                        # 双重错位导致 real_change 恒为 None，涨跌幅比对永远不触发。
+                        "est_change": realtime.get("estRate"),
+                        "nav_change": realtime.get("navRate"),
+                        "last_nav": realtime.get("nav") or realtime.get("prevNav"),
                     }
             except Exception as e:
                 print(f"  [实际数据] {name}({code}) 获取失败: {e}")

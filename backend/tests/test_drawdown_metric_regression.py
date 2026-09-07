@@ -20,7 +20,12 @@
        "已从谷底反弹 +Y%"就参照了两个互不相关的时点，输出直接自相矛盾。
        013107 是硬证据：距高点 -12.0% == -max_dd，说明当前净值就是 09/04 那个回撤
        谷底本身，反弹幅度本该是 0，却被报成 +2.9%（那是拿 08/17 之前的 0.855 低点
-       算出来的）。修复后 rebound 必须以 trough_idx 为参照，且要求 trough_idx >= peak_idx。
+       算出来的）。修复后 rebound 必须以 trough_idx 为参照，且要求 trough_idx > peak_idx。
+
+       注意是**严格大于**，不是 >=：单调上涨（无回撤）时 max_dd 保持 0，peak_idx 与
+       trough_idx 都停在初始值 0，若用 >= 则 0 >= 0 成立，会退化成"从 navs[0] 反弹"，
+       序列 [1.0, 1.1, 1.2] 会报出「最大回撤 0.0%…已从谷底反弹 +20%」——比原 bug 更离谱。
+       数学上 trough_idx > peak_idx ⟺ max_dd > 0，用严格大于即可同时覆盖两种情形。
 
     B. 「N日最大回撤」标签语义错误
        标签取自 navWindowDays = len(navs)，那是**交易日条数**，不是自然日跨度。
@@ -304,3 +309,70 @@ def test_fund_monitor_symbols_referenced_by_night_worker_exist():
     assert not missing, (
         "night_worker.py 引用了 services.fund_monitor 里不存在的符号：\n  "
         + "\n  ".join(missing))
+
+
+def test_project_modules_and_symbols_imported_by_scripts_exist():
+    """扫描 backend/scripts/ 下**所有**脚本，防两类静默失效。
+
+    2026-09-07 共发现 3 处，全部被 `except Exception` 吞掉、功能长期为空而无告警：
+
+    1. ``infra.data_source.fund_realtime``  —— 模块全仓不存在，出现两处：
+       - ``stock_monitor_cron.py:1196``           （收盘复盘「🔔 持仓预警」段恒空）
+       - ``closing_review_hallucination_check.py:149``（**幻觉自检**静默失效）
+    2. ``services.fund_monitor.calc_fund_risk``  —— 函数从未定义（同上第一段）
+
+    前两个用例只锁了 cron 和 night_worker，会漏掉同形态的其它脚本。
+    这里改成遍历整个 scripts/ 目录：既查 import 的**模块路径**是否真实存在，
+    也查 ``from services.fund_monitor import X`` 的 **X** 是否真实存在。
+
+    注意：只扫项目内模块（services./infra./api. 前缀），第三方库不在此列。
+    """
+    backend_dir = Path(fund_monitor.__file__).parent.parent
+    scripts_dir = backend_dir / "scripts"
+    assert scripts_dir.is_dir(), f"找不到 scripts 目录: {scripts_dir}"
+
+    missing_modules: list = []
+    missing_symbols: list = []
+    checked_imports = 0
+
+    for script in sorted(scripts_dir.glob("*.py")):
+        try:
+            tree = ast.parse(script.read_text(encoding="utf-8"), filename=str(script))
+        except SyntaxError as e:      # 脚本本身语法坏了，交给别的用例/工具管
+            pytest.fail(f"{script.name} 语法错误，无法扫描: {e}")
+
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.ImportFrom):
+                continue
+            module = node.module or ""
+            # 只管项目内模块
+            if not module.startswith(("services.", "infra.", "api.")):
+                continue
+
+            checked_imports += 1
+            mod_file = backend_dir / (module.replace(".", "/") + ".py")
+            mod_pkg = backend_dir / module.replace(".", "/") / "__init__.py"
+            if not mod_file.exists() and not mod_pkg.exists():
+                missing_modules.append(
+                    f"{script.name}:{node.lineno} -> 模块 {module} 不存在")
+                continue
+
+            if module == "services.fund_monitor":
+                for alias in node.names:
+                    if alias.name == "*":
+                        continue
+                    if not hasattr(fund_monitor, alias.name):
+                        missing_symbols.append(
+                            f"{script.name}:{node.lineno} -> {alias.name}")
+
+    assert checked_imports, (
+        f"没有从 {scripts_dir} 解析到任何项目内 import，扫描逻辑可能失效了")
+
+    assert not missing_modules, (
+        "scripts/ 下有脚本 import 了不存在的模块。这类 ImportError 通常被 "
+        "`except Exception` 吞掉，导致整段功能长期为空且无告警：\n  "
+        + "\n  ".join(missing_modules))
+
+    assert not missing_symbols, (
+        "scripts/ 下有脚本引用了 services.fund_monitor 里不存在的符号：\n  "
+        + "\n  ".join(missing_symbols))
