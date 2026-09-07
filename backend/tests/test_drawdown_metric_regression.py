@@ -311,31 +311,40 @@ def test_fund_monitor_symbols_referenced_by_night_worker_exist():
         + "\n  ".join(missing))
 
 
-def test_project_modules_and_symbols_imported_by_scripts_exist():
-    """扫描 backend/scripts/ 下**所有**脚本，防两类静默失效。
+def test_project_modules_and_symbols_referenced_exist():
+    """扫描整个 backend/ 下**所有** py 文件，防两类静默失效。
 
-    2026-09-07 共发现 3 处，全部被 `except Exception` 吞掉、功能长期为空而无告警：
+    2026-09-07 共发现 5 处，全部被 `except Exception` 吞掉、功能长期为空而无告警：
 
     1. ``infra.data_source.fund_realtime``  —— 模块全仓不存在，出现两处：
        - ``stock_monitor_cron.py:1196``           （收盘复盘「🔔 持仓预警」段恒空）
        - ``closing_review_hallucination_check.py:149``（**幻觉自检**静默失效）
     2. ``services.fund_monitor.calc_fund_risk``  —— 函数从未定义（同上第一段）
+    3. ``services.user_service``  —— 模块全仓不存在，出现两处：
+       - ``scenario_engine.py:408``   （场景分析的「用户持仓」恒为空）
+       - ``recommend_engine.py:81``   （按风险偏好调整权重从未生效）
 
-    前两个用例只锁了 cron 和 night_worker，会漏掉同形态的其它脚本。
-    这里改成遍历整个 scripts/ 目录：既查 import 的**模块路径**是否真实存在，
+    前两个用例只锁了 cron 和 night_worker，会漏掉同形态的其它文件。
+    这里遍历整个 backend/：既查 import 的**模块路径**是否真实存在，
     也查 ``from services.fund_monitor import X`` 的 **X** 是否真实存在。
 
-    注意：只扫项目内模块（services./infra./api. 前缀），第三方库不在此列。
+    注意：
+    - 只扫项目内模块（services./infra./api. 前缀），第三方库不在此列
+    - 排除 tests/ 自身（测试里会故意 import 异常路径做断言）与 _archive/
     """
     backend_dir = Path(fund_monitor.__file__).parent.parent
-    scripts_dir = backend_dir / "scripts"
-    assert scripts_dir.is_dir(), f"找不到 scripts 目录: {scripts_dir}"
+    scripts_dir = backend_dir
+    assert scripts_dir.is_dir(), f"找不到 backend 目录: {scripts_dir}"
 
     missing_modules: list = []
     missing_symbols: list = []
     checked_imports = 0
 
-    for script in sorted(scripts_dir.glob("*.py")):
+    _SKIP_PARTS = {"tests", "_archive", "__pycache__", "node_modules", "venv"}
+
+    for script in sorted(scripts_dir.rglob("*.py")):
+        if _SKIP_PARTS & set(script.parts):
+            continue
         try:
             tree = ast.parse(script.read_text(encoding="utf-8"), filename=str(script))
         except SyntaxError as e:      # 脚本本身语法坏了，交给别的用例/工具管
@@ -369,10 +378,10 @@ def test_project_modules_and_symbols_imported_by_scripts_exist():
         f"没有从 {scripts_dir} 解析到任何项目内 import，扫描逻辑可能失效了")
 
     assert not missing_modules, (
-        "scripts/ 下有脚本 import 了不存在的模块。这类 ImportError 通常被 "
+        "backend/ 下有文件 import 了不存在的模块。这类 ImportError 通常被 "
         "`except Exception` 吞掉，导致整段功能长期为空且无告警：\n  "
         + "\n  ".join(missing_modules))
 
     assert not missing_symbols, (
-        "scripts/ 下有脚本引用了 services.fund_monitor 里不存在的符号：\n  "
+        "backend/ 下有文件引用了 services.fund_monitor 里不存在的符号：\n  "
         + "\n  ".join(missing_symbols))

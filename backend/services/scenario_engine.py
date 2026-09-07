@@ -405,8 +405,12 @@ def analyze_scenario(scenario_id: str = "", custom_text: str = "", user_id: str 
     user_portfolio = []
     if user_id:
         try:
-            from services.user_service import get_user_holdings
-            holdings = get_user_holdings(user_id)
+            # services.user_service 模块全仓不存在，ImportError 被下面的
+            # except 吞掉 -> 场景分析的「用户持仓」恒为空，prompt 里永远缺持仓上下文。
+            # 真实实现是 fund_monitor.load_fund_holdings：它以盯盘列表为准，
+            # 并会再从 portfolio.transactions 补全（portfolio.holdings 常为空）。
+            from services.fund_monitor import load_fund_holdings
+            holdings = load_fund_holdings(user_id)
             if holdings:
                 user_portfolio = holdings[:10]
         except Exception:

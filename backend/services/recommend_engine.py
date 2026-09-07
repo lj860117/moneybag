@@ -78,9 +78,21 @@ def get_stock_recommendations(user_id: str = "", top_n: int = 10, pool: str = "h
     # V7.5: 按用户风险偏好调整权重
     if user_id:
         try:
-            from services.user_service import get_user_preference
-            pref = get_user_preference(user_id)
-            risk_type = pref.get("riskType", "balanced")
+            # services.user_service 模块全仓不存在，ImportError 被下面的
+            # except 吞掉 -> 按风险偏好调整权重这一步从未生效过。
+            # 真实偏好存在用户文件的 risk_profile 字段，取值 5 档
+            # （保守型/稳健型/平衡型/进取型/激进型，见 night_worker.py:383），
+            # 而下面分支用的是 3 档 growth/balanced/conservative，故需映射。
+            from services.persistence import load_user
+            _RISK_TYPE_MAP = {
+                "保守型": "conservative",
+                "稳健型": "balanced",
+                "平衡型": "balanced",
+                "进取型": "growth",
+                "激进型": "growth",
+            }
+            risk_type = _RISK_TYPE_MAP.get(
+                (load_user(user_id) or {}).get("risk_profile", ""), "balanced")
             if risk_type == "growth":
                 # 进攻型：加技术+资金，减风险
                 weights = {**weights, "technical": weights.get("technical", 0.15) + 0.05,
