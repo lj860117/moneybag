@@ -169,11 +169,16 @@ let _thinkSec=0;_thinkTimer=setInterval(()=>{_thinkSec++;const el=document.getEl
 // v9.5.63: 不管 API_AVAILABLE 状态，直接尝试一次真实请求（health 假阴性兜底）
 // 真实失败由 try/catch 处理，离线兜底只在真的网络错误时触发
 let _streamSuccess = false;
+let _streamTimeout = false; // 连接/首字节超时标记（区别于网络错误，用于展示「请求超时」提示）
 try{
 // D2 v9.5.45: 持仓上下文快照
 const p=_buildChatPortfolioSnapshot();
 const _history=chatMessages.slice(-21,-1).filter(m=>m.role==='user'||m.role==='bot').map(m=>({role:m.role==='bot'?'assistant':'user',content:m.text||''}));
-const r=await fetch(API_BASE+'/chat/stream',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({message:msgToSend,model:chatModel,portfolio:p,userId:getProfileId(),history:_history.length?_history:undefined})});
+// SSE 流式请求不能整体 timeout（会掐断长输出），只用 AbortController 限制「连接/首字节」阶段：
+// 20s 内没收到响应头就 abort；一旦拿到响应头即清除定时器，进入流式读取阶段不再超时。
+const _ctl=new AbortController();const _tmo=setTimeout(()=>_ctl.abort(),20000);
+const r=await fetch(API_BASE+'/chat/stream',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({message:msgToSend,model:chatModel,portfolio:p,userId:getProfileId(),history:_history.length?_history:undefined}),signal:_ctl.signal});
+clearTimeout(_tmo);
 // v9.5.63: 请求成功 → 标记 API 在线（修复假阴性）
 if(r.ok){ API_AVAILABLE = true; }
 rmTyping();
@@ -274,8 +279,10 @@ if(d&&d.reply){
   console.error('[chat] network error:', e);
   rmTyping();
   if(_thinkTimer){clearInterval(_thinkTimer);_thinkTimer=null;}
-  // 真实网络错误才置 false
-  if(e.name==='TypeError' || e.name==='AbortError'){
+  // 真实网络错误才置 false；超时(AbortError)只是连接慢，不判为离线
+  if(e.name==='AbortError'){
+    _streamTimeout = true;
+  } else if(e.name==='TypeError'){
     API_AVAILABLE = false;
   }
 }
@@ -283,9 +290,10 @@ if(d&&d.reply){
 if(!_streamSuccess){
   rmTyping();
   if(_thinkTimer){clearInterval(_thinkTimer);_thinkTimer=null;}
-  const fb = API_AVAILABLE ? '抱歉，AI 回复异常，请稍后重试。' : '后端未连接，无法获取实时数据。请确保后端运行中。';
-  chatMessages.push({role:'bot',text:fb,src: API_AVAILABLE?'error':'offline'});_saveChatHistory();
-  appendMsg('bot',fb, API_AVAILABLE?'error':'offline');
+  const fb = _streamTimeout ? '请求超时，请重试。' : (API_AVAILABLE ? '抱歉，AI 回复异常，请稍后重试。' : '后端未连接，无法获取实时数据。请确保后端运行中。');
+  const fbSrc = _streamTimeout ? 'timeout' : (API_AVAILABLE?'error':'offline');
+  chatMessages.push({role:'bot',text:fb,src:fbSrc});_saveChatHistory();
+  appendMsg('bot',fb,fbSrc);
   // v9.5.82: 重试按钮 — 自动用上一条用户消息重发
   const retryLastUserMsg = chatMessages.slice().reverse().find(m=>m.role==='user')?.text;
   if(retryLastUserMsg){

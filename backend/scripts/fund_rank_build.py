@@ -12,7 +12,7 @@
   - 本地计算收益率 → 排序
 
 产出：
-  moneybag/backend/data/fund_rank_ts.json
+  <DATA_DIR>/fund_rank_ts.json（DATA_DIR 来自 config，单一数据源）
   结构：{
     "generated_at": ISO_timestamp,
     "trade_date": "20260417",
@@ -51,9 +51,13 @@ if env.exists():
 from backend.services.tushare_data import (  # noqa: E402
     get_fund_basic_all, get_fund_nav_by_date, is_configured,
 )
+# 统一走 config.DATA_DIR（单一数据源），不再硬编码 backend/data/。
+# 否则与 fund_rank.py / night_worker.py / fund_screen.py / longterm_screen.py
+# 这些读取方（都读 config.DATA_DIR/fund_rank_ts.json）落盘目录不一致，榜单永远读不到。
+from backend.config import DATA_DIR  # noqa: E402
 
 
-OUTPUT_FILE = ROOT / "backend" / "data" / "fund_rank_ts.json"
+OUTPUT_FILE = Path(DATA_DIR) / "fund_rank_ts.json"
 
 
 def find_latest_trade_date() -> str:
@@ -242,7 +246,7 @@ def main():
         print("\n📤 上传到线上...")
         r = subprocess.run([
             "scp", str(OUTPUT_FILE),
-            "ubuntu@150.158.47.189:/opt/moneybag/backend/data/fund_rank_ts.json",
+            "ubuntu@150.158.47.189:/opt/moneybag/data/fund_rank_ts.json",
         ])
         if r.returncode == 0:
             print("✅ 上传成功")
