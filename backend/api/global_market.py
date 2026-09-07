@@ -5,6 +5,7 @@
 
 Design doc: docs/design/12-framework-refactor.md §二
 """
+import config
 import json
 import os
 import time
@@ -48,7 +49,7 @@ def global_pe():
 @router.get("/api/global/snapshot")
 def global_snapshot():
     """全球市场综合快照（4小时文件缓存）"""
-    _cache_fp = Path(os.environ.get("DATA_DIR", "data")) / "_cache" / "global_snapshot.json"
+    _cache_fp = Path(config.DATA_DIR) / "_cache" / "global_snapshot.json"
     try:
         if _cache_fp.exists():
             payload = json.loads(_cache_fp.read_text(encoding="utf-8"))

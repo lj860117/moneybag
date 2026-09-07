@@ -6,6 +6,7 @@
   3. 异动检测（量价/突破/资金流）
   4. 盯盘结果生成（供 cron 脚本调用）
 """
+import config
 import os
 import time
 import json
@@ -34,7 +35,7 @@ from config import (
 from infra.cache import MemoryCache
 
 # ---- 持仓数据路径 ----
-_DATA_DIR = Path(os.environ.get("DATA_DIR", Path(__file__).parent.parent / "data"))
+_DATA_DIR = Path(config.DATA_DIR)
 
 # ---- 缓存 ----
 _monitor_cache = MemoryCache(default_ttl=3600)

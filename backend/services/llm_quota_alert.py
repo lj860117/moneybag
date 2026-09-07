@@ -5,13 +5,14 @@ LLM 配额/余额告警
 - 同种告警一天只推一次（文件去重）
 - 没看见第二天会再推（次日重新允许推送）
 """
+import config
 import os
 import json
 import time
 from pathlib import Path
 from datetime import date
 
-DATA_DIR = Path(os.environ.get("DATA_DIR", "data"))
+DATA_DIR = Path(config.DATA_DIR)
 ALERT_STATE_FILE = DATA_DIR / "llm_alert_state.json"
 
 

@@ -5,6 +5,7 @@
 
 Design doc: docs/design/12-framework-refactor.md §四
 """
+import config
 import os
 import json
 import time
@@ -464,7 +465,7 @@ def get_fund_holding_detail_api(code: str, userId: str = "default"):
     import json as _json, time as _time, os as _os
     from pathlib import Path
     
-    cache_dir = Path(_os.environ.get("DATA_DIR", "data")) / "_cache" / "holding_detail"
+    cache_dir = Path(config.DATA_DIR) / "_cache" / "holding_detail"
     cache_dir.mkdir(parents=True, exist_ok=True)
     cache_fp = cache_dir / f"{code}_{userId}.json"
     
@@ -763,7 +764,7 @@ def holding_alerts_api(userId: str = "default"):
     import json as _json, time as _time, os as _os
     from pathlib import Path
     
-    cache_dir = Path(_os.environ.get("DATA_DIR", "data")) / "_cache"
+    cache_dir = Path(config.DATA_DIR) / "_cache"
     cache_dir.mkdir(parents=True, exist_ok=True)
     cache_fp = cache_dir / f"holding_alerts_{userId}.json"
     
@@ -982,7 +983,7 @@ def enrich_fund_holdings_api(userId: str = "default"):
     """
     import json as _json, time as _time
     from pathlib import Path
-    cache_dir = Path(os.environ.get("DATA_DIR", "data")) / "_cache"
+    cache_dir = Path(config.DATA_DIR) / "_cache"
     cache_fp = cache_dir / f"holdings_enrich_{userId}.json"
     
     # 读缓存（2h）
@@ -1183,7 +1184,7 @@ def ai_checkup_api(userId: str = "default"):
     import json as _json, time as _time
     from pathlib import Path
     
-    cache_dir = Path(os.environ.get("DATA_DIR", "data")) / "_cache"
+    cache_dir = Path(config.DATA_DIR) / "_cache"
     cache_dir.mkdir(parents=True, exist_ok=True)
     cache_fp = cache_dir / f"ai_checkup_{userId}.json"
     
@@ -1500,7 +1501,7 @@ def investor_dna_api(userId: str = "default"):
     """投资DNA画像: 风险偏好/持有风格/擅长赛道/行为弱点/回撤容忍度"""
     import json as _json, time as _time
     
-    cache_fp = Path(os.environ.get("DATA_DIR", "data")) / "_cache" / f"investor_dna_{userId}.json"
+    cache_fp = Path(config.DATA_DIR) / "_cache" / f"investor_dna_{userId}.json"
     # 缓存7天(画像不会频繁变化)
     if cache_fp.exists():
         try:
@@ -1536,7 +1537,7 @@ def family_overview_api():
     import json as _json, time as _time
     from pathlib import Path
     
-    cache_fp = Path(os.environ.get("DATA_DIR", "data")) / "_cache" / "family_view.json"
+    cache_fp = Path(config.DATA_DIR) / "_cache" / "family_view.json"
     # 读缓存(6h)
     if cache_fp.exists():
         try:
@@ -1559,7 +1560,7 @@ def family_monthly_report_api():
     import json as _json
     from pathlib import Path
     
-    report_dir = Path(os.environ.get("DATA_DIR", "data")) / "_cache" / "monthly_reports"
+    report_dir = Path(config.DATA_DIR) / "_cache" / "monthly_reports"
     if not report_dir.exists():
         return {"error": "暂无月报, 下月1号自动生成"}
     # 找最新的报告

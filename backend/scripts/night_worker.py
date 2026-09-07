@@ -18,6 +18,7 @@
 Token 预算: ¥0.45/天（R1×7 + V3×6）
 """
 
+import config
 import sys
 import os
 import json
@@ -883,7 +884,7 @@ def _build_portfolio_thermometer(uid: str) -> str:
 
     try:
         safe = hashlib.sha256(uid.encode()).hexdigest()[:16]
-        _users_dir = os.environ.get("USERS_DIR") or str(_P(os.environ.get("DATA_DIR", "./data")) / "users")
+        _users_dir = os.environ.get("USERS_DIR") or str(_P(config.DATA_DIR) / "users")
         ufile = _P(_users_dir) / f"{safe}.json"
         if not ufile.exists():
             return ""
@@ -1086,7 +1087,7 @@ def step_r1_phase2():
     # v9.5.124: 保存诊断缓存到文件（供 step_r1_phase3 读取）
     from pathlib import Path
     import json
-    diag_cache_dir = Path(os.environ.get("DATA_DIR", "./data")) / "night_worker"
+    diag_cache_dir = Path(config.DATA_DIR) / "night_worker"
     diag_cache_dir.mkdir(parents=True, exist_ok=True)
     for uid, data in results.items():
         diag_file = diag_cache_dir / f"diagnosis_{uid}.json"
@@ -1211,7 +1212,7 @@ def step_r1_phase3():
                 
                 # 加载持仓诊断（从 step4 生成的缓存）
                 from pathlib import Path
-                diag_cache_file = Path(os.environ.get("DATA_DIR", "./data")) / "night_worker" / f"diagnosis_{uid}.json"
+                diag_cache_file = Path(config.DATA_DIR) / "night_worker" / f"diagnosis_{uid}.json"
                 if not diag_cache_file.exists():
                     log(f"  ⚠️ {p.get('name', uid)}: 诊断缓存不存在，跳过决策生成")
                     continue
@@ -1256,7 +1257,7 @@ def _get_fund_recommendations(top_n=5, category="stock"):
     """
     try:
         import json as _json
-        rank_file = _P(os.environ.get("DATA_DIR", "./data")) / "fund_rank_ts.json"  # FIX: 不再硬编码 /opt/moneybag
+        rank_file = _P(config.DATA_DIR) / "fund_rank_ts.json"  # FIX: 不再硬编码 /opt/moneybag
         if not rank_file.exists():
             rank_file = _P("./data/fund_rank_ts.json")
         if not rank_file.exists():

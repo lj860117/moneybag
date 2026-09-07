@@ -17,6 +17,7 @@
 Design doc: docs/design/12-framework-refactor.md §四
 """
 from __future__ import annotations
+import config
 import os
 import json
 import time
@@ -39,7 +40,7 @@ from infra.cache import MemoryCache
 # ========================================================
 # v9.5.122: 市场上下文 — 文件缓存优先，后台 cache_warmer 预热
 # ========================================================
-_MARKET_CTX_FILE = os.path.join(os.environ.get("DATA_DIR", "data"), "_cache", "market_context.txt")
+_MARKET_CTX_FILE = os.path.join(config.DATA_DIR, "_cache", "market_context.txt")
 _MARKET_CTX_TTL = 300  # 内存加速层（防同一秒多个对话重复读文件）
 _market_ctx_cache = MemoryCache(default_ttl=_MARKET_CTX_TTL)
 
@@ -322,7 +323,7 @@ def _build_market_context() -> str:
     try:
         import json as _json_ctx
         import glob as _glob_ctx
-        cache_dir = os.environ.get("DATA_DIR", "data")
+        cache_dir = config.DATA_DIR
         cache_path = os.path.join(cache_dir, "_cache")
         # 找任何一个 fund_screen_all_score_*.json 文件
         fs_files = _glob_ctx.glob(os.path.join(cache_path, "fund_screen_all_score_*.json"))
@@ -355,7 +356,7 @@ def _build_market_context() -> str:
 # ========================================================
 # v9.5.122: 持仓上下文 — per-user 文件缓存，后台 cache_warmer 预热
 # ========================================================
-_PORTFOLIO_CTX_DIR = os.path.join(os.environ.get("DATA_DIR", "data"), "_cache")
+_PORTFOLIO_CTX_DIR = os.path.join(config.DATA_DIR, "_cache")
 
 
 def _build_portfolio_context(p=None, user_id: str = "default") -> str:
@@ -798,7 +799,7 @@ def _build_portfolio_context(p=None, user_id: str = "default") -> str:
             import json as _json
             from pathlib import Path as _Path
             from datetime import date as _date
-            _data_dir = _Path(os.environ.get("DATA_DIR", "data"))
+            _data_dir = _Path(config.DATA_DIR)
 
             # 今日晨报（先找 user_id，找不到找 default）
             _today = _date.today().strftime("%Y%m%d")

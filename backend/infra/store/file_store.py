@@ -15,6 +15,7 @@ Design doc: docs/design/12-framework-refactor.md
 Satisfies: domain.protocols.StoreProtocol (structural subtyping)
 """
 from __future__ import annotations
+import config
 
 import hashlib
 import json
@@ -40,7 +41,7 @@ class FileStore:
 
     def __init__(self, base_dir: Optional[str] = None) -> None:
         if base_dir is None:
-            base_dir = os.environ.get("DATA_DIR", "./data")
+            base_dir = config.DATA_DIR
         self._base_dir = Path(base_dir)
         self._base_dir.mkdir(parents=True, exist_ok=True)
 

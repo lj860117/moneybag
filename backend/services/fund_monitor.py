@@ -7,6 +7,7 @@
   4. 异动检测 & 预警信号
   5. 全持仓扫描（供 cron 脚本调用）
 """
+import config
 import os
 import json
 import time
@@ -32,7 +33,7 @@ MODULE_META = {
 }
 
 # ---- 持仓数据路径 ----
-_DATA_DIR = Path(os.environ.get("DATA_DIR", Path(__file__).parent.parent / "data"))
+_DATA_DIR = Path(config.DATA_DIR)
 _MONITOR_DIR = _DATA_DIR / "monitor"
 
 # ---- 缓存 ----
@@ -251,7 +252,7 @@ def _fallback_fund_nav(code: str) -> Optional[dict]:
 
 
 # v9.5.122: realtime 文件缓存目录
-_RT_CACHE_DIR = os.path.join(os.environ.get("DATA_DIR", "data"), "_cache", "fund_rt")
+_RT_CACHE_DIR = os.path.join(config.DATA_DIR, "_cache", "fund_rt")
 os.makedirs(_RT_CACHE_DIR, exist_ok=True)
 
 

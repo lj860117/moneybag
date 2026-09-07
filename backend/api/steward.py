@@ -11,6 +11,7 @@
 
 P3 高耦合路由 — 依赖 steward, regime_engine, llm_gateway, weekly_report
 """
+import config
 from fastapi import APIRouter, HTTPException
 
 from services.steward import get_steward
@@ -136,7 +137,7 @@ def market_panorama():
     from pathlib import Path
 
     # 优先读文件缓存（cache_warmer after_close/weekend 写入）
-    cache_fp = Path(os.environ.get("DATA_DIR", "data")) / "_cache" / "market_panorama.json"
+    cache_fp = Path(config.DATA_DIR) / "_cache" / "market_panorama.json"
     try:
         if cache_fp.exists():
             payload = json.loads(cache_fp.read_text(encoding="utf-8"))
@@ -162,7 +163,7 @@ def cfo_summary(userId: str = "", force: bool = False):
     import json as _json, time as _time, os as _os
     from pathlib import Path
     uid = userId or "default"
-    cache_dir = Path(_os.environ.get("DATA_DIR", "data")) / "_cache"
+    cache_dir = Path(config.DATA_DIR) / "_cache"
     cache_dir.mkdir(parents=True, exist_ok=True)
     cache_fp = cache_dir / f"cfo_summary_{uid}.json"
     # 读缓存（force 模式跳过，确保预热一定回写文件）

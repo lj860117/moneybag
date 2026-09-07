@@ -17,6 +17,7 @@ Sprint 1: 用历史数据验证8维引擎的准确率
 
 使用: python3 scripts/backtest_trend.py
 """
+import config
 import sys
 import os
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
@@ -378,7 +379,7 @@ def main():
         },
     }
     
-    cache_dir = Path(os.environ.get("DATA_DIR", "data")) / "_cache"
+    cache_dir = Path(config.DATA_DIR) / "_cache"
     cache_dir.mkdir(parents=True, exist_ok=True)
     fp = cache_dir / "backtest_results.json"
     fp.write_text(json.dumps(output, ensure_ascii=False, indent=2), encoding="utf-8")

@@ -10,6 +10,7 @@
 
 P3 高耦合路由 — dashboard 涉及异步 + precomputed_cache + 11 种数据源
 """
+import config
 import os
 import asyncio
 import json
@@ -96,7 +97,7 @@ def health():
     try:
         from pathlib import Path
         import time as _t
-        cache_dir = Path(os.environ.get("DATA_DIR", "data")) / "_cache"
+        cache_dir = Path(config.DATA_DIR) / "_cache"
         # 检查关键缓存文件的新鲜度
         _checks = [
             ("市场行情", "market_context.txt", 86400),   # 24h (周末可能不更新)

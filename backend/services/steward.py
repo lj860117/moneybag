@@ -8,6 +8,7 @@
   briefing(user_id)        — 每日简报（精简版）
   review(user_id)          — 收盘复盘（完整+判断记录）
 """
+import config
 import json
 import os
 import time
@@ -33,7 +34,7 @@ MODULE_META = {
 }
 
 # 晨报缓存目录
-_BRIEF_DIR = Path(os.environ.get("DATA_DIR", Path(__file__).parent.parent / "data")) / "briefings"
+_BRIEF_DIR = Path(config.DATA_DIR) / "briefings"
 
 
 def _check_date_consistency() -> bool:

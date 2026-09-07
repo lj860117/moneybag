@@ -11,6 +11,7 @@
   DATA_DIR=/path/to/data python3 cleanup_morning_report_cache.py
 """
 
+import config
 import os
 import sys
 from pathlib import Path
@@ -18,7 +19,7 @@ from datetime import datetime, timedelta
 
 def main():
     # 获取 DATA_DIR
-    data_dir = Path(os.environ.get("DATA_DIR", Path(__file__).parent.parent / "data"))
+    data_dir = Path(config.DATA_DIR)
     brief_dir = data_dir / "briefings"
     
     if not brief_dir.exists():

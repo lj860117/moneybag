@@ -11,6 +11,7 @@
   python3 scripts/dca_scheduler.py --weekly      # 周复盘
   python3 scripts/dca_scheduler.py --all         # 全部执行
 """
+import config
 import sys
 import os
 import json
@@ -20,7 +21,7 @@ from pathlib import Path
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 
-DATA_DIR = Path(os.environ.get("DATA_DIR", "data"))
+DATA_DIR = Path(config.DATA_DIR)
 USERS = ["LeiJiang", "BuLuoGeLi"]
 
 

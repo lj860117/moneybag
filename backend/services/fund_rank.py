@@ -25,7 +25,7 @@ from infra.cache import MemoryCache
 _fund_rank_cache = MemoryCache(default_ttl=3600)
 
 # 排行榜归档目录（与 fund_rank_build.py 输出一致）
-_RANK_DATA_DIR = Path(__file__).parent.parent / "data"
+_RANK_DATA_DIR = DATA_DIR
 
 
 def _load_ts_rank(file_path: Path = None) -> dict:

@@ -16,6 +16,7 @@ MODULE_META = {
     "layer": "analysis",
     "priority": 3,
 }
+import config
 import time
 import os
 import json as _json
@@ -632,7 +633,7 @@ def _load_ts_rank_map() -> dict:
     from pathlib import Path
     import os
 
-    data_dir = Path(os.environ.get("DATA_DIR", "data"))
+    data_dir = Path(config.DATA_DIR)
     rank_file = data_dir / "fund_rank_ts.json"
     if not rank_file.exists():
         # 尝试相对路径

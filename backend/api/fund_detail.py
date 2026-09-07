@@ -180,7 +180,7 @@ def _get_fund_dividend_recent(code: str) -> dict:
 
 # v9.5.89: 基金经理换届检测
 # v9.5.108: 文件持久化（跨重启）
-_MANAGER_CACHE_FILE = os.path.join(os.environ.get("DATA_DIR", "data"), "_cache", "_manager_change_cache.json")
+_MANAGER_CACHE_FILE = os.path.join(DATA_DIR, "_cache", "_manager_change_cache.json")
 _MANAGER_CACHE_TTL = 3600 * 24   # 24 小时
 
 
@@ -263,7 +263,7 @@ def _get_nav_history_cached(code: str, days: int = 365) -> list:
     避免每次fund_detail都HTTP拉20页净值,被限流后返空。
     缓存文件: DATA_DIR/_cache/nav_history_{code}.json
     """
-    cache_fp = Path(os.environ.get("DATA_DIR", "data")) / "_cache" / f"nav_history_{code}.json"
+    cache_fp = Path(DATA_DIR) / "_cache" / f"nav_history_{code}.json"
     
     # 读缓存(7天有效)
     if cache_fp.exists():
@@ -1546,7 +1546,7 @@ def _ipo_watchlist_fallback() -> dict:
     # v9.5.123: 读取周日自动验证的状态覆盖
     _ipo_overrides = {}
     try:
-        _override_fp = Path(os.environ.get("DATA_DIR", "data")) / "_cache" / "ipo_status.json"
+        _override_fp = Path(DATA_DIR) / "_cache" / "ipo_status.json"
         if _override_fp.exists():
             _ipo_overrides = json.loads(_override_fp.read_text(encoding="utf-8"))
     except Exception:

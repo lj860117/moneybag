@@ -4,6 +4,7 @@
 POST /api/auth/login  — 用 userId + password 换取 token
 GET  /api/auth/verify — 验证当前 token 是否有效
 """
+import config
 import os
 import json
 from pathlib import Path
@@ -16,7 +17,7 @@ router = APIRouter(prefix="/api/auth", tags=["鉴权"])
 
 # 用户密码存储：data/auth_users.json
 # 格式: {"LeiJiang": "password_hash", "BuLuoGeLi": "password_hash"}
-_AUTH_FILE = Path(os.environ.get("DATA_DIR", "data")) / "auth_users.json"
+_AUTH_FILE = Path(config.DATA_DIR) / "auth_users.json"
 
 
 def _load_users() -> dict:

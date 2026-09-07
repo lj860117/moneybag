@@ -22,6 +22,7 @@ V7：升级为完整的 DecisionMaker 输出（含 schema 校验、Pydantic 模�
 }
 """
 
+import config
 import json
 import uuid
 import os
@@ -29,7 +30,7 @@ from datetime import datetime, date
 from pathlib import Path
 
 # 日志目录
-LOG_DIR = Path(os.environ.get("DATA_DIR", "./data")) / "decision_logs"
+LOG_DIR = Path(config.DATA_DIR) / "decision_logs"
 
 # ---- V4 底座：MODULE_META ----
 MODULE_META = {

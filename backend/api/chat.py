@@ -7,6 +7,7 @@ Chat & LLM 直调路由
 
 P3 高耦合路由 — 依赖 shared_helpers, agent_memory, steward, httpx
 """
+import config
 import os
 import json
 from datetime import datetime
@@ -200,7 +201,7 @@ def _is_market_anomaly() -> bool:
     try:
         from pathlib import Path
         import json as _j, time as _t
-        cache_dir = Path(os.environ.get("DATA_DIR", "data")) / "_cache"
+        cache_dir = Path(config.DATA_DIR) / "_cache"
         # 读市场上下文缓存（由 cache_warmer 维护）
         for fn in ["market_ctx.json", "market_context.json"]:
             fp = cache_dir / fn
@@ -232,7 +233,7 @@ def _check_preset_answer(user_msg: str, user_id: str) -> str | None:
     if _is_market_anomaly():
         return None
     
-    cache_dir = Path(os.environ.get("DATA_DIR", "data")) / "_cache" / "preset_answers"
+    cache_dir = Path(config.DATA_DIR) / "_cache" / "preset_answers"
     
     for preset in _PRESET_QUESTIONS:
         # 需要匹配至少2个关键词（避免误触）

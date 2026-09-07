@@ -17,6 +17,7 @@ LLM Gateway -- 统一 LLM 调用入口（实现本体，原 services/llm_gateway
 不变式 #3：所有 LLM 调用走 infra/llm/gateway（权威出处 00-ANCHOR.md:63）
 """
 from __future__ import annotations
+import config
 
 import os
 import time
@@ -259,7 +260,7 @@ class LLMGateway:
 
     # ---- 缓存持久化（Phase 0 新增）----
 
-    CACHE_FILE = Path(os.environ.get("DATA_DIR", "./data")) / "cache" / "llm_cache.json"
+    CACHE_FILE = Path(config.DATA_DIR) / "cache" / "llm_cache.json"
 
     def _load_cache_from_disk(self) -> None:
         """启动时从磁盘恢复 LLM 缓存（忽略已过期的条目）"""
@@ -897,7 +898,7 @@ class LLMGateway:
                 cache_ratio = None
 
             # 读取今日全局用量
-            usage_dir = Path(os.environ.get("DATA_DIR", "./data")) / "llm_usage"
+            usage_dir = Path(config.DATA_DIR) / "llm_usage"
             usage_dir.mkdir(parents=True, exist_ok=True)
             usage_file = usage_dir / f"{date.today()}.json"
 
@@ -979,7 +980,7 @@ class LLMGateway:
         """检查预算状态（供 /api/health 调用）"""
         try:
             from config import TOKEN_BUDGET
-            usage_dir = Path(os.environ.get("DATA_DIR", "./data")) / "llm_usage"
+            usage_dir = Path(config.DATA_DIR) / "llm_usage"
             usage_file = usage_dir / f"{date.today()}.json"
 
             if usage_file.exists():
@@ -1032,7 +1033,7 @@ class LLMGateway:
     def get_cache_stats(self, days: int = 7) -> dict[str, Any]:
         """获取近 N 天的 DeepSeek 官方缓存命中率统计（V7.6）"""
         from datetime import timedelta
-        usage_dir = Path(os.environ.get("DATA_DIR", "./data")) / "llm_usage"
+        usage_dir = Path(config.DATA_DIR) / "llm_usage"
         if not usage_dir.exists():
             return {"days": 0, "items": []}
 

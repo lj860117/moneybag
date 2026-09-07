@@ -9,6 +9,7 @@
 复用已有的 API key 和 endpoint，不新建客户端。
 缓存策略：per-fund 文件缓存 12h（每天只消耗 1 次 LLM）。
 """
+import config
 import os
 import json
 import time
@@ -35,7 +36,7 @@ _MODELS = [
     },
 ]
 
-_CACHE_DIR = Path(os.environ.get("DATA_DIR", "data")) / "_cache" / "multi_model_score"
+_CACHE_DIR = Path(config.DATA_DIR) / "_cache" / "multi_model_score"
 _CACHE_TTL = 43200  # 12h
 
 

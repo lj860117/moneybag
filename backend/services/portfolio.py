@@ -9,6 +9,7 @@
   4. 塔勒布规则 → 现金永远 ≥ 15%
   5. 技术面 → RSI 极端值微调
 """
+import config
 import time
 import json
 
@@ -36,7 +37,7 @@ import os
 _AI_FUND_CACHE_TTL = 3600  # 内存缓存 1 小时
 _ai_fund_cache = MemoryCache(default_ttl=_AI_FUND_CACHE_TTL)
 
-_ALLOC_CACHE_FILE = Path(os.environ.get("DATA_DIR", "data")) / "alloc_cache.json"
+_ALLOC_CACHE_FILE = Path(config.DATA_DIR) / "alloc_cache.json"
 _ALLOC_CACHE_MAX_AGE = 7 * 24 * 3600  # 文件缓存 7 天
 
 def _load_file_cache() -> dict:

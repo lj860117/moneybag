@@ -5,6 +5,7 @@
 
 Design doc: docs/design/12-framework-refactor.md §四
 """
+import config
 import json
 import os
 import threading
@@ -325,7 +326,7 @@ def api_trend_backtest_results():
     前端用于展示"历史验证"卡片, 增加用户信任度。
     """
     import json as _j
-    cache_fp = Path(os.environ.get("DATA_DIR", "data")) / "_cache" / "backtest_results.json"
+    cache_fp = Path(config.DATA_DIR) / "_cache" / "backtest_results.json"
     if cache_fp.exists():
         try:
             return _j.loads(cache_fp.read_text(encoding="utf-8"))
@@ -370,7 +371,7 @@ def get_fund_screen(fund_type: str = "all", sort_by: str = "score", top_n: int =
         if code_list:
             return _screen_codes_fast(code_list, userId)
 
-    cache_dir = Path(os.environ.get("DATA_DIR", "data")) / "_cache"
+    cache_dir = Path(config.DATA_DIR) / "_cache"
     cache_dir.mkdir(parents=True, exist_ok=True)
     
     # ★ 1. 优先读 per-user 完整缓存
@@ -518,7 +519,7 @@ def get_fund_potential(userId: str = "", limit: int = 30):
     import json as _json
     import time as _time
     
-    cache_dir = _os.path.join(_os.environ.get("DATA_DIR", "data"), "_cache")
+    cache_dir = _os.path.join(config.DATA_DIR, "_cache")
     try:
         _os.makedirs(cache_dir, exist_ok=True)
     except Exception:
@@ -612,7 +613,7 @@ def _do_potential_compute(userId: str, limit: int, cache_file: str):
 # v9.5.108: nav_series 文件持久化（跨重启），按日期 TTL
 import os as __os_ns
 import json as __json_ns
-_NAV_SERIES_FILE = __os_ns.path.join(__os_ns.environ.get("DATA_DIR", "data"), "_cache", "_nav_series_cache.json")
+_NAV_SERIES_FILE = __os_ns.path.join(config.DATA_DIR, "_cache", "_nav_series_cache.json")
 
 
 def _load_nav_series_cache():
@@ -807,7 +808,7 @@ _nav_pct_cache: dict = {}   # {code: {nav_pct, nav_pct_label, updated}}
 # v9.5.108: nav_percentile 文件持久化（跨重启），TTL 当天有效
 import os as _os
 import json as _json_pct
-_NAV_PCT_FILE = _os.path.join(_os.environ.get("DATA_DIR", "data"), "_cache", "_nav_pct_cache.json")
+_NAV_PCT_FILE = _os.path.join(config.DATA_DIR, "_cache", "_nav_pct_cache.json")
 
 
 def _load_nav_pct_cache():
@@ -1064,7 +1065,7 @@ def _enrich_with_dna_match(funds: list, user_id: str) -> None:
         from services.investor_dna import generate_investor_dna
         # 读缓存优先
         import json as _j
-        cache_fp = Path(os.environ.get("DATA_DIR", "data")) / "_cache" / f"investor_dna_{user_id}.json"
+        cache_fp = Path(config.DATA_DIR) / "_cache" / f"investor_dna_{user_id}.json"
         dna = None
         if cache_fp.exists():
             try:
@@ -2062,7 +2063,7 @@ def _get_my_fund_holdings_summary(user_id: str, get_fund_industry_fn) -> dict:
 def get_stock_screen(top_n: int = 50, userId: str = ""):
     """AI多因子选股 v9.5.120：per-user 后端缓存，前端零缓存直取。"""
     import threading
-    cache_dir = Path(os.environ.get("DATA_DIR", "data")) / "_cache"
+    cache_dir = Path(config.DATA_DIR) / "_cache"
     cache_dir.mkdir(parents=True, exist_ok=True)
 
     # ★ 1. per-user 缓存（10h + stale 24h）
@@ -2127,7 +2128,7 @@ def _compute_stock_screen(top_n, userId):
     result["my_stock_summary"] = _get_my_stock_summary(userId)
     # 写 per-user 缓存
     try:
-        cache_dir = Path(os.environ.get("DATA_DIR", "data")) / "_cache"
+        cache_dir = Path(config.DATA_DIR) / "_cache"
         fp = cache_dir / f"stock_screen_{userId or 'anon'}.json"
         # v9.5.121: TTL 10h
         fp.write_text(json.dumps({"data": result, "expires_at": time.time() + 36000, "created_at": time.time()}, ensure_ascii=False, default=str), encoding="utf-8")
@@ -2893,7 +2894,7 @@ def api_holding_rank_compare(userId: str = ""):
 @router.get("/api/longterm/funds")
 def api_longterm_funds(force: bool = False, userId: str = ""):
     """长期持有基金 v9.5.120: per-user 后端缓存"""
-    cache_dir = Path(os.environ.get("DATA_DIR", "data")) / "_cache"
+    cache_dir = Path(config.DATA_DIR) / "_cache"
     cache_dir.mkdir(parents=True, exist_ok=True)
     cache_fp = cache_dir / f"longterm_funds_{userId or 'anon'}.json"
     # 读 per-user 缓存（30天）
@@ -2924,7 +2925,7 @@ def api_longterm_funds(force: bool = False, userId: str = ""):
 @router.get("/api/longterm/stocks")
 def api_longterm_stocks(force: bool = False, userId: str = ""):
     """长期持有股票 v9.5.120: per-user 后端缓存"""
-    cache_dir = Path(os.environ.get("DATA_DIR", "data")) / "_cache"
+    cache_dir = Path(config.DATA_DIR) / "_cache"
     cache_dir.mkdir(parents=True, exist_ok=True)
     cache_fp = cache_dir / f"longterm_stocks_{userId or 'anon'}.json"
     if not force:

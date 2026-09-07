@@ -3,6 +3,7 @@
 # TODO: 接入 Batch 5/6 行为偏差标记 — 当 include_behavior_marks=True 时
 #       从 behavior_detector 读取该标的的历史偏差标记
 from __future__ import annotations
+import config
 from dataclasses import asdict
 import json
 import os
@@ -17,7 +18,7 @@ from infra.data_source.providers.tushare_chart import (
 
 router = APIRouter(tags=["迷你行情"])
 
-_CHART_CACHE_DIR = Path(os.environ.get("DATA_DIR", "data")) / "_cache" / "chart_api"
+_CHART_CACHE_DIR = Path(config.DATA_DIR) / "_cache" / "chart_api"
 _CHART_CACHE_TTL = 36000  # 10h，早晚预热后日内秒回
 _CHART_CACHE_STALE = 259200  # 72h，接口异常时先回旧值
 

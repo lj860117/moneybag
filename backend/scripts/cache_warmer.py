@@ -736,7 +736,7 @@ def warm_morning():
     try:
         profiles = []
         import json as _json
-        _profiles_f = Path(os.environ.get("DATA_DIR", Path(__file__).parent.parent.parent / "data")) / "profiles.json"
+        _profiles_f = Path(config.DATA_DIR) / "profiles.json"
         if _profiles_f.exists():
             profiles = _json.loads(_profiles_f.read_text(encoding="utf-8"))
         for p in profiles:

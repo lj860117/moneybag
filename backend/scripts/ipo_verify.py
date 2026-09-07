@@ -18,6 +18,7 @@
 由 dca_scheduler.py --weekly 调用(每周日20:00)
 """
 
+import config
 import sys
 import os
 import json
@@ -28,7 +29,7 @@ from pathlib import Path
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 
-DATA_DIR = Path(os.environ.get("DATA_DIR", "data")).resolve()  # 转成绝对路径
+DATA_DIR = Path(config.DATA_DIR).resolve()  # 转成绝对路径
 CACHE_FP = DATA_DIR / "_cache" / "ipo_status.json"
 DISCOVER_FP = DATA_DIR / "_cache" / "ipo_discovered.json"
 WATCHLIST_FP = DATA_DIR / "ipo_watchlist.json"  # 权威配置文件（替代硬编码）

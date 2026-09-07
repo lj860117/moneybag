@@ -26,6 +26,7 @@
   - 已有持仓分析（现有 portfolio_ctx 已有）
   - 聊天/新闻（现有路径已有）
 """
+import config
 import json
 import os
 from typing import Iterator
@@ -507,7 +508,7 @@ def _tool_get_briefing_history(user_id: str, days: int = 3, date: str = "") -> s
         from pathlib import Path as _Path
         from datetime import datetime as _dt, timedelta as _td
 
-        data_dir = _Path(os.environ.get("DATA_DIR", "data"))
+        data_dir = _Path(config.DATA_DIR)
         brief_dir = data_dir / "briefings"
         if not brief_dir.exists():
             return "晨报目录不存在。"
@@ -563,7 +564,7 @@ def _tool_get_weekly_report(user_id: str, weeks_ago: int = 1) -> str:
         from pathlib import Path as _Path
         from datetime import datetime as _dt, timedelta as _td
 
-        data_dir = _Path(os.environ.get("DATA_DIR", "data"))
+        data_dir = _Path(config.DATA_DIR)
         rpt_dir = data_dir / user_id / "reports"
         if not rpt_dir.exists():
             return "周报目录不存在。"

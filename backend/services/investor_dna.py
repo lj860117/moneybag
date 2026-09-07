@@ -7,6 +7,7 @@
 2. 决策复盘追踪: 卖出后30/60/90天追踪 → 学习卖点规律
 3. 权重自进化: 回测各维度准确率 → 动态调权
 """
+import config
 import os
 import json
 import time
@@ -14,7 +15,7 @@ from datetime import datetime, date, timedelta
 from pathlib import Path
 from collections import Counter
 
-DATA_DIR = Path(os.environ.get("DATA_DIR", "data"))
+DATA_DIR = Path(config.DATA_DIR)
 
 # ═══════════════════════════════════════════════
 # 1. 投资DNA画像
