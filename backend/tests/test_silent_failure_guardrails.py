@@ -50,8 +50,16 @@ sitecustomize.py shim，会拦截 config.py 模块级的 USERS_DIR.mkdir()，把
 
 服务器（venv 依赖齐全，没有 shim）::
 
-    cd /opt/moneybag/backend && DATA_DIR=/opt/moneybag/data PYTHONPATH=/opt/moneybag/backend \
+    cd /opt/moneybag/backend && PYTHONPATH=/opt/moneybag/backend \\
         /opt/moneybag/venv/bin/python3 -m pytest tests/test_silent_failure_guardrails.py -q -rfEX
+
+⚠️ **服务器上千万不要加 `DATA_DIR=/opt/moneybag/data`**：那是 systemd 给
+API 进程用的，**不是**给测试用的。2026-09-08 前这一条被写进了项目环境铁律，
+结果 conftest 里 `if not os.environ.get("DATA_DIR")` 的"尊重显式意图"分支
+被触发、整段数据隔离被跳过，测试直接读写生产 data/users/，还制造了一批假
+失败（详见 backend/tests/test_conftest_data_dir_isolation.py 的事故复盘）。
+现在 conftest 会无视外部 DATA_DIR；确实要挂真实数据调试时用
+MONEYBAG_PYTEST_DATA_DIR=<目录>。
 """
 from __future__ import annotations
 

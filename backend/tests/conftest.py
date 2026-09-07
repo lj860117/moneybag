@@ -58,6 +58,49 @@ import load_user, save_user`，没有做任何隔离——如果这次 import �
      设置的临时目录，行为不变，只是更保险（双重兜底）。
   2. 从未做任何隔离、直接用模块级单例的文件（如 test_phase3_services.py
      修复前的状态）：现在会自动落在这里设置的临时目录里，不再是死链。
+
+背景（FIX 2026-09-08 第三次，任务：堵住隔离机制的逃逸口）：
+上面这套隔离机制**设计是对的，但被一个看似无害的条件判断整个废掉了**。
+原写法是::
+
+    if not os.environ.get("DATA_DIR"):        # ← 逃逸口
+        _PYTEST_DATA_DIR = tempfile.mkdtemp(...)
+        os.environ["DATA_DIR"] = _PYTEST_DATA_DIR
+
+原意是"尊重用户显式意图"：用户自己设了 DATA_DIR 就听他的。问题是**会去
+设这个变量的人，恰恰正是想模拟生产环境的人** —— 而"模拟生产环境"和
+"允许写生产数据"是两件完全不同的事，前者是合理需求，后者是灾难。
+
+真实事故链（2026-09-07/08）：
+  1. 项目环境铁律要求"服务器跑测试必须带 DATA_DIR=/opt/moneybag/data"
+     （抄自 systemd 的 Environment=，本意是让 config.py 找到真实数据目录）。
+  2. 这个变量一进来，上面的 if 判断为假，**整段隔离被跳过**，测试进程
+     直接把 DATA_DIR 锁死成生产路径 /opt/moneybag/data。
+  3. 于是测试真实写入生产 data/users/：跑几轮就攒出十几个 test_* 前缀的
+     脏用户文件（实测从 2 个涨到 13 个，两轮后又涨到 15 个）。
+  4. 更糟的是由此产生了一批**假失败**：test_phase3_services 用固定
+     user_id 写事件后断言精确条数（len(...) == 1），在共享生产目录里事件
+     逐次累积（期望 1 实际 13），于是变红；test_fund_risk_adjusted_cache
+     同理。这些红被误判成代码回归，浪费了两轮排查，还差点引出对
+     classify_fund 的错误怀疑。
+
+实测对照（2026-09-08）：
+    带 DATA_DIR=/opt/moneybag/data 跑 test_phase3_services  → 2 failed, 13 passed
+    不带 DATA_DIR 跑同一个文件                                → 15 passed
+    不带 DATA_DIR 跑全量                                      → 685 passed, 0 failed
+
+修法：改成**默认总是隔离** —— pytest 会话内永远把 DATA_DIR 指向会话专属
+临时目录，**无视外部传入的 DATA_DIR**。需要挂真实数据调试时，改用专属变量
+MONEYBAG_PYTEST_DATA_DIR（不复用 DATA_DIR，理由见下方代码注释）。
+
+教训（与 2026-09-07 的 D2 是同一类形态）：
+  - D2：`MemoryCache.get()` 一个"看起来只是读"的操作，有删除条目的副作用，
+    把后续降级路径悄悄废掉了。
+  - 本次：隔离机制写对了，但被一个"尊重用户显式意图"的合理设计放过了
+    真实危险。
+  共同点：**防护机制本身正确，却被另一处看似无害的逻辑悄悄绕过**。
+  以后凡是"默认值安全、但允许被环境变量覆盖"的防护，都要先想清楚：
+  覆盖它的那个人，是不是正是会踩坑的那个人。
 """
 import os
 import sys
@@ -71,25 +114,52 @@ import pytest
 # 关键：必须在任何 test_*.py 被 import 之前执行（模块顶层，非 fixture）
 # ============================================================
 # pytest 的 collection 阶段会先加载 conftest.py，再 import 各测试文件，
-# 这个特性保证了下面这行代码一定跑在任何 `from config import ...` /
+# 这个特性保证了下面的代码一定跑在任何 `from config import ...` /
 # `from services.persistence import ...` 之前，从而让 config.py 首次
-# import 时读到的 DATA_DIR 已经是这个临时目录，而不是真实生产路径
-# （如果用户在运行 pytest 前手动设置了 DATA_DIR 环境变量，这里会保留
-# 用户的显式设置——只在用户没设置时才兜底成临时目录，不覆盖显式意图）。
+# import 时读到的 DATA_DIR 已经是隔离目录，而不是真实生产路径。
+#
+# v9.9.13 FIX（2026-09-08）：**默认总是隔离，无视外部传入的 DATA_DIR**。
+# 旧写法 `if not os.environ.get("DATA_DIR")` 是个逃逸口——会去设这个变量
+# 的人正是想"模拟生产环境"的人，于是整段隔离被跳过、测试直写生产目录。
+#
+# 逃生阀改用专属变量 MONEYBAG_PYTEST_DATA_DIR，**不复用 DATA_DIR**：
+#   复用 DATA_DIR 会把「模拟生产环境」和「允许写生产数据」两件事耦合在一起
+#   —— 前者是合理需求，后者是灾难。拆成两个变量后，想挂真实数据调试的人
+#   必须显式写出 MONEYBAG_PYTEST_DATA_DIR，这个动作本身就是一次确认。
 _PYTEST_DATA_DIR: str = ""
-if not os.environ.get("DATA_DIR"):
+_PYTEST_DATA_DIR_OWNED: bool = False  # True = 本文件创建的，会话结束要清理
+
+_OVERRIDDEN_EXTERNAL_DATA_DIR: str = os.environ.get("DATA_DIR", "")
+
+_explicit_dir = os.environ.get("MONEYBAG_PYTEST_DATA_DIR", "").strip()
+if _explicit_dir:
+    _PYTEST_DATA_DIR = _explicit_dir
+    _PYTEST_DATA_DIR_OWNED = False
+else:
     _PYTEST_DATA_DIR = tempfile.mkdtemp(prefix="moneybag_pytest_data_")
-    os.environ["DATA_DIR"] = _PYTEST_DATA_DIR
-    (Path(_PYTEST_DATA_DIR) / "users").mkdir(parents=True, exist_ok=True)
+    _PYTEST_DATA_DIR_OWNED = True
+
+os.environ["DATA_DIR"] = _PYTEST_DATA_DIR
+(Path(_PYTEST_DATA_DIR) / "users").mkdir(parents=True, exist_ok=True)
+
+if _OVERRIDDEN_EXTERNAL_DATA_DIR and \
+        _OVERRIDDEN_EXTERNAL_DATA_DIR != _PYTEST_DATA_DIR:
+    # 明确告知，避免"我明明设了 DATA_DIR 怎么没生效"的困惑，
+    # 也提醒：这次测试不会碰你指定的那个目录。
+    print(f"[conftest] 已忽略外部 DATA_DIR={_OVERRIDDEN_EXTERNAL_DATA_DIR}，"
+          f"测试仍在隔离目录 {_PYTEST_DATA_DIR} 中运行"
+          f"（如需挂真实数据调试请设 MONEYBAG_PYTEST_DATA_DIR）")
 
 
 def pytest_sessionfinish(session, exitstatus):
-    """整个测试会话结束后清理这个临时目录（如果是本文件创建的）。
+    """整个测试会话结束后清理临时目录。
 
-    只清理 _PYTEST_DATA_DIR 非空的情况——如果用户显式设置了 DATA_DIR
-    （上面的 if 分支没有触发），这里也不会清理，绝不误删用户指定的目录。
+    **只清理本文件自己创建的目录**（_PYTEST_DATA_DIR_OWNED=True 时）。
+    用户通过 MONEYBAG_PYTEST_DATA_DIR 显式指定的目录绝不删除 —— 那是用户
+    的数据，不是我们的临时产物。
     """
-    if _PYTEST_DATA_DIR and os.path.isdir(_PYTEST_DATA_DIR):
+    if _PYTEST_DATA_DIR_OWNED and _PYTEST_DATA_DIR \
+            and os.path.isdir(_PYTEST_DATA_DIR):
         shutil.rmtree(_PYTEST_DATA_DIR, ignore_errors=True)
 
 

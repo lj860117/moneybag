@@ -86,12 +86,28 @@ MB_TEST_HOST=http://150.158.47.189:8000 python3 -m pytest tests/ -q
 
 `backend/tests/conftest.py` 在**模块顶层**（早于任何 `test_*.py` 被 import）执行：
 
-1. 若未设 `DATA_DIR` → 自动 `tempfile.mkdtemp(prefix="moneybag_pytest_data_")` 并写入环境变量
+1. **无条件** `tempfile.mkdtemp(prefix="moneybag_pytest_data_")` 并写入环境变量
+   —— **无视外部传入的 `DATA_DIR`**（2026-09-08 起，见下）
 2. `pytest_sessionfinish` 在整个会话结束后 `shutil.rmtree` 清理
+   —— **只清理自己创建的目录**；用户显式指定的目录绝不删
 3. autouse fixture `_clear_secret_env_pollution` 清空 `TUSHARE_TOKEN` 等 13 个密钥类环境变量
 
-⚠️ **不要手动设 `DATA_DIR` 指向生产路径** —— 显式设置会绕过兜底，测试就会读写真实数据。
-（2026-09-01 事故：`test_phase3_services.py` 未隔离，13 个用例真实写入生产 `data/users/`。）
+⚠️ **跑测试时不要设 `DATA_DIR`**，尤其在服务器上不要抄 systemd 的
+`DATA_DIR=/opt/moneybag/data`。
+
+历史教训（两次，形态相同但方向相反）：
+- 2026-09-01：`test_phase3_services.py` 未隔离，13 个用例真实写入生产
+  `data/users/` —— 于是加了"未设 DATA_DIR 就兜底成临时目录"的隔离。
+- 2026-09-08：上面这条隔离写成了 `if not os.environ.get("DATA_DIR")`
+  —— **"尊重用户显式意图"看起来合理，实际上成了一个逃逸口**：外部一设
+  DATA_DIR，整段隔离就被跳过。而会去设它的正是想"模拟生产环境"的人。
+  结果生产脏文件 2 → 13 → 15 个，还制造了一批**假失败**（用固定 user_id
+  断言精确条数的用例，在共享目录里事件逐次累积，期望 1 实际 13），
+  被误判成代码回归、浪费两轮排查。
+
+现在改为**默认总是隔离**；需要挂真实数据调试时用专属变量
+`MONEYBAG_PYTEST_DATA_DIR=<目录>`（不复用 `DATA_DIR`——那会把「模拟生产
+环境」和「允许写生产数据」两件事耦合起来，前者合理，后者是灾难）。
 
 #### 根 tests/ 的数据隔离（2026-09-05 补上）
 
@@ -105,6 +121,10 @@ MB_TEST_HOST=http://150.158.47.189:8000 python3 -m pytest tests/ -q
   `tests/conftest.py` 的模块顶层 —— 强制 `DATA_DIR` 到临时目录 /
   `pytest_sessionfinish` 清理 / autouse 清空 13 个密钥环境变量。
 - **跑法不变，但现在即使测试代码忘了写隔离，也物理上不可能脏生产数据。**
+- ⚠️ 2026-09-08：根 `tests/conftest.py` 有**同一个逃逸口**
+  （`if not os.environ.get("DATA_DIR")`），已与 backend 那份同步改成
+  "默认总是隔离 + `MONEYBAG_PYTEST_DATA_DIR` 逃生阀"。**改一处必须同步改
+  另一处**，两边注释里互留了提醒。
 
 ⚠️ 注意 `data/` 在 `.gitignore:39` 里：**`git status` 永远看不到这类污染**，
 验证测试是否脏数据时必须直接看 `data/` 目录本身，不能只看 git 干净。
@@ -134,10 +154,12 @@ cd /tmp/mb_baseline/backend && python3 -m pytest tests/ -q
 `PermissionError: EEXIST`。每次跑测试都要用**全新**临时目录：
 
 ```bash
-DD=$(mktemp -d); TD=$(mktemp -d); DATA_DIR=$DD TMPDIR=$TD python3 -m pytest tests/ -q
+TD=$(mktemp -d); TMPDIR=$TD python3 -m pytest tests/ -q
 ```
 
-（这是沙箱假象，服务器上不会出现；复用上次的目录会再次触发。）
+（这是沙箱假象，服务器上不会出现；复用上次的目录会再次触发。
+2026-09-08 注：旧版这行还带了 `DATA_DIR=$DD`，现在 conftest 会**无视**外部
+DATA_DIR（只认 `MONEYBAG_PYTEST_DATA_DIR`），留着只会误导，已去掉。）
 
 ### 类型检查 & 架构门禁
 

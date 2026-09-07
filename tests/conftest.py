@@ -56,14 +56,44 @@ import httpx
 # 拿到的也必然是临时目录，物理上不可能写到生产路径 —— **从"记得写隔离
 # 代码"升级为"写不写都安全"**。
 #
-# 尊重显式意图：如果用户运行 pytest 前已手动设置了 DATA_DIR，这里不覆盖。
-if not os.environ.get("DATA_DIR"):
-    _PYTEST_DATA_DIR: str = tempfile.mkdtemp(prefix="moneybag_pytest_data_")
-    os.environ["DATA_DIR"] = _PYTEST_DATA_DIR
-    (Path(_PYTEST_DATA_DIR) / "users").mkdir(parents=True, exist_ok=True)
+# ---------------------------------------------------------------------------
+# FIX 2026-09-08（逃逸口事故）：**默认总是隔离，无视外部传入的 DATA_DIR**
+# ---------------------------------------------------------------------------
+# 旧写法 `if not os.environ.get("DATA_DIR")` 是个逃逸口：原意是"尊重用户
+# 显式意图"，实际效果却是**外部一设 DATA_DIR，整段隔离就被跳过**。而会去
+# 设这个变量的人，恰恰正是想"模拟生产环境"的人 —— 于是项目里那条"服务器
+# 跑测试必须带 DATA_DIR=/opt/moneybag/data"（抄自 systemd 的 Environment=）
+# 的环境铁律，把每一轮测试都变成了对生产 data/users/ 的真实写入（实测脏
+# 文件 2 → 13 → 15 个），并由此产生一批**假失败**（用固定 user_id 断言
+# 精确条数的用例，在共享目录里事件逐次累积，期望 1 实际 13）。
+#
+# 逃生阀改用专属变量 MONEYBAG_PYTEST_DATA_DIR，**不复用 DATA_DIR**：
+#   复用 DATA_DIR 会把「模拟生产环境」和「允许写生产数据」两件事耦合在一起
+#   —— 前者是合理需求，后者是灾难。拆成两个变量后，想挂真实数据调试的人
+#   必须显式写出 MONEYBAG_PYTEST_DATA_DIR，这个动作本身就是一次确认。
+#
+# （与 backend/tests/conftest.py 保持完全一致，改一处请同步改另一处。）
+_PYTEST_DATA_DIR: str = ""
+_PYTEST_DATA_DIR_OWNED: bool = False  # True = 本文件创建的，会话结束要清理
+
+_OVERRIDDEN_EXTERNAL_DATA_DIR: str = os.environ.get("DATA_DIR", "")
+
+_explicit_dir = os.environ.get("MONEYBAG_PYTEST_DATA_DIR", "").strip()
+if _explicit_dir:
+    _PYTEST_DATA_DIR = _explicit_dir
+    _PYTEST_DATA_DIR_OWNED = False
 else:
-    # 用户显式指定了目录 → 不是我们创建的，会话结束时也绝不清理
-    _PYTEST_DATA_DIR = ""
+    _PYTEST_DATA_DIR = tempfile.mkdtemp(prefix="moneybag_pytest_data_")
+    _PYTEST_DATA_DIR_OWNED = True
+
+os.environ["DATA_DIR"] = _PYTEST_DATA_DIR
+(Path(_PYTEST_DATA_DIR) / "users").mkdir(parents=True, exist_ok=True)
+
+if _OVERRIDDEN_EXTERNAL_DATA_DIR and \
+        _OVERRIDDEN_EXTERNAL_DATA_DIR != _PYTEST_DATA_DIR:
+    print(f"[conftest] 已忽略外部 DATA_DIR={_OVERRIDDEN_EXTERNAL_DATA_DIR}，"
+          f"测试仍在隔离目录 {_PYTEST_DATA_DIR} 中运行"
+          f"（如需挂真实数据调试请设 MONEYBAG_PYTEST_DATA_DIR）")
 
 
 # 与 backend/.env 里出现的 key 名保持一致（脱敏后的清单，不含真实值）。
@@ -81,10 +111,12 @@ _SECRET_ENV_KEYS = (
 def pytest_sessionfinish(session, exitstatus):
     """整个测试会话结束后清理临时数据目录（仅限本文件自己创建的情况）。
 
-    只清理 _PYTEST_DATA_DIR 非空的情况 —— 如果用户显式设置了 DATA_DIR
-    （上面的 if 分支没触发），这里不会清理，绝不误删用户指定的目录。
+    **只清理本文件自己创建的目录**（_PYTEST_DATA_DIR_OWNED=True 时）。
+    用户通过 MONEYBAG_PYTEST_DATA_DIR 显式指定的目录绝不删除 —— 那是用户
+    的数据，不是我们的临时产物。
     """
-    if _PYTEST_DATA_DIR and os.path.isdir(_PYTEST_DATA_DIR):
+    if _PYTEST_DATA_DIR_OWNED and _PYTEST_DATA_DIR \
+            and os.path.isdir(_PYTEST_DATA_DIR):
         shutil.rmtree(_PYTEST_DATA_DIR, ignore_errors=True)
 
 
