@@ -2402,6 +2402,12 @@ def _inject_hallucination_label(briefings: dict) -> dict:
             except ValueError:
                 continue
             if val > 200:
+                # ⚠️ 临时取证代码 —— 定性后务必移除，不要留在生产。
+                # 背景：9-8 凌晨连续 10 条「异常涨幅数字「320%」」告警，触发文本为内存生成、
+                # 未落盘（服务器 data/ 下 grep 不到字面量 320%），本地无法复现。
+                # 故把命中上下文打进日志，下一轮跑完 grep EXAG_DEBUG 取证，
+                # 再决定是继续调正则还是改为按「持仓收益/累计收益」口径做语义排除。
+                log(f"  [EXAG_DEBUG] hit={m.group(0)} ctx=...{text[max(0, m.start() - 40):m.end() + 40]}...")
                 issues.append(f"异常涨幅数字「{m.group(0)}」")
                 break
 
