@@ -45,19 +45,35 @@ def test_get_technical_indicators_uses_memory_cache_interface(monkeypatch):
 
 
 def test_config_data_dir_defaults_to_project_root(monkeypatch):
-    import importlib
+    import subprocess
     import sys
 
     backend_dir = Path(__file__).resolve().parents[1]
     project_root = backend_dir.parent
 
-    monkeypatch.chdir(backend_dir)
-    monkeypatch.delenv("DATA_DIR", raising=False)
-    sys.modules.pop("config", None)
-
-    cfg = importlib.import_module("config")
-
-    assert cfg.DATA_DIR.resolve() == (project_root / "data").resolve()
+    # FIX 2026-09-07: 原实现 `sys.modules.pop("config", None)` + 重新 import 会
+    # 创建一个全新的 config 模块对象，而早已 import 的 api.signals 等模块里的
+    # `import config` 仍指向旧对象 → 后续测试 monkeypatch.setattr(config, ...)
+    # 改的是新对象，signals.config.DATA_DIR 却读旧对象，导致全量套件下
+    # test_fund_screen_weekend_stale_cache_survives_beyond_24_hours 缓存路径
+    # 分裂、误走 _compute_fund_screen 失败。改为独立子进程验证默认值解析，
+    # 完全不污染主进程的 config 模块身份。
+    probe = (
+        "import os, sys; "
+        "os.environ.pop('DATA_DIR', None); "
+        f"sys.path.insert(0, {str(backend_dir)!r}); "
+        "import config; "
+        "from pathlib import Path; "
+        f"print(config.DATA_DIR.resolve() == (Path({str(project_root)!r}) / 'data').resolve())"
+    )
+    result = subprocess.run(
+        [sys.executable, "-c", probe],
+        capture_output=True, text=True, timeout=20,
+    )
+    assert result.returncode == 0, f"stderr:\n{result.stderr}"
+    assert result.stdout.strip().endswith("True"), (
+        f"config.DATA_DIR 默认值解析失败，stdout:\n{result.stdout}"
+    )
 
 
 def test_generate_daily_signal_hold_confidence_uses_consistency_floor(monkeypatch):
