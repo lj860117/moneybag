@@ -481,12 +481,32 @@ def calc_risk_metrics(nav_list: list) -> dict:
             peak_idx = cur_peak_idx
             trough_idx = i
 
-    # 当前距 60 天最高点的距离 + 从谷底反弹幅度
+    # 当前距窗口最高点的距离 + 从回撤谷底反弹幅度
+    #
+    # v9.9.11 FIX (2026-09-07 事故)：旧实现用 min(navs)（窗口内**全局**最低点）当谷底。
+    # 全局最低点经常出现在回撤峰值**之前**（先涨后跌形态），此时"距高点 -X%"与
+    # "已从谷底反弹 +Y%"参照的是两个互不相关的时点，推送文案直接自相矛盾
+    # —— 例：华夏先进制造 013107 报「最大回撤 12.0%（08/17→09/04），距高点-12.0%，
+    # 已从谷底反弹 +2.9%」，而 09/04 就是当前净值所在位置，反弹幅度应为 0。
+    #
+    # 正确的谷底必须与 max_dd 严格同一对时点，即上面 474-482 行算出的 trough_idx。
     cur_nav = navs[-1] if navs else 0
-    period_peak = max(navs) if navs else 0
-    period_trough = min(navs) if navs else 0
+    dd_peak_nav = navs[peak_idx] if navs else 0        # 回撤区间的峰（与 max_dd 同对）
+    dd_trough_nav = navs[trough_idx] if navs else 0    # 回撤区间的谷（与 max_dd 同对）
+    period_peak = max(navs) if navs else 0             # 窗口内全局最高（用于"距高点"）
     dist_from_peak = (cur_nav - period_peak) / period_peak if period_peak > 0 else 0
-    rebound_from_trough = (cur_nav - period_trough) / period_trough if period_trough > 0 else 0
+
+    # 谷底必须**严格晚于**峰值（trough_idx > peak_idx）才算一次真实回撤 ——
+    # 用严格大于而非 >=：序列无回撤时 max_dd 保持 0，peak_idx 与 trough_idx
+    # 都停在初始值 0，用 >= 会误判成"从 navs[0] 反弹"，单调上涨序列会报出
+    # 「最大回撤 0.0%…已从谷底反弹 +20%」这种荒谬文案（回归测试已锁死）。
+    # 数学上 trough_idx > peak_idx ⟺ max_dd > 0，因为 dd>0 必然要求
+    # cur_peak_idx < i。另：当前净值低于谷底说明回撤还在扩大，也不是"反弹"。
+    # 不满足时返回 None —— 上游 detect_fund_alerts 据此不输出反弹文案，
+    # 绝不用别处的低点冒充。
+    rebound_from_trough = None
+    if navs and trough_idx > peak_idx and dd_trough_nav > 0 and cur_nav >= dd_trough_nav:
+        rebound_from_trough = (cur_nav - dd_trough_nav) / dd_trough_nav
 
     # 波动率（年化）
     vol = None
@@ -516,11 +536,18 @@ def calc_risk_metrics(nav_list: list) -> dict:
         "ddPeakDate": _fmt_md(dates[peak_idx]) if dates and peak_idx < len(dates) else "",
         "ddTroughDate": _fmt_md(dates[trough_idx]) if dates and trough_idx < len(dates) else "",
         "distFromPeak": round(dist_from_peak, 4),       # 当前距高点（负数=低于高点）
-        "reboundFromTrough": round(rebound_from_trough, 4),  # 从谷底反弹幅度
+        # 从「回撤谷底」反弹幅度；谷底不合法时为 None（v9.9.11）
+        "reboundFromTrough": (round(rebound_from_trough, 4)
+                              if rebound_from_trough is not None else None),
+        "ddPeakNav": round(dd_peak_nav, 4),     # 回撤区间峰值净值
+        "ddTroughNav": round(dd_trough_nav, 4),  # 回撤区间谷值净值
         "volatility": vol,
         "downDays": down_days,
         "weekReturn": round(sum(rates[-5:]), 2) if len(rates) >= 5 else None,
-        "navWindowDays": len(navs),  # 实际拉到的天数
+        "navWindowDays": len(navs),  # 实际拉到的天数（交易日条数，非自然日跨度）
+        # v9.9.11: 真实统计区间起止日 —— 供文案展示，避免"30日"被误读成 30 个自然日
+        "navStartDate": _fmt_md(dates[0]) if dates else "",
+        "navEndDate": _fmt_md(dates[-1]) if dates else "",
     }
 
 
@@ -572,23 +599,43 @@ def detect_fund_alerts(code: str, realtime: dict, risk: dict) -> list:
         peak_date = risk.get("ddPeakDate", "")
         trough_date = risk.get("ddTroughDate", "")
         dist_peak = risk.get("distFromPeak")  # 负数=当前低于高点
-        rebound = risk.get("reboundFromTrough")  # 正数=已从谷底反弹
+        rebound = risk.get("reboundFromTrough")  # 正数=已从**回撤谷底**反弹；None=无可信谷底
 
-        # 构建主信息：明确多少天 + 回撤区间
-        if peak_date and trough_date:
-            main = f"🔻 {window_days}日最大回撤 {max_dd*100:.1f}%（{peak_date}→{trough_date}）"
+        # v9.9.11 FIX-B (2026-09-07 事故)：旧文案写「{window_days}日最大回撤」，
+        # 而 window_days 实际是 navWindowDays = len(navs) = **交易日条数**。
+        # 30 个交易日 ≈ 42 个自然日，于是推送里出现「30日最大回撤 …（07/27→07/29）」
+        # 这种"窗口越界"的观感（相对 09/07，07/27 是 42 天前）。
+        # 改为直接展示真实统计区间起止日，用户不用再猜是交易日还是自然日。
+        win_start = risk.get("navStartDate", "")
+        win_end = risk.get("navEndDate", "")
+        if win_start and win_end:
+            span = f"{win_start}~{win_end}"
         else:
-            main = f"🔻 {window_days}日最大回撤 {max_dd*100:.1f}%"
+            span = f"近{window_days}个交易日"
 
-        # 构建当前位置：分 3 种状态
+        # 构建主信息：回撤区间 + 统计区间
+        if peak_date and trough_date:
+            main = (f"🔻 最大回撤 {max_dd*100:.1f}%"
+                    f"（{peak_date}→{trough_date}，统计区间 {span}）")
+        else:
+            main = f"🔻 最大回撤 {max_dd*100:.1f}%（统计区间 {span}）"
+
+        # 构建当前位置：分 4 种状态
+        # v9.9.11 FIX-A2：旧实现同一句话里出现两个不同的"高点" ——
+        # 句首「最大回撤」说的是回撤起始峰（07/27），句尾「距高点」说的是窗口内
+        # 全局最高点（可能是回撤之后又创新高的 8 月高点）。统一改成"窗口高点"，
+        # 并显式带上谷底日期，让"高/低"各有明确指代。
         sub = ""
-        if dist_peak is not None and rebound is not None:
+        if dist_peak is not None:
             if abs(dist_peak) < 0.005:  # 已回到高点附近
-                sub = f"，当前已回到高点附近 ✅"
-            elif rebound > 0.02:  # 已从谷底反弹超过 2%
-                sub = f"，距高点{dist_peak*100:+.1f}%，已从谷底反弹 +{rebound*100:.1f}%"
-            else:  # 仍在低位附近
-                sub = f"，当前仍在低位（距高点 {dist_peak*100:+.1f}%）"
+                sub = "，当前已回到高点附近 ✅"
+            elif rebound is not None and rebound > 0.02:  # 已从回撤谷底反弹超过 2%
+                sub = (f"，距窗口高点{dist_peak*100:+.1f}%"
+                       f"，较{trough_date}谷底反弹 +{rebound*100:.1f}%")
+            elif rebound is not None:  # 仍在回撤谷底附近
+                sub = f"，距窗口高点{dist_peak*100:+.1f}%，仍贴近{trough_date}谷底"
+            else:  # 谷底参照不合法，只报距高点，不提反弹
+                sub = f"，距窗口高点{dist_peak*100:+.1f}%"
 
         alerts.append({
             "type": "drawdown", "code": code,

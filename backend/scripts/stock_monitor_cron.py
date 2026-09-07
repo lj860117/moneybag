@@ -1193,11 +1193,20 @@ def run_close_review():
                                     continue
                                 # 获取实时数据
                                 try:
-                                    from infra.data_source.fund_realtime import get_fund_realtime
-                                    realtime = get_fund_realtime(code)
-                                    # 获取风险数据
-                                    from services.fund_monitor import calc_fund_risk
-                                    risk = calc_fund_risk(code)
+                                    # v9.9.11 FIX-F (2026-09-07 事故)：
+                                    # 这里原本 import 的两个符号**都不存在** ——
+                                    #   1) infra.data_source.fund_realtime 模块不存在（全仓无此文件）
+                                    #   2) services.fund_monitor.calc_fund_risk 函数从未定义
+                                    # 两个 ImportError 都被下面的 except Exception 吞掉，
+                                    # 导致「🔔 持仓预警」这一段对所有基金静默失效（永远为空）。
+                                    # 改为调用真实存在的符号；realtime 的返回结构
+                                    # （estRate/estDeviation/estNav/nav）与 detect_fund_alerts 一致。
+                                    from services.fund_monitor import (
+                                        get_fund_realtime, get_fund_nav_history, calc_risk_metrics,
+                                    )
+                                    realtime = get_fund_realtime(code) or {}
+                                    # 获取风险数据（与 scan_all_fund_holdings 同口径：30 个交易日）
+                                    risk = calc_risk_metrics(get_fund_nav_history(code, days=30) or [])
                                     # 检测预警
                                     fund_alerts = detect_fund_alerts(code, realtime, risk)
                                     # 补全基金名称
