@@ -18,17 +18,23 @@
 Token 预算: ¥0.45/天（R1×7 + V3×6）
 """
 
-import config
 import sys
 import os
+
+# 确保 import 路径：必须早于任何 `import config`。
+# 以 `python3 backend/scripts/night_worker.py` 方式调用时 sys.path[0] 是 scripts/ 而不是 backend/，
+# 若先执行 import config 会抛 ModuleNotFoundError: No module named 'config'
+# （cache_warmer --harvest 收尾调用 night_worker 即走这条路径）。
+_BACKEND_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if _BACKEND_DIR not in sys.path:
+    sys.path.insert(0, _BACKEND_DIR)
+
+import config
 import json
 import time
 import asyncio
 from pathlib import Path
 from datetime import datetime, date
-
-# 确保 import 路径
-sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from config import DATA_DIR, LLM_API_KEY
 
@@ -1337,6 +1343,8 @@ def _get_fund_recommendations(top_n=5, category="stock"):
     """
     try:
         import json as _json
+        # _P 此前只在另一个函数内局部导入（883 行），本函数直接用会抛 NameError: name '_P' is not defined
+        from pathlib import Path as _P
         rank_file = _P(config.DATA_DIR) / "fund_rank_ts.json"  # FIX: 不再硬编码 /opt/moneybag
         if not rank_file.exists():
             rank_file = _P("./data/fund_rank_ts.json")
@@ -2324,7 +2332,18 @@ def _inject_hallucination_label(briefings: dict) -> dict:
     ]
     # 夸大数字：正文含 >100% 涨跌（除了"近3年"等明确长周期描述的行）
     # 补数字边界，避免把 1.406% 误截成 406%
-    EXAG_PAT = _re_hc.compile(r'(?<![\d.])(?<!近[123三]年)(?<!近五年)([1-9]\d{2,}(?:\.\d+)?%)')
+    # 再加固（两处结构性改动）：
+    #   1) 整个数字 token 一起匹配（\d+(\.\d+)?%），而不是只匹配小数点后的片段，
+    #      从结构上杜绝把 0.320% / 1.406% 截断成 320% / 406% 的假阳性；
+    #      同时兼容全角小数点（．）等变体写法
+    #   2) 数字前不允许是数字 / 小数点 / 千分位，保证取到的是完整的整数部分
+    #   3) 命中后回看前文，带「近N年 / 成立以来 / 累计」等长周期限定语的属合规表述，不算异常涨幅
+    EXAG_PAT = _re_hc.compile(r'(?<![\d.．·,])(\d+(?:[.．·]\d+)?)%')
+    EXAG_TIME_QUAL_RE = _re_hc.compile(
+        r'(?:近\s*(?:\d+|[一二三四五六七八九十半两])\s*(?:年|个月|月|周|日|天)'
+        r'|成立以来(?:累计)?'
+        r'|累计(?:收益|涨幅|回报|收益率)?)\s*$'
+    )
 
     # 拉市场估值（用于校验"低估/风控正常"等描述）
     mt_pct = None
@@ -2374,7 +2393,14 @@ def _inject_hallucination_label(briefings: dict) -> dict:
 
         # 3. 数字夸大（单段涨幅 >200%，大概率幻觉，不含标题行）
         for m in EXAG_PAT.finditer(text):
-            val = float(m.group(1).rstrip('%'))
+            # 带长周期/累计限定语（近N年、成立以来、累计收益…）→ 合规表述，跳过
+            if EXAG_TIME_QUAL_RE.search(text[max(0, m.start() - 12):m.start()]):
+                continue
+            _raw = m.group(1).replace('．', '.').replace('·', '.')
+            try:
+                val = float(_raw)
+            except ValueError:
+                continue
             if val > 200:
                 issues.append(f"异常涨幅数字「{m.group(0)}」")
                 break

@@ -681,7 +681,7 @@ def get_recommend_allocations(risk_profile: str = "稳健型", with_ai: bool = F
                 allocations = ai_picks
                 adjustments.append("🤖 AI 从全量基金排行中动态精选")
             else:
-                pcts = ALLOC_PCTS.get(risk_profile, ALLOC_PCTS["稳健型"])
+                pcts = config.RISK_ALLOC_PCTS.get(risk_profile, config.RISK_ALLOC_PCTS["稳健型"])
                 for i, fund in enumerate(RECOMMENDED_FUNDS):
                     f = dict(fund)
                     f["pct"] = pcts[i] if i < len(pcts) else 0
@@ -689,7 +689,7 @@ def get_recommend_allocations(risk_profile: str = "稳健型", with_ai: bool = F
                 adjustments.append("⚠️ 规则引擎和 AI 都暂不可用，使用经典配置")
         else:
             # 规则引擎失败，且未启用 AI → 经典硬编码
-            pcts = ALLOC_PCTS.get(risk_profile, ALLOC_PCTS["稳健型"])
+            pcts = config.RISK_ALLOC_PCTS.get(risk_profile, config.RISK_ALLOC_PCTS["稳健型"])
             for i, fund in enumerate(RECOMMENDED_FUNDS):
                 f = dict(fund)
                 f["pct"] = pcts[i] if i < len(pcts) else 0
@@ -728,7 +728,7 @@ def get_recommend_allocations(risk_profile: str = "稳健型", with_ai: bool = F
         except Exception as e:
             adjustments.append(f"⚠️ 选股引擎暂不可用: {str(e)[:50]}")
             # 降级为基金
-            pcts = ALLOC_PCTS.get(risk_profile, ALLOC_PCTS["稳健型"])
+            pcts = config.RISK_ALLOC_PCTS.get(risk_profile, config.RISK_ALLOC_PCTS["稳健型"])
             for i, fund in enumerate(RECOMMENDED_FUNDS):
                 f = dict(fund)
                 f["pct"] = pcts[i] if i < len(pcts) else 0
@@ -737,7 +737,7 @@ def get_recommend_allocations(risk_profile: str = "稳健型", with_ai: bool = F
     elif preference == "mixed":
         # 混合模式 — 50% 基金 + 50% 股票
         # 基金部分：取前 3 只核心基金（沪深300/标普500/债券）
-        pcts_base = ALLOC_PCTS.get(risk_profile, ALLOC_PCTS["稳健型"])
+        pcts_base = config.RISK_ALLOC_PCTS.get(risk_profile, config.RISK_ALLOC_PCTS["稳健型"])
         fund_slice = RECOMMENDED_FUNDS[:3]  # 沪深300, 标普500, 债券
         fund_pcts = [15, 10, 25]  # 基金占 50%
         for i, fund in enumerate(fund_slice):
@@ -773,7 +773,7 @@ def get_recommend_allocations(risk_profile: str = "稳健型", with_ai: bool = F
                 allocations.append(f)
     else:
         # 未知偏好，默认基金
-        pcts = ALLOC_PCTS.get(risk_profile, ALLOC_PCTS["稳健型"])
+        pcts = config.RISK_ALLOC_PCTS.get(risk_profile, config.RISK_ALLOC_PCTS["稳健型"])
         for i, fund in enumerate(RECOMMENDED_FUNDS):
             f = dict(fund)
             f["pct"] = pcts[i] if i < len(pcts) else 0
@@ -783,7 +783,7 @@ def get_recommend_allocations(risk_profile: str = "稳健型", with_ai: bool = F
         "profile": risk_profile,
         "preference": preference,
         "allocations": allocations,
-        "profiles": list(ALLOC_PCTS.keys()),
+        "profiles": list(config.RISK_ALLOC_PCTS.keys()),
         "adjustments": adjustments,
         "marketData": {
             "valuationPct": round(val_pct, 1),
