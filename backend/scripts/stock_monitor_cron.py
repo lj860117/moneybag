@@ -8,6 +8,7 @@
 import os
 import sys
 import json
+import re
 import argparse
 from pathlib import Path
 from datetime import datetime
@@ -895,6 +896,35 @@ def _direction_to_advice(direction: str) -> str:
         return "不上不下的行情，没啥操作的必要，安心等就好。"
 
 
+# v9.9.12 FIX-G：管家结论与 AI 诊断一致性兜底用的两个小工具。
+#
+# 背景：管家（pipeline_runner.step_output 门控直出）与 AI 诊断（独立的
+# gw.call_sync）是两条互不知情的推理链。管家判 neutral 时推送里会出现
+# 「不上不下的行情，没啥操作的必要」，紧接着 AI 诊断却可能说「先按纪律止盈
+# 一部分」—— 用户看到两个相反的结论且没有任何说明。
+# 这里不做裁决（那需要产品决策），只做"显式提示"。
+
+#: AI 诊断里出现这些词说明在给具体操作建议
+_ACTION_WORD_RE = re.compile(r"(止盈|止损|减仓|加仓|补仓|清仓|卖出|赎回|割肉|离场)")
+
+
+def _steward_says_hold(review: dict) -> bool:
+    """管家结论是否为「观望/没啥操作必要」（direction == neutral）。
+
+    Args:
+        review: steward.review() 返回的 dict（字段见
+            decision_context.DecisionContext.to_user_response）。
+
+    Returns:
+        direction 为 neutral / 缺失 / 非法值时返回 True（保守：宁可多提示一句，
+        也不要漏掉冲突）；bullish / bearish 返回 False。
+    """
+    if not isinstance(review, dict):
+        return True
+    direction = review.get("direction") or review.get("final_direction") or "neutral"
+    return str(direction).strip().lower() not in ("bullish", "bearish")
+
+
 # 模块/技术术语 → 中文映射（用于推送文本人话化）
 _TERM_MAP = {
     "sector_rotation": "板块轮动",
@@ -1112,6 +1142,23 @@ def run_close_review():
                 system_prompt = _review_prompt.read_text(encoding="utf-8") if _review_prompt.exists() else "你是专业投资组合分析师，给出简洁的收盘复盘。"
                 
                 if scan_data:
+                    # v9.9.12 FIX-G (2026-09-07 事故)：管家结论与 AI 诊断自相矛盾。
+                    # 推送里曾同时出现「⚖️ 模块一致看neutral / 不上不下的行情，没啥操作的
+                    # 必要」和「AI诊断：…是否接近止盈…」—— 因为这是两条完全独立的推理链：
+                    # 管家走 pipeline_runner.step_output 的门控直出（未调 LLM），
+                    # 而这里是一次独立的 gw.call_sync，prompt 里根本没有管家说了什么，
+                    # LLM 无从对齐。修法不是强行让两者一致（那是大改），而是把管家结论
+                    # **注入 prompt**，并明确要求 LLM 有分歧时显式说明理由。
+                    # 字段以 steward.review() 返回的 ctx.to_user_response() 为准：
+                    # direction / conclusion（见 decision_context.py:275-279）。
+                    _rv_direction = (review or {}).get("direction") or "neutral"
+                    _rv_conclusion = (review or {}).get("conclusion") or ""
+                    steward_ctx = (
+                        f"## 管家今日结论（另一条独立分析链的结果，供你参考）\n"
+                        f"方向：{_rv_direction}\n"
+                        f"结论：{_rv_conclusion}\n"
+                    )
+
                     prompt = f"""## 持仓数据
 {scan_data}
 
@@ -1121,9 +1168,14 @@ def run_close_review():
 ## 持仓相关新闻
 {holdings_news_text if holdings_news_text else "暂无个股/基金新闻"}
 
+{steward_ctx}
 请按 close_review 格式输出收盘复盘，800 字以内。
 重点：基于盈亏锚点，告诉用户哪只已浮盈多少、是否接近止盈，哪只还在亏损需要持有。
-重要：用普通人能看懂的大白话，不要输出 JSON，不要英文术语。"""
+重要：用普通人能看懂的大白话，不要输出 JSON，不要英文术语。
+一致性要求：上面的「管家今日结论」是系统另一条分析链给出的方向判断。
+如果你的操作建议与管家方向不一致（例如管家说 neutral/观望，你却建议止盈或减仓），
+必须在正文里用一句话显式说明你为什么持不同看法，不要各说各话、让用户无所适从。
+如果一致，直接给出建议即可，不要复述管家的话。"""
                     
                     result = gw.call_sync(
                         prompt,
@@ -1177,6 +1229,16 @@ def run_close_review():
                     # 3. AI诊断（完整版）
                     if diagnosis_text:
                         safe_diag = _sanitize_push_text(diagnosis_text)
+                        # v9.9.12 FIX-G(b)：推送侧兜底。
+                        # (a) 已经在 prompt 里注入了管家结论并要求 LLM 显式说明分歧，
+                        #     但 LLM 不保证遵守，所以这里再加一道确定性提示：
+                        #     管家判 neutral（"没啥操作的必要"）而诊断文本却出现
+                        #     止盈/减仓这类动作词时，在两段之间插一行说明，
+                        #     避免用户看到"别操作"紧跟着"建议止盈"而无从判断。
+                        if _steward_says_hold(review) and _ACTION_WORD_RE.search(safe_diag):
+                            msg_parts.append(
+                                "\n⚠️ 管家今日判断为观望，而下方 AI 诊断含操作建议，"
+                                "两者口径不同，请结合自身情况判断。")
                         # v9.8.10: 不再截断，send_markdown 会自动分段推送长消息
                         msg_parts.append(f"\n🤖 AI诊断:\n{safe_diag}")
 
@@ -1206,7 +1268,14 @@ def run_close_review():
                                     )
                                     realtime = get_fund_realtime(code) or {}
                                     # 获取风险数据（与 scan_all_fund_holdings 同口径：30 个交易日）
-                                    risk = calc_risk_metrics(get_fund_nav_history(code, days=30) or [])
+                                    # v9.9.12 FIX-C：必须 force_refresh。
+                                    # run_close_review() 开头（L1024）先跑 run_scan()，
+                                    # 几分钟后走到这里，_NAV_TTL=3600 会让这次调用命中
+                                    # scan 刚写入的快照；而基金净值 20:00-23:00 才陆续
+                                    # 公布，盘中的 scan 拿到的其实是上一交易日的数据。
+                                    # 复盘是当天最后一条推送，必须尽力拿最新净值。
+                                    risk = calc_risk_metrics(
+                                        get_fund_nav_history(code, days=30, force_refresh=True) or [])
                                     # 检测预警
                                     fund_alerts = detect_fund_alerts(code, realtime, risk)
                                     # 补全基金名称
@@ -1222,9 +1291,14 @@ def run_close_review():
                                 msg_parts.append("\n🔔 持仓预警:")
                                 for alert in alerts[:5]:  # 最多显示5条
                                     level_emoji = "🔴" if alert.get("level") == "warning" else "🟡"
-                                    name = alert.get("name", alert.get("code", ""))
+                                    # v9.9.12 FIX：这里原本写 `name = ...`，覆盖了外层的
+                                    # `name`（L1030 `name = p.get("name", uid)` 是**用户名**）。
+                                    # 只要某用户有预警，后续所有日志与推送里的"用户名"
+                                    # 都会变成基金名 —— 排查"哪个用户推送失败"时会看到
+                                    # 一只基金的名字，直接误导线上排障。改用局部名。
+                                    fund_name = alert.get("name", alert.get("code", ""))
                                     message = alert.get("message", alert.get("msg", ""))
-                                    msg_parts.append(f"{level_emoji} {name}\n  {message}")
+                                    msg_parts.append(f"{level_emoji} {fund_name}\n  {message}")
                                     if len(msg_parts) > 8:  # 防止消息过长
                                         msg_parts.append("  ...更多预警请打开钱袋子查看")
                                         break

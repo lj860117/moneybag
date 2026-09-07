@@ -69,6 +69,30 @@ class MemoryCache:
                 return None
             return entry.value
 
+    def get_stale(self, key: str) -> Any:
+        """Return cached value even if expired -- for graceful degradation.
+
+        Unlike :meth:`get`, this **never deletes** the entry and **never**
+        returns ``None`` just because the TTL elapsed.  It is meant for the
+        "all upstream data sources failed, serve whatever we last had" path:
+        a stale value beats silently returning nothing.
+
+        Rationale (2026-09-07 incident, fund NAV history):
+        ``services.fund_monitor.get_fund_nav_history`` had a fallback that
+        intended to serve the last known NAV list when AKShare / Tushare /
+        EastMoney all failed.  It called :meth:`get`, which *deletes* the
+        expired entry and returns ``None`` — so the fallback could never fire.
+        Callers that want stale-while-error semantics must use this method.
+
+        Returns:
+            The stored value if the key exists (expired or not), else None.
+        """
+        with self._lock:
+            entry = self._data.get(key)  # type: Optional[_Entry]
+            if entry is None:
+                return None
+            return entry.value
+
     def set(self, key: str, value: Any, *, ttl: int = 0) -> None:
         """Store value with optional TTL override.
 

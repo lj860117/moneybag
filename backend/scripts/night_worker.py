@@ -895,10 +895,30 @@ def _build_portfolio_thermometer(uid: str) -> str:
             return ""
 
         # 聚合每只基金的买入成本（多次买入取加权均价）
+        #
+        # v9.9.12 FIX-H1：旧实现 `if t.get("type") != "BUY": continue` 把 SELL
+        # 记录完全跳过 —— 卖出后份额和成本都不扣减，已清仓的基金仍按全额展示，
+        # 浮盈率更是失真（分母分母都错）。models/schemas.py:35 里
+        # type 的合法值是 Literal["BUY", "SELL", "DIVIDEND"]，SELL 确实会产生
+        # （例如 shared_helpers.py 的基金赎回确认 OCR 解析）。
+        #
+        # 【成本口径】采用「加权平均成本 + 按剩余份额比例结转」：
+        #   - SELL 只扣减**份额**，成本按 剩余份额/累计买入份额 的比例结转。
+        #   - 不用「扣减赎回金额」口径：赎回金额 = 份额 × 赎回时净值，里面含
+        #     已实现盈亏，拿它去减成本会让**剩余仓位**的浮盈率失真。
+        #     反例：买入 1000 份 @1.0（成本 1000），卖出 500 份 @1.2（到账 600）。
+        #           剩余 500 份、剩余成本应为 500；若按金额扣则剩 400，
+        #           当前净值 1.2 时浮盈会被算成 +50%（正确是 +20%）。
+        #   - 该口径只依赖 BUY 记录的 amount/shares 和 SELL 记录的 shares，
+        #     不需要信任 SELL 的 amount/nav，健壮性更好。
         from collections import defaultdict
-        holdings_map = defaultdict(lambda: {"name": "", "total_amount": 0.0, "total_shares": 0.0, "buy_navs": []})
+        holdings_map = defaultdict(lambda: {
+            "name": "", "total_amount": 0.0, "total_shares": 0.0,
+            "sold_shares": 0.0, "buy_navs": [],
+        })
         for t in txns:
-            if t.get("type") != "BUY":
+            typ = str(t.get("type") or "BUY").strip().upper()
+            if typ not in ("BUY", "SELL"):
                 continue
             code = t.get("code", "")
             if not code:
@@ -908,12 +928,42 @@ def _build_portfolio_thermometer(uid: str) -> str:
             amount = float(t.get("amount", 0) or 0)
             shares = float(t.get("shares", 0) or 0)
             nav = float(t.get("nav", 0) or 0)
-            h["total_amount"] += amount
-            h["total_shares"] += shares
-            if nav > 0:
-                h["buy_navs"].append((nav, shares))
+
+            if typ == "BUY":
+                h["total_amount"] += amount
+                h["total_shares"] += shares
+                if nav > 0:
+                    h["buy_navs"].append((nav, shares))
+            else:  # SELL
+                # 份额缺失时用 到账金额 / 确认净值 反推；推不出来就记一条告警，
+                # 绝不静默跳过（静默跳过 = 份额不扣 = 已清仓还按全额展示）。
+                if shares <= 0 and amount > 0 and nav > 0:
+                    shares = amount / nav
+                if shares <= 0:
+                    print(f"[HOLDINGS] ⚠️ {code} 的 SELL 记录缺少份额且无法反推，"
+                          f"该笔卖出未参与扣减（amount={amount}, nav={nav}）")
+                    continue
+                h["sold_shares"] += shares
 
         if not holdings_map:
+            return ""
+
+        # 已清仓（剩余份额 <= 1e-6）的基金不再进入温度计
+        active_holdings = {}
+        for code, h in holdings_map.items():
+            remaining = h["total_shares"] - h["sold_shares"]
+            if remaining <= 1e-6:
+                print(f"[HOLDINGS] {code} 已清仓（剩余份额 {remaining:.6f}），跳过展示")
+                continue
+            h["remaining_shares"] = remaining
+            # 成本按剩余份额比例结转
+            if h["total_shares"] > 0:
+                h["remaining_cost"] = h["total_amount"] * (remaining / h["total_shares"])
+            else:
+                h["remaining_cost"] = 0.0
+            active_holdings[code] = h
+
+        if not active_holdings:
             return ""
 
         # 拉最新净值
@@ -921,10 +971,11 @@ def _build_portfolio_thermometer(uid: str) -> str:
 
         total_cost = 0.0
         total_val = 0.0
+        nav_missing_codes = []
         rows = []
-        for code, h in holdings_map.items():
-            cost_amount = h["total_amount"]
-            shares = h["total_shares"]
+        for code, h in active_holdings.items():
+            cost_amount = h["remaining_cost"]
+            shares = h["remaining_shares"]
             # 加权平均买入净值
             if h["buy_navs"]:
                 wt_nav = sum(n * s for n, s in h["buy_navs"]) / sum(s for _, s in h["buy_navs"])
@@ -933,8 +984,22 @@ def _build_portfolio_thermometer(uid: str) -> str:
 
             navs = get_fund_nav_history(code, days=3)
             cur_nav = navs[-1]["nav"] if navs and navs[-1].get("nav") else 0.0
-            cur_val = cur_nav * shares if cur_nav > 0 else cost_amount
-            float_pct = (cur_nav - wt_nav) / wt_nav * 100 if wt_nav > 0 and cur_nav > 0 else 0.0
+
+            # v9.9.12 FIX-H2：净值取不到时**不再静默用成本顶替**。
+            # 旧写法 `cur_val = cur_nav * shares if cur_nav > 0 else cost_amount`
+            # 会让数据源全挂时浮盈恒显示为 0.0%，看起来像"今天没涨跌"，
+            # 实为数据缺失 —— 典型静默失效。现在改为显式标记 + 告警日志。
+            nav_missing = cur_nav <= 0
+            if nav_missing:
+                print(f"[HOLDINGS] ⚠️ {code} 净值缺失（数据源无返回），跳过估值")
+                nav_missing_codes.append(code)
+                # 市值仍需一个数字参与汇总，按成本计入并明确标注，
+                # 但 float_pct 置 None，让下游能区分"真的持平"和"取不到数"。
+                cur_val = cost_amount
+                float_pct = None
+            else:
+                cur_val = cur_nav * shares
+                float_pct = (cur_nav - wt_nav) / wt_nav * 100 if wt_nav > 0 else 0.0
 
             total_cost += cost_amount
             total_val += cur_val
@@ -942,7 +1007,7 @@ def _build_portfolio_thermometer(uid: str) -> str:
                 "code": code, "name": h["name"],
                 "wt_nav": wt_nav, "cur_nav": cur_nav,
                 "cur_val": cur_val, "float_pct": float_pct,
-                "cost": cost_amount,
+                "cost": cost_amount, "navMissing": nav_missing,
             })
 
         if total_cost == 0:
@@ -956,21 +1021,36 @@ def _build_portfolio_thermometer(uid: str) -> str:
             "",
             "持仓明细："
         ]
-        # 按浮盈率排序（最好→最差）
-        rows.sort(key=lambda x: -x["float_pct"])
+        # 按浮盈率排序（最好→最差）；净值缺失的排最后，不能用 None 参与比较
+        rows.sort(key=lambda x: -1e9 if x["float_pct"] is None else -x["float_pct"])
         for r in rows:
-            arrow = "▲" if r["float_pct"] >= 0 else "▼"
             name_short = r["name"][:12] if r["name"] else r["code"]
+            if r["navMissing"]:
+                # 明确告诉用户"这只取不到净值"，而不是伪装成 0.0%
+                lines.append(
+                    f"  • {name_short}({r['code']})  "
+                    f"买入{r['wt_nav']:.3f} → 现净值缺失 ⚠️  "
+                    f"¥{r['cur_val']:.1f}（按成本计）"
+                )
+            else:
+                arrow = "▲" if r["float_pct"] >= 0 else "▼"
+                lines.append(
+                    f"  • {name_short}({r['code']})  "
+                    f"买入{r['wt_nav']:.3f} → 现{r['cur_nav']:.3f}  "
+                    f"{arrow}{abs(r['float_pct']):.1f}%  ¥{r['cur_val']:.1f}"
+                )
+        if nav_missing_codes:
+            lines.append("")
             lines.append(
-                f"  • {name_short}({r['code']})  "
-                f"买入{r['wt_nav']:.3f} → 现{r['cur_nav']:.3f}  "
-                f"{arrow}{abs(r['float_pct']):.1f}%  ¥{r['cur_val']:.1f}"
-            )
+                f"⚠️ {len(nav_missing_codes)} 只基金净值缺失"
+                f"（{'/'.join(nav_missing_codes)}），其市值按成本计，"
+                f"总市值与整体浮盈可能偏低")
 
         # v9.5.76: 追加再平衡缺口
+        # v9.9.12: 用 active_holdings（已剔除清仓），避免已卖出的基金污染缺口计算
         holdings_for_rebalance = [
             {"code": code, "name": h["name"], "cur_val": r["cur_val"], "float_pct": r["float_pct"]}
-            for code, h in holdings_map.items()
+            for code, h in active_holdings.items()
             for r in [next((rr for rr in rows if rr["code"] == code), {})]
             if r
         ]

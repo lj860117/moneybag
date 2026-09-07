@@ -56,8 +56,49 @@ def _fund_file(user_id: str = "default") -> Path:
 # 1. 基金持仓 CRUD（支持多用户）
 # ============================================================
 
+def _warn_if_unknown_user(user_id: str) -> None:
+    """user_id 在 users 目录下查无此人时打一条告警（不抛异常、不改变返回值）。
+
+    踩坑背景（v9.9.12）：用户文件在 config.USERS_DIR 下按
+    **sha256(user_id)[:16]** 命名（见 services/persistence.py:248 `_user_file`），
+    而本模块的 `_fund_file()` 是按**用户名原文**拼 `fund_holdings_{user_id}.json`。
+    一旦调用方把哈希串当 user_id 传进来，_fund_file 指向不存在的文件 →
+    existing=[] → _sync_from_transactions 里 load_user(哈希) 也取不到 →
+    **整个 load_fund_holdings 静默返回 []**，没有任何提示，排查时极易误判成
+    "数据被误删了"。这里只加一条日志，让下次踩坑的人一眼看到。
+
+    Args:
+        user_id: 传入的用户标识（可能是用户名，也可能是哈希串）。
+    """
+    if not user_id or user_id == "default":
+        return
+    try:
+        from pathlib import Path as _P
+        import hashlib
+
+        users_dir = _P(getattr(config, "USERS_DIR", _DATA_DIR / "users"))
+        direct = users_dir / f"{user_id}.json"
+        hashed = users_dir / f"{hashlib.sha256(user_id.encode()).hexdigest()[:16]}.json"
+        # 哈希串本身也可能被当成"用户名"再哈希一次，两种都查一遍
+        hashed_of_hashed = None
+        if direct.exists() or hashed.exists():
+            return
+        # 也可能是先按用户名哈希后、又拿哈希去当 user_id 用 —— 那种情况下
+        # 磁盘上存在的是 sha256(哈希)[:16].json，同样接受
+        hashed_of_hashed = users_dir / (
+            f"{hashlib.sha256(hashed.stem.encode()).hexdigest()[:16]}.json")
+        if hashed_of_hashed.exists():
+            return
+        print(f"[FUND_MONITOR] ⚠️ load_fund_holdings: 未知 user_id {user_id!r}，"
+              f"用户文件不存在（已查 {direct.name} / {hashed.name}），将返回空持仓")
+    except Exception:
+        # 告警本身绝不能影响主流程
+        pass
+
+
 def load_fund_holdings(user_id: str = "default") -> list:
     """加载基金持仓列表（v9.5.122: 自动从 V4 transactions 补全缺失基金）"""
+    _warn_if_unknown_user(user_id)
     f = _fund_file(user_id)
     existing = []
     if f.exists():
@@ -352,13 +393,33 @@ def get_fund_realtime(code: str) -> Optional[dict]:
 # 4. 净值历史 + 回撤/波动率
 # ============================================================
 
-def get_fund_nav_history(code: str, days: int = 60) -> list:
-    """获取净值历史"""
+def get_fund_nav_history(code: str, days: int = 60, force_refresh: bool = False) -> list:
+    """获取净值历史
+
+    Args:
+        code: 基金代码。
+        days: 取最近多少个交易日。
+        force_refresh: True 时**跳过读缓存**（仍照常写缓存），用于必须拿到
+            最新净值的场景。默认 False，保持既有行为。
+
+    v9.9.12 FIX-C (2026-09-07 事故)：收盘复盘链路必须能绕过缓存。
+    run_close_review() 开头先跑 run_scan()，几分钟后第 4 段「持仓预警」又调
+    本函数 —— 两者相隔几分钟，而 _NAV_TTL = 3600（1 小时），必然命中 scan 刚
+    写入的快照。基金净值通常 20:00-23:00 陆续公布，21:02 复盘时应该拿最新值。
+    """
     now = time.time()
     cache_key = f"{code}_{days}"
-    cached = _nav_cache.get(cache_key)
-    if cached is not None:
-        return cached
+
+    # v9.9.13 FIX-D2：先留一份「过期也算」的降级底牌，再读缓存。
+    # 顺序很关键：MemoryCache.get() 一发现过期就 **删除** 条目，如果先 get()
+    # 再 get_stale()，走到降级分支时键已经被删了，get_stale() 恒为 None ——
+    # 降级分支依旧是死代码（只修 get_stale 不修顺序，等于没修）。
+    stale_snapshot = _nav_cache.get_stale(cache_key)
+
+    if not force_refresh:
+        cached = _nav_cache.get(cache_key)
+        if cached is not None:
+            return cached
 
     try:
         from infra.data_source.market.stocks import get_fund_nav_history as _get_fund_nav_hist
@@ -447,8 +508,31 @@ def get_fund_nav_history(code: str, days: int = 60) -> list:
         except Exception as em_err:
             print(f"[FUND_MONITOR] {code} EM API 也失败: {em_err}")
 
-        cached_fallback = _nav_cache.get(cache_key)
-        return cached_fallback.get("data", []) if isinstance(cached_fallback, dict) else []
+        # v9.9.12 FIX-D (2026-09-07 事故)：三源全失败时降级用陈旧缓存。
+        #
+        # 旧实现两处都错，导致这个降级 **100% 从未生效过**：
+        #   1) 用了 `_nav_cache.get()` —— MemoryCache.get() 在发现过期时会先
+        #      `del self._data[key]` 再 return None，所以"缓存未过期"这个唯一
+        #      能取到值的场景，函数早就走上面的正常 return 了，永远到不了这里；
+        #      而真到了这里，键要么不存在、要么已被 get() 删掉，必然是 None。
+        #   2) 判了 `isinstance(cached_fallback, dict)` —— 但 MemoryCache 存的是
+        #      **裸值**（这里是 list），从不包 {"data":..., "ts":...} 外壳，
+        #      所以这个 isinstance 恒为 False，恒返回 []。
+        #
+        # 结果：数据源全挂时静默返回 []，下游 calc_risk_metrics 直接返回
+        # {"maxDrawdown": None...}，回撤/预警整段从推送里消失，用户无从判断
+        # 是"没有异动"还是"数据挂了"。
+        #
+        # 现在改用 get_stale() —— 即使已过期也返回上次的值且不删除。
+        # 宁可给用户上一批旧净值（并打日志），也不要静默返回空。
+        # 优先用函数开头留的快照（force_refresh=True 时那里没取，这里兜底再取一次）
+        stale = stale_snapshot if isinstance(stale_snapshot, list) and stale_snapshot \
+            else _nav_cache.get_stale(cache_key)
+        if isinstance(stale, list) and stale:
+            print(f"[FUND_MONITOR] {code} 数据源全失败，降级用陈旧缓存({len(stale)}天)")
+            return stale
+        print(f"[FUND_MONITOR] {code} 数据源全失败且无陈旧缓存可用")
+        return []
 
 
 def calc_risk_metrics(nav_list: list) -> dict:
