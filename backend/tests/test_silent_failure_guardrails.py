@@ -117,6 +117,45 @@ def test_get_stale_returns_none_for_missing_key():
 _RAISE = object()  # 哨兵：表示 L1 数据源应抛异常
 
 
+@pytest.fixture(autouse=True)
+def _isolate_nav_written_at(monkeypatch):
+    """每个用例都用一张干净的「缓存写入时刻」表，避免互相污染。
+
+    `_nav_written_at` 是模块级全局变量，用例之间会串味。这里用 monkeypatch
+    换成空 dict，pytest 会在用例结束后自动还原。
+    """
+    monkeypatch.setattr(fund_monitor, "_nav_written_at", {})
+
+
+def _seed_stale_nav(code: str, days: int, rows: list, age_hours: float = 0.0,
+                    with_timestamp: bool = True) -> str:
+    """预置一份**已过期**的 nav 缓存，并同步登记写入时刻。
+
+    生产代码里 `_nav_cache.set()` 与 `_mark_nav_written()` 是成对调用的，
+    测试也必须成对 —— 只设其中一个，测的是一个生产上不存在的状态。
+
+    为什么不用 sleep：把 `expires_at` 直接改到过去即可让 `get()` 判定过期，
+    既确定又快；用 sleep(1.1) 等方式既慢又受机器负载影响。
+
+    Args:
+        code: 基金代码。
+        days: 取数天数（参与 cache_key 的构成）。
+        rows: 要塞进缓存的净值行。
+        age_hours: 假装这份数据已经陈旧多少小时。
+        with_timestamp: False 时不登记写入时刻，用于测"有数据但无时间戳"。
+
+    Returns:
+        cache_key。
+    """
+    key = f"{code}_{days}"
+    _nav_cache.set(key, rows, ttl=3600)
+    # 强制标记为已过期（get() 会据此删除条目，get_stale() 仍能取到）
+    _nav_cache._data[key].expires_at = time.time() - 1.0
+    if with_timestamp:
+        fund_monitor._nav_written_at[key] = time.time() - age_hours * 3600
+    return key
+
+
 class _FakeDF:
     """最小 DataFrame 替身，满足 `df.empty` / `df.tail(n)` / `iterrows()`。
 
@@ -182,13 +221,12 @@ def test_nav_history_fallback_uses_stale_cache(capsys):
     """
     code = "999999"  # 不存在的基金，保证三源全失败
     days = 30
-    key = f"{code}_{days}"
     stale = [{"date": "2026-09-01", "nav": 1.0, "rate": 0.0},
              {"date": "2026-09-02", "nav": 1.1, "rate": 0.0},
              {"date": "2026-09-03", "nav": 1.2, "rate": 0.0}]
 
-    _nav_cache.set(key, stale, ttl=1)
-    time.sleep(1.1)  # 让缓存过期，模拟「数据源挂了且缓存也已过期」的最坏情况
+    # 缓存已过期但写入时刻很新（未超 48h 上限）
+    _seed_stale_nav(code, days, stale, age_hours=1.0)
 
     with _nav_sources():  # 三源全失败
         got = get_fund_nav_history(code, days=days)
@@ -220,6 +258,155 @@ def test_nav_history_returns_empty_and_logs_when_no_stale_cache(capsys):
     assert "无陈旧缓存" in captured.out, (
         f"必须明确打印「无陈旧缓存可用」，否则排障时无法区分"
         f"「没缓存」和「有缓存但没用上」，实际 stdout：\n{captured.out}")
+
+
+# ------------------------------------------------------------
+# 项目7：陈旧缓存降级的上限（_STALE_MAX_AGE = 48h）
+# ------------------------------------------------------------
+
+def test_successful_fetch_records_write_timestamp():
+    """成功写入缓存时必须**同步**登记写入时刻。
+
+    `_nav_cache`（数据）和 `_nav_written_at`（数据年龄）是两份必须同步的状态。
+    只在成功分支补了 `_nav_cache.set()` 却忘了 `_mark_nav_written()`，降级时
+    就会因为"没有时间戳"而不敢用这份数据 —— 也就是缓存白写了。
+
+    故障注入方向：把三处 `_mark_nav_written(cache_key)` 中任意一处删掉，
+    本用例应变红。
+    """
+    code = "999100"
+    days = 30
+    key = f"{code}_{days}"
+
+    fresh_df = _FakeDF([
+        {"累计净值": 1.5, "净值日期": "2026-09-07", "日增长率": 0.0},
+        {"累计净值": 1.4, "净值日期": "2026-09-04", "日增长率": 0.0},
+    ])
+
+    with _nav_sources(fresh_df):
+        got = get_fund_nav_history(code, days=days, force_refresh=True)
+
+    assert got, "数据源正常时应返回数据"
+    assert key in fund_monitor._nav_written_at, (
+        f"成功写入缓存后必须登记写入时刻，否则降级时无法判断陈旧程度。"
+        f"当前已登记的键：{sorted(fund_monitor._nav_written_at)}")
+    # 时间戳应当是"刚刚"，不能是 1970 或其它默认值
+    assert abs(time.time() - fund_monitor._nav_written_at[key]) < 60, (
+        f"写入时刻应接近当前时间，实际：{fund_monitor._nav_written_at[key]}")
+
+
+def test_stale_cache_within_limit_is_used(capsys):
+    """上限内（47h）的陈旧缓存照常降级，且日志要给出陈旧时长。
+
+    故障注入方向：把 `_STALE_MAX_AGE` 调成比 47h 更小（比如 1h），
+    本用例应变红。
+    """
+    code = "999101"
+    days = 30
+    stale = [{"date": "2026-09-01", "nav": 1.0, "rate": 0.0}] * 3
+
+    _seed_stale_nav(code, days, stale, age_hours=47.0)
+
+    with _nav_sources():
+        got = get_fund_nav_history(code, days=days)
+
+    assert got == stale, (
+        f"47h < 48h 上限，应正常降级，实际返回 {got!r}")
+
+    captured = capsys.readouterr()
+    assert "47.0h" in captured.out, (
+        f"降级日志应打印陈旧时长（便于判断还能撑多久），实际 stdout：\n{captured.out}")
+
+
+def test_stale_cache_over_limit_is_dropped(capsys):
+    """超过上限（49h）的陈旧缓存**不再**用来顶替，判定为数据缺失。
+
+    这是项目7的核心：只判"有没有陈旧缓存"不判"多旧"，等于把
+    「静默返回空」换成「静默返回旧值」—— 数据源持续挂掉时回撤数字会
+    一直停在旧值，用户看到的仍是被误导的数字，而且有数字比没数字更像真的。
+
+    故障注入方向：把上限判断（`if age > _STALE_MAX_AGE`）去掉，改回无条件
+    降级，本用例应变红。
+    """
+    code = "999102"
+    days = 30
+    stale = [{"date": "2026-09-01", "nav": 1.0, "rate": 0.0}] * 3
+
+    _seed_stale_nav(code, days, stale, age_hours=49.0)
+
+    with _nav_sources():
+        got = get_fund_nav_history(code, days=days)
+
+    assert got == [], (
+        f"陈旧 49h 已超 48h 上限，不应再用旧净值顶替，实际返回 {got!r}")
+
+    captured = capsys.readouterr()
+    assert "超过上限" in captured.out, (
+        f"必须说明是「超过上限」而不是「没有缓存」，否则排障时会误判成"
+        f"缓存压根没写进去，实际 stdout：\n{captured.out}")
+    assert "49.0h" in captured.out, (
+        f"必须打印实际陈旧时长，实际 stdout：\n{captured.out}")
+    # 与"无陈旧缓存"的措辞必须可区分
+    assert "无陈旧缓存" not in captured.out, (
+        f"这是「有缓存但超限」，不能报成「无陈旧缓存可用」，"
+        f"实际 stdout：\n{captured.out}")
+
+
+def test_stale_cache_without_timestamp_is_dropped(capsys):
+    """有陈旧数据但**没有写入时刻**时，不降级 —— 无法判断陈旧程度就不能用。
+
+    保守处理的原因：宁可报缺失，也不要拿一份不知道多旧的数据当当前净值。
+    生产上 `_nav_cache.set()` 与 `_mark_nav_written()` 成对调用，
+    这种状态正常不该出现；真出现了说明两处维护脱节，必须暴露出来。
+
+    故障注入方向：把 `written_at is None` 这个分支删掉（直接放行降级），
+    本用例应变红。
+    """
+    code = "999103"
+    days = 30
+    stale = [{"date": "2026-09-01", "nav": 1.0, "rate": 0.0}] * 3
+
+    _seed_stale_nav(code, days, stale, with_timestamp=False)
+
+    with _nav_sources():
+        got = get_fund_nav_history(code, days=days)
+
+    assert got == [], (
+        f"无写入时间戳时不应降级，实际返回 {got!r}")
+
+    captured = capsys.readouterr()
+    assert "无写入时间戳" in captured.out, (
+        f"必须明确说明是「无写入时间戳」，否则会被当成普通的没缓存，"
+        f"实际 stdout：\n{captured.out}")
+
+
+def test_stale_ceiling_also_applies_with_force_refresh(capsys):
+    """force_refresh=True 时上限依然生效，且仍会先取 stale 快照。
+
+    两个约束一起验证：
+    - 约束4：`stale_snapshot` 必须在 `if not force_refresh` **之外**取，
+      否则 force_refresh 路径会把 D 的修复整个绕过去。
+    - 项目7：绕过去之后仍能取到快照，但**上限判断必须照样执行**，
+      否则 force_refresh 就成了绕过陈旧上限的后门。
+
+    故障注入方向：把 `stale_snapshot = ...` 挪进 `if not force_refresh` 里
+    （变成 get() 之前取不到），或把上限判断去掉，本用例应变红。
+    """
+    code = "999104"
+    days = 30
+    stale = [{"date": "2026-09-01", "nav": 1.0, "rate": 0.0}] * 3
+
+    _seed_stale_nav(code, days, stale, age_hours=72.0)  # 远超上限
+
+    with _nav_sources():
+        got = get_fund_nav_history(code, days=days, force_refresh=True)
+
+    assert got == [], (
+        f"force_refresh=True 且陈旧 72h，仍应被上限拦下，实际返回 {got!r}")
+
+    captured = capsys.readouterr()
+    assert "超过上限" in captured.out, (
+        f"force_refresh 路径也必须打印超限日志，实际 stdout：\n{captured.out}")
 
 
 # ============================================================

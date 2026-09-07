@@ -41,6 +41,40 @@ _est_cache = MemoryCache(default_ttl=3600)  # {"fund_estimate": {"data": estimat
 _EST_TTL = 300  # 估值全量缓存 5 分钟
 _nav_cache = MemoryCache(default_ttl=3600)
 _NAV_TTL = 3600  # 净值历史缓存 1 小时
+
+# 陈旧缓存降级的上限（秒）。数据源全挂时 get_fund_nav_history 会降级用上一批
+# 旧净值，但旧净值不能无限期地当新数据用 —— 超过这个时长就判定为数据缺失。
+#
+# 取 48 小时的理由：净值**每个交易日**才更新一次，遇到周末就是周五收盘 → 周一
+# 早上的空档（约 60h 才是极限，但周末通常还有估值/补录），更常见的是周五晚 →
+# 周日（约 48h）。取 48h 可以稳稳跨过周末和短假期，不会因为"周末本来就没新净值"
+# 而误判成数据源挂了。
+#
+# 超过 48h 说明数据源已持续不可用（akshare / Tushare / 天天基金三源同时挂了两天），
+# 此时宁可明确报「数据缺失」，也不要继续把旧数字当用户净值看 ——
+# 否则等于把「静默返回空」换成「静默返回旧值」，回撤/预警数字会一直停在旧值上，
+# 用户同样被误导，而且更难察觉（有数字反而比没数字更像真的）。
+_STALE_MAX_AGE = 48 * 3600
+
+# 每个 nav cache_key 最后一次**成功写入**的时刻（time.time()）。
+# _nav_cache 里存的是裸 list，没有时间维度，而 MemoryCache 的 ttl 语义是
+# "多长之后不再作为新数据使用"，不是"这份数据有多旧"，两者不能混用。
+# 这里单独记一个写入时刻，只为判断降级时的陈旧程度，不另起一套缓存。
+_nav_written_at: dict = {}
+
+
+def _mark_nav_written(cache_key: str) -> None:
+    """记录 nav 缓存最后一次成功写入的时刻。
+
+    必须在 `_nav_cache.set(...)` 的**同一处**调用，保证两份状态同步 ——
+    只更新其中一个会让降级判断读到错误的数据年龄。
+
+    Args:
+        cache_key: `f"{code}_{days}"` 形式的缓存键。
+    """
+    _nav_written_at[cache_key] = time.time()
+
+
 _name_cache = MemoryCache(default_ttl=3600)  # {"fund_name": {"data": name, "ts": float}}
 _NAME_TTL = 86400  # 名称表缓存 24 小时
 
@@ -441,6 +475,7 @@ def get_fund_nav_history(code: str, days: int = 60, force_refresh: bool = False)
                 "rate": _safe_float(row.get("日增长率")),
             })
         _nav_cache.set(cache_key, result, ttl=_NAV_TTL)
+        _mark_nav_written(cache_key)
         return result
     except Exception as e:
         # 2026-04-19 A+: Tushare 降级
@@ -465,6 +500,7 @@ def get_fund_nav_history(code: str, days: int = 60, force_refresh: bool = False)
                         })
                     print(f"[FUND_MONITOR] {code} Tushare 降级: {len(result)} 天")
                     _nav_cache.set(cache_key, result)
+                    _mark_nav_written(cache_key)
                     return result
         except Exception as te:
             print(f"[FUND_MONITOR] {code} Tushare 也失败: {te}")
@@ -504,6 +540,7 @@ def get_fund_nav_history(code: str, days: int = 60, force_refresh: bool = False)
                 result = result[-days:]  # 截取最近 days 条
                 print(f"[FUND_MONITOR] {code} EM API 降级: {len(result)} 天")
                 _nav_cache.set(cache_key, result, ttl=_NAV_TTL)
+                _mark_nav_written(cache_key)
                 return result
         except Exception as em_err:
             print(f"[FUND_MONITOR] {code} EM API 也失败: {em_err}")
@@ -528,9 +565,31 @@ def get_fund_nav_history(code: str, days: int = 60, force_refresh: bool = False)
         # 优先用函数开头留的快照（force_refresh=True 时那里没取，这里兜底再取一次）
         stale = stale_snapshot if isinstance(stale_snapshot, list) and stale_snapshot \
             else _nav_cache.get_stale(cache_key)
+
         if isinstance(stale, list) and stale:
-            print(f"[FUND_MONITOR] {code} 数据源全失败，降级用陈旧缓存({len(stale)}天)")
+            # v9.9.13 项目7：陈旧缓存降级**有上限**。
+            # 只判"有没有"不判"多旧"是不够的 —— 数据源持续挂掉时，每次都会
+            # 返回同一批旧净值，回撤/预警数字一直停在旧值上，用户看到的仍是被
+            # 误导的数字，等于把「静默返回空」换成了「静默返回旧值」。
+            written_at = _nav_written_at.get(cache_key)
+            if written_at is None:
+                # 有数据却不知道写入时刻（例如进程内先写后丢、或旧版本残留）
+                # —— 保守起见不降级，按数据缺失处理并说明原因。
+                print(f"[FUND_MONITOR] {code} 数据源全失败，虽有陈旧缓存"
+                      f"({len(stale)}天)但无写入时间戳，无法判断陈旧程度，按缺失处理")
+                return []
+
+            age = now - written_at
+            if age > _STALE_MAX_AGE:
+                print(f"[FUND_MONITOR] {code} 数据源全失败，陈旧缓存已陈旧 "
+                      f"{age / 3600:.1f}h，超过上限 {_STALE_MAX_AGE / 3600:.1f}h，"
+                      f"判定为数据缺失（不再用旧净值顶替）")
+                return []
+
+            print(f"[FUND_MONITOR] {code} 数据源全失败，降级用陈旧缓存"
+                  f"({len(stale)}天，已陈旧 {age / 3600:.1f}h)")
             return stale
+
         print(f"[FUND_MONITOR] {code} 数据源全失败且无陈旧缓存可用")
         return []
 
