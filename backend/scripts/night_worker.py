@@ -78,8 +78,8 @@ def _call_v3(prompt, max_tokens=500, system="", force_no_thinking=False):
     if not LLM_API_KEY:
         return ""
     try:
-        import sys, os
-        sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+        # 路径由模块顶部 bootstrap（_BACKEND_DIR，带守卫）保证，此处不再 insert：
+        # 本函数每次 LLM 调用都走一次，无守卫的 insert 会让 sys.path 一个晚上累积几十条重复项
         from infra.llm.gateway import LLMGateway
         gw = LLMGateway.instance()
         result = gw.call_sync(
@@ -217,9 +217,7 @@ def _filter_prompt_leak(text: str) -> str:
     新代码请直接 from services.llm_output_guard import LLMOutputGuard
     """
     try:
-        import sys
-        import os
-        sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+        # 同 _call_v3：模块顶部 bootstrap 已保证 backend/ 在 sys.path，无需重复 insert
         from services.llm_output_guard import LLMOutputGuard
         return LLMOutputGuard.filter_diagnosis(text)
     except Exception as e:
@@ -746,9 +744,7 @@ def step_r1_phase1():
     if analysis:
         # v9.5.124: 过滤 prompt 泄漏和思考链
         try:
-            import sys
-            import os
-            sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+            # 同 _call_v3：模块顶部 bootstrap 已保证 backend/ 在 sys.path，无需重复 insert
             from services.llm_output_guard import LLMOutputGuard
             analysis = LLMOutputGuard.filter_analysis(analysis, fallback=fallback_macro)
         except Exception as e:

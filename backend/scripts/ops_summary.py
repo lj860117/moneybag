@@ -30,6 +30,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
 import sys
 from datetime import date, datetime, timedelta
@@ -208,26 +209,123 @@ def collect_llm_balance() -> dict[str, Any]:
     return result
 
 
-def collect_error_logs() -> dict[str, Any]:
-    """扫描核心 cron 日志里 24h 内的错误/异常关键字。
+# 行首方括号前缀：只剥「时间戳/日期」与「日志级别」这两类无业务语义的前缀。
+# ⚠️ 不能无差别地剥 `[xxx]`：行首方括号也可能是业务标签（如 `[保守型]` / `[LeiJiang]`），
+# 一律剥掉会让不同 profile 的同型错误塌缩成同一个指纹 —— 那是「过度去重」，
+# 比虚高更危险：告警会从 critical 直接变绿，而真故障还在。
+_BRACKET_PREFIX_RE = re.compile(r"^\[([^\]]*)\]\s*")
+# 时间戳/日期体：以数字开头，只允许数字和 : / - . , 空格 T Z + 这些分隔符
+_TS_BODY_RE = re.compile(r"^[0-9][0-9:/\-., T+Z]*$")
+# 日志级别白名单（大小写不敏感）
+_LOG_LEVELS = frozenset({"DEBUG", "INFO", "WARNING", "WARN", "ERROR", "CRITICAL", "FATAL"})
+# 最多剥几层前缀：时间戳 + 日期 + 级别各一层已绰绰有余。
+# 这个硬性上界 + 下方三个 break 保证循环必然终止（不依赖「正则一定不匹配空串」这类隐含假设）。
+_MAX_PREFIX_BRACKETS = 6
 
-    排除「正常容错重试」：`fetch attempt N failed: timed out, retry in Xs` 这类
-    网络超时后自动重试是正常容错（重试成功即无碍），不应统计为错误。按行匹配，
-    命中 failed/Failed 时若同行还含 retry/timeout/重试/超时 等容错标志则跳过。
+
+def _is_strippable_bracket(content: str) -> bool:
+    """判断行首方括号里的内容是否属于可剥掉的「时间戳 / 日期 / 日志级别」。
+
+    Args:
+        content: 方括号内的文本（不含方括号本身）。
+
+    Returns:
+        True：属无业务语义的日志前缀，可以剥掉后再取指纹。
+        False：可能是业务标签（如 `保守型`、`LeiJiang`），必须原样保留进指纹。
     """
-    log_dirs = [
+    c = (content or "").strip()
+    if not c:
+        return False
+    if _TS_BODY_RE.match(c):
+        return True
+    return c.upper() in _LOG_LEVELS
+
+
+def _error_fingerprint(line: str) -> str:
+    """错误行指纹：剥掉行首「时间戳 / 日志级别」方括号，只留错误本体。
+
+    ⚠️ 为什么必须去重（2026-09-08 事故根因）：
+    night_worker 的 stderr 被同时写进 `2026-09-07.log` 和 `cron.log`，两份日志
+    内容逐字相同；legacy 目录 `backend/data/night_worker/` 里还躺着同款历史错误。
+    旧实现按「文件 × 行」累加，一条真实错误被数成 2~3 条 —— 15 条 ALLOC_PCTS
+    被报成 30 条、24h 计数虚高到 35，直接把日报顶到 critical（阈值 ≥10），
+    而**真实独立故障只有 4 个**。
+
+    指纹取「去掉时间戳/级别前缀后的错误文本」，因此：
+    - 同一批错误出现在多份日志 → 指纹相同 → 只计 1 条
+    - 不同 profile / 资产的同型错误（保守型/fund vs 保守型/stock）→ 指纹不同 → 各自计数
+    - 行首是业务标签（`[保守型] ❌ X` vs `[激进型] ❌ X`）→ 标签保留 → 指纹不同 → 各自计数
+
+    Args:
+        line: 原始日志行，允许为空。
+
+    Returns:
+        用于跨文件去重的指纹字符串；空行返回空串。
+    """
+    s = (line or "").strip()
+    for _ in range(_MAX_PREFIX_BRACKETS):
+        m = _BRACKET_PREFIX_RE.match(s)
+        if not m:
+            break  # 没有方括号前缀了
+        if not _is_strippable_bracket(m.group(1)):
+            break  # 业务标签，保留（防过度去重）
+        rest = s[m.end():].strip()
+        if not rest:
+            break  # 整行只有时间戳，保留原行做指纹
+        s = rest
+    return s if s else (line or "").strip()
+
+
+def _candidate_log_dirs() -> list[Path]:
+    """待扫描的日志目录候选（系统日志目录 + 新老两处 data 目录）。
+
+    单独抽成函数是为了**可测**：回归测试可以 monkeypatch 掉它，把扫描范围
+    限制在 tmp_path 内，免得真实 `/var/log/moneybag` 里的线上日志混进断言。
+    `DATA_DIR` / `_LEGACY_DATA_DIR` 是模块级名字，按被测时的值动态读取，
+    所以测试用 monkeypatch.setattr 改它们也能生效。
+    """
+    return [
         Path("/var/log/moneybag"),
         DATA_DIR / "logs",
         _LEGACY_DATA_DIR / "logs",
         DATA_DIR / "night_worker",
         _LEGACY_DATA_DIR / "night_worker",
     ]
+
+
+def collect_error_logs() -> dict[str, Any]:
+    """扫描核心 cron 日志里 24h 内的错误/异常关键字。
+
+    排除「正常容错重试」：`fetch attempt N failed: timed out, retry in Xs` 这类
+    网络超时后自动重试是正常容错（重试成功即无碍），不应统计为错误。按行匹配，
+    命中 failed/Failed 时若同行还含 retry/timeout/重试/超时 等容错标志则跳过。
+
+    去重：同一条错误被 tee 进多份日志时只计一次（见 `_error_fingerprint`），
+    `count_24h` 表示「独立错误条数」而非「错误行数」。
+    """
+    log_dirs = _candidate_log_dirs()
+    # 目录去重：DATA_DIR 与 _LEGACY_DATA_DIR 可能 resolve 到同一路径，
+    # 否则同一份日志会被扫两遍、计数翻倍。
+    _seen_dirs: set[str] = set()
+    _uniq_dirs: list[Path] = []
+    for _d in log_dirs:
+        try:
+            _key = str(_d.resolve())
+        except Exception:
+            _key = str(_d)
+        if _key in _seen_dirs:
+            continue
+        _seen_dirs.add(_key)
+        _uniq_dirs.append(_d)
+
     keywords = ("Traceback", "ERROR", "❌", "Exception", "failed", "Failed")
     # 容错重试标志：failed 行若同时含这些词，属正常超时重试，不记为错误
     retry_markers = ("retry", "timed out", "timeout", "重试", "超时")
     cutoff = datetime.now() - timedelta(hours=24)
     findings: list[dict[str, Any]] = []
-    for log_dir in log_dirs:
+    # 指纹 → findings 下标，用于跨文件去重（同一错误只占一个条目）
+    _fp_index: dict[str, int] = {}
+    for log_dir in _uniq_dirs:
         if not log_dir.exists():
             continue
         for f in log_dir.rglob("*.log"):
@@ -243,6 +341,16 @@ def collect_error_logs() -> dict[str, Any]:
                             # failed/Failed 且同行含容错重试标志 → 跳过
                             if kw.lower() == "failed" and any(m in line.lower() for m in retry_markers):
                                 continue
+                            fp = _error_fingerprint(line)
+                            if fp in _fp_index:
+                                # 同一条错误的另一个出处：只记来源，不重复计数。
+                                # also_in 只记「别的文件」——同一文件内重复出现不记，避免噪音
+                                _dup = findings[_fp_index[fp]]
+                                _also = _dup.setdefault("also_in", [])
+                                if str(f) not in _also and str(f) != _dup.get("file"):
+                                    _also.append(str(f))
+                                break
+                            _fp_index[fp] = len(findings)
                             findings.append({"file": str(f), "keyword": kw})
                             break
             except Exception:

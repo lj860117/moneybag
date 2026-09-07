@@ -245,3 +245,41 @@ def test_sys_path_bootstrap_precedes_import_config():
         f"`import config`(第 {import_config_line} 行)，"
         f"否则脚本直调会抛 ModuleNotFoundError"
     )
+
+
+def test_no_unguarded_sys_path_insert_inside_functions():
+    """函数体内不得再有 `sys.path.insert` —— 只允许模块顶层那处带守卫的引导。
+
+    事故（2026-09-08 收尾发现）：`_call_v3()` / `_filter_prompt_leak()` /
+    `step_r1_phase1()` 三处函数内各有一句无守卫的 `sys.path.insert`：
+
+      - `_call_v3` 每次 LLM 调用都走一次，一个晚上几十次调用就往 sys.path
+        里塞几十个重复条目（`scripts/..` 未规范化，与顶层 `_BACKEND_DIR`
+        的 abspath 字符串不同值，守卫拦不住）；
+      - 另两处值与 `_BACKEND_DIR` 相同但同样无守卫，照样重复累积。
+
+    sys.path 越长，后续每次 import 的目录探测就越慢，且同一模块可能被
+    解析成两份。路径由模块顶部 bootstrap（导入时无条件执行，无论本文件是
+    `__main__` 还是被 import）保证，函数内无需再插。
+    """
+    tree = ast.parse(NIGHT_WORKER_PATH.read_text(encoding="utf-8"))
+
+    offenders: List[str] = []
+    for node in tree.body:
+        if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            continue
+        for child in ast.walk(node):
+            if (
+                isinstance(child, ast.Call)
+                and isinstance(child.func, ast.Attribute)
+                and child.func.attr == "insert"
+                and isinstance(child.func.value, ast.Attribute)
+                and child.func.value.attr == "path"
+                and isinstance(child.func.value.value, ast.Name)
+                and child.func.value.value.id == "sys"
+            ):
+                offenders.append(f"{node.name}() 第 {child.lineno} 行")
+
+    assert not offenders, (
+        f"以下函数内仍有 sys.path.insert，会重复污染 sys.path：{offenders}"
+    )
