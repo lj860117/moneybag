@@ -442,8 +442,17 @@ class TestDNoFalsePositive:
         )
 
     def test_d2b_real_exaggeration_still_flagged(self):
-        """D2 对照：真正的夸大数字（320%）仍必须被抓出来"""
-        text = "该基金近1年涨幅 320%，非常可观"
+        """D2 对照：真正的夸大数字（320%）仍必须被抓出来
+
+        2026-09-09 修正用例文本：原文是「该基金近1年涨幅 320%」，但「近1年」
+        本身就在长周期限定语词表里 —— Bug4 修复（EXAG_TIME_QUAL_RE 去掉 `$`
+        锚定）之后，这类表述属**合规**长周期涨幅，不该再被标记。
+
+        也就是说旧文本把「Bug4 的误报行为」当成了对照组期望，与修复后的语义
+        直接冲突。这里把限定语换成非长周期的「今日」，保留本用例的原始意图
+        ——「没有长周期限定语的孤立夸大数字必须被抓出来」。
+        """
+        text = "该基金今日涨幅 320%，非常可观"
         with mock.patch("services.stock_monitor.load_stock_holdings", return_value=[]), \
              mock.patch("services.fund_monitor.load_fund_holdings", return_value=[]), \
              mock.patch("urllib.request.urlopen", side_effect=RuntimeError("no network")):

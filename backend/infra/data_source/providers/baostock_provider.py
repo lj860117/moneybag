@@ -236,6 +236,12 @@ class BaostockProvider:
             "600519" → "sh.600519" (shanghai)
             "sh000300" → "sh.000300"
             "sz.000001" → "sz.000001" (already correct)
+            "920826" → "bj.920826" (beijing, 北交所新码段)
+
+        920xxx 是北交所 2024 年起启用的新码段（如 920826 盖世食品）。
+        此前它既不匹配 8/4（老码段）也不匹配 6/0/3，会落到「无法识别，原样
+        返回」，把裸码 920826 交给 baostock，后者要求 9 位带前缀格式，直接
+        报「股票代码应为9位，请检查」。这里补上 920 分支。
         """
         # 已经是 baostock 格式
         if "." in code and len(code) == 9:
@@ -252,6 +258,9 @@ class BaostockProvider:
             elif code.startswith("6"):
                 return f"sh.{code}"
             elif code.startswith(("8", "4")):
+                return f"bj.{code}"
+            elif code.startswith("920"):
+                # 北交所新码段；不用整段 "9"，避免把沪市 B 股 900xxx 误判成北交所
                 return f"bj.{code}"
         # 无法识别，原样返回
         return code

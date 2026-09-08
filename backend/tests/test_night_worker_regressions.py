@@ -42,6 +42,12 @@ EXAG_PASS_CASES: List[str] = [
     "近10年800%",      # 多位数年份限定（旧正则会误报）
     "成立以来520%",     # 长周期口径（旧正则会误报）
     "累计收益350%",     # 累计口径（旧正则会误报）
+    # Bug4 附加样例（严过关实测，2026-09-09 一并锁定）
+    "成立以来累计涨幅 250%",  # 限定语与数字之间夹了「累计涨幅」
+    "净值 0.320%",           # 小数点后三位 + 空格
+    "合计 1,320%",           # 千分位，不得被截成 320%
+    "199%",                  # 恰好在阈值下方（>200 才判异常）
+    "1.406%",                # 小数点后三位，不得被截成 406%
 ]
 
 # 应当**命中**（孤立的大额百分比，大概率幻觉）
@@ -49,6 +55,27 @@ EXAG_HIT_CASES: List[str] = [
     "单日暴涨500%",
     "收益达1200%",
     "该股暴涨350%",
+    # Bug4 附加样例（严过关实测）
+    "上涨 250.5%",      # 无长周期限定语，250.5 > 200
+    "收益 320．5%",      # 全角小数点，仍须检出
+]
+
+# ------------------------------------------------------------
+# Bug4（2026-09-09）：限定语与百分比之间夹了中文词 → 误标幻觉数字
+#
+# 根因：EXAG_TIME_QUAL_RE 原先以 `\s*$` 锚定，要求限定语与百分比**紧邻**。
+# 而「本基金近3年涨幅320%」才是晨报的标准写法 —— 中间夹了「涨幅 / 回报 /
+# 上涨」这类中文词，锚定失效，合法的长周期涨幅被当成幻觉数字刷屏告警
+# （9-8 凌晨 10 条「异常涨幅数字「320%」」）。
+# 修法：去掉 `\s*$`，改为非锚定搜索，限定语落在数字前 12 字窗口内即生效。
+# ------------------------------------------------------------
+EXAG_BUG4_PASS_CASES: List[str] = [
+    "本基金近3年涨幅320%",      # 限定语与数字之间夹了「涨幅」
+    "重仓股X近2年涨幅480%",      # 中间夹了「涨幅」，且带标的代码名
+]
+
+EXAG_BUG4_HIT_CASES: List[str] = [
+    "今日涨幅 320%",            # 「今日」不是长周期限定语，仍须命中
 ]
 
 
@@ -80,7 +107,13 @@ def exag_results(night_worker) -> dict:
     合并成一次调用的原因：`_inject_hallucination_label` 内部会做一次
     urllib 探测（timeout=3），逐用例调用会放大成 N 倍耗时。
     """
-    cases = {text: text for text in EXAG_PASS_CASES + EXAG_HIT_CASES}
+    all_cases = (
+        EXAG_PASS_CASES
+        + EXAG_HIT_CASES
+        + EXAG_BUG4_PASS_CASES
+        + EXAG_BUG4_HIT_CASES
+    )
+    cases = {text: text for text in all_cases}
     labelled = night_worker._inject_hallucination_label(cases)
     return {
         text: "异常涨幅数字" in labelled[text] for text in cases
@@ -103,6 +136,83 @@ def test_exag_pat_should_flag(text, exag_results):
     """孤立的大额百分比仍须被检出，不能为了消假阳性把真阳性也一起干掉。"""
     assert exag_results[text] is True, (
         f"{text!r} 未被检出 —— EXAG_PAT 过度放宽，幻觉数字会漏检"
+    )
+
+
+@pytest.mark.parametrize("text", EXAG_BUG4_PASS_CASES)
+def test_bug4_time_qualifier_allows_intervening_words(text, exag_results):
+    r"""Bug4：限定语与百分比之间夹了中文词，仍须视为合规长周期表述。
+
+    「本基金近3年涨幅320%」是晨报标准写法。旧正则因 `\s*$` 锚定，要求限定
+    语紧贴数字，中间的「涨幅」使其失效 → 合法涨幅被误标成幻觉数字，
+    9-8 凌晨刷出 10 条「异常涨幅数字「320%」」。
+    """
+    assert exag_results[text] is False, (
+        f"{text!r} 被误判为异常涨幅 —— EXAG_TIME_QUAL_RE 又被 `$` 锚定了，"
+        f"限定语与数字之间的中文词会让合规长周期涨幅误报"
+    )
+
+
+@pytest.mark.parametrize("text", EXAG_BUG4_HIT_CASES)
+def test_bug4_still_flags_short_horizon_pct(text, exag_results):
+    """Bug4 反向断言：去掉锚定不能把真阳性一起放掉。
+
+    「今日涨幅 320%」是短周期表述，「今日」不在长周期限定语词表里，
+    必须仍然命中，否则就是"为了消假阳性把真阳性也干掉"。
+    """
+    assert exag_results[text] is True, (
+        f"{text!r} 未被检出 —— EXAG_TIME_QUAL_RE 放宽过头，幻觉数字会漏检"
+    )
+
+
+def test_exag_time_qual_re_is_not_end_anchored():
+    """结构防护栏：EXAG_TIME_QUAL_RE 不得以 `$` 结尾锚定（Bug4 根因）。
+
+    行为用例（Bug4 三组）能抓住回归，但报错信息不够直接；这条直接从源码
+    断言正则形态，把根因写死在测试里，避免后人又加回 `$`。
+    """
+    tree = ast.parse(NIGHT_WORKER_PATH.read_text(encoding="utf-8"))
+
+    pattern_node = None
+    for node in tree.body:
+        if not isinstance(node, ast.FunctionDef):
+            continue
+        for child in ast.walk(node):
+            if (
+                isinstance(child, ast.Assign)
+                and any(
+                    isinstance(t, ast.Name) and t.id == "EXAG_TIME_QUAL_RE"
+                    for t in child.targets
+                )
+            ):
+                pattern_node = child.value
+
+    assert pattern_node is not None, (
+        "找不到 EXAG_TIME_QUAL_RE 的赋值，检测逻辑可能已被整体删除"
+    )
+
+    literals = [
+        sub.value
+        for sub in ast.walk(pattern_node)
+        if isinstance(sub, ast.Constant) and isinstance(sub.value, str)
+    ]
+    src = "".join(literals)
+    assert src, "EXAG_TIME_QUAL_RE 不再是字符串字面量，无法静态校验锚定形态"
+    assert not src.rstrip().endswith("$"), (
+        f"EXAG_TIME_QUAL_RE 仍以 `$` 结尾锚定: {src!r} —— "
+        f"限定语必须与数字紧邻才生效，会导致「近3年涨幅320%」类合规表述误报"
+    )
+
+
+def test_no_exag_debug_forensics_log_left():
+    """临时取证日志 EXAG_DEBUG 必须从生产代码里删干净。
+
+    它是 9-8 为定位「320%」误报临时加的上下文打印（含晨报正文片段），
+    已定性为 Bug4（正则锚定），取证代码不应留在生产。
+    """
+    src = NIGHT_WORKER_PATH.read_text(encoding="utf-8")
+    assert "EXAG_DEBUG" not in src, (
+        "night_worker.py 仍残留 EXAG_DEBUG 取证日志，会把晨报正文打进日志"
     )
 
 

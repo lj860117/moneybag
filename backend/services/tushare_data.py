@@ -213,12 +213,25 @@ def _call_tushare(api_name: str, params: dict, fields: str = "") -> list:
 
 
 def _code_to_ts(code: str) -> str:
-    """股票代码转 Tushare 格式（600519 → 600519.SH）"""
+    """股票代码转 Tushare 格式（600519 → 600519.SH）
+
+    北交所（920826 盖世食品 / 920982 锦波生物）此前会一路落到通用兜底
+    `.SZ`，Tushare 按错误交易所查询必然返回空，导致 920xxx 在「Tushare →
+    AKShare → Baostock」三级降级链上 100% 失败。这里补上北交所分支：
+
+      - 43/83/87/88 开头：北交所老码段（原新三板精选层平移）
+      - 920 开头：北交所 2024 年起启用的新码段
+
+    `920` 必须写在通用兜底之前，否则会被 `.SZ` 吃掉。
+    """
     code = code.strip()
     if "." in code:
         return code
     if code.startswith("6"):
         return f"{code}.SH"
+    # 北交所：老码段（8/4 开头）+ 新码段（920 开头）
+    if code.startswith(("920", "8", "4")):
+        return f"{code}.BJ"
     return f"{code}.SZ"
 
 
