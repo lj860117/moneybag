@@ -166,6 +166,10 @@ def _to_daily_point(snapshot: dict, default_date: str = "") -> dict:
         "disk_ok": bool(disk.get("ok", False)),
         "arrears": list(llm_balance.get("arrears") or []),
         "error_count_24h": _safe_int(error_logs.get("count_24h")),
+        # 老快照无此字段 → 回退到条数，趋势口径与判定口径保持一致
+        "error_root_cause_24h": _safe_int(
+            error_logs.get("root_cause_count", error_logs.get("count_24h"))
+        ),
     }
 
 
@@ -382,15 +386,22 @@ class OpsAnalyst:
         per_dim["llm_balance"] = lb_v
 
         # error_logs：critical ≥10 / warn ≥3；含 Traceback/Exception 上浮一档
+        # ⚠️ 阈值按**独立根因数**判定，不按独立错误条数：
+        # 一个根因（如 ALLOC_PCTS NameError）会在 5 档风险 × 3 类资产上扇出
+        # 15 条，按条数判会把它顶成 critical，而真实故障只有 1 个。
+        # 两个数字都在日报正文里显示，细节不丢。
         error_logs = today.get("error_logs_24h") or {}
         count = _safe_int(error_logs.get("count_24h"))
+        # 老快照没有 root_cause_count 字段 → 回退到条数，避免误判成 0 而假绿
+        _rc_raw = error_logs.get("root_cause_count")
+        root_cause_count = _safe_int(count if _rc_raw is None else _rc_raw)
         files = error_logs.get("files") or []
         has_traceback = any(
             (f.get("keyword") or "") in ("Traceback", "Exception") for f in files
         )
-        if count >= OPS_ERROR_CRITICAL_COUNT:
+        if root_cause_count >= OPS_ERROR_CRITICAL_COUNT:
             err_v = "critical"
-        elif count >= OPS_ERROR_WARN_COUNT:
+        elif root_cause_count >= OPS_ERROR_WARN_COUNT:
             err_v = "warn"
         else:
             err_v = "info"
@@ -399,13 +410,15 @@ class OpsAnalyst:
                 err_v = "warn"
             elif err_v == "warn":
                 err_v = "critical"
+        # 双指标展示：既看得到扇出规模（条数），也不被扇出数字吓到（根因数）
+        _err_brief = f"{count} 条独立错误 / {root_cause_count} 个独立根因"
         if err_v == "critical":
             reasons.append(
-                f"24h 错误日志 {count} 条" + ("（含 Traceback/Exception）" if has_traceback else f" ≥ {OPS_ERROR_CRITICAL_COUNT} 条")
+                f"24h 错误日志 {_err_brief}" + ("（含 Traceback/Exception）" if has_traceback else f" ≥ {OPS_ERROR_CRITICAL_COUNT} 个根因")
             )
         elif err_v == "warn":
             reasons.append(
-                f"24h 错误日志 {count} 条（阈值 {OPS_ERROR_WARN_COUNT}）" + ("，含 Traceback/Exception" if has_traceback else "")
+                f"24h 错误日志 {_err_brief}（阈值 {OPS_ERROR_WARN_COUNT} 个根因）" + ("，含 Traceback/Exception" if has_traceback else "")
             )
         per_dim["error_logs"] = err_v
 

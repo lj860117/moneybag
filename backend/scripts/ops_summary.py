@@ -214,12 +214,21 @@ def collect_llm_balance() -> dict[str, Any]:
 # 一律剥掉会让不同 profile 的同型错误塌缩成同一个指纹 —— 那是「过度去重」，
 # 比虚高更危险：告警会从 critical 直接变绿，而真故障还在。
 _BRACKET_PREFIX_RE = re.compile(r"^\[([^\]]*)\]\s*")
-# 时间戳/日期体：以数字开头，只允许数字和 : / - . , 空格 T Z + 这些分隔符
-_TS_BODY_RE = re.compile(r"^[0-9][0-9:/\-., T+Z]*$")
+# 时间：`HH:MM` / `HH:MM:SS`，可选小数秒与时区后缀
+_TS_TIME_RE = re.compile(r"^\d{1,2}:\d{2}(:\d{2})?([.,]\d{1,6})?(Z|[+-]\d{2}:?\d{2})?$")
+# 日期：`YYYY-MM-DD`，可选分隔符变体与后面的时间部分
+_TS_DATE_RE = re.compile(r"^\d{4}[-/.]\d{1,2}[-/.]\d{1,2}([ T].*)?$")
+# ⚠️ 不要用「以数字开头 + 只含数字与分隔符」这种宽松口径判定时间戳：
+# 它会把 `[1/4]` 这类**进度计数**误判成时间戳并剥掉，导致
+# `[1/4] ❌ 拉取失败` 与 `[2/4] ❌ 拉取失败` 塌缩成同一个指纹 ——
+# 静默丢告警（告警变绿而故障还在），是比虚高危险得多的方向。
+# 真实 cron.log 里确有 `[1/4]…[4/4]` 进度行，随时可能写出 `[1/4] ❌ xxx`。
 # 日志级别白名单（大小写不敏感）
 _LOG_LEVELS = frozenset({"DEBUG", "INFO", "WARNING", "WARN", "ERROR", "CRITICAL", "FATAL"})
-# 最多剥几层前缀：时间戳 + 日期 + 级别各一层已绰绰有余。
-# 这个硬性上界 + 下方三个 break 保证循环必然终止（不依赖「正则一定不匹配空串」这类隐含假设）。
+# 前缀剥离的防御性上界：时间戳 + 日期 + 级别各一层已绰绰有余。
+# 说明：真正的终止性来自「正则每次至少消耗 2 个字符（`[]`）」+「剥空即停」
+# 这两个条件，这个 6 只是**兜底护栏** —— 防止未来有人把正则改成可匹配空串
+# （例如 `^\[[^\]]*?\]`）时退化成无限循环。别把它理解成终止性的唯一保证。
 _MAX_PREFIX_BRACKETS = 6
 
 
@@ -236,7 +245,7 @@ def _is_strippable_bracket(content: str) -> bool:
     c = (content or "").strip()
     if not c:
         return False
-    if _TS_BODY_RE.match(c):
+    if _TS_TIME_RE.match(c) or _TS_DATE_RE.match(c):
         return True
     return c.upper() in _LOG_LEVELS
 
@@ -276,6 +285,65 @@ def _error_fingerprint(line: str) -> str:
     return s if s else (line or "").strip()
 
 
+# ── 根因归一口径（「独立根因数」用）────────────────────────────
+# 背景：一个根因会扇出成很多条错误 —— 例如 `ALLOC_PCTS` 一个 NameError，
+# 在 5 档风险 × 3 类资产上各报一次就是 15 条。去重只砍掉了日志 tee 造成的
+# 重复，砍不掉这种 fan-out，所以日报阈值仍会被 15 条顶到 critical。
+# 根因指纹在错误指纹基础上再抹掉两类**维度**信息（档位 / 资产），让同源
+# fan-out 收敛成 1 个根因；阈值改按根因数判定，日报同时报两个数字。
+#
+# ⚠️ 严禁抹掉异常类型、变量名、模块标签（DATA_SOURCE/MARKET、TUSHARE、
+# STOCK_PROVIDER、CONFIG … 真实日志里有 40+ 种）。抹掉它们就是过度去重 ——
+# 不同故障会被洗成同一个根因，告警直接变绿而故障还在。
+# 风险档位词（进取型/成长型 两种叫法都收，兼容不同时期的命名）
+_PROFILE_WORDS: tuple[str, ...] = ("保守型", "稳健型", "平衡型", "进取型", "成长型", "激进型")
+# 资产类型词
+_ASSET_WORDS: tuple[str, ...] = ("fund", "stock", "mixed")
+
+_PROFILE_RE = re.compile("|".join(re.escape(w) for w in _PROFILE_WORDS))
+# 资产词只匹配**独立成词**的情形（前后不是字母/数字/下划线）：
+# 这样才能命中 `保守型/fund:` 里的 fund，又不会把 `get_stock_daily_hist`
+# 里的 stock 吃掉 —— 否则 stock/fund 两类数据源的故障会被洗成同一个根因。
+_ASSET_RE = re.compile(
+    r"(?<![A-Za-z0-9_])(?:" + "|".join(_ASSET_WORDS) + r")(?![A-Za-z0-9_])",
+    re.IGNORECASE,
+)
+_DIGITS_RE = re.compile(r"\d+")
+_WS_RE = re.compile(r"\s+")
+
+
+def _root_cause_fingerprint(error_text: str) -> str:
+    """把「错误指纹」再归一成「根因指纹」。
+
+    在 `_error_fingerprint()` 的结果上再抹掉三类**不影响根因身份**的差异：
+      1. 风险档位词（保守型 / 稳健型 / 平衡型 / 进取型 / 成长型 / 激进型）
+      2. 资产类型（fund / stock / mixed，仅独立成词时）
+      3. 行内数字（连续数字 → `#`），避免「重试 3 次」与「重试 5 次」被当两个根因
+
+    **刻意保留**：异常类型、`NameError` 里的变量名、模块标签、函数名、股票代码
+    归一化后的结构。这些是区分根因的关键，抹掉就是过度去重。
+
+    Args:
+        error_text: `_error_fingerprint()` 的返回值（已剥掉时间戳/级别前缀）。
+
+    Returns:
+        根因指纹字符串。
+    """
+    s = error_text or ""
+    s = _PROFILE_RE.sub("", s)
+    s = _ASSET_RE.sub("", s)
+    s = _DIGITS_RE.sub("#", s)
+    s = _WS_RE.sub(" ", s).strip()
+    return s
+
+
+# 零值健康汇总行：`✅ 正常: 13    ❌ 异常: 0` 这类汇总行因为含 `❌` 被误算成错误。
+# 只排除「值为 0」这一种形态 —— `❌ 异常: 15` 这类真报警必须照常计入。
+# ⚠️ 这是「放宽计数」方向的改动，和过度去重是同一个滑坡，所以口径收到最窄：
+# 只认 `❌` + 异常/错误/失败 + 冒号 + 0，不做通用汇总行排除。
+_ZERO_SUMMARY_RE = re.compile(r"❌\s*(?:异常|错误|失败)\s*[:：]\s*0(?![0-9.])")
+
+
 def _candidate_log_dirs() -> list[Path]:
     """待扫描的日志目录候选（系统日志目录 + 新老两处 data 目录）。
 
@@ -302,6 +370,14 @@ def collect_error_logs() -> dict[str, Any]:
 
     去重：同一条错误被 tee 进多份日志时只计一次（见 `_error_fingerprint`），
     `count_24h` 表示「独立错误条数」而非「错误行数」。
+
+    同时排除「零值健康汇总行」：`✅ 正常: 13  ❌ 异常: 0` 这类汇总行含 `❌`
+    但不是错误，仅当值为 0 时跳过（见 `_ZERO_SUMMARY_RE`）。
+
+    返回两个计数，语义不同、缺一不可：
+      - `count_24h`：独立错误条数（细节口径，能看出扇出规模）
+      - `root_cause_count`：独立根因数（把同源 fan-out 收敛后的口径，
+        日报阈值按它判定 —— 一个根因扇出 15 条不该直接顶到 critical）
     """
     log_dirs = _candidate_log_dirs()
     # 目录去重：DATA_DIR 与 _LEGACY_DATA_DIR 可能 resolve 到同一路径，
@@ -325,6 +401,8 @@ def collect_error_logs() -> dict[str, Any]:
     findings: list[dict[str, Any]] = []
     # 指纹 → findings 下标，用于跨文件去重（同一错误只占一个条目）
     _fp_index: dict[str, int] = {}
+    # 根因指纹集合，用于统计「独立根因数」（同源 fan-out 收敛成 1 个）
+    _rc_index: dict[str, int] = {}
     for log_dir in _uniq_dirs:
         if not log_dir.exists():
             continue
@@ -336,6 +414,10 @@ def collect_error_logs() -> dict[str, Any]:
                 # 按行匹配，才能精确排除「failed 但带 retry」的容错行
                 lines = text.splitlines()
                 for line in lines:
+                    # 零值健康汇总行（`✅ 正常: 13    ❌ 异常: 0`）→ 整行跳过，
+                    # 只认「值为 0」这一种形态，非零的真报警照常计入
+                    if _ZERO_SUMMARY_RE.search(line):
+                        continue
                     for kw in keywords:
                         if kw in line:
                             # failed/Failed 且同行含容错重试标志 → 跳过
@@ -351,11 +433,27 @@ def collect_error_logs() -> dict[str, Any]:
                                     _also.append(str(f))
                                 break
                             _fp_index[fp] = len(findings)
-                            findings.append({"file": str(f), "keyword": kw})
+                            # 同源 fan-out（5 档风险 × 3 类资产）收敛成 1 个根因
+                            _rc = _root_cause_fingerprint(fp)
+                            if _rc not in _rc_index:
+                                _rc_index[_rc] = len(_rc_index)
+                            findings.append({
+                                "file": str(f),
+                                "keyword": kw,
+                                # 保留原文（截断 200 字）供日报/人工审计：只报数字
+                                # 说不出「是什么错误」，事后也无法验证去重对不对
+                                "line": line.strip()[:200],
+                            })
                             break
             except Exception:
                 continue
-    return {"count_24h": len(findings), "files": findings[:20]}
+    return {
+        # 独立错误条数（跨文件去重后）
+        "count_24h": len(findings),
+        # 独立根因数（再把同源 fan-out 收敛后）—— 日报阈值按这个判
+        "root_cause_count": len(_rc_index),
+        "files": findings[:20],
+    }
 
 
 def build_snapshot() -> dict[str, Any]:
@@ -390,7 +488,8 @@ def main() -> int:
           f"{'' if snapshot['disk']['ok'] else ' ⚠️ 低于阈值'}")
     if snapshot["llm_balance"]["arrears"]:
         print(f"  🚨 欠费 provider: {snapshot['llm_balance']['arrears']}")
-    print(f"  📝 24h 错误日志文件数: {snapshot['error_logs_24h']['count_24h']}")
+    _el = snapshot["error_logs_24h"]
+    print(f"  📝 24h 错误: {_el['count_24h']} 条独立错误 / {_el.get('root_cause_count', _el['count_24h'])} 个独立根因")
 
     # 落盘（原子写，铁律 M4）
     out_file = OPS_DIR / f"snapshot_{snapshot['date']}.json"

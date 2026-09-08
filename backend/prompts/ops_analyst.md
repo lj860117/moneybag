@@ -9,7 +9,7 @@
 - rule：规则引擎兜底结果
 
 # 告警三档定义
-- critical（致命）：必须立即人工介入，否则可能宕机/不可用。例：磁盘 < 5GB、主模型（deepseek/doubao）欠费、24h 错误 ≥10 条且含 Traceback。
+- critical（致命）：必须立即人工介入，否则可能宕机/不可用。例：磁盘 < 5GB、主模型（deepseek/doubao）欠费、24h 独立根因 ≥10 个且含 Traceback。
 - warn（警告）：值得关注但不立即宕机。例：巡检链失效、非路由模型（qwen）欠费、磁盘偏低、错误日志异常增多。
 - info（正常）：指标健康。
 
@@ -37,3 +37,4 @@
 3. **一票否决**：你的 overall_verdict 只能 >= rule.overall（info < warn < critical），不得把 critical 降级。
 4. **overall_verdict 取四维度最严重者**。
 5. **只输出 JSON，不要输出任何解释文字**。
+6. **错误日志看两个数字，阈值按根因数判**：`error_logs_24h.count_24h` 是「独立错误条数」，`error_logs_24h.root_cause_count` 是「独立根因数」（同一根因在 5 档风险 × 3 类资产上扇出只算 1 个）。**定级用 root_cause_count**（≥10 critical / ≥3 warn），正文里**两个数字都要写**（例：`19 条独立错误 / 4 个独立根因`）。禁止因为「条数很多」就判 critical —— 那往往只是扇出，不是故障多。

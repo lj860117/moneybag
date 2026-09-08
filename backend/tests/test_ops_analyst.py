@@ -67,6 +67,52 @@ def test_rule_triage_error_logs_thresholds_and_escalation(tmp_path):
     assert r["per_dim"]["error_logs"] == "critical"
 
 
+def test_rule_triage_error_logs_uses_root_cause_count(tmp_path):
+    """错误日志定级必须按**独立根因数**，不能按独立错误条数。
+
+    事故场景：去重后 19 条独立错误里 15 条是同一个 `ALLOC_PCTS` NameError
+    在 5 档风险 × 3 类资产上的扇出，真实根因只有 4 个。按条数判（19 ≥ 10）
+    会一直顶在 critical —— 事故的用户可见症状根本解除不了。
+
+    ⚠️ 本条是 P0 的核心护栏：把阈值改回 `count_24h` 后本条必红。
+    """
+    a = _analyst(tmp_path)
+    # 19 条 / 4 个根因 → warn（4 ≥ 3），不是 critical
+    r = a.rule_triage(_snapshot(error_logs_24h={"count_24h": 19, "root_cause_count": 4, "files": []}))
+    assert r["per_dim"]["error_logs"] == "warn", (
+        f"19 条 / 4 个根因应判 warn，实际 {r['per_dim']['error_logs']}"
+    )
+    # 根因数才是判据：12 个根因 → critical
+    r = a.rule_triage(_snapshot(error_logs_24h={"count_24h": 19, "root_cause_count": 12, "files": []}))
+    assert r["per_dim"]["error_logs"] == "critical"
+    # 1 个根因 → info，条数再多也不该报警
+    r = a.rule_triage(_snapshot(error_logs_24h={"count_24h": 30, "root_cause_count": 1, "files": []}))
+    assert r["per_dim"]["error_logs"] == "info"
+
+
+def test_rule_triage_error_logs_reason_shows_both_counts(tmp_path):
+    """日报正文必须同时给出「独立错误条数」和「独立根因数」两个数字。
+
+    只报根因数会丢掉扇出规模这个细节；只报条数又会吓人 —— 两个都要。
+    """
+    a = _analyst(tmp_path)
+    r = a.rule_triage(_snapshot(error_logs_24h={"count_24h": 19, "root_cause_count": 12, "files": []}))
+    reason = " ".join(r["reasons"])
+    assert "19 条独立错误" in reason, f"缺独立错误条数：{reason}"
+    assert "12 个独立根因" in reason, f"缺独立根因数：{reason}"
+
+
+def test_daily_point_carries_root_cause_count(tmp_path):
+    """DailyPoint 要带上根因数，否则 7/30 日趋势的口径与判定口径不一致。
+
+    老快照没有该字段时回退到条数，不得变成 0（那会让趋势假性变好）。
+    """
+    point = oa._to_daily_point(_snapshot(error_logs_24h={"count_24h": 19, "root_cause_count": 4, "files": []}))
+    assert point["error_root_cause_24h"] == 4
+    legacy = oa._to_daily_point(_snapshot(error_logs_24h={"count_24h": 19, "files": []}))
+    assert legacy["error_root_cause_24h"] == 19, "老快照无根因字段时应回退到条数"
+
+
 def test_rule_triage_llm_balance_thresholds(tmp_path):
     a = _analyst(tmp_path)
     assert a.rule_triage(_snapshot(llm_balance={"checked": True, "balances": {}, "arrears": ["deepseek"]}))["per_dim"]["llm_balance"] == "critical"
