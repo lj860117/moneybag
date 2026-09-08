@@ -535,8 +535,18 @@ def _mark_price_data_missing(stock: dict, dim: str, reason: str) -> None:
 
 
 def _price_missing_dims(stock: dict) -> list:
-    """返回该股票「并非真实评分」的维度列表（保序）。"""
-    return list((stock.get(_PRICE_MISSING_KEY) or {}).keys())
+    """返回该股票「并非真实评分」的维度列表。
+
+    顺序取 `_DIM_LABEL_CN` 的**固定表序**（估值→盈利→技术面→资金面→
+    风险面→题材），**不**用打标记的先后顺序，也绝不能用 `set` 去重：
+    集合迭代序随 hash 漂移（实测只有两个维度时碰巧与插入序一致，三个
+    以上就乱了），会让用户看到的提示语顺序不稳定且极难排查。
+    表外维度排在最后，保持打标顺序。
+    """
+    reasons = stock.get(_PRICE_MISSING_KEY) or {}
+    known = [d for d in _DIM_LABEL_CN if d in reasons]
+    extra = [d for d in reasons if d not in _DIM_LABEL_CN]
+    return known + extra
 
 
 def _price_data_caveat(stock: dict) -> str:

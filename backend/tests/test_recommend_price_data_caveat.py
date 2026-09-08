@@ -46,6 +46,13 @@ A3 回归测试：价格数据缺失「保留在推荐池 + 显式标注」
  11. **地缘高危门槛钉住**（Z11）：`severity >= 4` 时 60-30=30，
      且不管地缘怎么压，标记都必须在。
 
+第四轮（QA 第三轮 W 系列，2026-09-09）：
+ 12. **维度顺序取显式表序，不依赖打标先后、不能用 set**（W4 存活项）。
+     只有两个维度时 `list({'risk','technical'})` 碰巧等于插入序，所以
+     set 化后 40 条用例全绿；三个维度以上就乱了。现在 `_price_missing_dims`
+     按 `_DIM_LABEL_CN` 表序输出，本文件用「乱序打标 → 结果仍一致」
+     钉住机制本身，而不是钉住某一次的输出。
+
 设计原则：不复制实现里的分支表，直接调用真实的 `_score_technical` /
 `_score_risk` / `_calc_composite_score` / `_generate_reasons`，只把外部数据
 源（K 线 / 地缘 / LLM）换成假实现。
@@ -339,6 +346,48 @@ def test_risk_marks_when_code_missing() -> None:
 
     assert re_mod._score_risk(stock) == 60
     assert re_mod._price_missing_dims(stock) == ["risk"]
+
+
+# --- QA 的 W4：顺序不能依赖「打标先后」或集合迭代序 ----------------------
+# W4 存活原因：只有 technical/risk 两个维度时，CPython 集合迭代序**碰巧**
+# 与插入序一致（实测 `list({'risk','technical'}) == ['risk','technical']`），
+# 所以 set 化之后 40 条用例全绿。三个维度以上就乱了：
+#   list({'risk','valuation','technical'}) == ['risk','technical','valuation']
+# 现在顺序改为显式表序（见 `_price_missing_dims`），这条用例钉住机制本身。
+def test_price_missing_dims_follows_canonical_order_not_marking_order() -> None:
+    """乱序打标 → 输出仍按 `_DIM_LABEL_CN` 表序，不随打标先后漂移。"""
+    stock: Dict[str, object] = {"code": "920982"}
+    for dim in ("risk", "theme", "technical", "valuation"):  # 故意乱序
+        re_mod._mark_price_data_missing(stock, dim, f"{dim} 缺数据")
+
+    assert re_mod._price_missing_dims(stock) == [
+        "valuation", "technical", "risk", "theme",
+    ]
+
+
+def test_caveat_text_order_is_independent_of_marking_order() -> None:
+    """提示语里的维度顺序同样按表序，换打标顺序结果不变。"""
+    a: Dict[str, object] = {"code": "920982"}
+    b: Dict[str, object] = {"code": "920982"}
+    for dim in ("risk", "technical", "earnings"):
+        re_mod._mark_price_data_missing(a, dim, "x")
+    for dim in ("earnings", "technical", "risk"):   # 完全相反的顺序
+        re_mod._mark_price_data_missing(b, dim, "x")
+
+    assert re_mod._price_data_caveat(a) == re_mod._price_data_caveat(b)
+    assert re_mod._price_data_caveat(a) == \
+        "⚠️ 盈利、技术面、风险面行情数据不足，评分基于部分维度"
+
+
+def test_unknown_dimension_is_kept_after_known_ones() -> None:
+    """表外维度不至于被丢掉，排在已知维度之后。"""
+    stock: Dict[str, object] = {"code": "920982"}
+    re_mod._mark_price_data_missing(stock, "some_future_dim", "x")
+    re_mod._mark_price_data_missing(stock, "technical", "x")
+
+    assert re_mod._price_missing_dims(stock) == ["technical", "some_future_dim"]
+    assert re_mod._price_data_caveat(stock) == \
+        "⚠️ 技术面、some_future_dim行情数据不足，评分基于部分维度"
 
 
 def test_first_reason_wins_and_dims_are_deduped() -> None:
