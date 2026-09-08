@@ -37,6 +37,15 @@ A3 回归测试：价格数据缺失「保留在推荐池 + 显式标注」
   8. **异常路径也打标记**：两个数据源都抛异常（不是返回 None）时，
      `_score_technical` 外层 except 不能黑洞（本轮自查挖出来的洞）。
 
+第三轮（QA 第二轮 Z 系列，2026-09-09）：
+  9. **`_score_risk` 的 except 也要覆盖**（Z5 / Z10 存活项）：波动率计算
+     抛异常时必须标记，且必须标在 **risk** 上（标串到 technical 会让风险面
+     变回黑洞）。与第 8 条的 technical 版成对。
+ 10. **幂等守卫比对完整 caveat 而不是只看 ⚠️**（Z2）：否则一条本就带别的
+     ⚠️ 提示的理由会被误判成"已标注"从而漏标。
+ 11. **地缘高危门槛钉住**（Z11）：`severity >= 4` 时 60-30=30，
+     且不管地缘怎么压，标记都必须在。
+
 设计原则：不复制实现里的分支表，直接调用真实的 `_score_technical` /
 `_score_risk` / `_calc_composite_score` / `_generate_reasons`，只把外部数据
 源（K 线 / 地缘 / LLM）换成假实现。
@@ -74,6 +83,19 @@ class _FakeDF:
     def __getitem__(self, key: str) -> _Col:
         assert key == "收盘", f"被测代码只应读「收盘」列，实际读了 {key!r}"
         return self._col
+
+
+class _BoomDF:
+    """`len()` 够、但一读列就抛异常 —— 用来把代码逼进「计算失败」的 except。"""
+
+    def __init__(self, rows: int = 30) -> None:
+        self._rows = rows
+
+    def __len__(self) -> int:
+        return self._rows
+
+    def __getitem__(self, key: str) -> _Col:
+        raise RuntimeError("上游返回了脏数据")
 
 
 def _closes(n: int, start: float = 10.0) -> List[float]:
@@ -187,6 +209,50 @@ def test_technical_marks_when_both_sources_raise(
     assert "技术面计算失败" in stock[re_mod._PRICE_MISSING_KEY]["technical"]
 
 
+# --- QA 的 Z5 / Z10：risk 的 except 标记一直"写了没人测" ----------------
+# 与上面 technical 的 `test_technical_marks_when_both_sources_raise` 成对。
+# Z5（把这段标记删掉）和 Z10（标记改写成标 technical）在补这条之前都是
+# 36 条全绿 —— 风险面在异常路径下会变回黑洞，而且测试不会红。
+def test_risk_marks_when_volatility_raises(monkeypatch: pytest.MonkeyPatch) -> None:
+    """波动率计算抛异常 → 风险面必须打标记（防 except 黑洞）。"""
+    def _fake_get_daily_df(code: str, days: int = 60):
+        return _BoomDF(rows=30)  # len 够 20，但读「收盘」会炸
+
+    from services import stock_price_provider as _spp
+    from infra.data_source.market import stocks as _stocks
+
+    monkeypatch.setattr(_spp, "get_daily_df", _fake_get_daily_df, raising=False)
+    monkeypatch.setattr(_stocks, "get_stock_daily_hist",
+                        lambda **kwargs: _BoomDF(rows=30), raising=False)
+
+    stock = {"code": "920982", "name": "锦波生物"}
+
+    # 异常被吞掉后仍是默认 60，但**必须**留下标记
+    assert re_mod._score_risk(stock) == 60
+    # Z10：标记必须落在 risk 上，标到 technical 去就会漏掉风险面
+    assert re_mod._price_missing_dims(stock) == ["risk"]
+    assert "波动率计算失败" in stock[re_mod._PRICE_MISSING_KEY]["risk"]
+
+
+def test_risk_marks_risk_not_technical_when_volatility_raises(
+    monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Z10 专用：异常路径的标记维度必须是 risk，不许串到 technical。"""
+    from services import stock_price_provider as _spp
+    from infra.data_source.market import stocks as _stocks
+
+    monkeypatch.setattr(_spp, "get_daily_df",
+                        lambda code, days=60: _BoomDF(rows=30), raising=False)
+    monkeypatch.setattr(_stocks, "get_stock_daily_hist",
+                        lambda **kwargs: _BoomDF(rows=30), raising=False)
+
+    stock = {"code": "920826", "name": "盖世食品"}
+    re_mod._score_risk(stock)
+
+    assert re_mod._price_missing_dims(stock) == ["risk"]
+    assert re_mod._price_data_caveat(stock) == "⚠️ 风险面行情数据不足，评分基于部分维度"
+
+
 def test_technical_marks_when_code_missing() -> None:
     """没有股票代码 → 技术面无数据可评，必须标记（原代码静默 return 50）。"""
     stock: Dict[str, object] = {"name": "无名标的"}
@@ -246,6 +312,25 @@ def test_risk_neutral_60_minus_geo_gives_45_as_seen_on_920982(
     stock = {"code": "920982", "name": "锦波生物"}
 
     assert re_mod._score_risk(stock) == 45
+    assert re_mod._price_missing_dims(stock) == ["risk"]
+
+
+def test_risk_at_high_geo_severity_stays_marked(
+    monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Z11（QA 低优先级存活项）：极端地缘（severity>=4）门槛也钉住。
+
+    60 - 30 = 30（不是 -15 那档的 45）；且不管地缘怎么压，
+    这个分数**仍然不是真实评分**，标记必须还在。
+    """
+    from services import geopolitical as _geo
+
+    monkeypatch.setattr(_geo, "get_geopolitical_risk_score",
+                        lambda: {"max_severity": 4})
+    _patch_daily_df(monkeypatch, None)
+    stock = {"code": "920982", "name": "锦波生物"}
+
+    assert re_mod._score_risk(stock) == 30
     assert re_mod._price_missing_dims(stock) == ["risk"]
 
 
@@ -492,6 +577,20 @@ def test_append_data_caveat_is_idempotent() -> None:
 
     assert items[0]["reason"] == first == f"基本面稳健（{CAVEAT}）"
     assert items[0]["reason"].count("⚠️") == 1
+
+
+def test_idempotency_guard_matches_the_whole_caveat_not_just_the_warning_sign() -> None:
+    """Z2（QA 低优先级存活项）：幂等守卫必须比对**完整 caveat**，不是只比 ⚠️。
+
+    若把 `caveat in reason` 弱化成 `"⚠️" in reason`，那么一条本来就有别的
+    ⚠️ 提示的理由（比如地缘警示）会被误判成"已标注"，从而漏掉数据不足提示。
+    """
+    items = [{"reason": "⚠️ 注意地缘风险", "data_caveat": CAVEAT}]
+
+    re_mod._append_data_caveat(items)
+
+    assert CAVEAT in items[0]["reason"], "被无关的 ⚠️ 误判成已标注，漏标了"
+    assert items[0]["reason"].startswith("⚠️ 注意地缘风险")
 
 
 def test_caveat_is_appended_on_rule_fallback_path(
