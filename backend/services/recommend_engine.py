@@ -565,8 +565,10 @@ def _append_data_caveat(top_items: list) -> None:
     范式里「可被观测」的落地部分。LLM 路径与规则降级路径都必须走到这里。
 
     用户可见链路（2026-09-09 实测确认）：`/api/recommend/stocks` →
-    `pages/history.js:212` 会把 `r.reason` 原样渲染到「AI 推荐」卡片上，
-    所以挂在 `reason` 上的提示语是真的能被看到的。
+    `pages/history.js` 的 `renderRecommendTab()` 会把 `r.reason` 原样
+    渲染到「AI 推荐」卡片上，所以挂在 `reason` 上的提示语是真的能被看到的。
+    （此处刻意**引函数名不引行号**：本仓有硬编码 `file:line` 的习惯，
+     而纯注释/纯改写的 commit 会让插入点之后的行号整体位移，引用会悄悄指错行。）
     （注：08:30 晨报自 v9.5.123 起已不再带股票推荐，`night_worker.py`
     里的 `rec_text` 是死变量，不要指望提示从那儿出去。）
 
