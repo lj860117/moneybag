@@ -33,9 +33,9 @@ import os
 import re
 import shutil
 import sys
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, time, timedelta
 from pathlib import Path
-from typing import Any
+from typing import Any, Optional
 
 # 确保能 import 项目模块
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
@@ -344,6 +344,221 @@ def _root_cause_fingerprint(error_text: str) -> str:
 _ZERO_SUMMARY_RE = re.compile(r"❌\s*(?:异常|错误|失败)\s*[:：]\s*0(?![0-9.])")
 
 
+# ── 行内时间戳解析（24h 过滤口径）──────────────────────────────
+# ⚠️ 为什么必须按「行内时间戳」而不是「文件 mtime」判 24h（2026-09-08 事故真根因）：
+# `data/night_worker/cron.log` 是**按天追加**的：01:00 / 08:30 / 16:00 三个
+# cron 都往同一个文件尾部追加。于是文件 mtime 永远是「今天早上 08:30」，
+# 而文件里还躺着 09-07 01:00 的 15 条 ALLOC_PCTS、09-07 16:00 的 Traceback ——
+# 它们早就该老化了，却因为文件被追加过一行而「永远新鲜」，日报被旧账顶到
+# critical。改成行内时间戳后，旧行会自然老化。
+#
+# 只认两种**行首**形态，刻意不扫描行中间：
+#   - `[HH:MM:SS] text` / `[YYYY-MM-DD HH:MM:SS] text`（方括号前缀）
+#   - `YYYY-MM-DD HH:MM:SS,mmm - LEVEL - text`（python logging 裸时间戳）
+# 行中间的日期（`date=20260904`、`daily_signal_2026-09-07.json`、
+# `2026-09-07_briefing_LeiJiang.txt`）语义是**业务日期**不是写入时刻，
+# 拿它当时钟会把旧错误洗成新的 —— 宁可解析不到走继承/兜底，也不猜错方向。
+#
+# 时区后缀直接丢弃：本机日志全是本地时间，硬做时区转换只会把 24h 窗口算错。
+_TZ_SUFFIX_RE = re.compile(r"(?:Z|[+-]\d{2}:?\d{2})$", re.IGNORECASE)
+# 完整时间戳 token：`YYYY-MM-DD` 后可跟 `[ T]HH:MM[:SS][.mmm][Z|±HH:MM]`
+_DT_TOKEN_RE = re.compile(
+    r"^(?P<date>\d{4}[-/.]\d{1,2}[-/.]\d{1,2})"
+    r"(?:[ T](?P<time>\d{1,2}:\d{2}(?::\d{2})?(?:[.,]\d{1,6})?(?:Z|[+-]\d{2}:?\d{2})?))?$"
+)
+
+
+def _parse_datetime_token(token: str) -> Optional[datetime]:
+    """把一个「带日期的时间戳」token 解析成 datetime。
+
+    覆盖 `2026-09-08`、`2026-09-08 01:19:32`、`2026-09-08T01:19:32.123`、
+    `2026/09/08 01:19:32+08:00` 四种写法；只有时刻没有日期的（`01:19:32`）
+    返回 None —— 日期得由调用方补齐（见 `_line_timestamp`）。
+
+    Args:
+        token: 待解析的时间戳文本，允许为空/带前后空白。
+
+    Returns:
+        解析成功返回 naive datetime；失败（含非法日期如 2026-02-30）返回 None。
+    """
+    raw = (token or "").strip().rstrip(",;")
+    if not raw:
+        return None
+    m = _DT_TOKEN_RE.match(raw)
+    if not m:
+        return None
+    date_part = m.group("date").replace("/", "-").replace(".", "-")
+    time_part = _TZ_SUFFIX_RE.sub("", (m.group("time") or "").strip())
+    time_part = time_part.replace(",", ".")
+    if "." in time_part:
+        # 微秒对 24h 判定毫无意义，直接截断
+        time_part = time_part.split(".", 1)[0]
+    parts = time_part.split(":") if time_part else []
+    while len(parts) < 3:
+        parts.append("0")
+    try:
+        y, mo, d = (int(x) for x in date_part.split("-"))
+        hh, mi, ss = (int(p) for p in parts[:3])
+        return datetime(y, mo, d, hh, mi, ss)
+    except (ValueError, TypeError):
+        return None
+
+
+def _parse_time_token(token: str) -> Optional[time]:
+    """把 `HH:MM[:SS]` 解析成 time；不是时刻返回 None。
+
+    刻意复用 `_TS_TIME_RE`（行首方括号判定的同一个正则），保证「指纹里
+    剥得掉的前缀」与「这里解析得出的时刻」永远是同一口径 —— 否则会出现
+    「时间戳被剥掉了、时刻却没解析出来、于是走了兜底」这类自相矛盾的行。
+
+    Args:
+        token: 方括号内的文本或独立 token。
+
+    Returns:
+        解析成功返回 time；失败（如 `[1/4]` 进度计数）返回 None。
+    """
+    raw = _TZ_SUFFIX_RE.sub("", (token or "").strip()).replace(",", ".")
+    if "." in raw:
+        raw = raw.split(".", 1)[0]
+    if not _TS_TIME_RE.match(raw):
+        return None
+    parts = raw.split(":")
+    while len(parts) < 3:
+        parts.append("0")
+    try:
+        hh, mi, ss = (int(p) for p in parts[:3])
+        return time(hh, mi, ss)
+    except (ValueError, TypeError):
+        return None
+
+
+def _line_timestamp_ex(line: str, fallback_date: date) -> tuple[Optional[datetime], bool]:
+    """解析一行日志的写入时刻，并告诉调用方「这个时刻是否自带日期」。
+
+    优先级（命中即返回，不再往后看）：
+      1. 行首方括号里是完整日期时间（`[2026-09-08 01:19:32]`）→ 自带日期
+      2. 行首方括号里是纯时间（`[01:19:32]`）→ 用 `fallback_date` 补日期
+      3. 行首是裸时间戳（`2026-09-08 01:19:32,123 - ERROR - …`）→ 自带日期
+      4. 都没有 → `(None, False)`，交给调用方「继承上一行 / 回退文件 mtime」
+
+    ⚠️ 第 2 条里「补出来的时刻落在未来」要减一天：按天追加的日志里，
+    文件 mtime 是今天，行却可能是昨晚 23:50 写的。这个修正只在**未来**
+    这一个方向上生效，减一天后必然仍落在 24h 窗口内，所以**不会**把窗口
+    放宽、也不会把真错误洗掉。
+
+    Args:
+        line: 原始日志行。
+        fallback_date: 行内只有时刻、没有日期时用来补齐的日期。
+
+    Returns:
+        `(时刻, 是否自带日期)`；解析不到时 `(None, False)`。
+    """
+    s = (line or "").strip()
+    if not s:
+        return None, False
+
+    # 1 & 2：行首方括号前缀（时间戳 / 日期 / 日志级别），最多剥 _MAX_PREFIX_BRACKETS 层
+    remainder = s
+    for _ in range(_MAX_PREFIX_BRACKETS):
+        m = _BRACKET_PREFIX_RE.match(remainder)
+        if not m:
+            break
+        content = (m.group(1) or "").strip()
+        if _TS_DATE_RE.match(content):
+            dt = _parse_datetime_token(content)
+            return (dt, True) if dt is not None else (None, False)
+        if _TS_TIME_RE.match(content):
+            t = _parse_time_token(content)
+            if t is None:
+                return None, False
+            dt = datetime.combine(fallback_date, t)
+            if dt > datetime.now():
+                dt -= timedelta(days=1)
+            return dt, False
+        if content.upper() in _LOG_LEVELS:
+            rest = remainder[m.end():].strip()
+            if not rest:
+                break
+            remainder = rest
+            continue
+        # 业务标签（`[保守型]` / `[MACRO]` / `[1/4]`）：不是时间戳，停止剥
+        break
+
+    # 3：行首裸时间戳（python logging 风格），先试「日期 + 时刻」再试「只有日期」
+    toks = s.split()
+    for n in (2, 1):
+        if len(toks) < n:
+            continue
+        cand = " ".join(toks[:n])
+        if _TS_DATE_RE.match(cand):
+            dt = _parse_datetime_token(cand)
+            if dt is not None:
+                return dt, True
+    return None, False
+
+
+def _line_timestamp(line: str, fallback_date: date) -> Optional[datetime]:
+    """解析一行日志的写入时刻；解析不到返回 None。
+
+    这是 `_line_timestamp_ex()` 的薄封装，保留它是因为「一行 → 一个时刻」
+    才是外部（含回归测试）该依赖的口径；「是否自带日期」是推演日期用的
+    内部信息，不该外泄。
+
+    Args:
+        line: 原始日志行。
+        fallback_date: 行内只有时刻、没有日期时用来补齐的日期。
+
+    Returns:
+        该行的写入时刻；无法确定时返回 None。
+    """
+    return _line_timestamp_ex(line, fallback_date)[0]
+
+
+def _resolve_line_times(lines: list[str], file_mtime: datetime) -> list[datetime]:
+    """给文件里每一行定一个写入时刻 —— **倒序锚定推演**。
+
+    为什么必须倒着走：按天追加的日志里时间只有 `HH:MM:SS`，日期信息只藏在
+    「这个文件最后写到哪一天」（= mtime）。从文件末尾倒着往回推，锚点初始为
+    mtime；遇到「时刻比锚点还晚」的行，说明它属于锚点的**前一天**，减一天
+    并更新锚点。这样连 `08:30:30 → 08:30:02` 这种只回退 28 秒的跨天也能认
+    出来（真实 cron.log 里 09-07 08:30 与 09-08 08:30 就差这 28 秒），
+    09-07 01:00 的旧错误才不会被当成今天写的。
+
+    没有时间戳的行**继承它下面最近一个已知时刻**：Traceback 的后续行
+    （`File "…", line 21, in <module>`）本来就没有时刻，取「下一条日志的
+    时刻」作为上界是**安全方向** —— 宁可算新一点（报出来），不可算旧一点
+    （静默老化掉，告警变绿而故障还在）。
+
+    **整份文件一行时间戳都没有**时，锚点从头到尾都是初始的 `file_mtime`，
+    于是每一行都拿到文件 mtime —— 这正好就是「回退到按文件 mtime 整体判定」
+    的语义（老文件整体跳过、新文件整体计入，与改动前口径一致），不需要
+    额外的分支去实现。
+
+    Args:
+        lines: 文件的全部行。
+        file_mtime: 文件修改时间，作为倒序推演的初始锚点。
+
+    Returns:
+        与 `lines` 等长的时刻列表（不会含 None）。
+    """
+    resolved: list[datetime] = [file_mtime] * len(lines)
+    anchor = file_mtime
+    for i in range(len(lines) - 1, -1, -1):
+        ts, has_date = _line_timestamp_ex(lines[i], anchor.date())
+        if ts is None:
+            # 无时间戳：继承下面最近一个已知时刻（安全方向：偏新不偏旧）
+            resolved[i] = anchor
+            continue
+        if ts > anchor and not has_date:
+            # 时刻比锚点还晚 → 属于前一天。自带日期的行以行内日期为准，
+            # 不参与这个修正（它写的是什么时间就是什么时间）。
+            # 减一天后必然 < 锚点（ts 与锚点同日），不会死循环。
+            ts -= timedelta(days=1)
+        resolved[i] = ts
+        anchor = ts
+    return resolved
+
+
 def _candidate_log_dirs() -> list[Path]:
     """待扫描的日志目录候选（系统日志目录 + 新老两处 data 目录）。
 
@@ -373,6 +588,10 @@ def collect_error_logs() -> dict[str, Any]:
 
     同时排除「零值健康汇总行」：`✅ 正常: 13  ❌ 异常: 0` 这类汇总行含 `❌`
     但不是错误，仅当值为 0 时跳过（见 `_ZERO_SUMMARY_RE`）。
+
+    24h 窗口按**行内时间戳**判定（见 `_resolve_line_times`），不按文件 mtime：
+    cron.log 这类按天追加的文件 mtime 永远新鲜，按 mtime 判会让上周的错误
+    永远算进 24h；只有整份文件都解析不到行内时间戳时才回退 mtime。
 
     返回两个计数，语义不同、缺一不可：
       - `count_24h`：独立错误条数（细节口径，能看出扇出规模）
@@ -408,12 +627,21 @@ def collect_error_logs() -> dict[str, Any]:
             continue
         for f in log_dir.rglob("*.log"):
             try:
-                if f.stat().st_mtime < cutoff.timestamp():
-                    continue
+                st = f.stat()
+                file_mtime = datetime.fromtimestamp(st.st_mtime)
                 text = f.read_text(encoding="utf-8", errors="ignore")
                 # 按行匹配，才能精确排除「failed 但带 retry」的容错行
                 lines = text.splitlines()
-                for line in lines:
+                line_times = _resolve_line_times(lines, file_mtime)
+                for idx, line in enumerate(lines):
+                    # 24h 过滤按**行内时间戳**判，不按文件 mtime：
+                    # cron.log 这类按天追加的文件 mtime 永远新鲜，按 mtime 判
+                    # 会让上周的错误永远算进 24h（2026-09-08 事故真根因）。
+                    # 整份文件都解析不到行内时间戳时，`_resolve_line_times`
+                    # 会让每行都拿回初始锚点 = 文件 mtime（见其文档），
+                    # 与改动前口径一致，不放宽窗口。
+                    if line_times[idx] < cutoff:
+                        continue
                     # 零值健康汇总行（`✅ 正常: 13    ❌ 异常: 0`）→ 整行跳过，
                     # 只认「值为 0」这一种形态，非零的真报警照常计入
                     if _ZERO_SUMMARY_RE.search(line):

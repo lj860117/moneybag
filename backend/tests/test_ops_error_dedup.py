@@ -10,12 +10,16 @@
     30 条、24h 计数虚高到 35，直接把日报顶到 critical（阈值 ≥10），而真实
     独立故障只有 4 个。
 
-本文件锁住两件事，缺一不可：
+本文件锁住三件事，缺一不可：
 
 1. **去重生效**：同一批错误出现在多份日志，只计 1 条（防虚高刷屏）
 2. **不过度去重**：不同错误内容 / 不同 profile 的同型错误必须各自计数
    （⚠️ 这条更重要 —— 只做去重不做区分，等于"为了把告警变绿而把真故障
    洗掉"，比虚高危险得多）
+3. **24h 按行内时间戳判**（P5，事故真根因）：旧口径按文件 mtime 判，
+   而 `cron.log` 是按天追加的，mtime 永远新鲜 → 上周的错误永远算进 24h。
+   ⚠️ 改这条时更要防的是**反向**错误：把 24h 内的真错误判成老化而丢掉
+   （假绿），所以第 6 节里"23h 内必须计入"的用例比"25h 外必须丢掉"更关键。
 
 设计原则（与 test_night_worker_regressions.py 一致）：
   - **绝不复制实现里的正则/常量到本文件**。所有断言都真实调用
@@ -29,9 +33,10 @@ from __future__ import annotations
 import importlib.util
 import os
 import sys
+from datetime import datetime, timedelta
 from pathlib import Path
 from types import ModuleType
-from typing import List, Sequence
+from typing import List, Optional, Sequence
 
 import pytest
 
@@ -123,6 +128,43 @@ def _write(path: Path, lines: Sequence[str]) -> Path:
     return path
 
 
+def _write_at(path: Path, lines: Sequence[str], mtime: Optional[datetime] = None) -> Path:
+    """写日志并按需回填 mtime（不传 mtime 就是「刚刚」，即文件最新）。
+
+    24h 过滤改按**行内时间戳**判之后，「文件 mtime 很老、但行内有新时间戳」
+    成了必须覆盖的场景（日志归档/拷贝），所以要能显式摆布 mtime。
+    """
+    p = _write(path, lines)
+    if mtime is not None:
+        ts = mtime.timestamp()
+        os.utime(p, (ts, ts))
+    return p
+
+
+def _fresh(minutes_ago: int = 30) -> datetime:
+    """返回一个「必定落在 24h 窗口内」的时刻。
+
+    ⚠️ 不要再写死 `2026-09-07 xx:xx:xx` 之类的历史日期：行内时间戳口径下
+    它们会立刻被老化，用例在过了那天之后就永久变红。
+    """
+    return datetime.now() - timedelta(minutes=minutes_ago)
+
+
+def _stale(hours_ago: int = 30) -> datetime:
+    """返回一个「必定落在 24h 窗口外」的时刻。"""
+    return datetime.now() - timedelta(hours=hours_ago)
+
+
+def _hhmmss(dt: datetime) -> str:
+    """时刻形态 `[HH:MM:SS]`（行内没有日期，日期靠文件位置推演）。"""
+    return dt.strftime("%H:%M:%S")
+
+
+def _full_ts(dt: datetime) -> str:
+    """完整形态 `[YYYY-MM-DD HH:MM:SS]`（行内自带日期，权威）。"""
+    return dt.strftime("%Y-%m-%d %H:%M:%S")
+
+
 # ============================================================
 # 1. 去重生效：同一批错误 tee 进两份日志 → 只计 1 条
 # ============================================================
@@ -134,13 +176,18 @@ def test_tee_duplicated_logs_counted_once(env_factory):
     env = env_factory()
     bodies = [f"❌ ALLOC_PCTS 未定义：诊断 #{i:02d} 失败" for i in range(15)]
 
+    # ⚠️ 时间戳必须落在 24h 窗口内，且不要写死 00~14 点这种跨度：
+    # 24h 过滤已改成按**行内时间戳**判，写死历史日期会被直接老化，写死
+    # 大跨度时刻则会被「倒序锚定推演」判成前一天 —— 用例会在一天里的
+    # 某些时段随机变红。统一用「N 分钟前」这一个时刻。
+    fresh = _fresh()
     night_log = _write(
         env.tmp / "night_worker" / "2026-09-07.log",
-        [f"[{i:02d}:00:01] {b}" for i, b in enumerate(bodies)],
+        [f"[{_hhmmss(fresh)}] {b}" for b in bodies],
     )
     cron_log = _write(
         env.tmp / "logs" / "cron.log",
-        [f"[2026-09-07 {i:02d}:00:01] {b}" for i, b in enumerate(bodies)],
+        [f"[{_full_ts(fresh)}] {b}" for b in bodies],
     )
     assert night_log.exists() and cron_log.exists()
 
@@ -363,9 +410,13 @@ def test_fanout_collapses_to_one_root_cause(env_factory):
     env = env_factory()
     profiles = ("保守型", "稳健型", "平衡型", "进取型", "激进型")
     assets = ("fund", "stock", "mixed")
+    # 15 行共用一个「N 分钟前」的时刻：本条验证的是根因收敛，与时间戳无关，
+    # 用大跨度写死时刻反而会被倒序推演判成跨天、随机老化掉一部分。
+    fresh = _fresh()
     lines = [
-        f"[03:00:{i:02d}] ❌ {p}/{a}: name 'ALLOC_PCTS' is not defined"
-        for i, (p, a) in enumerate((p, a) for p in profiles for a in assets)
+        f"[{_hhmmss(fresh)}] ❌ {p}/{a}: name 'ALLOC_PCTS' is not defined"
+        for p in profiles
+        for a in assets
     ]
     _write(env.tmp / "night_worker" / "2026-09-07.log", lines)
 
@@ -531,3 +582,224 @@ def test_prefix_stripping_is_bounded(env_factory):
     assert out.count("[") == 2, (
         f"应只剥掉 {limit} 层（剩 2 个方括号），实际剩 {out.count('[')} 个：{out!r}"
     )
+
+
+# ============================================================
+# 6. 24h 过滤改按「行内时间戳」（P5，事故真根因）
+# ============================================================
+# 旧口径按**文件 mtime** 判 24h。`data/night_worker/cron.log` 被
+# 01:00 / 08:30 / 16:00 三个 cron 按天追加，mtime 永远停在「今天早上 08:30」，
+# 于是 09-07 01:00 的 15 条 ALLOC_PCTS、09-07 08:30 的旧错误永远算进 24h，
+# 日报被旧账顶到 critical。下面这组用例锁死「按行内时间戳老化」。
+def test_24h_boundary_is_judged_by_line_timestamp(env_factory):
+    """23h 前的错误计入、25h 前的不计入 —— 两行 mtime 完全相同。
+
+    ⚠️ 这条同时锁死「不能按文件 mtime 判」：两份日志 mtime 都是「刚刚」，
+    只有行内时间戳能区分 23h 与 25h。按 mtime 判则两条都计入，count 变 2。
+    """
+    env = env_factory()
+    _write(
+        env.tmp / "night_worker" / "cron.log",
+        [
+            f"[{_full_ts(_stale(hours_ago=25))}] ❌ 25h 前的旧错误，应老化",
+            f"[{_full_ts(_fresh(minutes_ago=23 * 60))}] ❌ 23h 前的真错误，应计入",
+        ],
+    )
+
+    result = env.mod.collect_error_logs()
+    assert result["count_24h"] == 1, (
+        f"24h 边界应按行内时间戳判：期望 1 条（23h），实际 {result['count_24h']} 条 —— "
+        f"{[f['line'] for f in result['files']]}"
+    )
+    assert "23h 前" in result["files"][0]["line"], (
+        f"计入的应是 23h 前那条，实际 {result['files'][0]['line']!r}"
+    )
+
+
+def test_time_only_error_within_24h_still_counts(env_factory):
+    """只有 `HH:MM:SS` 的真错误（昨天写的、但还在 24h 内）必须照样计入。
+
+    ⚠️ 防假绿护栏（P5 明确要求）：改成行内时间戳后最容易出的错是「补日期
+    补错方向」——把昨晚 23:50 的真错误判成 24h 外而静默丢掉，**告警变绿而
+    故障还在**，比虚高危险得多。本条用「文件 mtime=刚刚 + 行内时刻=23h 前」
+    这个「安全方向必被计入」的组合把它钉死。
+    """
+    env = env_factory()
+    young = _fresh(minutes_ago=23 * 60)
+    _write(
+        env.tmp / "night_worker" / "cron.log",
+        [f"[{_hhmmss(young)}] ❌ 昨晚的真错误，还在 24h 内"],
+    )
+
+    result = env.mod.collect_error_logs()
+    assert result["count_24h"] == 1, (
+        "只有时刻、但确实在 24h 内的错误被丢了 —— 这是假绿，比虚高危险得多"
+    )
+
+
+def test_multi_day_appended_log_ages_out_previous_day_errors(env_factory):
+    """按天追加的日志：mtime 永远新鲜，前一天的旧账也必须老化（事故现场）。
+
+    现场（真实 cron.log，906 行）：
+      - 01:00:01 起 → 01:11:06 完成 → 08:30:01/08:30:30 推送（都是 09-07）
+      - 16:00 收割 + 一段 Traceback
+      - 08:30:02 又追加两行（这是 09-08）
+    文件 mtime = 09-08 08:30:02，所以按 mtime 判，09-07 那 800 行永远「新鲜」。
+    倒序锚定推演要能认出 `08:30:30 → 08:30:02` 这种只回退 28 秒的跨天，
+    把 09-07 的 ALLOC_PCTS 判成 >24h。
+    """
+    env = env_factory()
+    _write(
+        env.tmp / "night_worker" / "cron.log",
+        [
+            "[01:00:01] 🌙 AI 凌晨工作启动",
+            "[01:00:56]   ❌ 保守型/fund: name 'ALLOC_PCTS' is not defined",
+            "[01:11:06] ✅ AI 凌晨工作完成",
+            "[08:30:01] 📤 08:30 推送早安简报",
+            "[08:30:30]   ✅ BuLuoGeLi: 外盘速览已推",
+            "[08:30:02] 📤 08:30 推送早安简报",
+            "[08:30:02]   ⚠️ 无简报文件，凌晨流程可能未执行",
+        ],
+    )
+
+    result = env.mod.collect_error_logs()
+    assert result["count_24h"] == 0, (
+        f"按天追加的日志里前一天的旧错误必须老化，实际还剩 {result['count_24h']} 条："
+        f"{[f['line'] for f in result['files']]}"
+    )
+
+
+def test_time_only_line_older_than_24h_is_aged_out(env_factory):
+    """只有时刻的行，若倒序推演判定它属于前一天，必须老化。
+
+    行内只有 `HH:MM:SS` 时「是哪一天」读不出来，只能靠它在文件里的位置推：
+    **时刻比下方锚点还晚 → 属于前一天**。这里构造真实跨天的形状 ——
+    「前晚 08:12 的错误」下面压着「今早 07:12 的日志」，推演结果必须是
+    25h 前 → 不计入。
+    """
+    env = env_factory()
+    anchor_dt = _fresh(minutes_ago=120)  # 2h 前：窗口内，充当下方锚点
+    old_hhmmss = _hhmmss(anchor_dt + timedelta(hours=1))  # 时刻比锚点晚 1h → 前一天
+    _write(
+        env.tmp / "night_worker" / "cron.log",
+        [
+            f"[{old_hhmmss}] ❌ 前一天的旧错误，应老化",
+            f"[{_hhmmss(anchor_dt)}] ✅ 正常收尾",
+        ],
+    )
+
+    result = env.mod.collect_error_logs()
+    assert result["count_24h"] == 0, (
+        f"跨天推演失效，25h 前的旧错误没被老化：{[f['line'] for f in result['files']]}"
+    )
+
+
+def test_traceback_continuation_lines_inherit_timestamp(env_factory):
+    """Traceback 后续行没有时刻，必须继承同一段日志的时刻，不能回退 mtime。
+
+    现场：`ModuleNotFoundError: No module named 'config'` 这种真 Traceback，
+    只有首行可能带时间戳，后续 `File "…", line 21` / `import config` /
+    `ModuleNotFoundError` 三行都没有。若继承失效而回退到文件 mtime，日志
+    一归档（mtime 变老）整段就被静默老化 —— 告警变绿而故障还在。
+
+    这里故意把 mtime 设成 3 天前，但行内有一个 1h 前的时间戳：
+    继承生效 → Traceback 计入；继承失效 → 整段丢掉。
+    """
+    env = env_factory()
+    recent = _fresh(minutes_ago=60)
+    _write_at(
+        env.tmp / "night_worker" / "cron.log",
+        [
+            "[HARVEST] 📦 收盘后数据收割 16:00",
+            "Traceback (most recent call last):",
+            '  File "/opt/moneybag/backend/scripts/night_worker.py", line 21, in <module>',
+            "    import config",
+            "ModuleNotFoundError: No module named 'config'",
+            f"[{_full_ts(recent)}] 📤 08:30 推送早安简报",
+            f"[{_full_ts(recent)}]   ⚠️ 无简报文件，凌晨流程可能未执行",
+        ],
+        mtime=_stale(hours_ago=72),
+    )
+
+    result = env.mod.collect_error_logs()
+    assert result["count_24h"] == 1, (
+        f"Traceback 续行没有继承到时刻（回退成 3 天前的 mtime 被老化了）："
+        f"{[f['line'] for f in result['files']]}"
+    )
+    assert result["files"][0]["keyword"] == "Traceback"
+
+
+def test_file_without_any_timestamp_falls_back_to_mtime(env_factory):
+    """整份文件都没有行内时间戳 → 回退「按文件 mtime 判」。
+
+    这是唯一保留 mtime 语义的分支：一行时刻都没有时，mtime 是唯一证据。
+    新文件（mtime 刚刚）照常计入、老文件（mtime 3 天前）整体跳过 ——
+    与改动前口径一致，**不放宽窗口**。
+    """
+    env = env_factory()
+    _write_at(
+        env.tmp / "logs" / "fresh.log",
+        ["[MACRO] ❌ 拉取出错（行首是模块标签，没有时刻）"],
+        mtime=_fresh(minutes_ago=5),
+    )
+    _write_at(
+        env.tmp / "logs" / "old.log",
+        ["[MACRO] ❌ 另一条老错误（同样没有时刻，但文件 3 天没动过）"],
+        mtime=_stale(hours_ago=72),
+    )
+
+    result = env.mod.collect_error_logs()
+    assert result["count_24h"] == 1, (
+        f"无时间戳文件应回退 mtime：新的计入、老的整体跳过，实际 {result['count_24h']} 条"
+    )
+    assert "fresh.log" in result["files"][0]["file"]
+
+
+def test_full_datetime_is_never_rolled_back(env_factory):
+    """自带日期的行必须以行内日期为准，不得被「倒序推演」再减一天。
+
+    ⚠️ 变异护栏：若把 `ts > anchor and not has_date` 写成 `ts > anchor`，
+    一条「行内日期比文件 mtime 还新」的真实日志（日志归档/拷贝场景）会被
+    无端减一天 —— 24h 边界上的真错误会被静默老化，告警假绿。
+    """
+    env = env_factory()
+    _write_at(
+        env.tmp / "logs" / "archived.log",
+        [f"[{_full_ts(_fresh(minutes_ago=30))}] ❌ 归档日志里的真错误"],
+        mtime=_stale(hours_ago=72),
+    )
+
+    result = env.mod.collect_error_logs()
+    assert result["count_24h"] == 1, (
+        "自带日期的行被倒序推演减了一天 —— 真错误被静默老化（假绿）"
+    )
+
+
+@pytest.mark.parametrize(
+    "line, expect_timestamp",
+    [
+        ("[01:00:01] ❌ X", True),                              # 纯时刻
+        ("[2026-09-08 01:00:01] ❌ X", True),                   # 方括号完整时间戳
+        ("[2026-09-08T01:00:01.123] ❌ X", True),               # ISO + 毫秒
+        ("2026-09-08 01:00:01,123 - ERROR - X", True),          # python logging
+        ("[ERROR] [2026-09-08 01:00:01] ❌ X", True),           # 级别 + 时间戳两层
+        ("[MACRO] ❌ X", False),                                # 模块标签
+        ("[保守型] ❌ X", False),                                # 业务标签
+        ("[1/4] ❌ X", False),                                  # 进度计数
+        ("Traceback (most recent call last):", False),          # 续行
+        ("===== 进程看门狗启动 @ 2026-09-06T00:05:01 =====", False),  # 行中间的日期
+        ("", False),                                            # 空行
+    ],
+)
+def test_line_timestamp_recognizes_only_leading_timestamps(
+    env_factory, line: str, expect_timestamp: bool
+):
+    """`_line_timestamp` 只认**行首**时间戳，行中间的日期一律不认。
+
+    ⚠️ 最后一条是关键：`date=20260904`、`daily_signal_2026-09-07.json`、
+    `2026-09-07_briefing_LeiJiang.txt` 这类**业务日期**全是行中间的，
+    拿它们当时钟会把旧错误洗成新的（假绿方向）。
+    """
+    env = env_factory()
+    got = env.mod._line_timestamp(line, datetime.now().date())
+    assert (got is not None) is expect_timestamp, f"{line!r} → {got!r}"
