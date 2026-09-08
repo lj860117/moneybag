@@ -1,0 +1,438 @@
+"""
+A3 回归测试：价格数据缺失「保留在推荐池 + 显式标注」
+====================================================
+
+背景（2026-09-09 线上事故）：北交所 920xxx（920826 盖世食品 / 920982 锦波生物）
+在「Tushare → AKShare → Baostock」三级降级链上取不到日线，但推荐引擎**不报错**：
+
+    `_score_technical`  → `if df is None or len(df) < 30: return 50`（静默）
+    `_score_risk`       → `score = 60` 默认值一路带到底（静默）
+
+于是 920982 以 `technical=50 / risk=45`、`total_score=60.6`、`rating=买入`
+出现在 9-09 01:05 的 hot Top10，08:30 直接推给用户。**用户看到的分数字面完整，
+其实技术面/风险面是凭空编的中性分。**
+
+口径（team-lead 2026-09-09 拍板）：**保留在推荐池 + 显式标注数据不足**，
+不静默改变推荐池构成。
+
+实现范式照抄本文件同模块已有的 `_north_fallback_skipped`（`_score_capital`）：
+注释原话是「让『没有这个兜底』可被观测到，而不是伪装成中性分」。
+
+本文件锁定四件事：
+  1. 取不到 K 线时**必须打标记**（技术面 <30 行 / 风险面 <20 行 / 无代码）；
+  2. 标记必须变成用户可见的东西：`evidence[dim].available=False` +
+     `display="数据不足"` + `data_completeness` + `reason` 末尾的 ⚠️ 提示；
+  3. **LLM 路径也必须带提示**（原 `_generate_reasons` 在 LLM 成功时直接
+     `return`，会把提示吞掉 —— 这是最容易被漏掉的一条）；
+  4. `total_score` 口径：缺失维度**照旧贡献中性分，不按可用维度归一化**。
+     归一化会让「数据越缺 → 剩余维度权重被放大 → 分数被抬高」，等价于
+     用缺失数据奖励这只股票（见 `test_..._would_inflate_...`）。
+
+设计原则：不复制实现里的分支表，直接调用真实的 `_score_technical` /
+`_score_risk` / `_calc_composite_score` / `_generate_reasons`，只把外部数据
+源（K 线 / 地缘 / LLM）换成假实现。
+"""
+from __future__ import annotations
+
+from typing import Dict, List, Sequence, Tuple
+
+import numpy as np
+import pytest
+
+from services import recommend_engine as re_mod
+from services.geopolitical import get_geopolitical_risk_score as _real_geo  # noqa: F401  (确保模块可导入)
+
+
+# ============================================================
+# 假数据源
+# ============================================================
+class _Col:
+    """最小化的 `df["收盘"]`：`len(df)` + `df["收盘"].values.astype(float)`。"""
+
+    def __init__(self, values: Sequence[float]) -> None:
+        self.values = np.asarray(values, dtype=float)
+
+
+class _FakeDF:
+    """最小化的日线 DataFrame 替身。"""
+
+    def __init__(self, closes: Sequence[float]) -> None:
+        self._col = _Col(closes)
+
+    def __len__(self) -> int:
+        return len(self._col.values)
+
+    def __getitem__(self, key: str) -> _Col:
+        assert key == "收盘", f"被测代码只应读「收盘」列，实际读了 {key!r}"
+        return self._col
+
+
+def _closes(n: int, start: float = 10.0) -> List[float]:
+    """生成 n 个轻微波动的收盘价（保证不会触发除零 / NaN）。"""
+    return [round(start + 0.1 * (i % 5), 4) for i in range(n)]
+
+
+def _patch_daily_df(monkeypatch: pytest.MonkeyPatch, rows: int | None) -> None:
+    """把 K 线数据源换成 `rows` 行的假数据（`rows=None` 表示取不到，返回 None）。"""
+    df = None if rows is None else _FakeDF(_closes(rows))
+
+    def _fake_get_daily_df(code: str, days: int = 90):
+        return df
+
+    # `_score_technical` / `_score_risk` 先试 stock_price_provider，
+    # 失败再退回 get_stock_daily_hist —— 两条路都堵上，避免测试只覆盖其一
+    try:
+        from services import stock_price_provider as _spp
+        monkeypatch.setattr(_spp, "get_daily_df", _fake_get_daily_df, raising=False)
+    except Exception:  # pragma: no cover - 模块缺失时退回分支仍会被下面这行堵住
+        pass
+    try:
+        from infra.data_source.market import stocks as _stocks
+        monkeypatch.setattr(
+            _stocks, "get_stock_daily_hist",
+            lambda **kwargs: df,
+            raising=False,
+        )
+    except Exception:  # pragma: no cover
+        pass
+
+
+@pytest.fixture(autouse=True)
+def _no_geo_network(monkeypatch: pytest.MonkeyPatch) -> None:
+    """地缘风险是外部调用，测试里固定为 0，保证风险面分数确定性。"""
+    from services import geopolitical as _geo
+
+    monkeypatch.setattr(_geo, "get_geopolitical_risk_score",
+                        lambda: {"max_severity": 0}, raising=False)
+
+
+def _scorer(dim: str, value: int, mark: bool, reason: str = "测试用缺失"):
+    """返回一个假的 `_score_<dim>`：可选顺带打缺失标记。"""
+
+    def _fake(stock: dict) -> int:
+        if mark:
+            re_mod._mark_price_data_missing(stock, dim, reason)
+        return value
+
+    return _fake
+
+
+# ============================================================
+# 1. 打标记：技术面 / 风险面
+# ============================================================
+@pytest.mark.parametrize("rows", [0, 10, 29])
+def test_technical_marks_when_kline_rows_below_30(
+    monkeypatch: pytest.MonkeyPatch, rows: int
+) -> None:
+    """技术面不足 30 行 K 线（含取不到）→ 打标记，不再静默 return 50。"""
+    _patch_daily_df(monkeypatch, rows)
+    stock = {"code": "920982", "name": "锦波生物"}
+
+    assert re_mod._score_technical(stock) == 50
+    assert re_mod._price_missing_dims(stock) == ["technical"]
+    assert "K线数据不足" in stock[re_mod._PRICE_MISSING_KEY]["technical"]
+    assert f"{rows} 行" in stock[re_mod._PRICE_MISSING_KEY]["technical"]
+
+
+def test_technical_does_not_mark_when_kline_is_enough(
+    monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """K 线足够 → 真实评分，绝不能误标「数据不足」（过度标注 = 假警）。"""
+    _patch_daily_df(monkeypatch, 40)
+    stock = {"code": "920826", "name": "盖世食品"}
+
+    score = re_mod._score_technical(stock)
+
+    assert isinstance(score, int)
+    assert re_mod._price_missing_dims(stock) == []
+
+
+def test_technical_marks_when_code_missing() -> None:
+    """没有股票代码 → 技术面无数据可评，必须标记（原代码静默 return 50）。"""
+    stock: Dict[str, object] = {"name": "无名标的"}
+
+    assert re_mod._score_technical(stock) == 50
+    assert re_mod._price_missing_dims(stock) == ["technical"]
+    assert stock[re_mod._PRICE_MISSING_KEY]["technical"] == "缺少股票代码"
+
+
+def test_risk_marks_when_kline_rows_below_20(monkeypatch: pytest.MonkeyPatch) -> None:
+    """风险面不足 20 行 → 打标记，不再静默停在默认 60。"""
+    _patch_daily_df(monkeypatch, 10)
+    stock = {"code": "920826", "name": "盖世食品"}
+
+    assert re_mod._score_risk(stock) == 60
+    assert re_mod._price_missing_dims(stock) == ["risk"]
+    assert "10 行 < 20" in stock[re_mod._PRICE_MISSING_KEY]["risk"]
+
+
+def test_risk_does_not_mark_when_kline_is_enough(
+    monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """风险面数据足够 → 不标注。"""
+    _patch_daily_df(monkeypatch, 30)
+    stock = {"code": "600519", "name": "贵州茅台"}
+
+    score = re_mod._score_risk(stock)
+
+    assert score in (25, 40, 60, 80)
+    assert re_mod._price_missing_dims(stock) == []
+
+
+def test_risk_marks_when_code_missing() -> None:
+    stock: Dict[str, object] = {"name": "无名标的"}
+
+    assert re_mod._score_risk(stock) == 60
+    assert re_mod._price_missing_dims(stock) == ["risk"]
+
+
+def test_first_reason_wins_and_dims_are_deduped() -> None:
+    """同一维度重复标记只记第一条原因（后续重试不该覆盖最初的失败原因）。"""
+    stock: Dict[str, object] = {"code": "920982"}
+    re_mod._mark_price_data_missing(stock, "technical", "第一次：所有源失败")
+    re_mod._mark_price_data_missing(stock, "technical", "第二次：超时")
+    re_mod._mark_price_data_missing(stock, "risk", "K线数据不足（0 行 < 20）")
+
+    assert re_mod._price_missing_dims(stock) == ["technical", "risk"]
+    assert stock[re_mod._PRICE_MISSING_KEY]["technical"] == "第一次：所有源失败"
+
+
+# ============================================================
+# 2. 综合评分：标记 → 可观测输出
+# ============================================================
+FULL_SCORES: Dict[str, int] = {
+    "valuation": 70,
+    "earnings": 65,
+    "technical": 50,
+    "capital": 50,
+    "risk": 45,
+    "theme": 60,
+}
+ALL_DIMS: Tuple[str, ...] = tuple(re_mod.RECOMMEND_WEIGHTS.keys())
+
+
+def _calc_with(monkeypatch: pytest.MonkeyPatch,
+               missing: Sequence[str] = ()) -> Dict[str, object]:
+    """用固定维度分跑一次 `_calc_composite_score`，`missing` 里的维度打缺失标记。"""
+    for dim in ALL_DIMS:
+        monkeypatch.setattr(
+            re_mod, f"_score_{dim}",
+            _scorer(dim, FULL_SCORES[dim], mark=(dim in missing)),
+        )
+    return re_mod._calc_composite_score({"code": "920982", "name": "锦波生物"})
+
+
+def test_composite_score_flags_missing_dimensions(
+    monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """缺失维度必须在 evidence 里 `available=False` + `display="数据不足"`。"""
+    res = _calc_with(monkeypatch, missing=("technical", "risk"))
+
+    assert res["evidence"]["technical"]["available"] is False
+    assert res["evidence"]["technical"]["display"] == "数据不足"
+    assert res["evidence"]["risk"]["available"] is False
+    # 未缺失的维度必须是 True 且不带 display，避免过度标注
+    for dim in ("valuation", "earnings", "capital", "theme"):
+        assert res["evidence"][dim]["available"] is True
+        assert "display" not in res["evidence"][dim]
+
+
+def test_composite_score_reports_data_completeness(
+    monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`data_completeness` 必须能回答「哪几个维度是编的、为什么」。"""
+    res = _calc_with(monkeypatch, missing=("technical", "risk"))
+
+    dc = res["data_completeness"]
+    assert dc["complete"] is False
+    assert dc["missing_dimensions"] == ["technical", "risk"]
+    assert set(dc["reasons"]) == {"technical", "risk"}
+    assert "测试用缺失" in dc["reasons"]["technical"]
+
+
+def test_composite_score_complete_when_nothing_missing(
+    monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """数据完整时 `data_caveat` 必须为空串 —— 否则满屏 ⚠️ 等于没标注。"""
+    res = _calc_with(monkeypatch, missing=())
+
+    assert res["data_completeness"]["complete"] is True
+    assert res["data_completeness"]["missing_dimensions"] == []
+    assert res["data_caveat"] == ""
+
+
+def test_data_caveat_text_lists_chinese_dimension_names() -> None:
+    """提示语用中文维度名，用户看得懂（不是 technical/risk 这种内部键）。"""
+    stock: Dict[str, object] = {"code": "920982"}
+    re_mod._mark_price_data_missing(stock, "technical", "K线数据不足（0 行 < 30）")
+    re_mod._mark_price_data_missing(stock, "risk", "K线数据不足（0 行 < 20）")
+
+    assert re_mod._price_data_caveat(stock) == \
+        "⚠️ 技术面、风险面行情数据不足，评分基于部分维度"
+    assert re_mod._price_data_caveat({"code": "600519"}) == ""
+
+
+def test_internal_marker_is_not_exposed_in_output(
+    monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """下划线前缀的内部标记不能出现在对外输出里（对外只有 data_completeness）。"""
+    res = _calc_with(monkeypatch, missing=("technical", "risk"))
+
+    assert re_mod._PRICE_MISSING_KEY not in res
+    assert not any(k.startswith("_price") for k in res)
+
+
+# ============================================================
+# 3. total_score 口径：不归一化（本轮选定方案）
+# ============================================================
+def test_missing_dimensions_do_not_change_total_score(
+    monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """缺失维度照旧贡献中性分 → 标注前后 total_score 完全相同（排序不变）。"""
+    complete = _calc_with(monkeypatch, missing=())
+    partial = _calc_with(monkeypatch, missing=("technical", "risk"))
+
+    assert partial["dimension_scores"] == complete["dimension_scores"]
+    assert partial["total_score"] == complete["total_score"]
+    # 但可观测性不同：一个标注、一个不标注
+    assert complete["data_caveat"] == ""
+    assert partial["data_caveat"] != ""
+
+
+def test_rejected_alternative_renormalization_would_inflate_920982() -> None:
+    """锁住被否决的方案（按可用维度归一化）会带来的后果，防止以后有人改回去。
+
+    事故里的 920982：`total=60.6`、`technical=50`（缺）、`risk=45`（缺），
+    权重取 `RECOMMEND_WEIGHTS`。把两个缺失维度从分母里剔掉再归一化：
+
+        缺失维度贡献 = 0.15*50 + 0.10*45 = 12.0
+        其余维度贡献 = 60.6 - 12.0      = 48.6
+        剩余权重     = 1 - 0.15 - 0.10  = 0.75
+        归一化后     = 48.6 / 0.75      = 64.8   ← 比原来高 4.2 分
+
+    即「数据越缺分越高」，等于用缺失数据奖励这只股票，故本轮不采用。
+    """
+    w = re_mod.RECOMMEND_WEIGHTS
+    total, technical, risk = 60.6, 50, 45
+
+    contributed = w["technical"] * technical + w["risk"] * risk
+    rest = total - contributed
+    available_weight = 1.0 - w["technical"] - w["risk"]
+
+    assert round(rest / available_weight, 1) == 64.8
+    assert round(rest / available_weight, 1) > total  # 归一化 = 抬高分数
+    # 被采用的方案：保持原公式，60.6 不动，只加标注
+    assert round(total, 1) == 60.6
+
+
+# ============================================================
+# 4. 用户可见：推荐理由必须带提示（LLM 路径最容易漏）
+# ============================================================
+CAVEAT = "⚠️ 技术面、风险面行情数据不足，评分基于部分维度"
+
+
+def test_caveat_appended_to_existing_reason() -> None:
+    items = [{"reason": "基本面稳健", "data_caveat": CAVEAT}]
+    re_mod._append_data_caveat(items)
+
+    assert items[0]["reason"] == f"基本面稳健（{CAVEAT}）"
+
+
+def test_caveat_becomes_reason_when_reason_is_empty() -> None:
+    items = [{"reason": "   ", "data_caveat": CAVEAT}]
+    re_mod._append_data_caveat(items)
+
+    assert items[0]["reason"] == CAVEAT
+
+
+def test_caveat_not_appended_when_data_complete() -> None:
+    items = [{"reason": "基本面稳健", "data_caveat": ""}]
+    re_mod._append_data_caveat(items)
+
+    assert items[0]["reason"] == "基本面稳健"
+
+
+def test_caveat_is_appended_on_rule_fallback_path(
+    monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """LLM 失败 → 走规则降级，提示仍须出现。"""
+    monkeypatch.setattr(re_mod, "_llm_generate_reasons", lambda items: False)
+    monkeypatch.setattr(re_mod, "_rule_reason", lambda item: "规则理由")
+
+    items = [{"code": "920982", "name": "锦波生物", "data_caveat": CAVEAT}]
+    re_mod._generate_reasons(items)
+
+    assert items[0]["reason"] == f"规则理由（{CAVEAT}）"
+
+
+def test_caveat_is_appended_on_llm_path(monkeypatch: pytest.MonkeyPatch) -> None:
+    """LLM 成功 → 原实现在这里直接 return，把提示吞掉。这条专防该回归。"""
+    def _fake_llm(items: list) -> bool:
+        for item in items:
+            item["reason"] = "LLM 生成的理由"
+        return True
+
+    monkeypatch.setattr(re_mod, "_llm_generate_reasons", _fake_llm)
+
+    items = [{"code": "920982", "name": "锦波生物", "data_caveat": CAVEAT}]
+    re_mod._generate_reasons(items)
+
+    assert items[0]["reason"] == f"LLM 生成的理由（{CAVEAT}）"
+
+
+def test_generate_reasons_leaves_complete_items_untouched(
+    monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """数据完整的股票，理由里不该平白多出一个 ⚠️。"""
+    def _fake_llm(items: list) -> bool:
+        for item in items:
+            item["reason"] = "LLM 生成的理由"
+        return True
+
+    monkeypatch.setattr(re_mod, "_llm_generate_reasons", _fake_llm)
+
+    items = [{"code": "600519", "name": "贵州茅台", "data_caveat": ""}]
+    re_mod._generate_reasons(items)
+
+    assert items[0]["reason"] == "LLM 生成的理由"
+    assert "⚠️" not in items[0]["reason"]
+
+
+# ============================================================
+# 5. 端到端：920982 的卡片长什么样
+# ============================================================
+def test_920982_stays_in_pool_but_is_annotated(
+    monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """口径落地：920982 仍留在推荐池（分数不变），但必须带上可见标注。
+
+    这正是 `_north_fallback_skipped` 那句注释的意思：
+    「让『没有这个兜底』可被观测到，而不是伪装成中性分」。
+    """
+    # K 线全程取不到（三级降级链对 920xxx 全失败）
+    _patch_daily_df(monkeypatch, None)
+    monkeypatch.setattr(re_mod, "_score_valuation", lambda s: 70)
+    monkeypatch.setattr(re_mod, "_score_earnings", lambda s: 65)
+    monkeypatch.setattr(re_mod, "_score_capital", lambda s: 50)
+    monkeypatch.setattr(re_mod, "_score_theme", lambda s: 60)
+
+    stock = {"code": "920982", "name": "锦波生物", "rating": "买入"}
+    scored = re_mod._calc_composite_score(stock)
+
+    # ① 仍在池子里：分数 > 0，不会因「数据不足」被静默剔除
+    assert scored["total_score"] > 0
+    # ② 维度分仍是中性分（口径：不重算）
+    assert scored["dimension_scores"]["technical"] == 50
+    assert scored["dimension_scores"]["risk"] == 60
+    # ③ 但完整度是可观测的
+    assert scored["data_completeness"]["complete"] is False
+    assert scored["data_completeness"]["missing_dimensions"] == ["technical", "risk"]
+    assert scored["data_caveat"] == CAVEAT
+
+    # ④ 并且落到用户看到的那句话上
+    monkeypatch.setattr(re_mod, "_llm_generate_reasons", lambda items: False)
+    monkeypatch.setattr(re_mod, "_rule_reason", lambda item: "研报评级买入")
+    re_mod._generate_reasons([scored])
+
+    assert scored["reason"] == f"研报评级买入（{CAVEAT}）"
+    assert "⚠️" in scored["reason"]

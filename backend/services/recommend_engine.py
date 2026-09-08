@@ -488,8 +488,98 @@ def _build_fina_pool(limit: int = 60) -> list:
     return candidates
 
 
+# ============================================================
+# A3（2026-09-09）：价格数据缺失的可观测化
+# ============================================================
+# 背景：北交所 920xxx（如 920826 盖世食品 / 920982 锦波生物）在
+# 「Tushare → AKShare → Baostock」三级降级链上取不到日线，
+# `_score_technical` 会静默 return 50、`_score_risk` 会静默停在默认 60，
+# 于是推荐卡片上出现「技术面 50 / 风险面 45」——看着完整，其实是凭空编的，
+# 08:30 直接推给用户。
+#
+# 范式照抄本文件已有的 `_north_fallback_skipped`（见 `_score_capital`）：
+# 注释原话是「让『没有这个兜底』可被观测到，而不是伪装成中性分」。
+# 这里同样：**不静默伪装成中性，而是打标记 + 落到用户可见的输出**。
+#
+# 口径（team-lead 2026-09-09 拍板）：保留在推荐池 + 显式标注数据不足，
+# 不静默改变推荐池构成。
+#
+# 内部标记只用这一个键：维度 -> 缺失原因（dict 保插入顺序，即维度顺序）。
+# 它是下划线前缀的内部字段，不进最终输出（见 `_calc_composite_score`）。
+_PRICE_MISSING_KEY = "_price_missing_reasons"
+
+# 维度 → 中文名（用于生成用户可见的提示语）
+_DIM_LABEL_CN = {
+    "valuation": "估值",
+    "earnings": "盈利",
+    "technical": "技术面",
+    "capital": "资金面",
+    "risk": "风险面",
+    "theme": "题材",
+}
+
+
+def _mark_price_data_missing(stock: dict, dim: str, reason: str) -> None:
+    """记录「该维度因缺少价格数据而未能真实评分」。
+
+    同一维度只记第一条原因（后续重试不会覆盖掉最初的失败原因）。
+
+    Args:
+        stock: 候选股票字典（原地写入标记）
+        dim: 维度名，如 "technical" / "risk"
+        reason: 人类可读的缺失原因，会经由 `data_completeness` 出现在输出里
+    """
+    reasons = stock.setdefault(_PRICE_MISSING_KEY, {})
+    reasons.setdefault(dim, reason)
+
+
+def _price_missing_dims(stock: dict) -> list:
+    """返回该股票「并非真实评分」的维度列表（保序）。"""
+    return list((stock.get(_PRICE_MISSING_KEY) or {}).keys())
+
+
+def _price_data_caveat(stock: dict) -> str:
+    """生成用户可见的「数据不足」提示语；数据完整时返回空串。"""
+    dims = _price_missing_dims(stock)
+    if not dims:
+        return ""
+    names = "、".join(_DIM_LABEL_CN.get(d, d) for d in dims)
+    return f"⚠️ {names}行情数据不足，评分基于部分维度"
+
+
+def _append_data_caveat(top_items: list) -> None:
+    """把「数据不足」追加到用户可见的推荐理由上。
+
+    只打标记不落到可见输出等于没做 —— 这是 `_north_fallback_skipped`
+    范式里「可被观测」的落地部分。LLM 路径与规则降级路径都必须走到这里。
+
+    用户可见链路（2026-09-09 实测确认）：`/api/recommend/stocks` →
+    `pages/history.js:212` 会把 `r.reason` 原样渲染到「AI 推荐」卡片上，
+    所以挂在 `reason` 上的提示语是真的能被看到的。
+    （注：08:30 晨报自 v9.5.123 起已不再带股票推荐，`night_worker.py`
+    里的 `rec_text` 是死变量，不要指望提示从那儿出去。）
+    """
+    for item in top_items:
+        caveat = item.get("data_caveat") or _price_data_caveat(item)
+        if not caveat:
+            continue
+        reason = (item.get("reason") or "").strip()
+        item["reason"] = f"{reason}（{caveat}）" if reason else caveat
+
+
 def _calc_composite_score(stock: dict) -> dict:
-    """计算 6 维综合评分（V7.2 新增 theme 维度）"""
+    """计算 6 维综合评分（V7.2 新增 theme 维度）
+
+    A3（2026-09-09）：技术面/风险面在缺少价格数据时**仍按中性分参与加权**，
+    但会在 evidence 里标 `available=False` + `display="数据不足"`，并在输出里
+    带上 `data_caveat` / `data_completeness`，让「这个分数基于不完整数据」
+    可被观测。
+
+    total_score 口径说明：缺失维度照旧贡献其中性分（50 / 60），**不做**
+    「按可用维度重新归一化」。理由是归一化会让「数据越缺 → 分母越小 →
+    剩余维度权重被放大 → 分数被抬高」，等价于用缺失数据奖励这只股票；
+    保持原公式则 ranking 与本轮之前完全一致，只是多了标注，风险可控。
+    """
     scores = {
         "valuation": _score_valuation(stock),
         "earnings": _score_earnings(stock),
@@ -501,19 +591,36 @@ def _calc_composite_score(stock: dict) -> dict:
 
     total = sum(scores[k] * RECOMMEND_WEIGHTS[k] for k in RECOMMEND_WEIGHTS)
 
+    # 缺失维度（价格数据取不到 → 该维度并非真实评分）
+    missing_reasons = dict(stock.get(_PRICE_MISSING_KEY) or {})
+    missing_dims = list(missing_reasons.keys())
+
     # 构造 evidence（每维度的打分依据）
     evidence = {}
     for dim, score in scores.items():
-        evidence[dim] = {
+        entry = {
             "score": score,
             "weight": f"{RECOMMEND_WEIGHTS[dim]*100:.0f}%",
+            "available": dim not in missing_dims,
         }
+        if dim in missing_dims:
+            entry["display"] = "数据不足"
+        evidence[dim] = entry
+
+    # 内部标记（下划线前缀）不进最终输出，对外只暴露 data_completeness
+    public = {k: v for k, v in stock.items() if k != _PRICE_MISSING_KEY}
 
     return {
-        **stock,
+        **public,
         "total_score": round(total, 1),
         "dimension_scores": scores,
         "evidence": evidence,
+        "data_completeness": {
+            "complete": not missing_dims,
+            "missing_dimensions": missing_dims,
+            "reasons": missing_reasons,
+        },
+        "data_caveat": _price_data_caveat(stock),
     }
 
 
@@ -605,6 +712,7 @@ def _score_technical(stock: dict) -> int:
     """
     code = stock.get("code", "")
     if not code:
+        _mark_price_data_missing(stock, "technical", "缺少股票代码")
         return 50
 
     # 检查缓存（1小时 TTL，避免重复拉 K 线）
@@ -628,6 +736,11 @@ def _score_technical(stock: dict) -> int:
             df = get_stock_daily_hist(code=code, period="daily",
                                      start_date=start_date, end_date=end_date, adjust="qfq")
         if df is None or len(df) < 30:
+            # A3：不再静默退回中性分 —— 打标记，让"技术面是编的"可被观测
+            _mark_price_data_missing(
+                stock, "technical",
+                f"K线数据不足（{0 if df is None else len(df)} 行 < 30）",
+            )
             return 50
 
         close = df["收盘"].values.astype(float)
@@ -752,6 +865,8 @@ def _score_risk(stock: dict) -> int:
     """
     score = 60  # 默认中等安全
     code = stock.get("code", "")
+    if not code:
+        _mark_price_data_missing(stock, "risk", "缺少股票代码")
 
     # 1. 个股 20 日年化波动率
     if code:
@@ -780,8 +895,15 @@ def _score_risk(stock: dict) -> int:
                     score = 40
                 else:
                     score = 25  # 高波动，危险
+            else:
+                # A3：不再静默停在默认 60 —— 打标记，让"风险面是编的"可被观测
+                _mark_price_data_missing(
+                    stock, "risk",
+                    f"K线数据不足（{0 if df is None else len(df)} 行 < 20）",
+                )
         except Exception as e:
             print(f"[RECOMMEND] 风险评分波动率失败 {code}: {e}")
+            _mark_price_data_missing(stock, "risk", f"波动率计算失败: {e}")
 
     # 2. 地缘加成（负面）
     try:
@@ -826,7 +948,21 @@ def _score_theme(stock: dict) -> int:
 
 
 def _generate_reasons(top_items: list) -> None:
-    """用 LLM 批量生成推荐理由（走 gateway 统一管理）"""
+    """用 LLM 批量生成推荐理由（走 gateway 统一管理）
+
+    A3：LLM 路径与规则降级路径都必须再走一次 `_append_data_caveat`，
+    否则「数据不足」提示会在 LLM 成功时被吞掉（原来这里直接 return 了）。
+    """
+    if not _llm_generate_reasons(top_items):
+        # 降级：规则理由
+        for item in top_items:
+            item["reason"] = _rule_reason(item)
+
+    _append_data_caveat(top_items)
+
+
+def _llm_generate_reasons(top_items: list) -> bool:
+    """尝试用 LLM 生成推荐理由；成功写入 `reason` 并返回 True。"""
     try:
         stocks_text = "\n".join(
             f"{i+1}. {item['name']}({item['code']}) 综合{item['total_score']}分 "
@@ -866,13 +1002,11 @@ def _generate_reasons(top_items: list) -> None:
                 reason_map = {r.get("code", ""): r.get("reason", "") for r in reasons}
                 for item in top_items:
                     item["reason"] = reason_map.get(item.get("code", ""), _rule_reason(item))
-                return
+                return True
     except Exception as e:
         print(f"[RECOMMEND] 理由生成失败: {e}")
 
-    # 降级：规则理由
-    for item in top_items:
-        item["reason"] = _rule_reason(item)
+    return False
 
 
 def _rule_reason(item: dict) -> str:
