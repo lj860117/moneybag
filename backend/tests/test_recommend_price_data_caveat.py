@@ -28,6 +28,15 @@ A3 回归测试：价格数据缺失「保留在推荐池 + 显式标注」
      归一化会让「数据越缺 → 剩余维度权重被放大 → 分数被抬高」，等价于
      用缺失数据奖励这只股票（见 `test_..._would_inflate_...`）。
 
+第二轮（QA 严过关自设计变异 X1-X7 后补的，2026-09-09）：
+  5. **多条目逐条标注**：`_append_data_caveat` 不许中途 break，Top10 里
+     每一条缺数据的都必须带 ⚠️（X7 存活项：加 break 时旧用例全绿）。
+  6. **阈值钉在精确边界**：technical 用 30 行、risk 用 19/20 行，
+     防 off-by-one 与阈值放宽（X2 / X5 存活项）。
+  7. **幂等**：重复调用不许套娃成「…（⚠️ …）（⚠️ …）」。
+  8. **异常路径也打标记**：两个数据源都抛异常（不是返回 None）时，
+     `_score_technical` 外层 except 不能黑洞（本轮自查挖出来的洞）。
+
 设计原则：不复制实现里的分支表，直接调用真实的 `_score_technical` /
 `_score_risk` / `_calc_composite_score` / `_generate_reasons`，只把外部数据
 源（K 线 / 地缘 / LLM）换成假实现。
@@ -134,17 +143,48 @@ def test_technical_marks_when_kline_rows_below_30(
     assert f"{rows} 行" in stock[re_mod._PRICE_MISSING_KEY]["technical"]
 
 
+@pytest.mark.parametrize("rows", [30, 31, 40, 60])
 def test_technical_does_not_mark_when_kline_is_enough(
-    monkeypatch: pytest.MonkeyPatch
+    monkeypatch: pytest.MonkeyPatch, rows: int
 ) -> None:
-    """K 线足够 → 真实评分，绝不能误标「数据不足」（过度标注 = 假警）。"""
-    _patch_daily_df(monkeypatch, 40)
-    stock = {"code": "920826", "name": "盖世食品"}
+    """K 线足够 → 真实评分，绝不能误标「数据不足」（过度标注 = 假警）。
+
+    行数刻意从 **30** 起步（正好压在阈值上）：把 `< 30` 改成 `<= 30`
+    （QA 的 X2 变异）会让 30 行的股票被误标，这条用例必须能杀掉它。
+    """
+    _patch_daily_df(monkeypatch, rows)
+    stock = {"code": f"T{rows}", "name": "盖世食品"}
 
     score = re_mod._score_technical(stock)
 
     assert isinstance(score, int)
     assert re_mod._price_missing_dims(stock) == []
+
+
+def test_technical_marks_when_both_sources_raise(
+    monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """两个数据源都**抛异常**（不是返回 None）时也要打标记。
+
+    这是 2026-09-09 补 QA 的 X 系列变异时自己挖出来的洞：外层 `except`
+    原本静默 return 50，连 `len(df) < 30` 那个标记都走不到 —— 数据源要是
+    改成抛异常而不是返回 None，技术面就变成彻底的黑洞，而且测试不会红。
+    （`_score_risk` 的 except 从一开始就有标记，这次把两边对齐。）
+    """
+    def _boom(*args, **kwargs):
+        raise RuntimeError("上游超时")
+
+    from services import stock_price_provider as _spp
+    from infra.data_source.market import stocks as _stocks
+
+    monkeypatch.setattr(_spp, "get_daily_df", _boom, raising=False)
+    monkeypatch.setattr(_stocks, "get_stock_daily_hist", _boom, raising=False)
+
+    stock = {"code": "920826", "name": "盖世食品"}
+
+    assert re_mod._score_technical(stock) == 50
+    assert re_mod._price_missing_dims(stock) == ["technical"]
+    assert "技术面计算失败" in stock[re_mod._PRICE_MISSING_KEY]["technical"]
 
 
 def test_technical_marks_when_code_missing() -> None:
@@ -156,27 +196,57 @@ def test_technical_marks_when_code_missing() -> None:
     assert stock[re_mod._PRICE_MISSING_KEY]["technical"] == "缺少股票代码"
 
 
-def test_risk_marks_when_kline_rows_below_20(monkeypatch: pytest.MonkeyPatch) -> None:
-    """风险面不足 20 行 → 打标记，不再静默停在默认 60。"""
-    _patch_daily_df(monkeypatch, 10)
-    stock = {"code": "920826", "name": "盖世食品"}
+@pytest.mark.parametrize("rows", [0, 10, 19])
+def test_risk_marks_when_kline_rows_below_20(
+    monkeypatch: pytest.MonkeyPatch, rows: int
+) -> None:
+    """风险面不足 20 行 → 打标记，不再静默停在默认 60。
+
+    19 行这一档是 QA 的 X5 变异（把 `>= 20` 放宽成 `>= 15`）的杀手：
+    放宽后 15~19 行的股票会漏标，这条必须红。
+    """
+    _patch_daily_df(monkeypatch, rows)
+    stock = {"code": f"R{rows}", "name": "盖世食品"}
 
     assert re_mod._score_risk(stock) == 60
     assert re_mod._price_missing_dims(stock) == ["risk"]
-    assert "10 行 < 20" in stock[re_mod._PRICE_MISSING_KEY]["risk"]
+    assert f"{rows} 行 < 20" in stock[re_mod._PRICE_MISSING_KEY]["risk"]
 
 
+@pytest.mark.parametrize("rows", [20, 25, 60])
 def test_risk_does_not_mark_when_kline_is_enough(
-    monkeypatch: pytest.MonkeyPatch
+    monkeypatch: pytest.MonkeyPatch, rows: int
 ) -> None:
-    """风险面数据足够 → 不标注。"""
-    _patch_daily_df(monkeypatch, 30)
-    stock = {"code": "600519", "name": "贵州茅台"}
+    """风险面数据足够（从阈值 20 起步）→ 不标注，避免过度标注。"""
+    _patch_daily_df(monkeypatch, rows)
+    stock = {"code": f"S{rows}", "name": "贵州茅台"}
 
     score = re_mod._score_risk(stock)
 
     assert score in (25, 40, 60, 80)
     assert re_mod._price_missing_dims(stock) == []
+
+
+def test_risk_neutral_60_minus_geo_gives_45_as_seen_on_920982(
+    monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """锁住线上实测值：风险面静默默认 60，地缘加成 -15 → 45。
+
+    2026-09-09 严过关在服务器上用新代码 + 线上网络实测 920982 得到
+    `risk=45`（不是 60）。这里复现这个减法，防止以后有人按注释里的
+    「默认 60」去跟线上的 45 对账然后对不上。
+    关键：就算地缘把它从 60 压到 45，这个分数**仍然不是真实评分**，
+    标记必须还在。
+    """
+    from services import geopolitical as _geo
+
+    monkeypatch.setattr(_geo, "get_geopolitical_risk_score",
+                        lambda: {"max_severity": 2})
+    _patch_daily_df(monkeypatch, None)
+    stock = {"code": "920982", "name": "锦波生物"}
+
+    assert re_mod._score_risk(stock) == 45
+    assert re_mod._price_missing_dims(stock) == ["risk"]
 
 
 def test_risk_marks_when_code_missing() -> None:
@@ -350,6 +420,78 @@ def test_caveat_not_appended_when_data_complete() -> None:
     re_mod._append_data_caveat(items)
 
     assert items[0]["reason"] == "基本面稳健"
+
+
+# --- X7（QA 变异存活项）：多条目必须逐条标注，不能只标第一条 -------------
+# 存活原因：上面几条用例全是单条目列表，所以在循环体末尾加个 `break` 测试照绿。
+# 现实风险：Top10 里缺数据的往往不止一条（北交所 920xxx 越多越是），
+# 一旦只标第一条，其余全是「看着完整其实是编的」，而且**测试不会红**。
+def test_caveat_is_appended_to_every_incomplete_item() -> None:
+    """3 条都缺数据 → 3 条 reason 都必须带 ⚠️（防循环里 break / early return）。"""
+    items = [
+        {"code": "920982", "reason": "理由A", "data_caveat": CAVEAT},
+        {"code": "920826", "reason": "理由B", "data_caveat": CAVEAT},
+        {"code": "830799", "reason": "理由C", "data_caveat": CAVEAT},
+    ]
+
+    re_mod._append_data_caveat(items)
+
+    for i, item in enumerate(items):
+        assert "⚠️" in item["reason"], f"第 {i+1} 条漏标了（循环被提前打断？）"
+        assert item["reason"].endswith(f"（{CAVEAT}）")
+
+
+def test_caveat_appended_to_all_incomplete_items_in_mixed_list() -> None:
+    """混合列表：缺数据的全部标注，数据完整的一条都不许标。"""
+    items = [
+        {"code": "920982", "reason": "理由A", "data_caveat": CAVEAT},
+        {"code": "600519", "reason": "理由B", "data_caveat": ""},
+        {"code": "920826", "reason": "理由C", "data_caveat": CAVEAT},
+    ]
+
+    re_mod._append_data_caveat(items)
+
+    assert items[0]["reason"] == f"理由A（{CAVEAT}）"
+    assert items[1]["reason"] == "理由B"           # 完整数据，不许标
+    assert items[2]["reason"] == f"理由C（{CAVEAT}）"  # 第三条也不能漏
+
+
+def test_generate_reasons_annotates_every_item(
+    monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """端到端：`_generate_reasons` 也必须逐条标注（LLM 路径同样）。"""
+
+    def _fake_llm(items: list) -> bool:
+        for item in items:
+            item["reason"] = "LLM 理由"
+        return True
+
+    monkeypatch.setattr(re_mod, "_llm_generate_reasons", _fake_llm)
+
+    items = [
+        {"code": "920982", "data_caveat": CAVEAT},
+        {"code": "600519", "data_caveat": ""},
+        {"code": "920826", "data_caveat": CAVEAT},
+    ]
+    re_mod._generate_reasons(items)
+
+    assert items[0]["reason"] == f"LLM 理由（{CAVEAT}）"
+    assert items[1]["reason"] == "LLM 理由"
+    assert items[2]["reason"] == f"LLM 理由（{CAVEAT}）"
+
+
+# --- 幂等性（QA 提出）：重试/二次加工不能把提示套娃 ---------------------
+def test_append_data_caveat_is_idempotent() -> None:
+    """调两次不能变成「…（⚠️ …）（⚠️ …）」的套娃警告。"""
+    items = [{"reason": "基本面稳健", "data_caveat": CAVEAT}]
+
+    re_mod._append_data_caveat(items)
+    first = items[0]["reason"]
+    re_mod._append_data_caveat(items)
+    re_mod._append_data_caveat(items)
+
+    assert items[0]["reason"] == first == f"基本面稳健（{CAVEAT}）"
+    assert items[0]["reason"].count("⚠️") == 1
 
 
 def test_caveat_is_appended_on_rule_fallback_path(

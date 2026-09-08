@@ -493,9 +493,10 @@ def _build_fina_pool(limit: int = 60) -> list:
 # ============================================================
 # 背景：北交所 920xxx（如 920826 盖世食品 / 920982 锦波生物）在
 # 「Tushare → AKShare → Baostock」三级降级链上取不到日线，
-# `_score_technical` 会静默 return 50、`_score_risk` 会静默停在默认 60，
-# 于是推荐卡片上出现「技术面 50 / 风险面 45」——看着完整，其实是凭空编的，
-# 08:30 直接推给用户。
+# `_score_technical` 会静默 return 50、`_score_risk` 会静默停在默认 60
+# （再经地缘加成 -15，落到线上看到的 45）——于是推荐卡片上出现
+# 「技术面 50 / 风险面 45」：看着完整，其实是凭空编的。
+# 2026-09-09 服务器上用新代码 + 线上网络实测确认仍是 50 / 45。
 #
 # 范式照抄本文件已有的 `_north_fallback_skipped`（见 `_score_capital`）：
 # 注释原话是「让『没有这个兜底』可被观测到，而不是伪装成中性分」。
@@ -558,12 +559,21 @@ def _append_data_caveat(top_items: list) -> None:
     所以挂在 `reason` 上的提示语是真的能被看到的。
     （注：08:30 晨报自 v9.5.123 起已不再带股票推荐，`night_worker.py`
     里的 `rec_text` 是死变量，不要指望提示从那儿出去。）
+
+    两条硬性要求（都是被变异测试打出来的，别改回去）：
+      · **必须遍历全部条目**，不能中途 break / early return —— 否则 Top10
+        里只有第一条带 ⚠️，其余全是「看着完整其实是编的」，且测试不会红。
+      · **必须幂等**：`caveat` 已在 `reason` 里就跳过，避免重试/二次加工
+        把提示套娃成「…（⚠️ …）（⚠️ …）」。
     """
     for item in top_items:
         caveat = item.get("data_caveat") or _price_data_caveat(item)
         if not caveat:
             continue
         reason = (item.get("reason") or "").strip()
+        if caveat in reason:  # 幂等：已标注过就不再追加
+            item["reason"] = reason
+            continue
         item["reason"] = f"{reason}（{caveat}）" if reason else caveat
 
 
@@ -802,7 +812,11 @@ def _score_technical(stock: dict) -> int:
         return final_score
 
     except Exception as e:
+        # A3：这里原本也静默 return 50。若两个数据源都**抛异常**（而不是返回
+        # None），连 `len(df) < 30` 那个标记都走不到，技术面就成了彻底的黑洞。
+        # 2026-09-09 补：与 `_score_risk` 的 except 保持一致，打标记。
         print(f"[RECOMMEND] 技术评分失败 {code}: {e}")
+        _mark_price_data_missing(stock, "technical", f"技术面计算失败: {e}")
         return 50
 
 
