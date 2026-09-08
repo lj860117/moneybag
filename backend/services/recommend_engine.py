@@ -577,6 +577,12 @@ def _append_data_caveat(top_items: list) -> None:
         把提示套娃成「…（⚠️ …）（⚠️ …）」。
     """
     for item in top_items:
+        # 生产路径恒走前半段（`_generate_reasons` 拿到的是 `_calc_composite_score`
+        # 的输出，内部标记已被 `public` 剥离、只剩 `data_caveat`）。后半段是
+        # **防御**：本函数是 module-level，将来任何新链路直接传原始 scored dict
+        # 也能正确标注，不至于静默 no-op。
+        # ⚠️ 勿删后半段，也**勿为它补测试** —— 给它写用例等于给死代码上锁，
+        # 将来想删都删不掉。（QA 严过关 2026-09-09 明确的等价变异判定）
         caveat = item.get("data_caveat") or _price_data_caveat(item)
         if not caveat:
             continue

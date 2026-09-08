@@ -52,6 +52,9 @@ A3 回归测试：价格数据缺失「保留在推荐池 + 显式标注」
      set 化后 40 条用例全绿；三个维度以上就乱了。现在 `_price_missing_dims`
      按 `_DIM_LABEL_CN` 表序输出，本文件用「乱序打标 → 结果仍一致」
      钉住机制本身，而不是钉住某一次的输出。
+ 13. **表外维度不许被截断**（V8 / V8b，最后一个存活项）：现实风险趋近于零
+     （6 个维度全在表里，`extra` 生产上恒为空），但成本只有一条用例，
+     顺手关掉 —— 「以后再说」的尾巴基本不会再被捡起来。
 
 设计原则：不复制实现里的分支表，直接调用真实的 `_score_technical` /
 `_score_risk` / `_calc_composite_score` / `_generate_reasons`，只把外部数据
@@ -388,6 +391,24 @@ def test_unknown_dimension_is_kept_after_known_ones() -> None:
     assert re_mod._price_missing_dims(stock) == ["technical", "some_future_dim"]
     assert re_mod._price_data_caveat(stock) == \
         "⚠️ 技术面、some_future_dim行情数据不足，评分基于部分维度"
+
+
+def test_multiple_unknown_dimensions_are_all_kept() -> None:
+    """V8 / V8b（QA 最后一轮存活项）：表外维度不止一个时不能只保留头几个。
+
+    现实风险趋近于零（`_DIM_LABEL_CN` 已覆盖全部 6 个维度，生产上 `extra`
+    恒为空），所以这条纯属 future-proofing。成本只有一条用例，顺手关掉，
+    不留"以后再说"的尾巴 —— 这类尾巴基本不会再被捡起来。
+    """
+    stock: Dict[str, object] = {"code": "920982"}
+    for dim in ("zzz_a", "zzz_b", "zzz_c", "technical"):
+        re_mod._mark_price_data_missing(stock, dim, "x")
+
+    assert re_mod._price_missing_dims(stock) == [
+        "technical", "zzz_a", "zzz_b", "zzz_c",
+    ]
+    assert re_mod._price_data_caveat(stock) == \
+        "⚠️ 技术面、zzz_a、zzz_b、zzz_c行情数据不足，评分基于部分维度"
 
 
 def test_first_reason_wins_and_dims_are_deduped() -> None:
