@@ -207,8 +207,10 @@ html+='<div class="dashboard-card" style="padding:12px;margin-bottom:8px"><div s
 html+='<div style="display:flex;gap:4px;margin-top:8px;font-size:11px">'+
 ['估值','盈利','技术','资金','风险','题材'].map(k=>{
 const key=k==='估值'?'valuation':k==='盈利'?'earnings':k==='技术'?'technical':k==='资金'?'capital':k==='风险'?'risk':'theme';
-const v=ds[key]||50;const c=v>=70?'#10B981':v<=30?'#EF4444':'#94A3B8';
-return '<div style="flex:1;text-align:center;padding:4px;background:var(--bg2);border-radius:6px"><div style="color:var(--text2)">'+k+'</div><div style="font-weight:700;color:'+c+'">'+v+'</div></div>'}).join('')+'</div>';
+const ev=r.evidence?r.evidence[key]:null;const missing=!!(ev&&ev.available===false);
+const v=missing?'—':(ds[key]==null?50:ds[key]);
+const c=missing?'#64748B':(v>=70?'#10B981':v<=30?'#EF4444':'#94A3B8');
+return '<div style="flex:1;text-align:center;padding:4px;background:var(--bg2);border-radius:6px"><div style="color:var(--text2)">'+k+'</div><div style="font-weight:700;color:'+c+'"'+(missing?' title="数据不足"':'')+'>'+v+'</div></div>'}).join('')+'</div>';
 if(r.reason)html+='<div style="font-size:12px;color:var(--text2);margin-top:6px;padding:6px 8px;background:var(--bg2);border-radius:6px">'+r.reason+'</div>';
 if(r.theme_tags&&r.theme_tags.length)html+='<div style="display:flex;flex-wrap:wrap;gap:4px;margin-top:6px">'+r.theme_tags.slice(0,4).map(t=>'<span style="font-size:10px;padding:2px 7px;background:rgba(249,115,22,.12);color:#F97316;border-radius:10px;border:1px solid rgba(249,115,22,.2)">🔥 '+t+'</span>').join('')+'</div>';
 html+='</div>'});
