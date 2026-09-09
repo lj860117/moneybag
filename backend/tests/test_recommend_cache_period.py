@@ -22,12 +22,15 @@
 from __future__ import annotations
 
 import asyncio
+import json
+import os
 import threading
 from pathlib import Path
 
 import pytest
 
 import api.misc as misc
+import config as config_mod
 from services import precomputed_cache as pc
 from services import recommend_engine as re_mod
 
@@ -189,3 +192,63 @@ def test_background_update_saves_to_period_key(
     misc._trigger_recommend_update("u", 10, "hot", period)
 
     assert saved == [expected_key]
+
+
+# ============================================================
+# 5. file_cache 兜底分支也必须 period 分键（QA 实测漏修点）
+# ============================================================
+def _make_file_cache_dir(tmp_path: Path) -> Path:
+    cache_dir = tmp_path / "_cache"
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    return cache_dir
+
+
+def _write_file_cache(cache_dir: Path, period: str, code: str, mtime: float) -> None:
+    fp = cache_dir / f"recommend_rec__hot_10_{period}.json"
+    fp.write_text(json.dumps({"recommendations": [{"code": code}], "period": period}))
+    os.utime(fp, (mtime, mtime))
+
+
+def test_file_cache_fallback_is_period_scoped(monkeypatch, tmp_path: Path) -> None:
+    """file_cache 兜底 glob 必须锁 period：short 文件 mtime 最新时，medium 请求
+    不能命中 short 那份（修复前 glob 全量按 mtime 取最新会串味）。"""
+    cache_dir = _make_file_cache_dir(tmp_path)
+    # mtime 顺序：short 最新 > long 次之 > medium 最旧。修复前的 glob 会把
+    # medium/long 请求都导向 mtime 最新的 short。
+    _write_file_cache(cache_dir, "short", "SHRT", mtime=300.0)
+    _write_file_cache(cache_dir, "long", "LONG", mtime=200.0)
+    _write_file_cache(cache_dir, "medium", "MED", mtime=100.0)
+
+    monkeypatch.setattr(config_mod, "DATA_DIR", tmp_path)
+    monkeypatch.setattr(pc, "get_precomputed", lambda key: None)  # precomputed 全 miss
+    monkeypatch.setattr(misc, "_trigger_recommend_update", lambda *a, **k: None)
+
+    def code_for(period: str) -> str:
+        r = asyncio.run(misc.api_recommend_stocks(
+            userId="", topN=10, pool="hot", period=period))
+        return r["recommendations"][0]["code"]
+
+    assert code_for("short") == "SHRT"
+    assert code_for("medium") == "MED"
+    assert code_for("long") == "LONG"
+
+
+def test_file_cache_fallback_triggers_background_refresh(
+    monkeypatch, tmp_path: Path
+) -> None:
+    """命中 file_cache 兜底也要触发后台刷新，让 period 键的 precomputed 重算。
+
+    否则 precomputed 被作废后，只要 file_cache 还在（4h TTL），precomputed
+    永远不会重新生成，接口会一直吃这份历史缓存。
+    """
+    cache_dir = _make_file_cache_dir(tmp_path)
+    _write_file_cache(cache_dir, "medium", "MED", mtime=100.0)
+
+    monkeypatch.setattr(config_mod, "DATA_DIR", tmp_path)
+    monkeypatch.setattr(pc, "get_precomputed", lambda key: None)
+    calls: list = []
+    monkeypatch.setattr(misc, "_trigger_recommend_update", lambda *a: calls.append(a))
+
+    asyncio.run(misc.api_recommend_stocks(userId="u1", topN=10, pool="hot", period="medium"))
+
+    assert calls == [("u1", 10, "hot", "medium")]

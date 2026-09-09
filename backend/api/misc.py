@@ -175,8 +175,15 @@ async def api_recommend_stocks(userId: str = "", topN: int = 10, pool: str = "ho
         from config import DATA_DIR
         import json as _json
         _file_cache_dir = Path(DATA_DIR) / "_cache"
-        # 找最近的有效推荐缓存文件（任何用户的都行，因为候选池是一样的）
-        cache_files = sorted(_file_cache_dir.glob("recommend_rec_*.json"), key=lambda f: f.stat().st_mtime, reverse=True)
+        # 文件名 recommend_rec_{user_id}_{pool}_{top_n}_{period}.json ——
+        # 必须锁定 pool/topN/period、只放宽 user_id（任何用户的候选池都一样）。
+        # 否则 glob 全量按 mtime 取最新，会把短线/中线/长线串味（QA 实测：
+        # precomputed 全 miss 后，三档 period 都返回 mtime 最新的 short）。
+        _pattern = f"recommend_rec_*_{pool}_{topN}_{period}.json"
+        cache_files = sorted(
+            _file_cache_dir.glob(_pattern),
+            key=lambda f: f.stat().st_mtime, reverse=True,
+        )
         for cf in cache_files[:5]:
             payload = _json.loads(cf.read_text())
             result = payload.get("data", payload)
@@ -184,6 +191,10 @@ async def api_recommend_stocks(userId: str = "", topN: int = 10, pool: str = "ho
             if recs:
                 result["from_cache"] = True
                 result["_note"] = "来自历史缓存"
+                # 命中 file_cache 兜底也要触发后台刷新：否则 precomputed 被
+                # 作废后，只要 file_cache 还在（4h TTL），period 键的
+                # precomputed 永远不会重新生成，会一直吃这份历史缓存。
+                _trigger_recommend_update(userId, topN, pool, period)
                 return result
     except Exception:
         pass
