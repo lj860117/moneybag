@@ -78,11 +78,16 @@ def get_stock_recommendations(user_id: str = "", top_n: int = 10, pool: str = "h
     # V7.5: 按用户风险偏好调整权重
     if user_id:
         try:
-            # services.user_service 模块全仓不存在，ImportError 被下面的
-            # except 吞掉 -> 按风险偏好调整权重这一步从未生效过。
             # 真实偏好存在用户文件的 risk_profile 字段，取值 5 档
-            # （保守型/稳健型/平衡型/进取型/激进型，见 night_worker.py:383），
-            # 而下面分支用的是 3 档 growth/balanced/conservative，故需映射。
+            # （保守型/稳健型/平衡型/进取型/激进型），而下面分支用的是 3 档
+            # growth/balanced/conservative，故需映射。
+            #
+            # ⚠️ 2026-09-09 更正：早期注释写「services.user_service 不存在，
+            # ImportError 被吞掉 → 这一步从未生效」。那是旧 import 的遗留。
+            # 现在 import 的是 `services.persistence.load_user`（2026-08-30
+            # 起存在），实测导入成功，**风险偏好调整是生效的**。接上
+            # `active_weights` 后它会一并影响排序 —— 这是两个变化叠在一起，
+            # 不是只有一个（详见 `_calc_composite_score` 的文档字符串）。
             from services.persistence import load_user
             _RISK_TYPE_MAP = {
                 "保守型": "conservative",
@@ -176,7 +181,9 @@ def get_stock_recommendations(user_id: str = "", top_n: int = 10, pool: str = "h
     scored = []
     for stock in candidates[:50]:  # 最多评 50 只，控制 API 调用量
         try:
-            s = _calc_composite_score(stock)
+            # 周期权重（含风险偏好调整）必须真正传进评分函数：只塞进返回体的
+            # `weights` 字段而不参与计算，会让「短线/中线/长线」算出来完全一样
+            s = _calc_composite_score(stock, active_weights)
             if s:
                 scored.append(s)
         except Exception as e:
@@ -595,7 +602,40 @@ def _append_data_caveat(top_items: list) -> None:
         item["reason"] = f"{reason}（{caveat}）" if reason else caveat
 
 
-def _calc_composite_score(stock: dict) -> dict:
+def _resolve_weights(weights: dict | None) -> dict:
+    """把外部传入的权重解析成「6 维齐全 + 和为 1.0」的权重表。
+
+    为什么要兜这么多层：`weights` 来自 `PERIOD_WEIGHTS[period]`，还可能叠加
+    了风险偏好调整（`get_stock_recommendations` 里对 technical/capital/risk
+    做加减），而调整分支里的 `max(0.05, ...)` 会**破坏和为 1**：例如 long
+    + 保守型 时 risk 0.15→0.20、technical 触底不再减 → 和变成 1.11，
+    `total_score` 会超过 100。所以这里统一归一化。
+
+    三个兜底（宁可退回默认表，也不让分数失真）：
+      - 传 None / 空 → 用模块级 `RECOMMEND_WEIGHTS`（旧调用方行为不变）
+      - 某一维缺失或非数字 → 该维取 `RECOMMEND_WEIGHTS` 的同名值
+      - 总和 <= 0 → 整体退回 `RECOMMEND_WEIGHTS`
+
+    Args:
+        weights: 外部权重表，只认 `RECOMMEND_WEIGHTS` 里的 6 个维度键，
+            其余键（如 `label` / `icon`）忽略。允许为 None。
+
+    Returns:
+        6 维齐全且和为 1.0 的权重表（新字典，不修改入参）。
+    """
+    if not weights:
+        return dict(RECOMMEND_WEIGHTS)
+    resolved: dict[str, float] = {}
+    for dim, default_w in RECOMMEND_WEIGHTS.items():
+        value = weights.get(dim)
+        resolved[dim] = float(value) if isinstance(value, (int, float)) else default_w
+    total = sum(resolved.values())
+    if total <= 0:
+        return dict(RECOMMEND_WEIGHTS)
+    return {dim: value / total for dim, value in resolved.items()}
+
+
+def _calc_composite_score(stock: dict, weights: dict | None = None) -> dict:
     """计算 6 维综合评分（V7.2 新增 theme 维度）
 
     A3（2026-09-09）：技术面/风险面在缺少价格数据时**仍按中性分参与加权**，
@@ -603,10 +643,29 @@ def _calc_composite_score(stock: dict) -> dict:
     带上 `data_caveat` / `data_completeness`，让「这个分数基于不完整数据」
     可被观测。
 
+    周期权重（2026-09-09 修复）：`weights` 为空时用模块级 `RECOMMEND_WEIGHTS`；
+    传了就用传入值 —— `get_stock_recommendations` 会把该周期的
+    `PERIOD_WEIGHTS[period]`（叠加风险偏好调整后）传进来，这样用户选
+    「短线/中线/长线」才真正影响排序。修复前 `active_weights` 只进了返回体的
+    `weights` 字段、没进计算，三档周期算出来完全一样。
+
+    ⚠️ 传入权重会让 `total_score` 与 A3 之前的快照**不可比**：线上 9-09 那份
+    快照的 60.6 是按 `RECOMMEND_WEIGHTS` 算的，同一只股票按 medium 权重是
+    61.9。这是本次修复的预期效果，不是回归。
+
     total_score 口径说明：缺失维度照旧贡献其中性分（50 / 60），**不做**
     「按可用维度重新归一化」。理由是归一化会让「数据越缺 → 分母越小 →
-    剩余维度权重被放大 → 分数被抬高」，等价于用缺失数据奖励这只股票；
-    保持原公式则 ranking 与本轮之前完全一致，只是多了标注，风险可控。
+    剩余维度权重被放大 → 分数被抬高」，等价于用缺失数据奖励这只股票。
+    （注意：这里说的是**分数**不归一化；**权重**是要归一化的，见
+    `_resolve_weights` —— 两者方向相反，别混。）
+
+    Args:
+        stock: 候选股字典，会被复制后附加评分字段（原字典不被改写）。
+        weights: 权重表；None 表示用模块级 `RECOMMEND_WEIGHTS`。
+
+    Returns:
+        附带 `total_score` / `dimension_scores` / `evidence` /
+        `data_completeness` / `data_caveat` / `weights` 的新字典。
     """
     scores = {
         "valuation": _score_valuation(stock),
@@ -617,7 +676,8 @@ def _calc_composite_score(stock: dict) -> dict:
         "theme": _score_theme(stock),   # V7.2 新增：同花顺热点题材
     }
 
-    total = sum(scores[k] * RECOMMEND_WEIGHTS[k] for k in RECOMMEND_WEIGHTS)
+    active = _resolve_weights(weights)
+    total = sum(scores[k] * active[k] for k in active)
 
     # 缺失维度（价格数据取不到 → 该维度并非真实评分）
     missing_reasons = dict(stock.get(_PRICE_MISSING_KEY) or {})
@@ -628,7 +688,7 @@ def _calc_composite_score(stock: dict) -> dict:
     for dim, score in scores.items():
         entry = {
             "score": score,
-            "weight": f"{RECOMMEND_WEIGHTS[dim]*100:.0f}%",
+            "weight": f"{active[dim]*100:.0f}%",
             "available": dim not in missing_dims,
         }
         if dim in missing_dims:
@@ -643,6 +703,9 @@ def _calc_composite_score(stock: dict) -> dict:
         "total_score": round(total, 1),
         "dimension_scores": scores,
         "evidence": evidence,
+        # 记下这套分是**按哪套权重**算出来的：字段进了计算这件事本身
+        # 曾经出过一次错（只进返回体不进计算），留个可核对的痕迹
+        "weights": dict(active),
         "data_completeness": {
             "complete": not missing_dims,
             "missing_dimensions": missing_dims,
