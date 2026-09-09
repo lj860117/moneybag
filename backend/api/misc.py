@@ -155,8 +155,12 @@ async def api_recommend_stocks(userId: str = "", topN: int = 10, pool: str = "ho
     2. 有 file_cache 缓存 → 兜底返回
     3. 无缓存 → 返回"计算中"提示 + 后台启动异步计算
     """
-    from services.precomputed_cache import get_precomputed, save_precomputed
-    cached = get_precomputed("recommendations")
+    from services.precomputed_cache import (
+        get_precomputed, save_precomputed, recommend_cache_key,
+    )
+    # 缓存键带 period 维度：短线/中线/长线权重不同，必须分键存储。
+    # 否则三个周期会命中同一份缓存、返回相同列表（period 形同虚设）。
+    cached = get_precomputed(recommend_cache_key(period))
     if cached:
         cached["from_cache"] = True
         # 后台静默刷新（如果缓存超过2小时）
@@ -208,10 +212,10 @@ def _trigger_recommend_update(userId: str, topN: int, pool: str, period: str):
         global _recommend_computing
         try:
             from services.recommend_engine import get_stock_recommendations
-            from services.precomputed_cache import save_precomputed
+            from services.precomputed_cache import save_precomputed, recommend_cache_key
             result = get_stock_recommendations(userId, topN, pool, period)
             if result and (result.get("recommendations") or result.get("stocks")):
-                save_precomputed("recommendations", result)
+                save_precomputed(recommend_cache_key(period), result)
                 count = len(result.get("recommendations", result.get("stocks", [])))
                 print(f"[RECOMMEND] 后台计算完成: {count} 只")
         except Exception as e:

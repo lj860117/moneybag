@@ -20,6 +20,8 @@ PRECOMPUTED_DIR.mkdir(parents=True, exist_ok=True)
 # 之前2h过短导致AI对话读不到预热数据
 _PRECOMPUTED_TTL = {
     "recommendations": 43200,   # 12小时(凌晨算→晚上过期)
+    "recommendations_short": 43200,  # 12小时(短线,后台实时算)
+    "recommendations_long": 43200,   # 12小时(长线,后台实时算)
     "decisions": 43200,         # 12小时
     "daily_signal": 43200,      # 12小时(v9.5.123: 2h→12h,盘中不会变)
     "sector_rotation": 14400,   # 4小时(盘中midday会刷新)
@@ -30,6 +32,36 @@ _PRECOMPUTED_TTL = {
     "fear_greed": 14400,        # 4小时(盘中变化大)
     "valuation": 43200,         # 12小时(盘中不变)
 }
+
+
+# 推荐缓存必须带 period 维度：短线/中线/长线权重不同，共用同一个 key 会让
+# `?period=short|medium|long` 命中同一份缓存、返回完全相同的列表（period 形同
+# 虚设，详见 recommend_engine.PERIOD_WEIGHTS 三套权重表）。
+#
+#   中线(medium)沿用 legacy 键 ``recommendations`` —— night_worker 03:00 预计算
+#   仍写这个键（夜班脚本不在本次改动范围），中线读/写都落在这里以保持预计算命中；
+#   短线(short)/长线(long)各自用 ``recommendations_short`` / ``recommendations_long``，
+#   由 /api/recommend/stocks 的后台线程实时计算后写入。
+RECOMMEND_PERIODS = ("short", "medium", "long")
+RECOMMEND_LEGACY_KEY = "recommendations"
+
+
+def recommend_cache_key(period: str) -> str:
+    """返回指定持有周期的推荐缓存键（带 period 维度）。
+
+    Args:
+        period: 持有周期 - "short"(短线) / "medium"(中线) / "long"(长线)；
+            非法值一律按 medium 兜底（与 recommend_engine 的
+            ``PERIOD_WEIGHTS.get(period, PERIOD_WEIGHTS["medium"])`` 口径一致）。
+
+    Returns:
+        medium → ``recommendations``（legacy，兼容 night_worker 预计算）；
+        short / long → ``recommendations_short`` / ``recommendations_long``。
+    """
+    p = period if period in RECOMMEND_PERIODS else "medium"
+    if p == "medium":
+        return RECOMMEND_LEGACY_KEY
+    return f"recommendations_{p}"
 
 
 def save_precomputed(key: str, data: dict, user_id: str = ""):
