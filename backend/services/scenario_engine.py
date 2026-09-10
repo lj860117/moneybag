@@ -352,7 +352,18 @@ def _call_llm_for_scenario(prompt: str, use_r1: bool = True) -> dict:
     if json_match:
         try:
             parsed = json.loads(json_match.group())
-            parsed["_model"] = MODEL_ROUTING.get(model_tier, "deepseek-v4-pro" if use_r1 else "deepseek-v4-flash")
+            # FIX 2026-09-11: 这里原先取的是 MODEL_ROUTING 的「路由期望值」，
+            # 而 gateway 在 content_empty/HTTP 失败时会自动降级到候选链里的
+            # 下一个模型（如 doubao），实际生效模型与期望值并不一致，导致产物
+            # 和用户可见的晨报页脚「🤖 模型：DeepSeek V4 Pro」与实际不符。
+            # gateway 的返回值已带上真实生效模型（result["model"] = actual_model），
+            # 优先取真实值；取不到时才回落到路由期望值兜底。
+            parsed["_model"] = (
+                result.get("model")
+                or MODEL_ROUTING.get(
+                    model_tier, "deepseek-v4-pro" if use_r1 else "deepseek-v4-flash"
+                )
+            )
             parsed["_raw_length"] = len(content)
             return parsed
         except json.JSONDecodeError:

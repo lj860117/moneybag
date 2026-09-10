@@ -61,11 +61,14 @@ def fast_health_check_stock_spot():
         return None
 
 
-def optimized_stock_spot(use_cache=True, timeout=15):
+def optimized_stock_spot(use_cache=True, timeout=15, raise_on_error=False):
     """
     优化的 stock_zh_a_spot 调用
     - 支持缓存（默认1分钟）
     - 支持超时控制（默认15秒）
+    - raise_on_error: 默认 False（失败返回 None，保持既有契约）。
+      置 True 时把真实异常抛给调用方，供巡检展示准确的失败原因
+      （区分"超时"与"上游返回 HTML 导致解码失败"）。
     """
     cache_key = "stock_zh_a_spot_full"
     cache_file = CACHE_DIR / f"{cache_key}.pkl"
@@ -106,9 +109,13 @@ def optimized_stock_spot(use_cache=True, timeout=15):
 
     except FutureTimeoutError:
         print(f"[接口] 超时（{timeout}秒）")
+        if raise_on_error:
+            raise TimeoutError(f"调用超时（>{timeout}秒）")
         return None
     except Exception as e:
         print(f"[接口] 失败: {e}")
+        if raise_on_error:
+            raise
         return None
 
 

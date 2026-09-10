@@ -25,6 +25,7 @@ MODULE_META = {
     "priority": 2,
 }
 import os
+import re
 import time
 import json
 import math
@@ -130,6 +131,66 @@ def get_us_indices() -> dict:
 # 2. 外汇数据
 # ============================================================
 
+def _normalize_fx_pair(name) -> str:
+    """把货币对名称归一化为大写紧凑代码：'USD/CNY' / 'USDCNY' / '美元人民币' → 'USDCNY'。
+
+    AKShare fx_spot_quote 的「货币对」列历史上返回中文名（如 '美元/人民币'），
+    现版本返回 ISO 代码（'USD/CNY'）。FIX 2026-09-11 之前这里用
+    `"美元" in name and "人民币" in name` 匹配，而实际数据全是 ISO 代码，
+    25 行命中 0 行 → usdcny 恒为 None → 外汇 100% 缺失且无告警。
+    这里同时兼容两种形态，避免同类静默失败复发。
+
+    Returns:
+        归一化后的代码（如 'USDCNY'），无法识别时返回空字符串。
+    """
+    raw = str(name if name is not None else "").strip().upper()
+    if not raw:
+        return ""
+    # 中文形态优先：美元/人民币、美元人民币、美元兑人民币 等
+    if "美元" in raw and "人民币" in raw:
+        return "USDCNY"
+    # ISO 形态：去掉所有非字母数字（'USD/CNY' → 'USDCNY'）
+    return re.sub(r"[^A-Z0-9]", "", raw)
+
+
+def _parse_fx_frame(df) -> dict:
+    """解析 AKShare 外汇表 → {归一化代码: 买卖中值}。列名不敏感。
+
+    约定：第 1 列为货币对名称，其余列中能转成数字的都视为报价
+    （买报价/卖报价…，取均值作中值）。这样即使 AKShare 改列名或增减
+    报价列也不会解析失败。
+
+    Returns:
+        {pair_code: mid_rate}，解析不到任何有效行时返回空 dict。
+    """
+    out: dict = {}
+    if df is None or len(df) == 0:
+        return out
+    try:
+        rows = df.itertuples(index=False)
+    except Exception:
+        return out
+    for row in rows:
+        cells = list(row)
+        if len(cells) < 2:
+            continue
+        pair = _normalize_fx_pair(cells[0])
+        if not pair:
+            continue
+        rates = []
+        for cell in cells[1:]:
+            try:
+                v = float(str(cell).replace(",", "").strip())
+            except (TypeError, ValueError):
+                continue
+            if math.isfinite(v):
+                rates.append(v)
+        if not rates:
+            continue
+        out[pair] = sum(rates) / len(rates)
+    return out
+
+
 def get_forex_data() -> dict:
     """获取主要外汇汇率（美元/人民币、欧元等）
 
@@ -164,32 +225,30 @@ def get_forex_data() -> dict:
         try:
             from infra.data_source.macro.indicators import get_fx_spot_quote
             df = get_fx_spot_quote()
-            if df is not None and len(df) > 0:
-                # 找美元/人民币
-                for _, row in df.iterrows():
-                    name = str(row.iloc[0]) if len(row) > 0 else ""
-                    if "美元" in name and "人民币" in name:
-                        result["usdcny"] = {
-                            "rate": _safe_num(row.iloc[1]) if len(row) > 1 else 0,
-                            "name": name,
-                            "source": "akshare",
-                        }
-                        break
+            pairs = _parse_fx_frame(df)
+            if pairs:
+                # 美元/人民币：兼容 USD/CNY 与 USDCNY 两种写法
+                if "USDCNY" in pairs:
+                    result["usdcny"] = {
+                        "rate": round(pairs["USDCNY"], 4),
+                        "name": "USD/CNY",
+                        "source": "akshare",
+                    }
 
-                # 用美元对多币种变化推算美元强弱
-                usd_pairs = []
-                for _, row in df.iterrows():
-                    name = str(row.iloc[0])
-                    if "美元" in name:
-                        try:
-                            rate = _safe_num(row.iloc[1])
-                            usd_pairs.append(rate)
-                        except (ValueError, IndexError):
-                            pass
+                # 美元对多币种 → 美元强弱代理（ISO 前缀 USD）
+                usd_pairs = [v for k, v in pairs.items() if k.startswith("USD")]
+                if usd_pairs:
+                    result["dxy_proxy"] = round(sum(usd_pairs) / len(usd_pairs), 4)
 
                 result["available"] = result["usdcny"] is not None
                 if result["available"]:
-                    print(f"[GLOBAL] Forex from AKShare (Tushare unavailable)")
+                    print(f"[GLOBAL] Forex from AKShare (Tushare unavailable): "
+                          f"USDCNY={result['usdcny']['rate']}")
+                else:
+                    # 解析不到就明确报出来，不再静默返回 available=False
+                    print(f"[GLOBAL] Forex AKShare 无 USDCNY（解析到 {len(pairs)} 个货币对）")
+            else:
+                print(f"[GLOBAL] Forex AKShare 返回空/无法解析")
         except Exception as e:
             print(f"[GLOBAL] Forex AKShare failed: {e}")
 

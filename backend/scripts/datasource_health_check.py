@@ -48,10 +48,25 @@ HEALTH_CHECKS = [
      "args": {"symbol": "HSI"}, "expect": "rows > 100"},
 
     # 降级备份：用 stock_zh_a_spot（带缓存+超时控制）替代 stock_zh_a_spot_em，
-    # 避开东方财富接口偶发限流/封禁。critical=False，失败不影响整体健康结论。
+    # 避开东方财富接口偶发限流/封禁。
+    #
+    # FIX 2026-09-11：critical 由 False 改为 True。原先注释写着
+    # "critical=False，失败不影响整体健康结论"，但 critical 字段从未被
+    # run_health_check 读取过（声明未实现）。更重要的是：本项与生产降级链
+    # 的源 2 共用同一个上游 ak.stock_zh_a_spot
+    # （services/stock_data_provider.py 的 _try_sina_xq_source），
+    # 东财主源反爬时会连坐，是有效前哨，不能静音。
     {"name": "[降级]实时行情(优化)", "source": "akshare_optimized", "func": "optimized_stock_spot",
      "args": {"use_cache": True, "timeout": 30}, "expect": "rows > 100",
-     "critical": False, "note": "带缓存和超时控制"},
+     "critical": True, "note": "带缓存和超时控制；生产降级链源2前哨，不可静音"},
+
+    # === 外汇（P0，2026-09-11 补入，此前 13 项不含外汇 → 永久盲区）===
+    # 注意：不能只测"接口能不能调通"。2026-09-11 的事故正是数据源正常返回
+    # 25 行、但解析条件永不命中，导致 usdcny 恒为 None、外汇 100% 缺失却
+    # 永不告警。所以这里校验的是「能否解析出有效的 usdcny 数值」。
+    {"name": "外汇(USD/CNY)", "source": "forex", "func": "get_forex_data",
+     "args": {}, "expect": "usdcny > 0", "critical": True,
+     "note": "校验能解析出有效 usdcny，而非仅接口可调通"},
 
     # === Tushare（付费 API，稳定，每次间隔 0.3s）===
     {"name": "股票日线", "source": "tushare", "api_name": "daily",
@@ -126,10 +141,14 @@ def _check_akshare_optimized(check: dict) -> dict:
         from scripts.akshare_optimized import optimized_stock_spot
 
         args = check.get("args", {})
-        data = optimized_stock_spot(**args)
+        # FIX 2026-09-11: raise_on_error=True，让真实异常冒出来而不是被
+        # optimized_stock_spot 吞成 None。原实现返回固定文案「调用失败或超时」，
+        # 把"新浪反爬返回 HTML 导致解码失败"和"真的超时"混为一谈，
+        # 严重误导排障（2026-09-11 实际是前者，实耗 21.8s 并未超时）。
+        data = optimized_stock_spot(raise_on_error=True, **args)
 
         if data is None:
-            return {"ok": False, "detail": "调用失败或超时"}
+            return {"ok": False, "detail": "调用返回空（无数据）"}
 
         if check["expect"].startswith("rows"):
             row_count = len(data) if data is not None else 0
@@ -141,6 +160,42 @@ def _check_akshare_optimized(check: dict) -> dict:
             detail = "有数据" if ok else "无数据"
 
         return {"ok": ok, "detail": detail}
+    except Exception as e:
+        return {"ok": False, "detail": f"异常: {str(e)[:80]}"}
+
+
+def _check_forex(check: dict) -> dict:
+    """检查外汇链路（Tushare 主 + AKShare 降级）
+
+    关键点：不能只验证"接口返回了 DataFrame"。2026-09-11 的事故正是数据源
+    正常返回 25 行、但 services/global_market.py 的解析条件用了中文匹配
+    （"美元"/"人民币"）而实际数据是 ISO 代码（USD/CNY），命中 0 行 →
+    usdcny 恒为 None → 外汇 100% 缺失且无任何告警。
+
+    所以这里直接复用 get_forex_data() 的真实解析路径，以 available 与
+    usdcny.rate 作为判定依据——即验证"能解析出有效数值"，而非"接口可调通"。
+    """
+    try:
+        from services.global_market import get_forex_data
+
+        data = get_forex_data()
+        if not isinstance(data, dict):
+            return {"ok": False, "detail": f"返回值类型异常: {type(data).__name__}"}
+
+        if not data.get("available"):
+            return {"ok": False, "detail": "available=False，未解析出 usdcny（数据源有数据但解析失败？）"}
+
+        usd = data.get("usdcny") or {}
+        rate = usd.get("rate")
+        try:
+            rate_val = float(rate)
+        except (TypeError, ValueError):
+            return {"ok": False, "detail": f"usdcny.rate 非法: {rate!r}"}
+
+        if rate_val <= 0:
+            return {"ok": False, "detail": f"usdcny.rate 非正值: {rate_val}"}
+
+        return {"ok": True, "detail": f"USD/CNY={rate_val}（来源 {usd.get('source', '?')}）"}
     except Exception as e:
         return {"ok": False, "detail": f"异常: {str(e)[:80]}"}
 
@@ -206,6 +261,8 @@ def run_health_check() -> list:
             result = _check_akshare(check)
         elif source == "akshare_optimized":
             result = _check_akshare_optimized(check)
+        elif source == "forex":
+            result = _check_forex(check)
         elif source == "tushare":
             result = _check_tushare(check)
         else:
@@ -218,6 +275,10 @@ def run_health_check() -> list:
             "ok": result["ok"],
             "status": status,
             "detail": result["detail"],
+            # FIX 2026-09-11: 透传 critical。此前该字段只在 HEALTH_CHECKS
+            # 里声明、从未进入 results，导致 main() 无从区分关键/非关键失败，
+            # 所有失败一律推企微（"失败不影响整体健康结论"的设计意图落空）。
+            "critical": bool(check.get("critical", True)),
             "timestamp": datetime.now().isoformat(),
         })
         print(f"  {status} [{source}] {name}: {result['detail']}")
@@ -296,10 +357,19 @@ def main():
     results = run_health_check()
 
     # 统计
-    failures = [r for r in results if r["status"] == "❌"]
-    ok_count = len(results) - len(failures)
+    # FIX 2026-09-11: 只有 critical 为真的失败才计入告警 failures；
+    # critical=False 的失败降级为日志提示，不再推企微。此前该判断完全缺失，
+    # 所有失败一律推送，导致"失败不影响整体健康结论"的设计意图从未生效。
+    all_failures = [r for r in results if r["status"] == "❌"]
+    failures = [r for r in all_failures if r.get("critical", True)]
+    ok_count = len(results) - len(all_failures)
     print(f"\n{'='*40}")
-    print(f"  ✅ 正常: {ok_count}    ❌ 异常: {len(failures)}")
+    print(f"  ✅ 正常: {ok_count}    ❌ 异常: {len(all_failures)}（其中需告警: {len(failures)}）")
+    if len(failures) < len(all_failures):
+        print("  ℹ️ 以下非关键项失败（critical=False，不推送告警）：")
+        for r in all_failures:
+            if not r.get("critical", True):
+                print(f"     - [{r['source']}] {r['name']}: {r['detail']}")
 
     # 有异常 → 推企微（去重）
     if failures:

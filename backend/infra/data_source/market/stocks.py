@@ -14,6 +14,8 @@ Invariant #6: All external data through infra/data_source.
 """
 from __future__ import annotations
 
+import time
+
 import pandas as pd
 from typing import Any, Dict, List, Optional
 
@@ -190,14 +192,26 @@ def get_stock_realtime_quotes() -> Any:
         DataFrame with realtime price data.
         None on failure.
 
-    v9.9.x: 接入超时保护（FIX 2026-09-01）。实测该接口耗时 13.72s（分页
-    拉取全市场，带进度条），比 stock_zh_a_spot_em 慢很多——超时兜底给
-    25s 留余量，正常网络下应该在这个窗口内完成。
+    超时保护（FIX 2026-09-01 引入，FIX 2026-09-11 调整阈值+重试）：
+    该接口分页拉取全市场（70 页 × 80 条），耗时随上游波动很大：
+      - 2026-09-01 实测 13.72s（旧基线，已失效，勿再引用）
+      - 2026-09-11 实测 27.2s
+    原 25s 阈值已低于实测耗时 → 上游正常波动就会被误判成超时。这里放宽
+    到 40s，并加 1 次重试（间隔 3s）吸收新浪侧偶发的分页限流：新浪常在
+    分页末段返回 HTML 限流页，akshare 抛解码异常后被 call_with_timeout
+    吞成 None，重试一次即可恢复。
     """
     try:
         import akshare as ak
         from infra.data_source.fallback import call_with_timeout
-        return call_with_timeout(ak.stock_zh_a_spot, 25)
+
+        df = call_with_timeout(ak.stock_zh_a_spot, 40)
+        if df is None or len(df) == 0:
+            print("[DATA_SOURCE/MARKET] get_stock_realtime_quotes: "
+                  "首次返回为空，3s 后重试 1 次")
+            time.sleep(3)
+            df = call_with_timeout(ak.stock_zh_a_spot, 40)
+        return df
     except Exception as e:
         print(f"[DATA_SOURCE/MARKET] get_stock_realtime_quotes: {e}")
         return None
