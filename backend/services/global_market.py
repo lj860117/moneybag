@@ -191,6 +191,65 @@ def _parse_fx_frame(df) -> dict:
     return out
 
 
+# USD/CNY 合理性区间：历史大致 6.0~7.3，放宽到 [4.0, 9.0] 以容纳极端行情，
+# 同时仍能拦住明显错误的值（如把分位/百分比/汇率小数位弄错的结果）。
+_USDCNY_VALID_RANGE = (4.0, 9.0)
+
+# 美元指数（DXY）合理性区间：真实值约 100，历史区间大致 70~165，
+# 放宽到 [50, 200] 以容纳极端行情。关键是它能拦住**量纲错误**——
+# 例如把 USDCNY≈6.7 当成美元指数返回（这正是 2026-09-11 返工的原因）。
+_DXY_VALID_RANGE = (50.0, 200.0)
+
+
+def _sanitize_usdcny(value) -> float | None:
+    """USD/CNY 准入校验：落在 [4.0, 9.0] 才采纳，越界返回 None 并告警。
+
+    兜底必须配检测：只判「非空」会让任何可疑数值一路静默变成对外数据，
+    这正是 2026-09-11 这一整串故障的共同病根。
+    """
+    if value is None:
+        return None
+    try:
+        val = float(value)
+    except (TypeError, ValueError):
+        print(f"[GLOBAL] usdcny 非法值（非数字）: {value!r}，置为 None")
+        return None
+    if not math.isfinite(val):
+        print(f"[GLOBAL] usdcny 非法值（非有限数）: {val}，置为 None")
+        return None
+    low, high = _USDCNY_VALID_RANGE
+    if not (low <= val <= high):
+        print(f"[GLOBAL] ⚠️ usdcny={val} 超出合理区间 [{low}, {high}]，"
+              f"疑似数据源异常，置为 None")
+        return None
+    return val
+
+
+def _sanitize_dxy(value) -> float | None:
+    """美元指数（DXY）准入校验：落在 [50, 200] 才采纳，越界返回 None 并告警。
+
+    DXY 当前**未实现**（无可用数据源，原因见 get_forex_data 内注释），
+    本函数是为未来实现预留的防线：任何算出来的 DXY 都必须先过这道校验，
+    越界即拦下并告警，绝不静默返回可疑值。
+    """
+    if value is None:
+        return None
+    try:
+        val = float(value)
+    except (TypeError, ValueError):
+        print(f"[GLOBAL] dxy_proxy 非法值（非数字）: {value!r}，置为 None")
+        return None
+    if not math.isfinite(val):
+        print(f"[GLOBAL] dxy_proxy 非法值（非有限数）: {val}，置为 None")
+        return None
+    low, high = _DXY_VALID_RANGE
+    if not (low <= val <= high):
+        print(f"[GLOBAL] ⚠️ dxy_proxy={val} 超出合理区间 [{low}, {high}]，"
+              f"疑似量纲错误（DXY 应约 100，切勿拿 USDCNY≈6.7 充当），置为 None")
+        return None
+    return val
+
+
 def get_forex_data() -> dict:
     """获取主要外汇汇率（美元/人民币、欧元等）
 
@@ -210,13 +269,16 @@ def get_forex_data() -> dict:
         tp = TusharePrimary.instance()
         forex = tp.get_forex_data()
         if forex and forex.get("usdcny"):
-            result["usdcny"] = {
-                "rate": forex["usdcny"],
-                "date": forex.get("date", ""),
-                "source": "tushare",
-            }
-            result["available"] = True
-            print(f"[GLOBAL] Forex from Tushare: USDCNY={forex['usdcny']}")
+            rate = _sanitize_usdcny(forex["usdcny"])
+            if rate is not None:
+                result["usdcny"] = {
+                    "rate": rate,
+                    "date": forex.get("date", ""),
+                    "source": "tushare",
+                }
+                result["available"] = True
+                print(f"[GLOBAL] Forex from Tushare: USDCNY={rate}")
+            # rate 为 None 时不置 available，自动落到下面的 AKShare 降级
     except Exception as e:
         print(f"[GLOBAL] Forex Tushare failed: {e}")
 
@@ -229,16 +291,25 @@ def get_forex_data() -> dict:
             if pairs:
                 # 美元/人民币：兼容 USD/CNY 与 USDCNY 两种写法
                 if "USDCNY" in pairs:
-                    result["usdcny"] = {
-                        "rate": round(pairs["USDCNY"], 4),
-                        "name": "USD/CNY",
-                        "source": "akshare",
-                    }
+                    rate = _sanitize_usdcny(pairs["USDCNY"])
+                    if rate is not None:
+                        result["usdcny"] = {
+                            "rate": round(rate, 4),
+                            "name": "USD/CNY",
+                            "source": "akshare",
+                        }
 
-                # 美元对多币种 → 美元强弱代理（ISO 前缀 USD）
-                usd_pairs = [v for k, v in pairs.items() if k.startswith("USD")]
-                if usd_pairs:
-                    result["dxy_proxy"] = round(sum(usd_pairs) / len(usd_pairs), 4)
+                # 美元指数（DXY）未实现 → 恒为 None。保留字段以免破坏 API 契约。
+                #
+                # 真实 DXY 需要 EUR/USD、USD/JPY、GBP/USD 等跨币种加权几何平均
+                # （EUR 57.6% / JPY 13.6% / GBP 11.9% / CAD 9.1% / SEK 4.2% /
+                #   CHF 3.6%），而当前 fx_spot_quote 只提供「外币/CNY」报价，
+                # 不含上述跨币种对，无法计算。
+                #
+                # 切勿拿 USDCNY 充当代理——两者量纲完全不同
+                # （DXY≈100 vs USDCNY≈6.7），返回错值比返回 None 危险得多。
+                # 未来接真实 DXY 数据源时，务必把结果交给 _sanitize_dxy() 校验。
+                result["dxy_proxy"] = _sanitize_dxy(None)
 
                 result["available"] = result["usdcny"] is not None
                 if result["available"]:
