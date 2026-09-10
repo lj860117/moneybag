@@ -345,12 +345,31 @@ class TusharePrimary:
             return None
 
     def get_forex_data(self, start_date: str = "", end_date: str = "") -> Optional[Dict]:
-        """获取外汇汇率（Tushare: fx_obtime）
+        """获取外汇汇率（Tushare: fx_daily，FXCM 源）
 
-        主要汇率：
-        - USDCNY (美元/人民币)
-        - USDJPY (美元/日元)
-        - EURUSD (欧元/美元)
+        FIX 2026-09-11: 原实现调用 fx_obtime(ts_code="USDCNY")，但该接口名
+        在 Tushare Pro 上**根本不存在**（返回「请指定正确的接口名」）。注意这
+        与「权限不足」是两种不同的报错——对照实验：us_daily 会明确报
+        「抱歉，您没有接口(us_daily)访问权限」，而 fx_obtime 报的是接口名错误。
+
+        实测排查（服务器 tushare 1.4.29，token 有效、daily/shibor/hk_daily 均正常）：
+          - 穷举 27 个候选接口名（fx_obtime / fx_spot / fx_swap / cn_fx /
+            exchange_rate / fx_cny / rmb_rate …），**只有 fx_daily 可用**。
+          - fx_daily 是 **FXCM 全球外汇/CFD** 数据，实测 273 个 ts_code 中
+            **没有任何 CNY（在岸）标的**，只提供离岸 USDCNH.FXCM。
+        结论：Tushare 无法提供在岸 USD/CNY，只能提供离岸 USD/CNH。
+        因此在岸 USD/CNY 的主源改为 AKShare（见 services/global_market.py
+        的 get_forex_data 注释），本方法只返回离岸价，供兜底与交叉校验，
+        并且**绝不当作在岸 CNY 返回**（币种不同，不能冒充）。
+
+        两个实现要点（都是实测踩出来的坑）：
+          1. 必须传 start_date/end_date——不传会返回 2013 年起的 4000 行，
+             取到的是最旧数据；
+          2. fx_daily 返回按 trade_date **降序**，最新一行是 iloc[0]。
+             原代码用 iloc[-1]，会取到区间最早一天（已修正）。
+
+        Returns:
+            {"usdcnh": float, "date": str, "source": "tushare"}，取不到时 None。
         """
         if not self.is_available():
             return None
@@ -361,22 +380,41 @@ class TusharePrimary:
             if not start_date:
                 start_date = (datetime.now() - timedelta(days=30)).strftime("%Y%m%d")
 
-            # 美元/人民币
-            df = self._pro.fx_obtime(ts_code="USDCNY", start_date=start_date, end_date=end_date)
-            if df is not None and len(df) > 0:
-                latest = df.iloc[-1]
-                rate = float(latest.get("close", 0))
-                print(f"[TUSHARE_PRIMARY] FX USDCNY: {rate}")
-                return {
-                    "usdcny": rate,
-                    "date": str(latest.get("trade_date", "")),
-                    "source": "tushare",
-                }
+            # 离岸人民币（FXCM）。在岸 USDCNY 在 Tushare 上不存在，详见 docstring。
+            df = self._pro.fx_daily(
+                ts_code="USDCNH.FXCM",
+                start_date=start_date,
+                end_date=end_date,
+            )
+            if df is None or len(df) == 0:
+                print(f"[TUSHARE_PRIMARY] ⚠️ FX USDCNH 无数据"
+                      f"（ts_code=USDCNH.FXCM, {start_date}~{end_date}）")
+                return None
 
-            return None
+            latest = df.iloc[0]
+            try:
+                bid = float(latest.get("bid_close"))
+                ask = float(latest.get("ask_close"))
+            except (TypeError, ValueError):
+                print(f"[TUSHARE_PRIMARY] ⚠️ FX USDCNH 报价字段异常: "
+                      f"bid_close={latest.get('bid_close')!r} ask_close={latest.get('ask_close')!r}")
+                return None
+
+            rate = (bid + ask) / 2 if (bid > 0 and ask > 0) else max(bid, ask)
+            if rate <= 0:
+                print(f"[TUSHARE_PRIMARY] ⚠️ FX USDCNH 报价非正: {rate}")
+                return None
+
+            trade_date = str(latest.get("trade_date", ""))
+            print(f"[TUSHARE_PRIMARY] FX USDCNH: {rate:.4f} (trade_date={trade_date})")
+            return {
+                "usdcnh": round(rate, 4),
+                "date": trade_date,
+                "source": "tushare",
+            }
 
         except Exception as e:
-            print(f"[TUSHARE_PRIMARY] Forex 获取失败: {e}")
+            print(f"[TUSHARE_PRIMARY] ⚠️ Forex 获取失败: {e}")
             return None
 
     def get_global_commodities(self, start_date: str = "", end_date: str = "") -> Optional[Dict]:

@@ -1916,7 +1916,16 @@ def step_overnight_check():
         from services.global_market import get_forex_data
         fx = get_forex_data()
         if fx.get("available") and fx.get("usdcny"):
-            parts.append(f"💱 美元/人民币: {fx['usdcny']['rate']:.4f}")
+            usd = fx["usdcny"]
+            # 主源（AKShare 在岸）挂了、落到 Tushare 离岸价时，必须把币种标出来。
+            # 否则晨报会静默地把离岸 USD/CNH 当成在岸 USD/CNY 推给用户
+            # ——和 dxy_proxy 拿 USDCNY 充数是同一类语义错误。
+            if usd.get("proxy"):
+                parts.append(f"💱 美元/人民币(离岸CNH兜底): {usd['rate']:.4f}")
+                log(f"  ⚠️ 汇率主源降级：当前为离岸 USD/CNH 兜底价 {usd['rate']}，"
+                    f"非在岸 USD/CNY")
+            else:
+                parts.append(f"💱 美元/人民币: {usd['rate']:.4f}")
     except Exception as e:
         log(f"  汇率数据失败: {e}")
 

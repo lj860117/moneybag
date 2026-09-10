@@ -195,6 +195,17 @@ def _check_forex(check: dict) -> dict:
         if rate_val <= 0:
             return {"ok": False, "detail": f"usdcny.rate 非正值: {rate_val}"}
 
+        # 在岸 USD/CNY 的主源是 AKShare；若落到 Tushare 的离岸 USD/CNH，
+        # 说明主源已故障、正在用离岸价兜底——必须判失败并告警，
+        # 不能因为「还有个值」就当没事（这正是 2026-09-11 的病根：
+        # 主源坏了靠降级撑着，全靠一行没人看的日志）。
+        if usd.get("proxy"):
+            return {
+                "ok": False,
+                "detail": (f"⚠️ 主源降级：当前 USD/CNY 由 Tushare 离岸 USD/CNH 兜底 "
+                           f"= {rate_val}（{usd.get('name', '?')}），AKShare 在岸主源已不可用"),
+            }
+
         return {"ok": True, "detail": f"USD/CNY={rate_val}（来源 {usd.get('source', '?')}）"}
     except Exception as e:
         return {"ok": False, "detail": f"异常: {str(e)[:80]}"}

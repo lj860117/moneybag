@@ -251,9 +251,24 @@ def _sanitize_dxy(value) -> float | None:
 
 
 def get_forex_data() -> dict:
-    """获取主要外汇汇率（美元/人民币、欧元等）
+    """获取主要外汇汇率（美元/人民币）
 
-    策略：Tushare 主 + AKShare 降级
+    数据源顺序（FIX 2026-09-11 重大调整）：
+      1. **AKShare** fx_spot_quote —— 在岸 USD/CNY 的真实主源
+      2. **Tushare** fx_daily(USDCNH.FXCM) —— 离岸 USD/CNH，仅作兜底/交叉校验
+
+    为什么把 AKShare 提到主源（违背「Tushare 主源」惯例，但这是实测结论）：
+      Tushare 上**不存在在岸 USD/CNY 数据**。详见
+      services/tushare_fallback.py 的 get_forex_data docstring——
+      穷举 27 个候选接口名只有 fx_daily 可用，而 fx_daily 是 FXCM 数据，
+      273 个 ts_code 里没有任何 CNY 标的，只有离岸 USDCNH.FXCM；
+      代码原先调用的 fx_obtime 则是根本不存在的接口名。
+      在岸/离岸价差通常 <0.1%，但**币种不同**，混用必须显式标注，
+      不能用 CNH 默默冒充 CNY（这与 dxy_proxy 不能拿 USDCNY 充数是同一原则）。
+
+    Returns:
+        {"usdcny": {...}|None, "dxy_proxy": None, "available": bool}
+        usdcny 里的 "proxy": True 表示当前值是离岸 USD/CNH 兜底，非在岸价。
     """
     cache_key = "forex"
     now = time.time()
@@ -261,67 +276,96 @@ def get_forex_data() -> dict:
     if cached is not None:
         return cached
 
-    result = {"usdcny": None, "dxy_proxy": None, "available": False}
+    # degraded / degraded_reason：把「降级」做成接口字段而不只是一行日志。
+    # 2026-09-11 的病根就是主源坏了靠降级撑着、只在 stdout 打一行没人看的日志，
+    # 调用方（前端/晨报）完全无感。现在降级状态随数据一起返回，可被巡检、
+    # 可被前端读取、可被人看见。
+    result = {
+        "usdcny": None,
+        "dxy_proxy": None,
+        "available": False,
+        "degraded": False,
+        "degraded_reason": "",
+    }
 
-    # 策略：Tushare 主
+    # 主源 1：AKShare（在岸 USD/CNY）
     try:
-        from services.tushare_fallback import TusharePrimary
-        tp = TusharePrimary.instance()
-        forex = tp.get_forex_data()
-        if forex and forex.get("usdcny"):
-            rate = _sanitize_usdcny(forex["usdcny"])
-            if rate is not None:
-                result["usdcny"] = {
-                    "rate": rate,
-                    "date": forex.get("date", ""),
-                    "source": "tushare",
-                }
-                result["available"] = True
-                print(f"[GLOBAL] Forex from Tushare: USDCNY={rate}")
-            # rate 为 None 时不置 available，自动落到下面的 AKShare 降级
-    except Exception as e:
-        print(f"[GLOBAL] Forex Tushare failed: {e}")
+        from infra.data_source.macro.indicators import get_fx_spot_quote
+        df = get_fx_spot_quote()
+        pairs = _parse_fx_frame(df)
+        if pairs:
+            # 美元/人民币：兼容 USD/CNY 与 USDCNY 两种写法
+            if "USDCNY" in pairs:
+                rate = _sanitize_usdcny(pairs["USDCNY"])
+                if rate is not None:
+                    result["usdcny"] = {
+                        "rate": round(rate, 4),
+                        "name": "USD/CNY",
+                        "source": "akshare",
+                    }
 
-    # 降级：AKShare
+            # 美元指数（DXY）未实现 → 恒为 None。保留字段以免破坏 API 契约。
+            #
+            # 真实 DXY 需要 EUR/USD、USD/JPY、GBP/USD 等跨币种加权几何平均
+            # （EUR 57.6% / JPY 13.6% / GBP 11.9% / CAD 9.1% / SEK 4.2% /
+            #   CHF 3.6%），而当前 fx_spot_quote 只提供「外币/CNY」报价，
+            # 不含上述跨币种对，无法计算。
+            #
+            # 切勿拿 USDCNY 充当代理——两者量纲完全不同
+            # （DXY≈100 vs USDCNY≈6.7），返回错值比返回 None 危险得多。
+            # 未来接真实 DXY 数据源时，务必把结果交给 _sanitize_dxy() 校验。
+            result["dxy_proxy"] = _sanitize_dxy(None)
+
+            result["available"] = result["usdcny"] is not None
+            if result["available"]:
+                print(f"[GLOBAL] Forex from AKShare (primary): "
+                      f"USDCNY={result['usdcny']['rate']}")
+            else:
+                # 解析不到就明确报出来，不再静默返回 available=False
+                print(f"[GLOBAL] ⚠️ 外汇主源 AKShare 未解析出 USDCNY"
+                      f"（解析到 {len(pairs)} 个货币对）")
+        else:
+            print("[GLOBAL] ⚠️ 外汇主源 AKShare 返回空/无法解析")
+    except Exception as e:
+        print(f"[GLOBAL] ⚠️ 外汇主源 AKShare 异常: {e}")
+
+    # 兜底/交叉校验：Tushare（离岸 USD/CNH）
     if not result["available"]:
         try:
-            from infra.data_source.macro.indicators import get_fx_spot_quote
-            df = get_fx_spot_quote()
-            pairs = _parse_fx_frame(df)
-            if pairs:
-                # 美元/人民币：兼容 USD/CNY 与 USDCNY 两种写法
-                if "USDCNY" in pairs:
-                    rate = _sanitize_usdcny(pairs["USDCNY"])
-                    if rate is not None:
-                        result["usdcny"] = {
-                            "rate": round(rate, 4),
-                            "name": "USD/CNY",
-                            "source": "akshare",
-                        }
-
-                # 美元指数（DXY）未实现 → 恒为 None。保留字段以免破坏 API 契约。
-                #
-                # 真实 DXY 需要 EUR/USD、USD/JPY、GBP/USD 等跨币种加权几何平均
-                # （EUR 57.6% / JPY 13.6% / GBP 11.9% / CAD 9.1% / SEK 4.2% /
-                #   CHF 3.6%），而当前 fx_spot_quote 只提供「外币/CNY」报价，
-                # 不含上述跨币种对，无法计算。
-                #
-                # 切勿拿 USDCNY 充当代理——两者量纲完全不同
-                # （DXY≈100 vs USDCNY≈6.7），返回错值比返回 None 危险得多。
-                # 未来接真实 DXY 数据源时，务必把结果交给 _sanitize_dxy() 校验。
-                result["dxy_proxy"] = _sanitize_dxy(None)
-
-                result["available"] = result["usdcny"] is not None
-                if result["available"]:
-                    print(f"[GLOBAL] Forex from AKShare (Tushare unavailable): "
-                          f"USDCNY={result['usdcny']['rate']}")
+            from services.tushare_fallback import TusharePrimary
+            tp = TusharePrimary.instance()
+            fx = tp.get_forex_data()
+            if fx and fx.get("usdcnh"):
+                rate = _sanitize_usdcny(fx["usdcnh"])
+                if rate is not None:
+                    # 离岸价兜底：必须显式标注币种，绝不冒充在岸 USD/CNY。
+                    # proxy=True 会被数据源巡检识别为降级状态并告警
+                    # （见 scripts/datasource_health_check.py 的 _check_forex）。
+                    result["usdcny"] = {
+                        "rate": round(rate, 4),
+                        "name": "USD/CNH(离岸,代理USD/CNY)",
+                        "source": "tushare",
+                        "proxy": True,
+                    }
+                    result["available"] = True
+                    result["degraded"] = True
+                    result["degraded_reason"] = (
+                        "在岸 USD/CNY 主源(AKShare)不可用，"
+                        "当前值为 Tushare 离岸 USD/CNH 兜底"
+                    )
+                    print(f"[GLOBAL] ⚠️ 外汇主源不可用，已用 Tushare 离岸 USD/CNH 兜底: "
+                          f"{rate}（date={fx.get('date', '')}，注意：离岸价，非在岸 USD/CNY）")
                 else:
-                    # 解析不到就明确报出来，不再静默返回 available=False
-                    print(f"[GLOBAL] Forex AKShare 无 USDCNY（解析到 {len(pairs)} 个货币对）")
+                    print(f"[GLOBAL] ⚠️ Tushare 离岸 USD/CNH 值不合理: {fx['usdcnh']}")
             else:
-                print(f"[GLOBAL] Forex AKShare 返回空/无法解析")
+                print("[GLOBAL] ⚠️ 外汇兜底源 Tushare 也无数据（无 USD/CNH）")
         except Exception as e:
-            print(f"[GLOBAL] Forex AKShare failed: {e}")
+            print(f"[GLOBAL] ⚠️ Tushare 外汇兜底异常: {e}")
+
+    if not result["available"]:
+        result["degraded"] = True
+        result["degraded_reason"] = "外汇全部数据源均不可用（AKShare 在岸 + Tushare 离岸）"
+        print("[GLOBAL] ⚠️ 外汇全部数据源均不可用，usdcny=None")
 
     _global_cache.set(cache_key, result, ttl=_GLOBAL_TTL)
     return result
