@@ -231,6 +231,7 @@ def run_health_check() -> list:
             results.append({
                 "name": name, "source": source, "ok": True,
                 "status": "⏭️", "detail": "非交易时段，跳过",
+                "critical": bool(check.get("critical", True)),
                 "timestamp": datetime.now().isoformat(),
             })
             print(f"  ⏭️ [{source}] {name}: 非交易时段，跳过")
@@ -239,6 +240,7 @@ def run_health_check() -> list:
             results.append({
                 "name": name, "source": source, "ok": True,
                 "status": "⏭️", "detail": "非交易日，跳过",
+                "critical": bool(check.get("critical", True)),
                 "timestamp": datetime.now().isoformat(),
             })
             print(f"  ⏭️ [{source}] {name}: 非交易日，跳过")
@@ -247,6 +249,7 @@ def run_health_check() -> list:
             results.append({
                 "name": name, "source": source, "ok": True,
                 "status": "⏭️", "detail": "收盘前无数据，跳过",
+                "critical": bool(check.get("critical", True)),
                 "timestamp": datetime.now().isoformat(),
             })
             print(f"  ⏭️ [{source}] {name}: 收盘前无数据，跳过")
