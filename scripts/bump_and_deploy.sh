@@ -114,7 +114,18 @@ if $DRY_RUN; then
         echo "  ⚠️  纯后端改动：bump 后会出现「后端版本领先前端缓存标记」的状态，"
         echo "     这是允许的。下一轮动了前端时，三处必须一起 bump 收拢。"
     else
-        echo "  index.html         ?v=${CURRENT_INDEX_VERSION:-?} → ?v=${NEW_VERSION}  (22 处)"
+        # 真实统计"出现次数"而不是写死数字。
+        # 2026-09-12：这里原来是硬编码的 "(22 处)"，与实际处数早已不符
+        # （实测 27 处），会让 dry-run 预览给出一个假的确定感。
+        # 口径必须与 [2/5] 实际替换后的统计一致，否则"预览 27、实际替换 22"
+        # 这种对不上的情况无法被发现。
+        IDX_OLD_COUNT=0
+        if [ -n "${CURRENT_INDEX_VERSION:-}" ]; then
+            # grep -oF：-o 逐"出现"输出（而非 -c 的逐"行"计数），
+            #          -F 固定字符串（避免版本号里的 . 被当正则元字符）。
+            IDX_OLD_COUNT=$(grep -oF "?v=${CURRENT_INDEX_VERSION}" index.html | wc -l | tr -d ' ')
+        fi
+        echo "  index.html         ?v=${CURRENT_INDEX_VERSION:-?} → ?v=${NEW_VERSION}  (${IDX_OLD_COUNT} 处)"
         echo "  sw.js              CACHE_NAME: moneybag-v${CURRENT_SW_VERSION}-cache → moneybag-v${NEW_SW_VERSION}-cache"
     fi
     echo ""
@@ -158,7 +169,12 @@ else
     if [ -n "$OLD_V" ]; then
         # 用 perl 替换所有出现（macOS sed -i 不支持 \+ 等，perl 更稳健）
         perl -i -pe "s/\?v=${OLD_V//./\\.}/\?v=${NEW_VERSION}/g" index.html
-        REPLACED=$(grep -c "?v=${NEW_VERSION}" index.html || echo 0)
+        # 与 dry-run 预览保持同一口径：逐"出现"计数，不是逐"行"计数。
+        # grep -c 数的是【匹配到的行数】，若某行出现两个 ?v=x.x.x 就会少算，
+        # 造成"预览 27 处 / 实际替换 25 处"这种对不上却没人发现的偏差。
+        # 与 [dry-run] 的 IDX_OLD_COUNT 用同一套 grep -oF | wc -l，
+        # 两处口径一致才能真正互相对账。
+        REPLACED=$(grep -oF "?v=${NEW_VERSION}" index.html | wc -l | tr -d ' ')
         echo "  ✅ ?v=${OLD_V} → ?v=${NEW_VERSION} (共 ${REPLACED} 处)"
     else
         echo "  ⚠️  未在 index.html 找到版本号，跳过"
@@ -199,8 +215,23 @@ if $BACKEND_ONLY; then
 else
     git add backend/config.py index.html sw.js
 fi
-# 如果还有其它已跟踪的变更，也一起加进来
-git add -u 2>/dev/null || true
+# 其它变更也一起加进来（含新增文件）。
+# 2026-09-12：原来是 `git add -u`，只加【已跟踪】文件 —— 新增文件会被
+# 静默漏掉：不报错、不提示，等 push 上去才发现新文件没进版本库。
+# 实例：bump v9.9.22 时新写的 backend/tests/test_multi_model_scorer_cache.py
+# 就差点没进提交，靠手动 git add 才救回来。
+# 改用 -A 覆盖新增。安全边界：.gitignore 已覆盖 *.bak / *.bak-* / *.bak_*
+# / *.bak.*，服务器上 pages/ 下那 9 个 .bak* 不会被误提交（已用
+# git check-ignore 逐个验证：9/9 IGNORED，漏网 0）。
+# 先打印清单，让"到底加进去了什么"肉眼可见（--yes 模式同样打印）。
+echo "  📥 git add -A 将纳入的新增文件："
+UNTRACKED_LIST=$(git ls-files --others --exclude-standard)
+if [ -n "$UNTRACKED_LIST" ]; then
+    echo "$UNTRACKED_LIST" | sed 's/^/      /'
+else
+    echo "      （无新增文件）"
+fi
+git add -A 2>/dev/null || true
 
 git commit -m "$FULL_MSG"
 echo "  ✅ 已提交: $FULL_MSG"
