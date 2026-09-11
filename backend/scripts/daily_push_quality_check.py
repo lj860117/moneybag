@@ -16,7 +16,14 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from config import PUSH_ARCHIVE_DIR
-from services.wxwork_push import send_markdown
+from services.wxwork_push import (
+    send_markdown,
+    byte_len,
+    WECOM_MARKDOWN_LIMIT,
+    MARKDOWN_CHUNK_BUDGET,
+    LENGTH_ALERT_BYTES,
+    PUSH_ENVELOPE_OVERHEAD_BYTES,
+)
 
 
 def check_truncation(content: str) -> list:
@@ -172,9 +179,36 @@ def check_push_format(push_file: str) -> list:
     if re.search(r'🟡\s*\(\s*\)', content):
         issues.append("❌ 基金名称显示为空（'🟡 ()'）")
     
-    # 检查2：消息是否太长（企微单条限制 2048 字符）
-    if len(content) > 2048:
-        issues.append(f"⚠️ 消息超长：{len(content)} 字符（企微限制 2048）")
+    # 检查2：消息是否太长
+    # v9.9.20 (B2)：原来写的是 `len(content) > 2048`，两个错误叠在一起：
+    #   ① 单位错 —— 用「字符数」比「字节上限」。中文 3 字节/字，实测晨报 2.38~2.43
+    #      字节/字符，字符判断会把真实体积系统性低估约 2.4 倍；
+    #   ② 漏算信封 —— 档案里只有 archive_push 存的 body，不含 send_daily_report_to
+    #      拼上的 title + "\n\n" + "\n\n⏰ 时间戳"（实测 52 字节）。
+    #   两者叠加的后果：2026-09-11 BuLuoGeLi 晨报 body=2035B「通过检查」，
+    #   实际发送 2087B > 2048B 被截断，监控却每晚 22:00 稳定全绿 —— bug 藏了很久。
+    body_bytes = byte_len(content)
+    sent_bytes = body_bytes + PUSH_ENVELOPE_OVERHEAD_BYTES
+    if sent_bytes > WECOM_MARKDOWN_LIMIT:
+        issues.append(
+            f"❌ 消息超长：{sent_bytes} 字节（body {body_bytes}B + 信封 "
+            f"{PUSH_ENVELOPE_OVERHEAD_BYTES}B）> 企微 markdown 通道上限 "
+            f"{WECOM_MARKDOWN_LIMIT} 字节 —— send_markdown 会按字节无损分段，"
+            f"若真被截断说明有调用方绕过了分段逻辑，必须排查"
+        )
+    elif sent_bytes > MARKDOWN_CHUNK_BUDGET:
+        issues.append(
+            f"⚠️ 消息会分段：{sent_bytes} 字节（body {body_bytes}B + 信封 "
+            f"{PUSH_ENVELOPE_OVERHEAD_BYTES}B）> 分段预算 {MARKDOWN_CHUNK_BUDGET} 字节，"
+            f"将拆成多条推送（内容无损，但阅读体验受损）"
+        )
+    elif sent_bytes > LENGTH_ALERT_BYTES:
+        issues.append(
+            f"⚠️ 消息接近告警线：{sent_bytes} 字节（body {body_bytes}B + 信封 "
+            f"{PUSH_ENVELOPE_OVERHEAD_BYTES}B）> {LENGTH_ALERT_BYTES} 字节，"
+            f"距通道上限 {WECOM_MARKDOWN_LIMIT} 仅剩 "
+            f"{WECOM_MARKDOWN_LIMIT - sent_bytes} 字节"
+        )
     
     # 检查3：分段是否合理
     if content.count("\n\n") > 10:
@@ -266,8 +300,11 @@ def send_alert_if_needed(results: dict):
     alert_msg += "⚠️ 请及时修复\n"
     
     # 发送告警
+    # v9.9.20 (B2)：修参数顺序写反的 bug —— 原来是 send_markdown("LeiJiang", alert_msg)，
+    # 而签名是 send_markdown(content, user_id="")，等于把 "LeiJiang" 当正文、
+    # 把整段告警文本当 userId 发出去。这个告警其实从来没正常工作过。
     try:
-        send_markdown("LeiJiang", alert_msg)
+        send_markdown(alert_msg, user_id="LeiJiang")
         print("✅ 告警已发送")
     except Exception as e:
         print(f"❌ 告警发送失败：{e}")

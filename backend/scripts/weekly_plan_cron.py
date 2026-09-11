@@ -30,7 +30,9 @@ if env.exists():
 
 def main():
     try:
-        from services.wxwork_push import is_configured, send_text
+        # v9.9.20 (B3): 裸 send_text 没有任何长度保护，超 2048 字节就被企微硬截断。
+        # 改走 send_markdown：按字节无损分段，内容一个字都不会丢。
+        from services.wxwork_push import is_configured, send_markdown
 
         if not is_configured():
             print("[WEEK_PLAN] 企微未配置")
@@ -69,7 +71,7 @@ def main():
             if dry_run:
                 print(f"\n[WEEK_PLAN dry-run] 将推送给 {user}:\n{text}\n")
                 continue
-            ok = send_text(text, user_id=user)
+            ok = send_markdown(text, user_id=user)
             print(f"[WEEK_PLAN] 推送 {user}: {'✅' if ok.get('ok') else '❌'}")
         return 0
     except Exception as e:

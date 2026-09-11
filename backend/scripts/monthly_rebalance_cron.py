@@ -83,7 +83,9 @@ def analyze_user(user_id: str) -> dict:
 
 def main():
     try:
-        from services.wxwork_push import is_configured, send_text
+        # v9.9.20 (B3): 裸 send_text 没有任何长度保护，超 2048 字节就被企微硬截断。
+        # 改走 send_markdown：按字节无损分段，内容一个字都不会丢。
+        from services.wxwork_push import is_configured, send_markdown
 
         if not is_configured():
             print("[REBALANCE] 企微未配置")
@@ -135,7 +137,7 @@ def main():
             if dry_run:
                 print(f"\n[REBALANCE dry-run] 将推送给 {user}:\n{text}\n")
             else:
-                ok = send_text(text, user_id=user)  # FIX: 参数名是 user_id 不是 to_user
+                ok = send_markdown(text, user_id=user)  # FIX: 参数名是 user_id 不是 to_user
             print(f"[REBALANCE] {user}: {'✅ dry' if dry_run else ('✅ 推送成功' if ok.get('ok') else '❌ 推送失败')}")
 
         return 0

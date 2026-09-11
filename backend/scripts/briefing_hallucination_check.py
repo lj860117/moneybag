@@ -150,7 +150,10 @@ def send_wecom_alert(issues: list, base: str):
     """E6: 检测到幻觉时发企微告警"""
     try:
         sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
-        from services.wxwork_push import is_configured, send_text
+        # v9.9.20 (B3): 这是「证据链」推送 —— 原文即证据，宁可被截断也绝不改写内容，
+        # 所以**故意不接** send_markdown 的分段/精简。唯一让步：用 send_text_capped
+        # 在真被截断时落一条事件记录，让人知道这条消息是断的、断了什么。
+        from services.wxwork_push import is_configured, send_text_capped
         if not is_configured():
             print("  [告警] 企微未配置，跳过推送")
             return
@@ -162,7 +165,7 @@ def send_wecom_alert(issues: list, base: str):
         if len(issues) > 5:
             msg += f"...以及 {len(issues)-5} 项更多问题\n"
         msg += f"\n请检查 night_worker 日志（02:30 前生效的改动）"
-        result = send_text(msg)
+        result = send_text_capped(msg, source="briefing_hallucination_check")
         print(f"  [告警] 企微推送结果: {result}")
     except Exception as e:
         print(f"  [告警] 企微推送失败: {e}")
