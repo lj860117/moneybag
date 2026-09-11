@@ -28,6 +28,19 @@
 
 set -euo pipefail
 
+# ---- 纵深防御：让 set -e 的失败不再"静默" ----
+# set -e 触发时不会打印任何行号或原因，脚本直接断在半路，看起来像跑完了。
+# 2026-09-12 踩过一次 P1：干净工作区时下面 DIRTY_COUNT 那行因 grep 无匹配
+# 退出 1，pipefail 把管道状态传出去、set -e 直接终止脚本 —— 现象是只打印
+# header、退出码 1、一句错误都没有，而"工作区干净"恰恰是纯 bump 最常见的情况。
+# 有这个 trap 后，任何同类问题都会立刻指名行号。
+# 注意用【单引号】：让 ${LINENO} / ${?} 在触发时才展开，而不是定义时。
+# 必须先把 $? 存进 rc 再 echo：trap 里第一条命令（哪怕是 echo ""）都会把
+# $? 重置为 0，直接写 exit=${?} 会永远打印 exit=0，把报错伪装成成功。
+# （实测：原始写法打印「第 4 行，exit=0」；rc=$? 前置后是「第 4 行，exit=1」）
+# LINENO 不受影响，仍指向触发失败的那一行。
+trap 'rc=$?; echo ""; echo "❌ 脚本异常退出：第 ${LINENO} 行，exit=${rc}。请检查上面输出，可能未做任何修改。" >&2' ERR
+
 # ---- 参数解析 ----
 NEW_VERSION="${1:-}"
 NO_DEPLOY=false
@@ -134,10 +147,18 @@ if $DRY_RUN; then
 fi
 
 # ---- 防呆：当前目录有未提交的变更时提醒 ----
-DIRTY_COUNT=$(git status --porcelain | grep -v "^??" | wc -l | tr -d ' ')
+# grep -cv 直接数"非 untracked 的行"，一行取代原来的 grep -v | wc -l。
+# 尾部 `|| true` 是必需的，不是可有可无的保险：
+#   干净工作区 → git status --porcelain 无输出 → grep 无任何匹配行 → 退出码 1
+#   → pipefail 让整条管道返回 1 → set -e 静默终止整个脚本。
+# 2026-09-12 P1：就是这个原因让"工作区干净时脚本打完 header 就退出 1"，
+# 而工作区干净恰恰是纯 bump 最常见的场景。
+DIRTY_COUNT=$(git status --porcelain | grep -cv "^??" || true)
 if [ "$DIRTY_COUNT" -gt 0 ]; then
     echo "⚠️  当前有 ${DIRTY_COUNT} 个已跟踪文件有未提交变更："
-    git status --porcelain | grep -v "^??" | head -10
+    # 同上一行：这行只在 DIRTY_COUNT>0 时才走到，所以目前没爆过，
+    # 但属于同一颗雷（grep 无匹配 → pipefail → set -e 静默终止），一并兜住。
+    git status --porcelain | grep -v "^??" | head -10 || true
     echo ""
     if $YES; then
         echo "  --yes 模式，自动继续。"
