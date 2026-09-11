@@ -200,13 +200,13 @@ def _call_model(model_cfg: dict, prompt: str) -> dict:
 
 def score_fund_multi_model(fund_info: dict) -> dict:
     """
-    三模型并发评分 → 综合排名
+    两模型并发评分 → 综合排名（与 _MODELS 保持一致：DeepSeek + 豆包 Seed 2.1）
 
     返回:
     {
         "scores": [
-            {"id": "deepseek", "name": "DeepSeek Pro", "score": 7.5, "reason": "...", "risk": "..."},
-            {"id": "doubao", "name": "豆包 Seed 2.0", "score": 8.0, "reason": "...", "risk": "..."},
+            {"id": "deepseek", "name": "DeepSeek", "score": 7.5, "reason": "...", "risk": "..."},
+            {"id": "doubao", "name": "豆包 Seed 2.1", "score": 8.0, "reason": "...", "risk": "..."},
         ],
         "avg_score": 7.5,
         "consensus": "推荐" / "分歧" / "谨慎",

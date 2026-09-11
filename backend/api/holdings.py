@@ -1175,11 +1175,15 @@ def _compute_holdings_enrich(userId: str) -> dict:
 
 @router.get("/api/fund-holdings/ai-checkup")
 def ai_checkup_api(userId: str = "default"):
-    """AI 深度体检：DeepSeek Pro 对持仓组合做全维度分析。
+    """AI 深度体检：LLM 对持仓组合做全维度分析。
     
     维度：风格暴露/集中度风险/相关性/再平衡建议/夏普预估/市场匹配度
     缓存：per-user 24h文件缓存，cache_warmer 预热。
-    降级：Pro → Flash → 纯数据兜底。
+    降级：LLM 候选链（gateway 内部按峰谷/可用性降级）→ 纯数据兜底。
+
+    v9.9.19 归因修正：`source` 只保留 ai / data_fallback 粗粒度枚举，
+    具体模型名一律交给前端用返回的 `model` 字段渲染（对齐 chat.js:229 既有模式）。
+    后端不再声明档位：llm_heavy 全面 Flash 化后写死 "ai_pro" 会让页面显示错误档位名。
     """
     import json as _json, time as _time
     from pathlib import Path
@@ -1293,12 +1297,14 @@ def _compute_ai_checkup(userId: str) -> dict:
 5. 🌍 市场匹配度：当前持仓 vs 宏观环境是否顺风/逆风
 6. 💡 一句话总结：当前组合最该关注的1件事"""
 
-    # 5. 调 LLM（Pro → Flash 降级）
+    # 5. 调 LLM（候选链降级由 gateway 统一负责，这里不再手写第二段）
     try:
         from infra.llm.gateway import LLMGateway
         gw = LLMGateway.instance()
-        
-        # 先用 Pro
+
+        # v9.9.19：删掉原先「Pro 失败→降级 Flash」的第二段调用。
+        # 全面 Flash 化后 llm_heavy / llm_light 解析出的是同一条候选链，
+        # 第二段不会拿到更便宜的模型，只是重复烧一次 token。
         result = gw.call_sync(
             user_prompt,
             system=system_prompt,
@@ -1312,8 +1318,12 @@ def _compute_ai_checkup(userId: str) -> dict:
             return {
                 "status": "ok",
                 "analysis": result["content"],
-                "source": "ai_pro",
+                # v9.9.19：粗粒度枚举，模型名由前端读 `model` 渲染，不再写死档位
+                "source": "ai",
                 "model": result.get("model", "deepseek-v4-flash"),
+                # 新增（additive）：DeepSeek 失败转豆包时让页脚能显示「降级」，
+                # 否则模型名会静默变成豆包而看不出是降级导致。
+                "fallback_used": bool(result.get("fallback_used", False)),
                 "dimensions": {
                     "fund_count": len(funds),
                     "avg_nav_pct": round(avg_pct) if avg_pct else None,
@@ -1324,30 +1334,6 @@ def _compute_ai_checkup(userId: str) -> dict:
                 "generated_at": _time.strftime("%Y-%m-%d %H:%M"),
             }
         
-        # Pro 失败，降级 Flash
-        result = gw.call_sync(
-            user_prompt,
-            system=system_prompt,
-            model_tier="llm_light",
-            user_id=userId,
-            module="ai_checkup_fallback",
-            max_tokens=1200,
-        )
-        if result.get("content"):
-            return {
-                "status": "ok",
-                "analysis": result["content"],
-                "source": "ai_flash",
-                "model": result.get("model", "deepseek-v4-flash"),
-                "dimensions": {
-                    "fund_count": len(funds),
-                    "avg_nav_pct": round(avg_pct) if avg_pct else None,
-                    "concentration": round(concentration),
-                    "top_industry": top_ind[0],
-                    "industries": len(industries),
-                },
-                "generated_at": _time.strftime("%Y-%m-%d %H:%M"),
-            }
     except Exception as e:
         print(f"[AI_CHECKUP] LLM failed: {e}")
     

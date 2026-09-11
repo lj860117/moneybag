@@ -438,6 +438,11 @@ class LLMGateway:
                         raise RuntimeError(f"content_empty: {candidate_model} returned only reasoning ({_rc_len}chars), fallback needed")
                     data = payload
                     actual_model = candidate_model
+                    # v9.9.19 归一化漂移监控：deepseek-v4-flash 等 ID 由上游静默归一化，
+                    # 一旦官方换挡/下架旧 ID，这里立刻可见，不用等账单或输出质量出问题才发现。
+                    _api_model = str(payload.get("model") or "").strip()
+                    if _api_model and _api_model != candidate_model:
+                        print(f"[LLM_GATEWAY] ⚠️ 模型ID归一化: 请求={candidate_model} 实际生效={_api_model}")
                     fallback_used = idx > 0
                     if fallback_used:
                         print(f"[LLM_GATEWAY] ✅ 降级成功 ({actual_model})")
@@ -1097,11 +1102,14 @@ class LLMGateway:
         avg_ratio = (total_hit / total_in) if total_in > 0 else None
 
         # 估算"满命中"能省多少钱（假设全部 miss 变 hit）
-        # 日用量文件未按模型/峰谷拆分，这里用 pro 档谷值(平价)做保守估算
+        # 日用量文件未按模型/峰谷拆分。v9.9.19：全面 Flash 化后线上绝大多数
+        # 调用跑 deepseek-flash，改用 flash 档谷值估算；此前用 DEEPSEEK_PRICING
+        # （pro 档）会把潜在收益高估约 3 倍（pro 差 4.35 vs flash 差 1.45）。
         try:
-            from config import DEEPSEEK_PRICING
+            from config import PROVIDER_PRICING
+            _fx = PROVIDER_PRICING["deepseek-flash"]
             potential_save = total_miss * (
-                DEEPSEEK_PRICING["input_cache_miss_valley"] - DEEPSEEK_PRICING["input_cache_hit_valley"]
+                _fx["input_cache_miss_valley"] - _fx["input_cache_hit_valley"]
             ) / 1_000_000
         except Exception:
             potential_save = None

@@ -142,7 +142,7 @@ LLM_MODEL = os.environ.get("LLM_MODEL", "deepseek-v4-flash")
 TUSHARE_TOKEN = os.environ.get("TUSHARE_TOKEN", "")
 
 # ---- 版本号（Phase 1 更新）----
-APP_VERSION = "9.9.18"
+APP_VERSION = "9.9.19"
 
 # ---- v9.5.123: API 鉴权 ----
 # 每个用户一个token，格式: userId:token（环境变量或data/auth_tokens.json）
@@ -198,7 +198,11 @@ PROVIDER_PRICING = {
         "output_peak": 15.0, "output_valley": 15.0,
     },
 }
-DEEPSEEK_PRICING = PROVIDER_PRICING["deepseek-pro"]  # 兼容旧引用（指向 pro 价表）
+# ⚠️ 兼容旧引用：这个名字有误导性，它**只**是 pro 档价表，不是"DeepSeek 的价表"。
+# 2026-09-11 全面 Flash 化后，线上绝大多数调用跑的是 deepseek-flash，
+# 用这里的价格估算成本/收益会**高估约 3 倍**。新代码请直接用
+# PROVIDER_PRICING["deepseek-flash"]（或按实际模型选表），不要再用这个别名。
+DEEPSEEK_PRICING = PROVIDER_PRICING["deepseek-pro"]
 
 # ============================================================
 # V7.2 硬编码治理（2026-04-19）

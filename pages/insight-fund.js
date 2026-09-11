@@ -552,7 +552,7 @@ async function _showDeepDiag(){
     <div style="margin-top:12px;border-top:1px solid rgba(148,163,184,.1);padding-top:10px">
       <div style="font-size:11px;font-weight:600;color:var(--text-primary,#F0F2F7);margin-bottom:6px">🤖 AI 深度体检</div>
       <div id="aiCheckupArea" style="font-size:11px;color:var(--text2)">
-        <button onclick="_loadAiCheckup()" style="width:100%;padding:6px;border-radius:6px;border:1px dashed rgba(139,92,246,.3);background:transparent;color:#A78BFA;font-size:11px;cursor:pointer">🧠 启动 AI 深度体检（Pro 级分析 · 6维度诊断）</button>
+        <button onclick="_loadAiCheckup()" style="width:100%;padding:6px;border-radius:6px;border:1px dashed rgba(139,92,246,.3);background:transparent;color:#A78BFA;font-size:11px;cursor:pointer">🧠 启动 AI 深度体检（6维度诊断）</button>
       </div>
     </div>
   </div>`;
@@ -565,7 +565,7 @@ async function _showDeepDiag(){
 function _loadAiCheckup(){
   const area = document.getElementById('aiCheckupArea');
   if(!area) return;
-  area.innerHTML='<div style="padding:8px 0"><div class="loading-spinner" style="width:18px;height:18px;margin:0 auto 6px;border-width:2px"></div><div style="text-align:center;color:var(--text-tertiary)">AI 正在分析你的持仓组合...</div><div style="text-align:center;font-size:10px;color:var(--text-tertiary);margin-top:4px">DeepSeek Pro · 6维度深度体检 · 首次约5-10秒</div></div>';
+  area.innerHTML='<div style="padding:8px 0"><div class="loading-spinner" style="width:18px;height:18px;margin:0 auto 6px;border-width:2px"></div><div style="text-align:center;color:var(--text-tertiary)">AI 正在分析你的持仓组合...</div><div style="text-align:center;font-size:10px;color:var(--text-tertiary);margin-top:4px">6维度深度体检 · 首次约5-10秒</div></div>';
   fetch(API_BASE+'/fund-holdings/ai-checkup?userId='+getProfileId(),{signal:AbortSignal.timeout(30000)})
   .then(r=>r.json())
   .then(d=>{
@@ -576,7 +576,11 @@ function _loadAiCheckup(){
     const analysis = d.analysis || '';
     const dims = d.dimensions || {};
     const source = d.source || '';
-    const modelLabel = source==='ai_pro'?'DeepSeek Pro':source==='ai_flash'?'DeepSeek Flash':'数据摘要';
+    // v9.9.19：对齐 chat.js:229 既有模式 —— source 只判「AI / 非AI」，
+    // 模型名一律由后端返回的 d.model 渲染，前端不再按档位硬编码。
+    const modelLabel = source==='ai'
+      ? (typeof _formatModelName==='function' ? _formatModelName(d.model, !!d.fallback_used) : 'AI')
+      : '📊 数据摘要';
     const time = d.generated_at || '';
     
     // 格式化 AI 输出
