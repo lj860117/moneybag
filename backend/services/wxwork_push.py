@@ -252,14 +252,17 @@ def _to_wecom_markdown(text: str) -> str:
 
 
 def send_markdown(content: str, user_id: str = "") -> dict:
-    """发送 Markdown 消息（走企微 markdown 通道，上限 4096 字节；超长按字节无损分段）
+    """发送消息（**默认走 text 通道**，超长按字节无损分段）
 
-    v9.9.20 (B4) 行为变更，务必知悉：
-      旧实现在这里把 markdown 剥成纯文本再走 text 通道（上限只有 2048 字节），
-      于是 2026-09-11 的晨报（912 字符 / 2194 字节含信封）单条直发被硬截断，
-      丢掉【操作建议】整段和免责声明。现在改走真正的 markdown 通道，上限翻倍。
-      当前晨报正文经扫描不含任何 markdown 语法（只有 5 个竖线），
-      所以渲染结果与纯文本一致 —— 本次变更的收益是「上限 2048→4096」，不是排版。
+    历史沿革，务必知悉：
+      - 旧实现：把 markdown 剥成纯文本走 text 通道（上限 2048 字节），
+        2026-09-11 晨报 2224 字节单条直发被硬截断，丢掉【操作建议】和免责声明。
+      - v9.9.20 (B4)：改走真正的 markdown 通道，上限翻倍到 4096。
+        但 2026-09-12 实测用户收到「暂不支持此消息类型，请在企业微信中查看」
+        —— markdown 在部分接收端不渲染，用户什么都读不到。**比截断更糟。**
+      - v9.9.20 (B4 回滚)：**默认改回 text 通道**。长度问题交给 B1~B3 的
+        按字节无损分段（预算 1800 字节 < 2048 限制，超长自动切多条），
+        不依赖 markdown 通道。想用 markdown 需显式设 WXWORK_FORCE_MARKDOWN=1。
 
     返回: {"ok": bool, "data": dict, "skipped_81013": bool}
     """
@@ -272,7 +275,8 @@ def send_markdown(content: str, user_id: str = "") -> dict:
 
     # 运维逃生开关：markdown 渲染出问题时可一键退回旧的纯文本通道，无需改代码
     if _force_text():
-        print(f"[WXWORK] WXWORK_FORCE_TEXT=1，退回纯文本通道（{total} 字节）")
+        # 默认路径（2026-09-12 起）：text 通道 + 按字节分段，预算 1800 < 2048 上限。
+        print(f"[WXWORK] 走纯文本通道（{total} 字节，预算 {TEXT_CHUNK_BUDGET}）")
         return _send_chunked(body, user_id=user_id,
                              budget=TEXT_CHUNK_BUDGET, markdown=False)
 
@@ -397,8 +401,20 @@ def _truncate_bytes(text: str, limit: int) -> str:
 
 
 def _force_text() -> bool:
-    """运维逃生开关：WXWORK_FORCE_TEXT=1 时退回旧的纯文本通道。"""
-    return os.getenv("WXWORK_FORCE_TEXT", "").strip().lower() in ("1", "true", "yes")
+    """是否走纯文本通道（**默认 True**，2026-09-12 反转）。
+
+    B4 曾经把 send_markdown 改成走真正的 markdown 通道，图的是上限从 2048
+    翻倍到 4096 字节。但 2026-09-12 01:0x 用户实测收到「暂不支持此消息类型，
+    请在企业微信中查看」——markdown 通道在部分接收端（微信侧转发 / 旧版客户端）
+    根本渲染不出来，用户等于什么都读不到。**读不到比被截断严重得多。**
+
+    而长度问题 B1~B3 已经用「按字节无损分段」解决了（text 通道单条 2048 字节，
+    分段预算 1800，超长自动切多条），根本不需要靠 markdown 通道的 4096 上限。
+    所以默认改回 text：稳妥压倒一切。
+
+    显式设置 WXWORK_FORCE_MARKDOWN=1 才会走 markdown（保留能力，不删代码）。
+    """
+    return os.getenv("WXWORK_FORCE_MARKDOWN", "").strip().lower() not in ("1", "true", "yes")
 
 
 def _record_event(event: dict) -> None:

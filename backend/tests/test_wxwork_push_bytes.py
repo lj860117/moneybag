@@ -196,11 +196,26 @@ def test_truncate_bytes_never_splits_a_character():
 # B4：send_markdown 走真 markdown 通道
 # ------------------------------------------------------------------
 
-def test_send_markdown_uses_markdown_msgtype(recorder):
+def test_send_markdown_defaults_to_text_msgtype(recorder, monkeypatch):
+    """2026-09-12 反转：默认必须走 text 通道。
+
+    起因：B4 改成真 markdown 通道后，用户实测收到「暂不支持此消息类型，
+    请在企业微信中查看」—— 部分接收端不渲染 markdown，等于什么都读不到。
+    长度问题由按字节分段解决，不依赖 markdown 的 4096 上限。
+    """
+    monkeypatch.delenv("WXWORK_FORCE_MARKDOWN", raising=False)
+    wp.send_markdown("**标题**\n\n正文内容", user_id="LeiJiang")
+    assert len(recorder.calls) == 1
+    assert recorder.calls[0]["msgtype"] == "text"
+    assert recorder.calls[0]["user_id"] == "LeiJiang"
+
+
+def test_send_markdown_uses_markdown_only_when_explicitly_enabled(recorder, monkeypatch):
+    """显式 WXWORK_FORCE_MARKDOWN=1 才走 markdown —— 能力保留，默认关闭。"""
+    monkeypatch.setenv("WXWORK_FORCE_MARKDOWN", "1")
     wp.send_markdown("**标题**\n\n正文内容", user_id="LeiJiang")
     assert len(recorder.calls) == 1
     assert recorder.calls[0]["msgtype"] == "markdown"
-    assert recorder.calls[0]["user_id"] == "LeiJiang"
 
 
 def test_send_markdown_preserves_markdown_syntax(recorder):
@@ -233,15 +248,17 @@ def test_to_wecom_markdown_strips_code_fence_but_keeps_text():
     assert "print(1)" in out, "代码正文不得被丢掉"
 
 
-def test_send_markdown_splits_when_over_markdown_budget(recorder):
-    """超 3900 字节必须分片，且发出的内容总和 == 原文（扣掉分片标记）。"""
+def test_send_markdown_splits_when_over_text_budget(recorder):
+    """超 1800 字节必须分片，每段 ≤ text 上限 2048，且内容无损（扣掉分片标记）。"""
     body = make_text(9000)
     wp.send_markdown(body, user_id="LeiJiang")
 
-    assert len(recorder.calls) >= 3
+    assert len(recorder.calls) >= 5, (
+        f"9000 字节按 1800 预算应切 ≥5 段，实际 {len(recorder.calls)} 段"
+    )
     for call in recorder.calls:
-        assert call["msgtype"] == "markdown"
-        assert wp.byte_len(call["content"]) <= wp.WECOM_MARKDOWN_LIMIT
+        assert call["msgtype"] == "text"
+        assert wp.byte_len(call["content"]) <= wp.WECOM_TEXT_LIMIT
 
     # 去掉 "(i/N)" 标记后拼回来，必须与原文无损相等
     import re
@@ -251,9 +268,13 @@ def test_send_markdown_splits_when_over_markdown_budget(recorder):
     assert joined == body
 
 
-def test_force_text_env_falls_back_to_text_channel(recorder, monkeypatch):
-    """运维逃生开关：WXWORK_FORCE_TEXT=1 必须退回 text 通道并按 1800 字节分段。"""
-    monkeypatch.setenv("WXWORK_FORCE_TEXT", "1")
+def test_default_channel_is_text_and_chunks_at_1800(recorder, monkeypatch):
+    """默认（不设 WXWORK_FORCE_MARKDOWN）走 text 通道并按 1800 字节分段。
+
+    2026-09-12 前这里是 WXWORK_FORCE_TEXT=1 逃生开关；反转默认后，
+    text 成为常态，开关改为反向的 WXWORK_FORCE_MARKDOWN。
+    """
+    monkeypatch.delenv("WXWORK_FORCE_MARKDOWN", raising=False)
     body = make_text(5000)
     wp.send_markdown(body, user_id="LeiJiang")
     assert len(recorder.calls) >= 3
@@ -266,11 +287,12 @@ def test_force_text_env_falls_back_to_text_channel(recorder, monkeypatch):
 # 断言③：2026-09-11 晨报（2194 字节）改后应单条装下、不分片
 # ------------------------------------------------------------------
 
-def test_real_0911_briefing_fits_in_one_markdown_message(recorder):
+def test_real_0911_briefing_splits_losslessly(recorder):
     """复刻 2026-09-11 LeiJiang 晨报的字节画像：body 2142B + 信封 52B = 2194B。
 
-    B4 之前：2194B > text 上限 2048B → 被硬截断，丢【操作建议】+ 免责声明。
-    B4 之后：2194B < markdown 上限 4096B → 必须单条装下、不分片。
+    B1 之前：2194B > text 上限 2048B，且旧逻辑按【字符】判断（914 字符 < 1800）
+            → 判定为「不分段」→ 单条直发被硬截断，丢【操作建议】+ 免责声明。
+    现在：按【字节】分段，2194B 切成 2 段，每段 ≤2048B，内容一个字不少。
     """
     body = make_text(2142)
     assert abs(wp.byte_len(body) - 2142) <= 4
@@ -280,11 +302,19 @@ def test_real_0911_briefing_fits_in_one_markdown_message(recorder):
     assert 2190 <= total <= 2198, f"复刻字节数偏离实测：{total}"
 
     wp.send_markdown(content, user_id="LeiJiang")
-    assert len(recorder.calls) == 1, (
-        f"2194 字节在 4096 上限下必须单条发完，实际分了 {len(recorder.calls)} 段"
+    assert len(recorder.calls) == 2, (
+        f"2194 字节按 1800 预算应切 2 段，实际 {len(recorder.calls)} 段"
     )
-    assert recorder.calls[0]["msgtype"] == "markdown"
-    assert wp.byte_len(recorder.calls[0]["content"]) < wp.WECOM_MARKDOWN_LIMIT
+    for call in recorder.calls:
+        assert call["msgtype"] == "text"
+        assert wp.byte_len(call["content"]) <= wp.WECOM_TEXT_LIMIT
+
+    # 扣掉 "(i/N)" 分片标记后必须与原文完全一致 —— 分段是无损的
+    import re
+    joined = "".join(
+        re.sub(r"\n\(\d+/\d+\)$", "", c["content"]) for c in recorder.calls
+    )
+    assert joined == content, "分段必须无损，一个字都不少"
 
 
 def test_old_char_logic_would_not_have_split_the_0911_briefing():
@@ -326,7 +356,11 @@ def test_length_guard_records_event_but_never_truncates(monkeypatch, recorder):
     assert events[0]["level"] == "warn"
     assert events[0]["bytes"] == wp.byte_len(body)
 
-    sent = "".join(c["content"] for c in recorder.calls)
+    # 扣掉 "(i/N)" 分片标记后必须与原文一致 —— 告警只记录，绝不动内容
+    import re
+    sent = "".join(
+        re.sub(r"\n\(\d+/\d+\)$", "", c["content"]) for c in recorder.calls
+    )
     assert sent == body, "护栏绝不能裁剪内容"
 
 
