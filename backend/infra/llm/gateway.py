@@ -389,15 +389,31 @@ class LLMGateway:
             }
             # 关闭 thinking 的策略（reasoning_content 与 content 共享 max_tokens）：
             # 1) force_no_thinking=True：调用方显式要求（短输出点），强制关闭所有推理模型
-            # 2) DeepSeek V4 轻量档：关闭（轻量任务不需要推理，避免截断，P0-1）
+            # 2) DeepSeek 实际跑到 flash 档：关闭（避免截断 P0-1，且实测省 token）
             # 3) 豆包 Seed 非推理档：关闭（v9.5.130 既有逻辑）
-            # 其余（DeepSeek V4 重档/推理档）：保留推理，靠 call_sync 顶部提预算兜底
+            # 其余（DeepSeek 实际是 pro 档，即用户在对话页显式选 Pro）：保留推理，
+            #     靠 call_sync 顶部提预算兜底
+            #
+            # v9.9.19：DeepSeek 判据从 model_tier 标签改成「实际解析出的模型」。
+            # 全面 Flash 化后 llm_heavy 也解析成 deepseek-v4-flash，继续拿 tier
+            # 当判据，晨报/监控/诊断/self_audit/scenario_engine 这些后台跑批会被
+            # 当成「重档」而保留 thinking。2026-09-11 实测：flash 带 thinking 的
+            # completion token 是关闭状态的 6.9~8.0 倍 —— 全面 Flash 化不配
+            # thinking 关闭，省下的钱基本被吃回去。
+            # 判据与降级档位共用同一个 _fallback_tier_for()（模型名含 pro 才算重档），
+            # 不新造平行判断函数，避免将来两处漂移。
+            _is_deepseek_v4 = use_model.startswith("deepseek-v4")
             if force_no_thinking:
-                if use_model.startswith("deepseek-v4") or "doubao-seed" in use_model:
+                if _is_deepseek_v4 or "doubao-seed" in use_model:
                     body["thinking"] = {"type": "disabled"}
-            elif model_tier == "llm_light" and use_model.startswith("deepseek-v4"):
-                body["thinking"] = {"type": "disabled"}
+            elif _is_deepseek_v4:
+                # 只有「实际解析出 pro」才保留 thinking；flash 一律关掉
+                if _fallback_tier_for(use_model) == "llm_light":
+                    body["thinking"] = {"type": "disabled"}
             elif model_tier != "llm_light":
+                # 豆包：保持 v9.5.130 既有逻辑，本次不动。
+                # 注意这里仍按 model_tier 判，不能换成 _fallback_tier_for(use_model)：
+                # doubao-seed-2-1-turbo 不含 "pro" 会被判成轻档而漏关。
                 if "doubao-seed" in use_model:
                     body["thinking"] = {"type": "disabled"}
             with httpx.Client(timeout=timeout) as client:

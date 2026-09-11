@@ -561,7 +561,17 @@ def get_global_snapshot() -> dict:
 
     fx = result["forex"]
     if fx.get("available") and fx.get("usdcny"):
-        summary_lines.append(f"  💱 美元/人民币: {fx['usdcny']['rate']:.4f}")
+        # v9.9.19：这段 summary 会被 api/shared_helpers.py 原样拼进 LLM 上下文，
+        # 模型会照抄里面的措辞写结论。主源（AKShare 在岸）挂掉、落到 Tushare
+        # 离岸 USD/CNH 兜底时若不标出币种，模型就会把离岸价当在岸 USD/CNY
+        # 转述给用户 —— 与 dxy_proxy 拿 USDCNY 充数是同一类语义错误。
+        # 文案与 scripts/night_worker.py:1926 保持一致，避免两处漂移。
+        if fx["usdcny"].get("proxy"):
+            summary_lines.append(
+                f"  💱 美元/人民币(离岸CNH兜底): {fx['usdcny']['rate']:.4f}"
+            )
+        else:
+            summary_lines.append(f"  💱 美元/人民币: {fx['usdcny']['rate']:.4f}")
 
     fed = result["fed_rate"]
     if fed.get("available"):

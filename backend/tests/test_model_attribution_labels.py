@@ -273,3 +273,137 @@ def test_insight_fund_renders_model_from_model_field():
 
     # loading 文案与入口按钮都不该再写死档位名
     assert "DeepSeek Pro" not in text, "insight-fund.js 仍有硬编码的 'DeepSeek Pro'"
+
+
+# =============================================================================
+# P2-3：渲染 usdcny 的地方必须处理 proxy（离岸 CNH 兜底不得冒充在岸 USD/CNY）
+# =============================================================================
+# 背景
+# ----
+# 在岸主源（AKShare fx_spot_quote）不可用时，`get_forex_data()` 会落到 Tushare
+# 离岸 USD/CNH，并在 usdcny 里置 `proxy: True`。渲染方若不判这个标记，就会把
+# 离岸价当在岸价报出去 —— 和 dxy_proxy 拿 USDCNY 充数是同一类语义错误。
+#
+# `services/global_market.py` 的 snapshot summary 尤其危险：它会被
+# `api/shared_helpers.py` 原样拼进 LLM 上下文，模型会照抄措辞写进结论再转述
+# 给用户；`pages/insight.js` 则是直接给用户看的界面文字。
+#
+# 检测方式：同一行内既出现「美元/人民币」标签又出现 rate 取值 → 认定为渲染点；
+# 再要求其 ±8 行内出现 proxy 判断。负向对照：修复前的
+# global_market.py:564 / insight.js:370 都会被这条规则抓出来。
+
+FX_RENDER_WINDOW = 8
+
+# 已知合规的参照实现：晨报里判了 proxy，用来防「扫描器自己失效」
+FX_REFERENCE_FILE = "backend/scripts/night_worker.py"
+FX_OFFSHORE_MARKER = "离岸CNH兜底"
+
+
+class _NoCache:
+    """替身缓存：让 get_global_snapshot() 每次都真的重算，不受 600s TTL 影响。"""
+
+    def get(self, *args, **kwargs):
+        return None
+
+    def set(self, *args, **kwargs):
+        return None
+
+
+def _collect_fx_render_sites():
+    """返回 [(相对路径, 行号, 该渲染点附近是否出现 proxy 判断)]。"""
+    sites = []
+    for path in _iter_source_files():
+        try:
+            lines = path.read_text(encoding="utf-8", errors="ignore").splitlines()
+        except OSError:
+            continue
+        rel = path.relative_to(ROOT).as_posix()
+        for idx, line in enumerate(lines):
+            # 「渲染点」= 同一行里既有中文标签又真的在格式化 rate
+            if "美元/人民币" not in line or "rate" not in line:
+                continue
+            lo = max(0, idx - FX_RENDER_WINDOW)
+            hi = min(len(lines), idx + FX_RENDER_WINDOW + 1)
+            has_proxy = any("proxy" in probe for probe in lines[lo:hi])
+            sites.append((rel, idx + 1, has_proxy))
+    return sites
+
+
+def _snapshot_summary(monkeypatch, usdcny: dict) -> str:
+    """把 get_global_snapshot 的数据依赖全部打桩，返回生成的 summary。"""
+    from services import global_market as gm
+
+    monkeypatch.setattr(gm, "_global_cache", _NoCache())
+    monkeypatch.setattr(gm, "get_us_indices", lambda: {"available": False})
+    monkeypatch.setattr(
+        gm,
+        "get_forex_data",
+        lambda: {
+            "usdcny": usdcny,
+            "dxy_proxy": None,
+            "available": usdcny is not None,
+            "degraded": bool(usdcny.get("proxy")),
+            "degraded_reason": "在岸主源不可用" if usdcny.get("proxy") else "",
+        },
+    )
+    monkeypatch.setattr(gm, "get_fed_rate", lambda: {"available": False})
+    monkeypatch.setattr(gm, "get_global_pe", lambda: {"available": False})
+
+    return gm.get_global_snapshot()["summary"]
+
+
+def test_global_snapshot_summary_marks_offshore_proxy(monkeypatch):
+    """P2-3 核心：离岸兜底价进 LLM 上下文时必须带币种标记。"""
+    summary = _snapshot_summary(
+        monkeypatch,
+        {
+            "rate": 6.7120,
+            "name": "USD/CNH(离岸,代理USD/CNY)",
+            "source": "tushare",
+            "proxy": True,
+        },
+    )
+
+    assert FX_OFFSHORE_MARKER in summary, (
+        "离岸兜底价没有标出币种，模型会把 USD/CNH 当 USD/CNY 写进结论：\n" + summary
+    )
+    # 不能同时出现「裸」的在岸写法
+    assert "美元/人民币: 6.7120" not in summary
+
+
+def test_global_snapshot_summary_onshore_has_no_offshore_marker(monkeypatch):
+    """反向：在岸价不得被误标成离岸（别为了合规把所有价都打上 CNH）。"""
+    summary = _snapshot_summary(
+        monkeypatch,
+        {"rate": 6.7115, "name": "USD/CNY", "source": "akshare", "proxy": False},
+    )
+
+    assert "美元/人民币: 6.7115" in summary
+    assert FX_OFFSHORE_MARKER not in summary
+
+
+def test_all_usdcny_render_sites_handle_proxy():
+    """防回归：任何新加的 usdcny 渲染点都必须处理 proxy。"""
+    sites = _collect_fx_render_sites()
+
+    # 防呆：扫描器挂了会「0 违规」假通过
+    assert len(sites) >= 3, "抓到的汇率渲染点异常少（%d），检测规则可能失效" % len(sites)
+
+    # 防呆 2：参照实现必须被识别到且判定为合规，否则说明规则本身就判错了
+    ref_sites = [s for s in sites if s[0] == FX_REFERENCE_FILE]
+    assert ref_sites, "没抓到参照实现 %s，扫描范围或规则变了" % FX_REFERENCE_FILE
+    assert all(ok for _, _, ok in ref_sites), (
+        "参照实现 %s 被判为未处理 proxy，检测规则有问题" % FX_REFERENCE_FILE
+    )
+
+    violations = [
+        "%s:%d" % (rel, lineno)
+        for rel, lineno, ok in sites
+        if not ok
+    ]
+    assert not violations, (
+        "以下位置渲染美元/人民币却没有处理 proxy，离岸 CNH 兜底价会被当成在岸价报出：\n"
+        + "\n".join(violations)
+        + "\n修法：proxy 为真时输出「💱 美元/人民币(离岸CNH兜底): {rate}」，"
+        "参照 backend/scripts/night_worker.py。"
+    )

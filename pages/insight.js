@@ -367,7 +367,10 @@ let h='<div class="dashboard-card"><div class="dashboard-card-title">🌐 全球
 const idxArr=[['dji','道琼斯'],['spx','标普500'],['ixic','纳斯达克']];
 h+=idxArr.map(([k,n])=>{const d=us[k];if(!d)return'';const c=d.change_pct>0?'var(--green)':d.change_pct<0?'var(--red)':'var(--text2)';return`<div style="display:flex;justify-content:space-between;align-items:center;padding:10px 0;border-bottom:1px solid var(--bg3)"><div style="font-size:13px;font-weight:600">${d.change_pct>0?'📈':'📉'} ${n}</div><div style="text-align:right"><div style="font-size:14px;font-weight:700">${d.close.toLocaleString()}</div><div style="font-size:12px;color:${c};font-weight:600">${d.change_pct>0?'+':''}${d.change_pct}%</div></div></div>`}).join('');
 // 外汇
-if(fx.usdcny)h+=`<div style="display:flex;justify-content:space-between;padding:10px 0;border-bottom:1px solid var(--bg3)"><div style="font-size:13px">💱 美元/人民币</div><div style="font-size:14px;font-weight:700">${fx.usdcny.rate.toFixed(4)}</div></div>`;
+// v9.9.19：在岸主源（AKShare）挂掉时后端会返回 Tushare 离岸 USD/CNH 兜底价并置
+// proxy=true。这里不标出来，用户会以为看到的是在岸 USD/CNY —— 与后端把离岸价
+// 静默当在岸价用是同一类语义错误。文案与 night_worker.py:1926 / global_market.py 一致。
+if(fx.usdcny)h+=`<div style="display:flex;justify-content:space-between;padding:10px 0;border-bottom:1px solid var(--bg3)"><div style="font-size:13px">💱 美元/人民币${fx.usdcny.proxy?' <span style="font-size:11px;color:var(--red,#E5484D);font-weight:600">离岸CNH兜底</span>':''}</div><div style="font-size:14px;font-weight:700">${fx.usdcny.rate.toFixed(4)}</div></div>`;
 // 美联储
 if(fed.available)h+=`<div style="display:flex;justify-content:space-between;padding:10px 0;border-bottom:1px solid var(--bg3)"><div style="font-size:13px">🏛️ 美联储利率</div><div style="text-align:right"><div style="font-size:14px;font-weight:700">${fed.current_rate}%</div><div style="font-size:11px;color:var(--text2)">${fed.trend==='hiking'?'⬆️加息周期':fed.trend==='cutting'?'⬇️降息周期':'按兵不动'}</div></div></div>`;
 // PE 对比

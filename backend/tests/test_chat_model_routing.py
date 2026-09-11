@@ -12,6 +12,26 @@ if str(BACKEND_DIR) not in sys.path:
     sys.path.insert(0, str(BACKEND_DIR))
 
 
+# 每次对话结束后，api/chat.py:127 会额外调一次 call_sync 做「记忆提取」。
+# 桩类里不实现 call_sync 就会抛 AttributeError，而被 api/chat.py:143 的
+# `except Exception` 静默吞掉 —— 用例照过，但这意味着**桩缺方法这件事本身
+# 不会让任何人失败**。将来真实代码出同类错误，同样会被这句静默吞掉。
+# 所以三个桩统一实现 call_sync，返回「无」：走 api/chat.py:135 的跳过分支，
+# 不沉淀任何记忆，保持测试无副作用。
+_STUB_MEMORY_RESULT = {
+    "content": "无",
+    "source": "ai",
+    "fallback": False,
+    "model": "",
+    "tokens": 0,
+}
+
+
+def _stub_call_sync(self, prompt, **kwargs) -> dict:
+    """桩的 call_sync：只服务记忆提取，返回「无」让它跳过沉淀。"""
+    return dict(_STUB_MEMORY_RESULT)
+
+
 def test_resolve_default_model_peak_prefers_doubao_for_interactive(monkeypatch):
     import infra.llm.gateway as gw_mod
 
@@ -340,6 +360,8 @@ def test_chat_stream_fc_uses_peak_aware_default_model(monkeypatch):
         def pre_check(self):
             return True
 
+        call_sync = _stub_call_sync
+
     fake_llm_gateway.LLMGateway = _FakeGateway
     fake_llm_gateway.resolve_default_model = lambda model_tier="llm_light", module="": "doubao-seed-2-1-turbo-260628"
     monkeypatch.setitem(sys.modules, "infra.llm.gateway", fake_llm_gateway)
@@ -396,6 +418,8 @@ def test_chat_stream_done_event_preserves_model_and_fallback(monkeypatch):
             yield {"delta": "前端标签修复完成", "phase": "answering", "done": False}
             yield {"delta": "", "done": True, "model": "doubao-seed-2-1-turbo-260628", "fallback_used": False}
 
+        call_sync = _stub_call_sync
+
     fake_llm_gateway.LLMGateway = _FakeGateway
     fake_llm_gateway.resolve_default_model = lambda model_tier="llm_light", module="": "doubao-seed-2-1-turbo-260628"
     monkeypatch.setitem(sys.modules, "infra.llm.gateway", fake_llm_gateway)
@@ -445,6 +469,8 @@ def test_chat_stream_fc_hard_failure_falls_back_to_normal_chat(monkeypatch):
             yield {"delta": "回退成功", "phase": "answering", "done": False}
             yield {"delta": "", "done": True, "model": "deepseek-v4-flash", "fallback_used": False}
 
+        call_sync = _stub_call_sync
+
     fake_llm_gateway.LLMGateway = _FakeGateway
     monkeypatch.setitem(sys.modules, "infra.llm.gateway", fake_llm_gateway)
 
@@ -477,3 +503,175 @@ def test_chat_stream_fc_hard_failure_falls_back_to_normal_chat(monkeypatch):
 
     assert '"served_by": "llm"' in payload
     assert "所有模型都失败" not in payload
+
+
+# =============================================================================
+# P2-4：thinking 开关按「实际解析出的模型」判定，不按 model_tier 标签
+# =============================================================================
+# 背景
+# ----
+# 全面 Flash 化后 MODEL_ROUTING["llm_heavy"] 也解析成 deepseek-v4-flash，但
+# gateway 里「要不要关 thinking」仍按 model_tier 判断：llm_light 才关。
+# 结果晨报/监控/诊断/self_audit/scenario_engine 这些后台跑批（全部走 llm_heavy）
+# 全都保留了 thinking。2026-09-11 实测：flash 带 thinking 的 completion token
+# 是关闭状态的 6.9~8.0 倍 —— Flash 化省下的钱基本被吃回去。
+#
+# 收敛规则：DeepSeek 按实际模型判（含 pro 才保留 thinking），豆包保持既有逻辑。
+# 判据复用 _fallback_tier_for()，与降级档位共用同一个「是不是 pro 档」的定义，
+# 不新造平行判断函数。
+#
+# 这些用例断言的是**真正发出去的 request body**，不是推断。
+
+def _capture_request_body(monkeypatch, *, prompt, model_tier, module="",
+                          explicit_model="", max_tokens=800,
+                          force_no_thinking=False):
+    """跑一次 call_sync，拦截 httpx 返回真正发出去的 request body。"""
+    import httpx
+
+    import infra.llm.gateway as gw_mod
+
+    bodies = []
+
+    class _FakeResponse:
+        status_code = 200
+
+        def __init__(self, payload):
+            self._payload = payload
+
+        def json(self):
+            return self._payload
+
+    class _FakeClient:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+        def post(self, url, headers=None, json=None, **kwargs):
+            bodies.append(json)
+            return _FakeResponse({
+                "choices": [{"message": {"content": "ok"}}],
+                "model": (json or {}).get("model", ""),
+                "usage": {"prompt_tokens": 1, "completion_tokens": 1},
+            })
+
+    monkeypatch.setattr(httpx, "Client", _FakeClient)
+    monkeypatch.setenv("LLM_API_KEY", "ds")
+    monkeypatch.setenv("DOUBAO_API_KEY", "db")
+
+    # 每次新建实例，避免单例的响应缓存让第二次调用直接命中而不发请求
+    gw = gw_mod.LLMGateway()
+    gw.call_sync(
+        prompt,
+        system="",
+        model_tier=model_tier,
+        module=module,
+        max_tokens=max_tokens,
+        explicit_model=explicit_model,
+        force_no_thinking=force_no_thinking,
+    )
+
+    assert len(bodies) == 1, "期望发出 1 次请求，实际 %d 次（桩或缓存异常）" % len(bodies)
+    return bodies[0]
+
+
+def test_llm_heavy_backend_batch_disables_thinking(monkeypatch):
+    """P2-4 核心回归：llm_heavy 已解析成 flash，必须关 thinking。
+
+    这条在改动前是漏的 —— 按 model_tier 判，llm_heavy 会被当成「重档」而保留
+    thinking，所有后台跑批都中招。
+    """
+    body = _capture_request_body(
+        monkeypatch,
+        prompt="llm_heavy 后台跑批 thinking 断言",
+        model_tier="llm_heavy",
+        module="morning_brief",
+    )
+
+    assert body["model"] == "deepseek-v4-flash"
+    assert body.get("thinking") == {"type": "disabled"}, (
+        "model_tier=llm_heavy 解析出来的是 flash，却仍保留 thinking；"
+        "实测 flash 带 thinking 的 completion token 是关闭状态的 6.9~8.0 倍"
+    )
+    # 顺带守住 gateway.py 顶部那条「llm_heavy 抬高 max_tokens 下限」未被本次改动波及
+    assert body["max_tokens"] == 3000
+
+
+def test_llm_light_backend_disables_thinking(monkeypatch):
+    """llm_light 后台调用：行为与改动前一致，仍要关。"""
+    body = _capture_request_body(
+        monkeypatch,
+        prompt="llm_light 后台调用 thinking 断言",
+        model_tier="llm_light",
+        module="self_audit",
+    )
+
+    assert body["model"] == "deepseek-v4-flash"
+    assert body.get("thinking") == {"type": "disabled"}
+
+
+def test_chat_explicit_pro_keeps_thinking(monkeypatch):
+    """对话页手动选 Pro：用户显式为质量付费，thinking 必须保留。"""
+    body = _capture_request_body(
+        monkeypatch,
+        prompt="对话页手动选 Pro thinking 断言",
+        model_tier="llm_light",
+        module="chat",
+        explicit_model="deepseek-v4-pro",
+    )
+
+    assert body["model"] == "deepseek-v4-pro"
+    assert "thinking" not in body, (
+        "用户显式选了 Pro 却被关掉 thinking；判据要按实际解析出的模型，不是 tier 标签"
+    )
+
+
+def test_force_no_thinking_overrides_explicit_pro(monkeypatch):
+    """短输出点显式要求关推理时，即便实际模型是 Pro 也要关掉。"""
+    body = _capture_request_body(
+        monkeypatch,
+        prompt="force_no_thinking 覆盖 Pro 断言",
+        model_tier="llm_light",
+        module="chat",
+        explicit_model="deepseek-v4-pro",
+        force_no_thinking=True,
+    )
+
+    assert body["model"] == "deepseek-v4-pro"
+    assert body.get("thinking") == {"type": "disabled"}
+
+
+def test_doubao_turbo_under_llm_heavy_still_disables_thinking(monkeypatch):
+    """豆包保持 v9.5.130 既有逻辑：llm_heavy + doubao turbo 仍要关 thinking。
+
+    这条专门挡「把整个判据换成 _fallback_tier_for(use_model)」的偷懒改法：
+    doubao-seed-2-1-turbo 不含 "pro"，会被判成轻档而漏关。
+    """
+    body = _capture_request_body(
+        monkeypatch,
+        prompt="豆包 turbo 重档 thinking 断言",
+        model_tier="llm_heavy",
+        module="morning_brief",
+        explicit_model="doubao-seed-2-1-turbo-260628",
+    )
+
+    assert body["model"] == "doubao-seed-2-1-turbo-260628"
+    assert body.get("thinking") == {"type": "disabled"}
+
+
+def test_doubao_turbo_under_llm_light_keeps_default_thinking(monkeypatch):
+    """豆包轻档：既有逻辑就是不设 thinking，不得被本次改动带偏。"""
+    body = _capture_request_body(
+        monkeypatch,
+        prompt="豆包 turbo 轻档 thinking 断言",
+        model_tier="llm_light",
+        module="chat",
+        explicit_model="doubao-seed-2-1-turbo-260628",
+    )
+
+    assert body["model"] == "doubao-seed-2-1-turbo-260628"
+    assert "thinking" not in body
