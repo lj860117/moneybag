@@ -880,7 +880,9 @@ def warm_morning():
         _ai_ok = 0
         for code in top_codes[:5]:
             try:
-                _rq_ai.get(f"http://127.0.0.1:8000/api/fund/ai-score/{code}", timeout=40)
+                # timeout 必须大于 multi_model_scorer 的 _TOTAL_TIMEOUT(40s)，
+                # 否则 LLM 打满预算时预热请求反而先超时（接口还在跑但预热已放弃）。
+                _rq_ai.get(f"http://127.0.0.1:8000/api/fund/ai-score/{code}", timeout=60)
                 _ai_ok += 1
             except Exception:
                 pass

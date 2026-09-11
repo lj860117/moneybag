@@ -758,7 +758,7 @@ window.showFundDetailModal = async function(code, name) {
     html += `<div id="aiScoreArea_${code}" style="margin-top:14px;padding:10px 12px;background:rgba(139,92,246,.03);border:1px dashed rgba(139,92,246,.2);border-radius:8px">
       <div style="display:flex;align-items:center;gap:6px;cursor:pointer" onclick="_loadAiScore('${code}',this.parentElement)">
         <span style="font-size:11px;font-weight:600;color:#A78BFA">🤖 AI 多模型评审</span>
-        <span style="font-size:10px;color:var(--text-tertiary)">DeepSeek + 豆包 + 千问 各自打分</span>
+        <span style="font-size:10px;color:var(--text-tertiary)">DeepSeek + 豆包 两家各自打分</span>
         <span style="margin-left:auto;font-size:10px;color:#A78BFA">点击加载 →</span>
       </div>
     </div>`;
@@ -1000,7 +1000,7 @@ window.showStockDetailModal = async function(stockData) {
 // v9.5.124: 多模型AI评分异步加载
 window._loadAiScore = async function(code, container) {
   if(!container) return;
-  container.innerHTML = `<div style="text-align:center;padding:12px"><div class="loading-spinner" style="width:18px;height:18px;margin:0 auto 6px;border-width:2px"></div><div style="font-size:11px;color:var(--text-tertiary)">三大AI模型评分中... (约5-10秒)</div></div>`;
+  container.innerHTML = `<div style="text-align:center;padding:12px"><div class="loading-spinner" style="width:18px;height:18px;margin:0 auto 6px;border-width:2px"></div><div style="font-size:11px;color:var(--text-tertiary)">两家AI模型评分中... (约3-10秒)</div></div>`;
   try {
     const r = await fetch(API_BASE + '/fund/ai-score/' + code, {signal: AbortSignal.timeout(45000)});
     if(!r.ok) throw new Error('HTTP ' + r.status);
@@ -1008,6 +1008,35 @@ window._loadAiScore = async function(code, container) {
     if(d.error) { container.innerHTML = `<div style="font-size:11px;color:#F87171">${d.error}</div>`; return; }
 
     let h = `<div style="font-size:11px;font-weight:600;color:#A78BFA;margin-bottom:8px">🤖 AI 多模型评审</div>`;
+    const _total = d.model_total || (d.scores||[]).length || 2;
+
+    // v9.9.x: 两家全失败时明确报错 + 列出每家原因，而不是渲染成"加载完了但没数据"
+    if(!d.model_count){
+      h += `<div style="display:flex;align-items:center;gap:6px;margin-bottom:8px;padding:6px 8px;background:rgba(248,113,113,.07);border-radius:6px">
+        <span style="font-size:12px">⚠️</span>
+        <span style="font-size:11px;color:#F87171;font-weight:600">评分服务暂时不可用</span>
+        <span style="font-size:10px;color:var(--text-tertiary);margin-left:auto">${_total} 家模型本次均调用失败</span>
+      </div>`;
+      if((d.scores||[]).length){
+        h += '<div style="display:flex;flex-direction:column;gap:4px;margin-bottom:8px">';
+        for(const s of d.scores){
+          h += `<div style="display:flex;gap:6px;font-size:10px;padding:4px 8px;background:rgba(255,255,255,.02);border-radius:5px">
+            <span style="flex-shrink:0;color:var(--text-secondary);min-width:70px">${s.name}</span>
+            <span style="color:#FCA5A5;flex:1;word-break:break-all">${s.reason||'未知错误'}</span>
+          </div>`;
+        }
+        h += '</div>';
+      }
+      h += `<div style="font-size:10px;color:var(--text-tertiary);margin-bottom:8px">本次失败未缓存，可直接重试</div>
+        <button onclick="_loadAiScore('${code}',document.getElementById('aiScoreArea_${code}'))" style="padding:4px 12px;border-radius:5px;border:1px solid rgba(248,113,113,.3);background:transparent;color:#F87171;font-size:11px;cursor:pointer">🔄 重试</button>`;
+      container.innerHTML = h;
+      return;
+    }
+
+    // 部分成功：如实说明不是全量结果
+    if(d.partial){
+      h += `<div style="font-size:10px;color:#F59E0B;margin-bottom:8px;padding:4px 8px;background:rgba(245,158,11,.07);border-radius:5px">⚠️ 仅 ${d.model_count}/${_total} 家模型返回，评分可能不完整</div>`;
+    }
 
     // 综合分大字
     const avgColor = (d.avg_score||0)>=7?'#86EFAC':(d.avg_score||0)>=5?'#F59E0B':'#FCA5A5';
@@ -1015,7 +1044,7 @@ window._loadAiScore = async function(code, container) {
     h += `<div style="display:flex;align-items:baseline;gap:10px;margin-bottom:10px">
       <span style="font-size:22px;font-weight:800;color:${avgColor}">${d.avg_score||'—'}</span><span style="font-size:11px;color:var(--text-tertiary)">/10</span>
       <span style="font-size:11px;padding:2px 8px;border-radius:8px;background:rgba(139,92,246,.1);color:${consColor};font-weight:600">${d.consensus||'未知'}</span>
-      <span style="font-size:10px;color:var(--text-tertiary);margin-left:auto">${d.model_count||0}个模型</span>
+      <span style="font-size:10px;color:var(--text-tertiary);margin-left:auto">${d.model_count||0}/${_total} 家模型</span>
     </div>`;
 
     // 各模型分项
@@ -1034,9 +1063,10 @@ window._loadAiScore = async function(code, container) {
     }
     h += '</div>';
 
-    // 缓存标注
+    // 缓存标注（部分成功的短 TTL 要如实标注，别让"12h刷新一次"误导）
     if(d.from_cache) {
-      h += `<div style="font-size:9px;color:var(--text-tertiary);margin-top:6px;text-align:right">缓存 · 12h刷新一次</div>`;
+      const ttlTxt = d.partial ? '部分成功缓存 · 30分钟后可重试' : '缓存 · 12h刷新一次';
+      h += `<div style="font-size:9px;color:var(--text-tertiary);margin-top:6px;text-align:right">${ttlTxt}</div>`;
     }
 
     container.innerHTML = h;

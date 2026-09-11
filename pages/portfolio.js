@@ -677,7 +677,8 @@ overlay.innerHTML=`<div class="modal-sheet" style="max-height:85vh;overflow-y:au
 </div>`;
 document.body.appendChild(overlay);};
 
-// 图片识别：上传截图 → qwen-vl 识别
+// 图片识别：上传截图 → 视觉模型识别（主 deepseek-v4-flash-vision-exp，
+// 失败时 gateway 自动降级到 LLM_VISION_MODEL_DOUBAO，见 gateway.py 降级链）
 window.doParseReceiptImage=async function(input){
 const file=input.files&&input.files[0];if(!file)return;
 const status=document.getElementById('receiptImageStatus');
@@ -696,7 +697,7 @@ reader.onload=async function(e){
   status.innerHTML=`<div style="padding:14px;background:rgba(99,102,241,.1);border:1px solid rgba(99,102,241,.3);border-radius:10px;text-align:center">
     <div class="loading-spinner" style="width:24px;height:24px;border-width:3px;margin:0 auto 8px"></div>
     <div style="font-size:14px;font-weight:700;color:#818CF8;margin-bottom:4px">🤖 AI识别中...</div>
-    <div style="font-size:11px;color:var(--text-secondary,#9AA1AC)">通义千问视觉模型分析中（约5-10秒）<br>请勿点击其他按钮</div>
+    <div style="font-size:11px;color:var(--text-secondary,#9AA1AC)">AI 视觉模型分析中（约5-10秒）<br>请勿点击其他按钮</div>
   </div>`;
 
   // 禁用按钮，避免误触

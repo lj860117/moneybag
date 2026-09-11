@@ -152,7 +152,7 @@ TUSHARE_TOKEN = os.environ.get("TUSHARE_TOKEN", "")
 # 对齐）。没有任何前端资源文件被修改，按上面这条规则，index.html 的 ?v= 与
 # sw.js 的 CACHE_NAME 保持 9.9.20 不动 —— 改了只会让所有用户白重下一遍资源，
 # 且 Service Worker 缓存被整体作废。下一轮只要动了前端，三处必须一起 bump。
-APP_VERSION = "9.9.21"
+APP_VERSION = "9.9.22"
 
 # ---- v9.5.123: API 鉴权 ----
 # 每个用户一个token，格式: userId:token（环境变量或data/auth_tokens.json）
