@@ -88,8 +88,10 @@
 30 4 * * * cd /opt/moneybag/backend && set -a && . /opt/moneybag/backend/.env && set +a && /opt/moneybag/venv/bin/python -m scripts.housekeeping_cron --apply >> /var/log/moneybag/housekeeping.log 2>&1
 */5 * * * * cd /opt/moneybag/backend && set -a && . /opt/moneybag/backend/.env && set +a && /opt/moneybag/venv/bin/python3 scripts/process_watchdog.py --apply >> /var/log/moneybag/watchdog.log 2>&1
 
-# 07:40 LLM 供应商余额主动监控（赶在 08:00 早报链前预警）
-40 7 * * * cd /opt/moneybag/backend && mkdir -p logs && set -a && . /opt/moneybag/backend/.env && set +a && /opt/moneybag/venv/bin/python scripts/llm_balance_monitor.py --alert >> /opt/moneybag/backend/logs/llm_balance_monitor.log 2>&1
+# 08:05 LLM 供应商余额主动监控（FIX 2026-09-12：原 07:40 落在 08:00-23:00 免打扰
+# 窗口之外，主动巡检虽允许绕过窗口，但与 P1/P2 的窗口规则自相矛盾；挪到 08:05
+# 后既在窗口内、又仍早于 08:30 早安简报，保留提前预警价值）
+5 8 * * * cd /opt/moneybag/backend && mkdir -p logs && set -a && . /opt/moneybag/backend/.env && set +a && /opt/moneybag/venv/bin/python scripts/llm_balance_monitor.py --alert >> /opt/moneybag/backend/logs/llm_balance_monitor.log 2>&1
 
 # 08:03 运行态势快照汇总（元巡检，纯规则零 LLM）
 3 8 * * * cd /opt/moneybag/backend && set -a && . /opt/moneybag/backend/.env && set +a && /opt/moneybag/venv/bin/python scripts/ops_summary.py >> /var/log/moneybag/ops_summary.log 2>&1

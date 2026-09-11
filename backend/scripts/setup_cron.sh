@@ -84,8 +84,10 @@ CRONTAB_AUTHORITATIVE_BLOCK=$(cat << 'CRONTAB_EOF'
 # 08:00 批量提炼前一天对话 → pending_insights 待审队列
 # 08:10 深度复盘（窗口：昨天 06:00 → 今天 06:00）→ 写入 context.last_analysis
 # 08:30 推送早安简报到企微（工作日）
-# 07:40 LLM 供应商余额主动监控（赶在 08:00 早报链前预警，2026-09-06 新增）
-40 7 * * * cd /opt/moneybag/backend && mkdir -p logs && set -a && . /opt/moneybag/backend/.env && set +a && /opt/moneybag/venv/bin/python scripts/llm_balance_monitor.py --alert >> /opt/moneybag/backend/logs/llm_balance_monitor.log 2>&1
+# 08:05 LLM 供应商余额主动监控（FIX 2026-09-12：原 07:40 落在 08:00-23:00 免打扰
+# 窗口之外，与 P1/P2 的窗口规则自相矛盾；挪到 08:05 后既在窗口内、又仍早于
+# 08:30 早安简报，保留提前预警价值）
+5 8 * * * cd /opt/moneybag/backend && mkdir -p logs && set -a && . /opt/moneybag/backend/.env && set +a && /opt/moneybag/venv/bin/python scripts/llm_balance_monitor.py --alert >> /opt/moneybag/backend/logs/llm_balance_monitor.log 2>&1
 0 8 * * * cd /opt/moneybag/backend && set -a && . /opt/moneybag/backend/.env && set +a && /opt/moneybag/venv/bin/python -m scripts.auto_extract_cron >> /var/log/moneybag/auto_extract.log 2>&1
 # 09:00-11:59 每 10 分钟盯盘
 # 09:00-14:59 每 30 分钟刷 midday 缓存

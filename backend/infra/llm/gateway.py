@@ -19,6 +19,7 @@ LLM Gateway -- 统一 LLM 调用入口（实现本体，原 services/llm_gateway
 from __future__ import annotations
 import config
 
+import inspect
 import os
 import time
 import json
@@ -83,12 +84,23 @@ def set_alert_hook(fn: Callable[..., None]) -> None:
     _alert_hook = fn
 
 
-def _maybe_alert(provider: str, status_code: int, error_msg: str) -> None:
+def _maybe_alert(
+    provider: str,
+    status_code: int,
+    error_msg: str,
+    *,
+    model: str = "",
+    module: str = "",
+) -> None:
     """触发配额/余额告警，注入钩子优先，未注入时回退 lazy import。
 
     独立进程（night_worker.py 等 6 个 cron 脚本）不经过 main.py 的启动注入，
     钩子为 None，故在此回退到 services.llm_quota_alert.maybe_alert_quota。
     任何环节异常均静默吞掉，不影响主流程（含 raise RuntimeError 流程）。
+
+    FIX 2026-09-12：额外透传 model / module，让告警文案能带上「哪个模型、
+    哪个模块」触发的，便于自查（豆包误报那次的告警文案完全没有溯源信息）。
+    老钩子若不接受这两个 kwarg，自动退回三参数调用，不破坏兼容性。
     """
     global _alert_hook
     fn = _alert_hook
@@ -99,7 +111,18 @@ def _maybe_alert(provider: str, status_code: int, error_msg: str) -> None:
         except Exception:
             return
     try:
-        fn(provider, status_code, error_msg)
+        try:
+            params = inspect.signature(fn).parameters
+            supports_ctx = "model" in params or any(
+                p.kind == inspect.Parameter.VAR_KEYWORD for p in params.values()
+            )
+        except (TypeError, ValueError):
+            supports_ctx = False
+
+        if supports_ctx:
+            fn(provider, status_code, error_msg, model=model, module=module)
+        else:
+            fn(provider, status_code, error_msg)
     except Exception:
         pass
 
@@ -454,7 +477,10 @@ class LLMGateway:
                         print(f"[LLM_GATEWAY] 降级候选({idx + 1}/{len(candidate_models)}) → {candidate_model}")
                     status, payload = _do_call(candidate_model, api_key, api_base)
                     if status != 200:
-                        _maybe_alert(provider, status, payload if isinstance(payload, str) else "")
+                        _maybe_alert(
+                            provider, status, payload if isinstance(payload, str) else "",
+                            model=candidate_model, module=module,
+                        )
                         raise RuntimeError(f"HTTP {status}: {payload}")
                     _msg0 = payload.get("choices", [{}])[0].get("message", {})
                     if not (_msg0.get("content") or "").strip() and (_msg0.get("reasoning_content") or "").strip():
@@ -645,7 +671,10 @@ class LLMGateway:
                             err_body = resp.read().decode("utf-8", errors="ignore")[:500]
                         except Exception:
                             err_body = ""
-                        _maybe_alert(_provider_from_model(use_model), resp.status_code, err_body)
+                        _maybe_alert(
+                            _provider_from_model(use_model), resp.status_code, err_body,
+                            model=use_model, module=module,
+                        )
                         yield {"_http_error": resp.status_code, "_err_body": err_body}
                         return
                     for line in resp.iter_lines():
