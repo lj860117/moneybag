@@ -288,7 +288,10 @@ api/ → use_cases/ → domain/ → infra/
 - Git commit 格式：`[home] 类型: 简短描述`
 - 禁止模糊文件命名：`记录1`、`想法`、`杂项`、`temp` 一律禁止
 - 改完一个文件立即验证，不攒改动
-- 前端版本号更新时，同步更新 `index.html` 的 `?v=` 查询参数和 `sw.js` 的 `CACHE_NAME`
+- **版本 bump 口径**（别踩坑，两种情形不一样）：
+  - 有前端改动 → 三处**一起** bump：`backend/config.py` 的 `APP_VERSION` + `index.html` 的 `?v=` + `sw.js` 的 `CACHE_NAME`
+  - 纯后端改动 → **只** bump `APP_VERSION`，用 `bash scripts/bump_and_deploy.sh X.Y.Z --backend-only`。前端 `?v=` 与 `CACHE_NAME` 保持不动（改了只会让所有用户白重下资源且 SW 缓存整体作废）
+- ⚠️ 前端 `?v=` / SW `CACHE_NAME` 漏改的后果：用户浏览器继续吃旧副本，改了等于没改（2026-09-11 踩过）。纯后端 bump 会出现「后端版本领先前端缓存标记」的临时状态，这是允许的，下一轮动前端时三处收拢
 
 ---
 

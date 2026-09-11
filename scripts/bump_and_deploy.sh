@@ -8,10 +8,19 @@
 #   bash scripts/bump_and_deploy.sh 9.3.32 --no-deploy              # 只 bump+commit，不部署
 #   bash scripts/bump_and_deploy.sh 9.3.32 --dry-run                # 只打印要改哪些，不改
 #
+# 版本 bump 口径（重要，别踩坑）：
+#   - 本轮**有前端改动** → 三处一起 bump：config.py + index.html ?v= + sw.js CACHE_NAME。
+#     不一起 bump 的后果：用户浏览器和 Service Worker 继续吃旧副本，改了等于没改。
+#   - 本轮是**纯后端改动** → 只 bump config.py，加 --backend-only。
+#     index.html 的 ?v= 与 sw.js 的 CACHE_NAME 保持不动：改了只会让所有用户白重下
+#     一遍资源，且 SW 缓存被整体作废，却没有任何前端内容变化。
+#     代价是会出现「后端版本领先前端缓存标记」的状态 —— 这是允许的，
+#     下一轮只要动了前端，三处必须一起收拢。
+#
 # 会做什么：
 #   1. 把 backend/config.py 里的 APP_VERSION 改成新版本
-#   2. 把 index.html 所有 ?v=x.x.x 改成新版本
-#   3. 把 sw.js 的 CACHE_NAME 里的版本号改成新版本（去掉点，如 9.3.32 → 9332）
+#   2. 把 index.html 所有 ?v=x.x.x 改成新版本              [--backend-only 时跳过]
+#   3. 把 sw.js 的 CACHE_NAME 里的版本号改成新版本（去掉点）  [--backend-only 时跳过]
 #   4. git add + commit "[home] bump vX.X.X: <commit message>"
 #   5. git push origin main
 #   6. 调用 backend/scripts/deploy_to_server.sh 推到服务器
@@ -24,6 +33,7 @@ NEW_VERSION="${1:-}"
 NO_DEPLOY=false
 DRY_RUN=false
 YES=false      # --yes 跳过交互确认
+BACKEND_ONLY=false  # --backend-only 只 bump config.py（纯后端改动用，不动前端缓存标记）
 COMMIT_MSG_ARG=""  # -m "message" 直接传 commit message
 
 i=1
@@ -33,6 +43,7 @@ while [ $i -le $# ]; do
         --no-deploy) NO_DEPLOY=true ;;
         --dry-run)   DRY_RUN=true ;;
         --yes|-y)    YES=true ;;
+        --backend-only) BACKEND_ONLY=true ;;
         -m)
             i=$((i+1))
             COMMIT_MSG_ARG="${!i:-}"
@@ -53,6 +64,7 @@ if [ -z "$NEW_VERSION" ] || [ "$NEW_VERSION" = "--help" ] || [ "$NEW_VERSION" = 
     echo "  bash scripts/bump_and_deploy.sh 9.3.32              # bump + commit + 部署"
     echo "  bash scripts/bump_and_deploy.sh 9.3.32 --no-deploy  # 只 bump + commit"
     echo "  bash scripts/bump_and_deploy.sh 9.3.32 --dry-run    # 只预览，不改文件"
+    echo "  bash scripts/bump_and_deploy.sh 9.3.32 --backend-only  # 纯后端改动：只 bump config.py"
     echo ""
     # 读取当前版本
     CURRENT=$(grep 'APP_VERSION' backend/config.py | grep -oE '"[0-9]+\.[0-9]+\.[0-9]+"' | tr -d '"' | head -1)
@@ -83,6 +95,9 @@ echo "  当前版本(index.html): ${CURRENT_INDEX_VERSION:-?}"
 echo "  当前版本(sw.js):      ${CURRENT_SW_VERSION:-?}"
 echo "  目标版本:             $NEW_VERSION"
 echo "  sw.js cache key:      moneybag-v${NEW_SW_VERSION}-cache"
+if $BACKEND_ONLY; then
+    echo "  模式:                 --backend-only（纯后端改动，不动前端缓存标记）"
+fi
 if $DRY_RUN; then
     echo "  [DRY RUN 模式，不修改文件]"
 fi
@@ -92,8 +107,16 @@ echo ""
 if $DRY_RUN; then
     echo "📋 将要修改的文件："
     echo "  backend/config.py  APP_VERSION: ${CURRENT_VERSION} → ${NEW_VERSION}"
-    echo "  index.html         ?v=${CURRENT_INDEX_VERSION:-?} → ?v=${NEW_VERSION}  (22 处)"
-    echo "  sw.js              CACHE_NAME: moneybag-v${CURRENT_SW_VERSION}-cache → moneybag-v${NEW_SW_VERSION}-cache"
+    if $BACKEND_ONLY; then
+        echo "  index.html         ?v=${CURRENT_INDEX_VERSION:-?} 保持不变（--backend-only）"
+        echo "  sw.js              CACHE_NAME: moneybag-v${CURRENT_SW_VERSION}-cache 保持不变（--backend-only）"
+        echo ""
+        echo "  ⚠️  纯后端改动：bump 后会出现「后端版本领先前端缓存标记」的状态，"
+        echo "     这是允许的。下一轮动了前端时，三处必须一起 bump 收拢。"
+    else
+        echo "  index.html         ?v=${CURRENT_INDEX_VERSION:-?} → ?v=${NEW_VERSION}  (22 处)"
+        echo "  sw.js              CACHE_NAME: moneybag-v${CURRENT_SW_VERSION}-cache → moneybag-v${NEW_SW_VERSION}-cache"
+    fi
     echo ""
     echo "✅ Dry run 完成，实际未修改任何文件。"
     exit 0
@@ -128,19 +151,25 @@ fi
 
 # ---- 2. 修改 index.html (所有 ?v=x.x.x) ----
 echo "[2/5] 修改 index.html ..."
-OLD_V="${CURRENT_INDEX_VERSION:-}"
-if [ -n "$OLD_V" ]; then
-    # 用 perl 替换所有出现（macOS sed -i 不支持 \+ 等，perl 更稳健）
-    perl -i -pe "s/\?v=${OLD_V//./\\.}/\?v=${NEW_VERSION}/g" index.html
-    REPLACED=$(grep -c "?v=${NEW_VERSION}" index.html || echo 0)
-    echo "  ✅ ?v=${OLD_V} → ?v=${NEW_VERSION} (共 ${REPLACED} 处)"
+if $BACKEND_ONLY; then
+    echo "  ⏭️  --backend-only，跳过（保持 ?v=${CURRENT_INDEX_VERSION:-?} 不变）"
 else
-    echo "  ⚠️  未在 index.html 找到版本号，跳过"
+    OLD_V="${CURRENT_INDEX_VERSION:-}"
+    if [ -n "$OLD_V" ]; then
+        # 用 perl 替换所有出现（macOS sed -i 不支持 \+ 等，perl 更稳健）
+        perl -i -pe "s/\?v=${OLD_V//./\\.}/\?v=${NEW_VERSION}/g" index.html
+        REPLACED=$(grep -c "?v=${NEW_VERSION}" index.html || echo 0)
+        echo "  ✅ ?v=${OLD_V} → ?v=${NEW_VERSION} (共 ${REPLACED} 处)"
+    else
+        echo "  ⚠️  未在 index.html 找到版本号，跳过"
+    fi
 fi
 
 # ---- 3. 修改 sw.js CACHE_NAME ----
 echo "[3/5] 修改 sw.js ..."
-if grep -q "CACHE_NAME" sw.js; then
+if $BACKEND_ONLY; then
+    echo "  ⏭️  --backend-only，跳过（保持 moneybag-v${CURRENT_SW_VERSION}-cache 不变）"
+elif grep -q "CACHE_NAME" sw.js; then
     # 把整个 CACHE_NAME 行里的版本替换
     perl -i -pe "s/(CACHE_NAME\s*=\s*')moneybag-v\d+-cache(')/"'${1}'"moneybag-v${NEW_SW_VERSION}-cache"'${2}/g' sw.js
     echo "  ✅ CACHE_NAME → moneybag-v${NEW_SW_VERSION}-cache"
@@ -155,17 +184,21 @@ echo "[4/5] Git commit ..."
 if [ -n "$COMMIT_MSG_ARG" ]; then
     COMMIT_MSG="$COMMIT_MSG_ARG"
 elif $YES; then
-    COMMIT_MSG="前端+后端版本同步"
+    if $BACKEND_ONLY; then COMMIT_MSG="纯后端改动（不动前端缓存标记）"; else COMMIT_MSG="前端+后端版本同步"; fi
 else
     read -r -p "  Commit message（直接回车用默认）: " COMMIT_MSG
     if [ -z "$COMMIT_MSG" ]; then
-        COMMIT_MSG="前端+后端版本同步"
+        if $BACKEND_ONLY; then COMMIT_MSG="纯后端改动（不动前端缓存标记）"; else COMMIT_MSG="前端+后端版本同步"; fi
     fi
 fi
 
 FULL_MSG="[home] bump v${NEW_VERSION}: ${COMMIT_MSG}"
 
-git add backend/config.py index.html sw.js
+if $BACKEND_ONLY; then
+    git add backend/config.py
+else
+    git add backend/config.py index.html sw.js
+fi
 # 如果还有其它已跟踪的变更，也一起加进来
 git add -u 2>/dev/null || true
 
