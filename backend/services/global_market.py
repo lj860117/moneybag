@@ -713,6 +713,41 @@ def get_global_pe() -> dict:
 # 5. 全球市场综合快照（一次性调用）
 # ============================================================
 
+def is_snapshot_degraded(snapshot: dict) -> bool:
+    """快照是否处于降级态（外汇主源不可用 / 汇率是离岸 proxy / 汇率整体拿不到）。
+
+    P3-6 起，服务层**内存缓存**对降级结果用 _GLOBAL_TTL_DEGRADED(300s)，
+    但【文件缓存层】—— api/global_market.py 的 4h、scripts/cache_warmer.py
+    的 18h(:322)/4h(:711) —— 都不看 degraded，会把离岸兜底价钉死几个小时。
+    本函数给文件缓存层提供和服务层同一个判据，避免两处各写各的。
+
+    Args:
+        snapshot: get_global_snapshot() 的返回结构（至少含 "forex" 键）。
+
+    Returns:
+        True 表示这份快照是降级产物，文件缓存应该用短 TTL；False 表示正常态。
+    """
+    fx = (snapshot or {}).get("forex") or {}
+
+    # 判据 1：显式降级标记（在岸主源挂了、走的 Tushare 离岸兜底）
+    if fx.get("degraded"):
+        return True
+
+    # 判据 2：汇率值是离岸 proxy
+    if (fx.get("usdcny") or {}).get("proxy"):
+        return True
+
+    # 判据 3：汇率整体不可用。
+    # 历史证据：2026-09-08/09/10 三天的 precomputed 快照里 forex 是
+    # {"available": False, "usdcny": {}, "degraded": None} —— 汇率完全拿不到
+    # 却没有 degraded 标记（旧版代码字段结构不同）。只判 1、2 会把它当正常
+    # 数据，用 18h TTL 把一份空汇率钉死一整晚，恰好是最坏情况。
+    if fx.get("available") is False:
+        return True
+
+    return False
+
+
 def get_global_snapshot() -> dict:
     """一次性获取全球市场综合快照"""
     cache_key = "global_snapshot"

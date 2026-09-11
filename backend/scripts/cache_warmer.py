@@ -201,7 +201,11 @@ def warm_after_close():
         print("[CACHE] 非交易日，跳过")
         return
     
-    ttl = 18  # 收盘15:35 → 次日9:30 = ~18小时
+    # 注意：注释里的 15:35 是历史排期，**实际 cron 是 18:10**（见本文件头部
+    # crontab 与服务器实测）。真实窗口是 18:10 → 次日 12:10，会盖住整个次日
+    # 早盘 —— 所以下面写 global_snapshot 时，降级态必须改用短 TTL，
+    # 否则一次降级会把离岸兜底价钉到次日 12:10（2026-09-11 真实故障）。
+    ttl = 18  # 18:10 收盘跑批 → 次日 12:10 = ~18小时
     
     # 1. 选股结果（最耗时 30-40秒 → 缓存后 0 秒）
     print("  📊 选股...")
@@ -317,9 +321,21 @@ def warm_after_close():
     # 6. 全球市场
     print("  📊 全球市场...")
     try:
-        from services.global_market import get_global_snapshot
+        from services.global_market import (
+            get_global_snapshot, is_snapshot_degraded, _GLOBAL_TTL_DEGRADED,
+        )
         global_data = get_global_snapshot()
-        _save_cache("global_snapshot", global_data, ttl)
+        # 降级态（外汇主源挂了、走离岸 USD/CNH 兜底、或汇率整体拿不到）改用
+        # 短 TTL，对齐 P3-6 的 _GLOBAL_TTL_DEGRADED。
+        # 本轮 cron 实际是 18:10（下面 ttl 注释里的 15:35 是过时的），ttl=18
+        # 会把 18:10 的离岸兜底价钉到次日 12:10，盖住整个早盘 —— 2026-09-11
+        # 就是这么发生的：08:45 的降级价一直吐到 12:45，而 11:21 主源已恢复。
+        # _save_cache 的 ttl_hours 是 float，0.0833 小时是合法输入。
+        _save_cache(
+            "global_snapshot",
+            global_data,
+            _GLOBAL_TTL_DEGRADED / 3600 if is_snapshot_degraded(global_data) else ttl,
+        )
     except Exception as e:
         print(f"  ❌ 全球失败: {e}")
     
@@ -706,9 +722,18 @@ def warm_morning():
     # 3. 全球市场（隔夜美股已收盘）
     print("  🌐 全球...")
     try:
-        from services.global_market import get_global_snapshot
+        from services.global_market import (
+            get_global_snapshot, is_snapshot_degraded, _GLOBAL_TTL_DEGRADED,
+        )
         global_data = get_global_snapshot()
-        _save_cache("global_snapshot", global_data, ttl)
+        # 同 warm_after_close()：降级态不能用 4h，否则早盘 8:45 那轮的离岸
+        # 兜底价会被钉到 12:45 —— 而主源往往在开盘后很快就恢复了（2026-09-11
+        # 实测 11:21 已正常）。降级时改用 _GLOBAL_TTL_DEGRADED（300s）。
+        _save_cache(
+            "global_snapshot",
+            global_data,
+            _GLOBAL_TTL_DEGRADED / 3600 if is_snapshot_degraded(global_data) else ttl,
+        )
     except Exception as e:
         print(f"  ❌ 全球失败: {e}")
     
@@ -1718,15 +1743,27 @@ def warm_evening():
         print("[CACHE] 非交易日，跳过")
         return
     
+    # 注意：正常态是 18:00 → 次日 6:00 的长窗口，但**降级态不走这个 ttl**——
+    # 下面写 global_snapshot 时会换成 _GLOBAL_TTL_DEGRADED（300s）。
     ttl = 12  # 18:00 → 次日 6:00 = ~12小时
     active_users = []
     
     # 1. 全球市场（美股开盘后数据更新）
     print("  🌐 全球市场...")
     try:
-        from services.global_market import get_global_snapshot
+        from services.global_market import (
+            get_global_snapshot, is_snapshot_degraded, _GLOBAL_TTL_DEGRADED,
+        )
         global_data = get_global_snapshot()
-        _save_cache("global_snapshot", global_data, ttl)
+        # 降级态改用短 TTL，对齐 P3-6 的 _GLOBAL_TTL_DEGRADED。
+        # 本轮 cron 是 18:00（比 warm_after_close 的 18:10 还早），ttl=12
+        # 会把离岸兜底价钉到次日 06:00 —— 正好罩住 01:10 晨报生成的时刻，
+        # 四个写手里它嫌疑最大（2026-09-11 缺汇率的晨报就是这个时候生成的）。
+        _save_cache(
+            "global_snapshot",
+            global_data,
+            _GLOBAL_TTL_DEGRADED / 3600 if is_snapshot_degraded(global_data) else ttl,
+        )
         print("  ✅ 全球市场完成")
     except Exception as e:
         print(f"  ❌ 全球市场: {e}")
