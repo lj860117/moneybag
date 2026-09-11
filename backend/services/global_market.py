@@ -34,7 +34,11 @@ from datetime import datetime, timedelta
 from infra.cache import MemoryCache
 
 _global_cache = MemoryCache(default_ttl=3600)
-_GLOBAL_TTL = 3600  # 1 小时缓存
+_GLOBAL_TTL = 3600  # 1 小时缓存（成功路径）
+# 降级/失败结果的缓存时长。远短于成功路径，目的是让主源一恢复就能自愈，
+# 同时**仍保留兜底**（不是「失败不缓存」——那会在上游故障时放大请求压力）。
+# 只用于外汇，见 get_forex_data() 末尾。
+_GLOBAL_TTL_DEGRADED = 300
 
 
 def _safe_num(v, default=0):
@@ -156,9 +160,17 @@ def _normalize_fx_pair(name) -> str:
 def _parse_fx_frame(df) -> dict:
     """解析 AKShare 外汇表 → {归一化代码: 买卖中值}。列名不敏感。
 
-    约定：第 1 列为货币对名称，其余列中能转成数字的都视为报价
-    （买报价/卖报价…，取均值作中值）。这样即使 AKShare 改列名或增减
-    报价列也不会解析失败。
+    约定：第 1 列为货币对名称，第 2、3 列为买报价/卖报价，取二者均值作中值。
+
+    v9.9.19 P3-5：这里原先写的是 `cells[1:]`（「能转成数字的列都算报价」），
+    当时的正确性**完全依赖 akshare 的返回列数**。实测（任务 #7）
+    `akshare/fx/fx_quote.py:42` 最后做了
+    `temp_df = temp_df[["货币对", "买报价", "卖报价"]]`，
+    所以帧固定 3 列、`cells[1:]` 恰好等于 [买报价, 卖报价]，均值即真实中值 ✅。
+    但哪天它升版多返回一列（「昨收」「涨跌幅」之类），旧写法会把这些一起平均；
+    而混合均值仍落在 `[4.0, 9.0]` 区间内，**能通过 `_sanitize_usdcny` 校验、
+    不报错、日志照常打 `USDCNY=6.7xxx`** —— 典型的「没有症状」的静默失败。
+    所以改成显式 `cells[1:3]`，把「只认买/卖两列」这件事写死。
 
     Returns:
         {pair_code: mid_rate}，解析不到任何有效行时返回空 dict。
@@ -178,7 +190,9 @@ def _parse_fx_frame(df) -> dict:
         if not pair:
             continue
         rates = []
-        for cell in cells[1:]:
+        # 显式只取买/卖报价两列（见上面 docstring）。不要改回 cells[1:]：
+        # 那会让解析结果随 akshare 的列数悄悄变化，且变化后无症状。
+        for cell in cells[1:3]:
             try:
                 v = float(str(cell).replace(",", "").strip())
             except (TypeError, ValueError):
@@ -367,7 +381,23 @@ def get_forex_data() -> dict:
         result["degraded_reason"] = "外汇全部数据源均不可用（AKShare 在岸 + Tushare 离岸）"
         print("[GLOBAL] ⚠️ 外汇全部数据源均不可用，usdcny=None")
 
-    _global_cache.set(cache_key, result, ttl=_GLOBAL_TTL)
+    # v9.9.19 P3-6：降级/失败结果不按 1 小时缓存。
+    # 2026-09-11 生产证据：08:30 那次落到离岸兜底后被缓存 3600s，一直锁到 09:30
+    # —— 而 09:30 正是在岸开盘、本可以恢复成在岸价的时刻（10:20 实测主源完全
+    # 正常：source=akshare、degraded=false）。等于一次降级把自己钉死整整一小时，
+    # 这一小时里用户看到的都是 CNH。全失败（available=False）同理。
+    # 所以这两类结果只缓存 _GLOBAL_TTL_DEGRADED（300s）：主源一恢复就能自愈，
+    # 又不会因为「失败不缓存」而在上游故障时放大请求压力。
+    # 判据复用 result 里已有的字段（proxy / available），不新造状态标记。
+    _fx_proxy = bool((result.get("usdcny") or {}).get("proxy", False))
+    if result["available"] and not _fx_proxy:
+        _ttl = _GLOBAL_TTL
+    else:
+        _ttl = _GLOBAL_TTL_DEGRADED
+        print(f"[GLOBAL] 外汇为降级/失败结果，缓存缩短为 {_ttl}s"
+              f"（{'离岸CNH兜底' if _fx_proxy else '全部数据源不可用'}），"
+              f"便于主源恢复后自愈")
+    _global_cache.set(cache_key, result, ttl=_ttl)
     return result
 
 
