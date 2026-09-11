@@ -142,7 +142,7 @@ LLM_MODEL = os.environ.get("LLM_MODEL", "deepseek-v4-flash")
 TUSHARE_TOKEN = os.environ.get("TUSHARE_TOKEN", "")
 
 # ---- 版本号（Phase 1 更新）----
-APP_VERSION = "9.9.17"
+APP_VERSION = "9.9.18"
 
 # ---- v9.5.123: API 鉴权 ----
 # 每个用户一个token，格式: userId:token（环境变量或data/auth_tokens.json）
@@ -353,5 +353,5 @@ OPS_DISK_WARN_GB = 10.0                  # 磁盘 warn 阈值
 OPS_ERROR_CRITICAL_COUNT = 10            # 24h 错误日志 critical 条数
 OPS_ERROR_WARN_COUNT = 3                 # 24h 错误日志 warn 条数
 OPS_ROUTED_PROVIDERS = ("deepseek", "doubao")  # 主路由模型（欠费=critical）
-OPS_LLM_MODEL_TIER = "llm_heavy"         # 分析用重档（DeepSeek V4 Pro，豆包 Seed 2.1 Pro 兜底）
+OPS_LLM_MODEL_TIER = "llm_heavy"         # 分析用重档（2026-09-11 全面 Flash 化后解析为 DeepSeek V4 Flash，豆包 Seed 2.1 Turbo 兜底）
 OPS_LLM_MAX_TOKENS = 3000

@@ -8,7 +8,8 @@ This protocol exposes the calling interface; implementations handle the rest.
 
 Model tiers (from existing LLMGateway):
   - "llm_light" -> deepseek-v4-flash (V4 Flash: commentary, interpretation, chat)
-  - "llm_heavy" -> deepseek-v4-pro (V4 Pro: arbitration, diagnosis, factor gen)
+  - "llm_heavy" -> deepseek-v4-flash (2026-09-11 全面 Flash 化：不再是 Pro。
+    该档现在只用于「抬高输出预算」与「显式选 Pro 时的降级档位」)
 
 Implementations:
   - infra.llm.gateway.LLMClient -- adapter over existing LLMGateway (M1 Day 1)

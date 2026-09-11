@@ -333,7 +333,7 @@ def _ai_pick_funds(risk_profile: str, val_pct: float, fgi: float) -> list:
         gw = LLMGateway.instance()
         llm_result = gw.call_sync(
             prompt,
-            model_tier="llm_heavy",    # deepseek-v4-pro，高质量低幻觉
+            model_tier="llm_heavy",    # 2026-09-11 全面 Flash 化：解析为 deepseek-v4-flash；保留 heavy 只为更大输出预算
             user_id="",
             module="ai_pick_funds",
             max_tokens=800,            # 关 thinking 后 5 只基金 JSON 输出足够

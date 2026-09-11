@@ -358,11 +358,13 @@ def _call_llm_for_scenario(prompt: str, use_r1: bool = True) -> dict:
             # 和用户可见的晨报页脚「🤖 模型：DeepSeek V4 Pro」与实际不符。
             # gateway 的返回值已带上真实生效模型（result["model"] = actual_model），
             # 优先取真实值；取不到时才回落到路由期望值兜底。
+            #
+            # 2026-09-11 全面 Flash 化：兜底值统一改成 flash。MODEL_ROUTING 里
+            # llm_heavy 已解析为 flash，这里若还写 pro 会出现「兜底值比路由值还贵」
+            # 的自相矛盾，让页脚再次失真。
             parsed["_model"] = (
                 result.get("model")
-                or MODEL_ROUTING.get(
-                    model_tier, "deepseek-v4-pro" if use_r1 else "deepseek-v4-flash"
-                )
+                or MODEL_ROUTING.get(model_tier, "deepseek-v4-flash")
             )
             parsed["_raw_length"] = len(content)
             return parsed

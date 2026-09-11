@@ -187,7 +187,11 @@ def run_analysis_cycle(
     # Step 4: 通过 LLMGateway 调用（统一计费+缓存+熔断）
     try:
         from infra.llm.gateway import LLMGateway
-        # 模型名 → Gateway tier（deepseek-v4-pro → llm_heavy）
+        # 模型名 → Gateway tier。
+        # 2026-09-11 全面 Flash 化后 llm_heavy 不再等于 Pro（两者在 MODEL_ROUTING
+        # 里都解析为 flash），但此映射仍需保留：显式选 Pro 时走 heavy 档，
+        # 才能让降级档位按 _fallback_tier_for() 落到豆包 Pro，保住用户
+        # 「愿意付钱换质量」的意图；选 flash 则降级到便宜的豆包 Turbo。
         tier = "llm_heavy" if model == "deepseek-v4-pro" else "llm_light"
         gw_result = LLMGateway.instance().call_sync(
             prompt=user_msg,

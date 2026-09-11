@@ -64,10 +64,12 @@ def _load_profiles():
 
 
 def _call_v3(prompt, max_tokens=500, system="", force_no_thinking=False):
-    """调用 DeepSeek V4 Pro（通过 gateway 统一管理）
+    """调用 DeepSeek V4 Flash（通过 gateway 统一管理）
 
-    晨报场景默认走 V4 Pro：5/23 永久降价后比 Flash 只贵一点，但幻觉更少、质量更好
-    如果 DeepSeek 挂掉，gateway 会自动降级到豆包
+    2026-09-11 全面 Flash 化：晨报等所有内部调用一律走 Flash。
+    model_tier 仍传 llm_heavy，但那已不代表 Pro——只为拿到更大的输出预算
+    （gateway 对 llm_heavy 有 max_tokens 下限保护），实际模型是 Flash。
+    如果 DeepSeek 挂掉，gateway 会自动降级到豆包 Turbo
 
     Args:
         prompt: 用户 prompt
@@ -85,7 +87,7 @@ def _call_v3(prompt, max_tokens=500, system="", force_no_thinking=False):
         result = gw.call_sync(
             prompt,
             system=system,
-            model_tier="llm_heavy",  # 改为 V4 Pro（晨报需要更高质量+低幻觉）
+            model_tier="llm_heavy",  # 2026-09-11 全面 Flash 化：解析为 V4 Flash，heavy 只为输出预算
             user_id="",
             module="night_worker",
             max_tokens=max_tokens,

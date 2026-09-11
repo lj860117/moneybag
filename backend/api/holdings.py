@@ -1313,7 +1313,7 @@ def _compute_ai_checkup(userId: str) -> dict:
                 "status": "ok",
                 "analysis": result["content"],
                 "source": "ai_pro",
-                "model": result.get("model", "deepseek-v4-pro"),
+                "model": result.get("model", "deepseek-v4-flash"),
                 "dimensions": {
                     "fund_count": len(funds),
                     "avg_nav_pct": round(avg_pct) if avg_pct else None,

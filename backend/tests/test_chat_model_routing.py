@@ -105,6 +105,11 @@ def test_resolve_model_candidates_switches_fallback_order_by_peak_window(monkeyp
 
 
 def test_resolve_default_model_noninteractive_keeps_deepseek_during_peak(monkeypatch):
+    """非交互模块（晨报/运维等）峰段仍以 DeepSeek 为主，且 2026-09-11 起是 Flash 而非 Pro。
+
+    这条断言的语义被「全面 Flash 化」推翻：旧断言要求 llm_heavy → deepseek-v4-pro。
+    现在 llm_heavy 不再代表 Pro，只代表「更大输出预算 + 重档降级档位」。
+    """
     import infra.llm.gateway as gw_mod
 
     monkeypatch.setenv("LLM_API_KEY", "ds")
@@ -117,7 +122,75 @@ def test_resolve_default_model_noninteractive_keeps_deepseek_during_peak(monkeyp
         now=datetime(2026, 7, 6, 10, 15),
     )
 
-    assert model == "deepseek-v4-pro"
+    assert model == "deepseek-v4-flash"
+
+
+def test_heavy_tier_resolves_to_flash_with_cheap_fallback(monkeypatch):
+    """全面 Flash 化：llm_heavy 主模型必须是 flash，降级必须是便宜的豆包 Turbo。
+
+    覆盖晨报(night_worker)、运维分析(OPS_LLM_MODEL_TIER)、个股监控(close_review)、
+    AI 选基(ai_pick_funds)、持仓诊断、self_audit、scenario_engine 等全部重档调用。
+    """
+    import infra.llm.gateway as gw_mod
+
+    monkeypatch.setenv("LLM_API_KEY", "ds")
+    monkeypatch.setenv("DOUBAO_API_KEY", "db")
+
+    candidates = gw_mod.resolve_model_candidates(
+        "llm_heavy",
+        module="night_worker",
+        now=datetime(2026, 7, 6, 10, 15),   # 峰段但非交互模块 → deepseek 优先
+    )
+
+    assert candidates == [
+        "deepseek-v4-flash",
+        "doubao-seed-2-1-turbo-260628",
+    ]
+
+
+def test_explicit_pro_keeps_quality_fallback(monkeypatch):
+    """用户在对话页显式选 Pro 时，降级必须保质量（豆包 Pro），不能降成 Turbo。"""
+    import infra.llm.gateway as gw_mod
+
+    monkeypatch.setenv("LLM_API_KEY", "ds")
+    monkeypatch.setenv("DOUBAO_API_KEY", "db")
+
+    candidates = gw_mod.resolve_model_candidates(
+        "llm_light",
+        module="chat",
+        explicit_model="deepseek-v4-pro",
+        now=datetime(2026, 7, 6, 10, 15),
+    )
+
+    assert candidates == [
+        "deepseek-v4-pro",
+        "doubao-seed-2-1-pro-260628",
+    ]
+
+
+def test_peak_chat_auto_stays_cheap_and_doubao_first(monkeypatch):
+    """峰谷窗口下 chat 走 auto：主模型仍须便宜档，且候选顺序豆包优先。"""
+    import infra.llm.gateway as gw_mod
+
+    monkeypatch.setenv("LLM_API_KEY", "ds")
+    monkeypatch.setenv("DOUBAO_API_KEY", "db")
+
+    # 2026-07-06 是周一，10:15 落在 9~12 点峰段
+    candidates = gw_mod.resolve_model_candidates(
+        "llm_light",
+        module="chat",
+        now=datetime(2026, 7, 6, 10, 15),
+    )
+    default_model = gw_mod.resolve_default_model(
+        "llm_light",
+        module="chat",
+        now=datetime(2026, 7, 6, 10, 15),
+    )
+
+    assert candidates[0] == "doubao-seed-2-1-turbo-260628"   # 峰段豆包优先
+    assert "pro" not in candidates[0]                        # 主模型是便宜档
+    assert "pro" not in candidates[1]                        # 降级也是便宜档
+    assert default_model == "doubao-seed-2-1-turbo-260628"
 
 
 def test_llm_cache_key_includes_model_to_avoid_cross_model_reuse(tmp_path, monkeypatch):

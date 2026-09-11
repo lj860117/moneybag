@@ -197,7 +197,8 @@ async def agent_analyze(req: dict):
     """Agent 决策引擎 — 手动触发分析"""
     user_id = req.get("userId", "default_user")
     force = req.get("force", False)
-    model = req.get("model", "deepseek-v4-pro")
+    # 2026-09-11 全面 Flash 化：内部默认改 Flash（Pro 仍是用户可在对话页显式选的合法项）
+    model = req.get("model", "deepseek-v4-flash")
 
     # 收集数据
     market_ctx = _build_market_context()

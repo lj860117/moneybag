@@ -1180,7 +1180,7 @@ def run_close_review():
                     result = gw.call_sync(
                         prompt,
                         system=system_prompt,
-                        model_tier="llm_heavy",  # R1 深度推理
+                        model_tier="llm_heavy",  # 2026-09-11 全面 Flash 化：解析为 V4 Flash，heavy 只为输出预算（已非 R1 深度推理）
                         user_id=uid,
                         module="close_review",
                         max_tokens=2000,  # v9.8.10: 900→2000，防止诊断文本不完整

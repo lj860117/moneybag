@@ -2,7 +2,7 @@
 钱袋子 — 多模型 AI 评分引擎（v9.5.124）
 
 两家大模型各自独立对基金打分（0-10分+理由），综合加权排名。
-- DeepSeek V4 Pro：主力深度分析
+- DeepSeek V4 Flash：主力分析（2026-09-11 全面 Flash 化，内部默认不再用 Pro）
 - 豆包 Seed 2.1 Pro：字节系视角
 （千问 Qwen3.6 已于欠费后下线）
 
@@ -22,8 +22,8 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 _MODELS = [
     {
         "id": "deepseek",
-        "name": "DeepSeek Pro",
-        "model": "deepseek-v4-pro",
+        "name": "DeepSeek",
+        "model": "deepseek-v4-flash",
         "key_env": "LLM_API_KEY",
         "base_url": "https://api.deepseek.com/v1",
     },

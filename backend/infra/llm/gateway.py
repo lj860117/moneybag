@@ -39,9 +39,19 @@ LLM_API_BASE = os.environ.get("LLM_API_BASE", "https://api.deepseek.com/v1")
 DOUBAO_API_BASE = os.environ.get("DOUBAO_API_BASE", os.environ.get("ARK_API_BASE", "https://ark.cn-beijing.volces.com/api/v3"))
 
 # 模型路由
+#
+# 2026-09-11 全面 Flash 化：**llm_heavy 不再代表 Pro**。
+# 实测 DeepSeek 官方 /v1/models 只有 ["deepseek-flash", "deepseek-v4-pro"]，
+# `deepseek-v4-flash` 被 API 静默归一化为当前最新的 flash 档（官方不换 ID 升级），
+# 继续沿用该 ID，不要改成 v4.1 之类的猜测名。
+#
+# 两档 tier 现在的语义收敛为：
+#   - 决定「输出预算」：llm_heavy 仍会抬高 max_tokens 下限（见 _call / _stream）
+#   - 决定「显式 Pro 时的降级档位」：见 _fallback_tier_for()
+# 实际主模型一律 Flash。只有用户在对话页显式选 Pro 才用贵模型。
 MODEL_ROUTING = {
     "llm_light": "deepseek-v4-flash",     # V4 Flash: 聊天/点评/解读/信号
-    "llm_heavy": "deepseek-v4-pro",       # V4 Pro: 仲裁/诊断/因子生成（快且质量高）
+    "llm_heavy": "deepseek-v4-flash",     # 2026-09-11 全面 Flash 化：不再是 Pro
 }
 DOUBAO_MODEL_ROUTING = {
     "llm_light": "doubao-seed-2-1-turbo-260628",
@@ -181,11 +191,22 @@ def _preferred_provider_order(module: str = "", now: Optional[datetime] = None) 
 def _resolve_provider_model(provider: str, model_tier: str = "llm_light", *, need_tools: bool = False, phase: str = "primary") -> str:
     # need_tools / phase 保留为兼容参数：Seed 2.1 收敛为 pro/turbo 两档后，
     # 豆包 fallback 不再有 mini 兜底档，统一用 turbo，故二者不再参与路由决策。
+    #
+    # 2026-09-11：原先对 doubao 是硬编码 if/else，与 DOUBAO_MODEL_ROUTING 字典
+    # 重复定义且易失同步。改为统一查字典，保证改字典即生效。
     if provider == "doubao":
-        if model_tier == "llm_heavy":
-            return "doubao-seed-2-1-pro-260628"
-        return "doubao-seed-2-1-turbo-260628"
+        return DOUBAO_MODEL_ROUTING.get(model_tier, DOUBAO_MODEL_ROUTING["llm_light"])
     return MODEL_ROUTING.get(model_tier, "deepseek-v4-flash")
+
+
+def _fallback_tier_for(primary_model: str) -> str:
+    """降级档位跟随主模型：只有主模型是 pro 才用 pro 档兜底，其余一律便宜档。
+
+    全面 Flash 化后 model_tier 已不能直接反映实际模型（llm_heavy 也解析成 flash），
+    所以降级档位必须从「真正要调用的主模型」反推，否则对话页手动选 Pro 会被
+    降级成豆包 Turbo，与用户显式选择昂贵模型的意图冲突。
+    """
+    return "llm_heavy" if "pro" in (primary_model or "").lower() else "llm_light"
 
 
 def resolve_model_candidates(model_tier: str = "llm_light", module: str = "", explicit_model: str = "", need_tools: bool = False, now: Optional[datetime] = None) -> list[str]:
@@ -202,8 +223,12 @@ def resolve_model_candidates(model_tier: str = "llm_light", module: str = "", ex
         candidates.append(_resolve_provider_model(primary_provider, model_tier, need_tools=need_tools, phase="primary"))
         remaining = preferred[1:]
 
+    # 降级档位跟随「实际主模型」而非调用方传入的 tier：
+    # llm_heavy 现在也解析成 flash，若继续拿 tier 当降级档位，会把所有重档调用
+    # 的兜底抬成豆包 Pro（贵）；反之用户显式选 Pro 时又会被降成 Turbo（掉质量）。
+    fallback_tier = _fallback_tier_for(candidates[0]) if candidates else model_tier
     for provider in remaining:
-        candidates.append(_resolve_provider_model(provider, model_tier, need_tools=need_tools, phase="fallback"))
+        candidates.append(_resolve_provider_model(provider, fallback_tier, need_tools=need_tools, phase="fallback"))
 
     deduped: list[str] = []
     for model in candidates:
