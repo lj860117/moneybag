@@ -397,9 +397,17 @@ class LLMGateway:
             # v9.9.19：DeepSeek 判据从 model_tier 标签改成「实际解析出的模型」。
             # 全面 Flash 化后 llm_heavy 也解析成 deepseek-v4-flash，继续拿 tier
             # 当判据，晨报/监控/诊断/self_audit/scenario_engine 这些后台跑批会被
-            # 当成「重档」而保留 thinking。2026-09-11 实测：flash 带 thinking 的
-            # completion token 是关闭状态的 6.9~8.0 倍 —— 全面 Flash 化不配
-            # thinking 关闭，省下的钱基本被吃回去。
+            # 当成「重档」而保留 thinking。
+            #
+            # 收益证据（2026-09-11 实测，同一 prompt 各 2 次）：
+            #   | 状态           | completion token | 耗时      |
+            #   | thinking 已关  | 51 ~ 133         | 1.1~1.5s |
+            #   | thinking 没关  | 934 ~ 1355       | 6.9~9.1s |
+            # ⚠️ 只看**绝对量级**，不要写成「N 倍」。n=2 的样本下倍数的置信区间
+            # 宽到 7~27× 都能自圆其说，倍数根本无法证伪——之前这里写的
+            # 「6.9~8.0 倍」其实是把 B 组的**耗时秒数**（6.9~9.1s）误当成了
+            # 倍数，v9.9.20 更正。绝对 token 数是可证伪的：改动后如果后台跑批的
+            # completion token 还停在 900+，就说明 thinking 没真关掉。
             # 判据与降级档位共用同一个 _fallback_tier_for()（模型名含 pro 才算重档），
             # 不新造平行判断函数，避免将来两处漂移。
             _is_deepseek_v4 = use_model.startswith("deepseek-v4")

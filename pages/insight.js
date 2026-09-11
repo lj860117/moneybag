@@ -369,8 +369,12 @@ h+=idxArr.map(([k,n])=>{const d=us[k];if(!d)return'';const c=d.change_pct>0?'var
 // 外汇
 // v9.9.19：在岸主源（AKShare）挂掉时后端会返回 Tushare 离岸 USD/CNH 兜底价并置
 // proxy=true。这里不标出来，用户会以为看到的是在岸 USD/CNY —— 与后端把离岸价
-// 静默当在岸价用是同一类语义错误。文案与 night_worker.py:1926 / global_market.py 一致。
-if(fx.usdcny)h+=`<div style="display:flex;justify-content:space-between;padding:10px 0;border-bottom:1px solid var(--bg3)"><div style="font-size:13px">💱 美元/人民币${fx.usdcny.proxy?' <span style="font-size:11px;color:var(--red,#E5484D);font-weight:600">离岸CNH兜底</span>':''}</div><div style="font-size:14px;font-weight:700">${fx.usdcny.rate.toFixed(4)}</div></div>`;
+// 静默当在岸价用是同一类语义错误。
+// v9.9.20：补 as_of 时点标注（后端下发的取数时刻/离岸收盘日）。不要用 new Date()
+// 现取——这里拿到的价可能来自快照缓存，标成打开页面这一刻就是误导。
+// 文案与 night_worker.py / global_market.py 三处保持一致，一致性由
+// backend/tests/test_model_attribution_labels.py 扫描三处渲染点守住。
+if(fx.usdcny){const _fxAsOf=fx.usdcny.as_of?`<span style="font-size:11px;color:var(--text2);font-weight:400">（${fx.usdcny.as_of}）</span>`:'';h+=`<div style="display:flex;justify-content:space-between;padding:10px 0;border-bottom:1px solid var(--bg3)"><div style="font-size:13px">💱 美元/人民币${fx.usdcny.proxy?' <span style="font-size:11px;color:var(--red,#E5484D);font-weight:600">离岸CNH兜底</span>':''}${_fxAsOf}</div><div style="font-size:14px;font-weight:700">${fx.usdcny.rate.toFixed(4)}</div></div>`}
 // 美联储
 if(fed.available)h+=`<div style="display:flex;justify-content:space-between;padding:10px 0;border-bottom:1px solid var(--bg3)"><div style="font-size:13px">🏛️ 美联储利率</div><div style="text-align:right"><div style="font-size:14px;font-weight:700">${fed.current_rate}%</div><div style="font-size:11px;color:var(--text2)">${fed.trend==='hiking'?'⬆️加息周期':fed.trend==='cutting'?'⬇️降息周期':'按兵不动'}</div></div></div>`;
 // PE 对比

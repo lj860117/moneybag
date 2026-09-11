@@ -40,6 +40,20 @@ _GLOBAL_TTL = 3600  # 1 小时缓存（成功路径）
 # 只用于外汇，见 get_forex_data() 末尾。
 _GLOBAL_TTL_DEGRADED = 300
 
+# 综合快照（get_global_snapshot）的缓存时长。
+# 为什么是 300 而不是更大：快照里含外汇，而外汇的降级结果按
+# _GLOBAL_TTL_DEGRADED=300s 缓存（见 get_forex_data 末尾）。若快照 TTL 更长，
+# 外汇主源恢复后消费方读到的仍是快照里的旧值，P3-6 做的「降级缩短 TTL 好自愈」
+# 会被快照层再压一层、效果打折。对齐成 300，自愈链路才完整。
+#
+# 为什么降 TTL 不会打爆上游（这点务必保留，否则后人看到 300 会以为要限流）：
+# 快照本身不取数，只是把四个子函数的结果组装起来，而四个子函数**各自有自己的
+# 缓存**：get_us_indices=3600 / get_forex_data=3600(正常)或300(降级) /
+# get_fed_rate=default 3600 / get_global_pe=default 3600。所以快照 TTL 从 600
+# 降到 300，多出来的开销只是每 5 分钟重新组装一次字典，绝大多数子调用直接命中
+# 自己的缓存，不会新增上游请求。
+_SNAPSHOT_TTL = 300
+
 
 def _safe_num(v, default=0):
     """安全转数字，处理 NaN/Inf"""
@@ -242,9 +256,10 @@ def _sanitize_usdcny(value) -> float | None:
 def _sanitize_dxy(value) -> float | None:
     """美元指数（DXY）准入校验：落在 [50, 200] 才采纳，越界返回 None 并告警。
 
-    DXY 当前**未实现**（无可用数据源，原因见 get_forex_data 内注释），
-    本函数是为未来实现预留的防线：任何算出来的 DXY 都必须先过这道校验，
-    越界即拦下并告警，绝不静默返回可疑值。
+    v9.9.20 起 DXY 已由 _compute_dxy_proxy() 真实合成（不再是恒为 None 的
+    占位字段），这道校验从「预留防线」变成**实际生效的运行时闸门**：
+    任何合成结果都必须先过这里，越界即拦下并告警，绝不静默返回可疑值。
+    这是本字段唯一的安全网，不要在调用处绕过它。
     """
     if value is None:
         return None
@@ -264,6 +279,126 @@ def _sanitize_dxy(value) -> float | None:
     return val
 
 
+# ---- 美元指数（DXY）合成（v9.9.20 真值化）----
+#
+# ICE 美元指数的官方定义（1973-03 基期 = 100）：
+#   DXY = 50.14348112
+#       × (EUR/USD)^(-0.576) × (USD/JPY)^(+0.136) × (GBP/USD)^(-0.119)
+#       × (USD/CAD)^(+0.091) × (USD/SEK)^(+0.042) × (USD/CHF)^(+0.036)
+#
+# 两个最容易写错的地方，错一个就得到荒谬的值：
+#   1. 必须是**几何加权**（连乘 + 幂），不是算术加权。算术加权会把 EUR/USD≈1.16
+#      和 USD/JPY≈154.4 这种量纲完全不同的数直接相加 —— 2026-09-11 实测
+#      算术加权得 22.39，既不在 _DXY_VALID_RANGE 内也毫无意义；几何加权得
+#      99.11，与真实美元指数同量级。
+#   2. USD 是基准货币：EUR/USD、GBP/USD 里 USD 在**分母**，指数为负；
+#      其余四项 USD 在分子，指数为正。别统一成正号。
+_DXY_BASE_CONST = 50.14348112
+_DXY_W_EUR = -0.576
+_DXY_W_JPY = 0.136
+_DXY_W_GBP = -0.119
+_DXY_W_CAD = 0.091
+_DXY_W_SEK = 0.042
+_DXY_W_CHF = 0.036
+
+
+def _compute_dxy_proxy(pairs: dict) -> float | None:
+    """用 AKShare 的「外币/CNY」报价交叉出 ICE 六大成分货币对，合成美元指数。
+
+    fx_spot_quote 只给「外币/CNY」和「CNY/外币」两类报价，而 DXY 公式需要的是
+    跨币种对（EUR/USD 等），所以先与 USD/CNY 做交叉：
+        EUR/USD = (EUR/CNY) ÷ (USD/CNY)          USD 在分母 → 指数取负
+        USD/JPY = (USD/CNY) ÷ (JPY/CNY)          USD 在分子 → 指数取正
+        CNY/SEK 是「1 人民币 = ? 克朗」，先取倒数才是 SEK/CNY
+        100JPY/CNY 是「100 日元 = ? 人民币」，先 ÷100 归一到 1 日元
+
+    交叉精度已实测核对（2026-09-11 10:58）：与 akshare fx_pair_quote 的直盘
+    报价逐项比对，六项全部吻合到小数点后 4 位（EUR/USD 1.160731 vs 1.16073、
+    USD/JPY 154.4031 vs 154.399、GBP/USD 1.350385 vs 1.35040、
+    USD/CAD 1.384119 vs 1.38413、USD/SEK 9.70027 vs 9.6995、
+    USD/CHF 0.813669 vs 0.81368），所以不需要额外发一次 fx_pair_quote 请求，
+    复用已经取回来的这一帧即可（省一次上游调用，也少一个失败点）。
+
+    局限性（要写清楚，避免被当成官方指数用）：
+      - 这是**合成代理值**，不是 ICE 官方发布的 DXY，字段名保留 dxy_proxy 就是
+        为了时刻提示这一点；
+      - 六个成分都由 CNY 报价推导，因此**继承了在岸盘口的时点特性**——
+        非交易时段（CFETS 每日 03:00 重置、09:30 开盘）算出来的是陈旧价；
+      - 任一分量为 0/缺失/非有限数时直接放弃返回 None，**不做硬编码兜底**。
+        返回错值比返回 None 危险得多（2026-09-11 拿 USDCNY≈6.7 冒充 DXY
+        就是这个教训）。
+
+    Args:
+        pairs: _parse_fx_frame() 的输出，{归一化货币对代码: 买卖中值}。
+
+    Returns:
+        合成后的 DXY（已过 _sanitize_dxy 校验）；缺少/非法成分时返回 None。
+    """
+    usdcny = _safe_num(pairs.get("USDCNY"), 0)
+    if not (math.isfinite(usdcny) and usdcny > 0):
+        return None
+
+    needed = ("EURCNY", "100JPYCNY", "GBPCNY", "CADCNY", "CHFCNY", "CNYSEK")
+    vals = {k: _safe_num(pairs.get(k), 0) for k in needed}
+    bad = [k for k, v in vals.items() if not (math.isfinite(v) and v > 0)]
+    if bad:
+        print(f"[GLOBAL] dxy_proxy 缺少/非法成分 {bad}，本次不合成（返回 None）")
+        return None
+
+    eurusd = vals["EURCNY"] / usdcny
+    usdjpy = usdcny / (vals["100JPYCNY"] / 100.0)
+    gbpusd = vals["GBPCNY"] / usdcny
+    usdcad = usdcny / vals["CADCNY"]
+    usdchf = usdcny / vals["CHFCNY"]
+    usdsek = usdcny / (1.0 / vals["CNYSEK"])
+
+    comps = (eurusd, usdjpy, gbpusd, usdcad, usdsek, usdchf)
+    if any((not math.isfinite(c)) or c <= 0 for c in comps):
+        print(f"[GLOBAL] dxy_proxy 交叉结果非法: {comps}，置为 None")
+        return None
+
+    dxy = (_DXY_BASE_CONST
+           * eurusd ** _DXY_W_EUR
+           * usdjpy ** _DXY_W_JPY
+           * gbpusd ** _DXY_W_GBP
+           * usdcad ** _DXY_W_CAD
+           * usdsek ** _DXY_W_SEK
+           * usdchf ** _DXY_W_CHF)
+    return _sanitize_dxy(dxy)
+
+
+def _fx_as_of_text(trade_date: str = "") -> str:
+    """生成汇率行的「时点」标注文案（三处渲染点共用，见 FX_AS_OF_MARKER）。
+
+    为什么不用报价自带的时间戳：akshare 的 fx_spot_quote 原始 payload 里确实有
+    time 字段，但实测（2026-09-11 10:58）返回的是**空字符串**，midprice 也是
+    占位符 '---'，拿不到报价自己的时点。所以分两种口径：
+
+      - 在岸价：标**取数时刻**（`截至 MM-DD HH:MM`），语义是「本系统此刻观测到的
+        价」。关键是这个时刻在**取数时**写入并随缓存一起返回，不是在渲染时才生成
+        —— 否则缓存命中时会把「多久之前取的」说成「现在」，标注反而变成误导。
+      - 离岸兜底价：优先用 Tushare 自己的 trade_date（`MM-DD 收盘`）。因为
+        fx_daily 是日频收盘价，很可能就是昨天的，标成取数时刻会把「昨收」
+        说成「现在」，比不标更糟。
+
+    Args:
+        trade_date: Tushare 的 YYYYMMDD 交易日；空串/非法表示没有，退回取数时刻。
+
+    Returns:
+        形如 "截至 09-11 10:58" 或 "09-11 收盘" 的文案。
+    """
+    d = (trade_date or "").strip()
+    if len(d) == 8 and d.isdigit():
+        try:
+            dt = datetime.strptime(d, "%Y%m%d")
+            return f"{dt.month:02d}-{dt.day:02d} 收盘"
+        except ValueError:
+            pass
+    now = datetime.now()
+    return (f"截至 {now.month:02d}-{now.day:02d} "
+            f"{now.hour:02d}:{now.minute:02d}")
+
+
 def get_forex_data() -> dict:
     """获取主要外汇汇率（美元/人民币）
 
@@ -281,8 +416,10 @@ def get_forex_data() -> dict:
       不能用 CNH 默默冒充 CNY（这与 dxy_proxy 不能拿 USDCNY 充数是同一原则）。
 
     Returns:
-        {"usdcny": {...}|None, "dxy_proxy": None, "available": bool}
+        {"usdcny": {...}|None, "dxy_proxy": float|None, "available": bool}
         usdcny 里的 "proxy": True 表示当前值是离岸 USD/CNH 兜底，非在岸价。
+        usdcny 里的 "as_of" 是该价格的时点文案（见 _fx_as_of_text），
+        dxy_proxy 是合成美元指数（见 _compute_dxy_proxy），两者都可能为 None/缺失。
     """
     cache_key = "forex"
     now = time.time()
@@ -316,19 +453,28 @@ def get_forex_data() -> dict:
                         "rate": round(rate, 4),
                         "name": "USD/CNY",
                         "source": "akshare",
+                        # 时点在**取数时刻**写入（不是渲染时生成），这样缓存命中时
+                        # 返回的是真正观测到该价格的时刻，见 _fx_as_of_text。
+                        "as_of": _fx_as_of_text(),
                     }
 
-            # 美元指数（DXY）未实现 → 恒为 None。保留字段以免破坏 API 契约。
+            # 美元指数（DXY）：v9.9.20 起真实合成，不再是恒为 None 的占位字段。
             #
-            # 真实 DXY 需要 EUR/USD、USD/JPY、GBP/USD 等跨币种加权几何平均
-            # （EUR 57.6% / JPY 13.6% / GBP 11.9% / CAD 9.1% / SEK 4.2% /
-            #   CHF 3.6%），而当前 fx_spot_quote 只提供「外币/CNY」报价，
-            # 不含上述跨币种对，无法计算。
+            # 之前这里写着「fx_spot_quote 只提供外币/CNY 报价，不含跨币种对，无法
+            # 计算」——这个结论只对了一半：确实没有直盘，但可以用 USD/CNY 做
+            # 交叉推导出六大成分（实测与 fx_pair_quote 直盘吻合到 4 位小数）。
+            # 合成口径、几何加权的原因、以及「合成值而非官方指数」的局限都写在
+            # _compute_dxy_proxy() 的 docstring 里。
             #
-            # 切勿拿 USDCNY 充当代理——两者量纲完全不同
-            # （DXY≈100 vs USDCNY≈6.7），返回错值比返回 None 危险得多。
-            # 未来接真实 DXY 数据源时，务必把结果交给 _sanitize_dxy() 校验。
-            result["dxy_proxy"] = _sanitize_dxy(None)
+            # 两条不能破的规矩：
+            #   1. 结果必须过 _sanitize_dxy() —— 它在 _compute_dxy_proxy 内部调用，
+            #      不要在外面另算一遍绕过它；
+            #   2. 合成不出来就保持 None，**不要硬编码兜底值**。
+            #      返回错值比返回 None 危险得多（2026-09-11 拿 USDCNY≈6.7 冒充
+            #      DXY 的返工就是这个教训）。
+            result["dxy_proxy"] = (
+                _compute_dxy_proxy(pairs) if result["usdcny"] is not None else None
+            )
 
             result["available"] = result["usdcny"] is not None
             if result["available"]:
@@ -360,6 +506,10 @@ def get_forex_data() -> dict:
                         "name": "USD/CNH(离岸,代理USD/CNY)",
                         "source": "tushare",
                         "proxy": True,
+                        # 离岸价走 fx_daily，是日频收盘价，可能就是昨天的。
+                        # 这里用数据源自己的 trade_date，不能标取数时刻 ——
+                        # 否则会把「昨收」说成「现在」，比不标更误导。
+                        "as_of": _fx_as_of_text(str(fx.get("date", "") or "")),
                     }
                     result["available"] = True
                     result["degraded"] = True
@@ -595,13 +745,21 @@ def get_global_snapshot() -> dict:
         # 模型会照抄里面的措辞写结论。主源（AKShare 在岸）挂掉、落到 Tushare
         # 离岸 USD/CNH 兜底时若不标出币种，模型就会把离岸价当在岸 USD/CNY
         # 转述给用户 —— 与 dxy_proxy 拿 USDCNY 充数是同一类语义错误。
-        # 文案与 scripts/night_worker.py:1926 保持一致，避免两处漂移。
+        # 文案与 scripts/night_worker.py 的汇率行保持一致，避免两处漂移
+        # （一致性由 tests/test_model_attribution_labels.py 的
+        #  test_all_usdcny_render_sites_handle_proxy 扫描三处渲染点守住）。
+        # 时点文案来自后端 usdcny.as_of（取数时刻/离岸收盘日），不要在这里现取
+        # datetime.now()——那会把缓存里的旧价说成「现在」。
+        _as_of = fx["usdcny"].get("as_of") or ""
+        _as_of_txt = f"（{_as_of}）" if _as_of else ""
         if fx["usdcny"].get("proxy"):
             summary_lines.append(
-                f"  💱 美元/人民币(离岸CNH兜底): {fx['usdcny']['rate']:.4f}"
+                f"  💱 美元/人民币(离岸CNH兜底): {fx['usdcny']['rate']:.4f}{_as_of_txt}"
             )
         else:
-            summary_lines.append(f"  💱 美元/人民币: {fx['usdcny']['rate']:.4f}")
+            summary_lines.append(
+                f"  💱 美元/人民币: {fx['usdcny']['rate']:.4f}{_as_of_txt}"
+            )
 
     fed = result["fed_rate"]
     if fed.get("available"):
@@ -615,7 +773,10 @@ def get_global_snapshot() -> dict:
 
     result["summary"] = "\n".join(summary_lines)
 
-    _global_cache.set(cache_key, result, ttl=600)
+    # TTL 见 _SNAPSHOT_TTL 的注释：与外汇降级 TTL 对齐，且子函数各自有 3600s
+    # 缓存，降到这里不会新增上游请求。不要改回裸写的 600 —— 那会让外汇的
+    # 300s 自愈链路被快照层再压一层。
+    _global_cache.set(cache_key, result, ttl=_SNAPSHOT_TTL)
     return result
 
 

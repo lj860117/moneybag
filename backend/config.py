@@ -142,7 +142,11 @@ LLM_MODEL = os.environ.get("LLM_MODEL", "deepseek-v4-flash")
 TUSHARE_TOKEN = os.environ.get("TUSHARE_TOKEN", "")
 
 # ---- 版本号（Phase 1 更新）----
-APP_VERSION = "9.9.19"
+# v9.9.20：本轮改了 pages/insight.js（汇率行补时点标注），属于前端改动，
+# 所以前端 cache-busting 必须跟着 bump —— index.html 的 ?v= 与 sw.js 的
+# CACHE_NAME 要与这里保持一致，否则用户浏览器会继续吃旧副本
+# （2026-09-11 那次 ?v 漏改就是这个坑）。
+APP_VERSION = "9.9.20"
 
 # ---- v9.5.123: API 鉴权 ----
 # 每个用户一个token，格式: userId:token（环境变量或data/auth_tokens.json）

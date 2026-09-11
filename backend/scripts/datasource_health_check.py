@@ -19,7 +19,7 @@ import os
 import sys
 import json
 import time
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from pathlib import Path
 
 # 确保能 import 项目模块
@@ -100,6 +100,52 @@ def _is_trading_hours() -> bool:
 def _is_trading_day() -> bool:
     """判断当前是否为交易日（简单判断：非周末）"""
     return datetime.now().weekday() < 5
+
+
+# 银行间人民币外汇即期（CFETS）交易时段。
+# 来源：中国货币网（chinamoney.org.cn，即 akshare fx_spot_quote 的上游）
+# 「人民币外汇即期」产品页原文：交易时间 北京时间 9:30 - 次日 3:00，
+# 周六、周日及法定节假日不开市。
+#
+# 所以「非交易时段」= 每天 03:00-09:30 的盘面重置空档 + 整个周六周日。
+# 这个区间拿不到在岸报价是**预期行为**，不是故障，不该天天告警。
+#
+# 实测佐证（2026-09-11）：
+#   08:30（空档内）→ 在岸主源不可用，落到离岸 USD/CNH 兜底 6.7138
+#   10:58（开盘后）→ 在岸主源正常，USD/CNY=6.7109
+#   02:30（夜盘内）→ 巡检 ✅ USD/CNY=6.712（来源 akshare）
+_FX_SESSION_OPEN_HHMM = 930     # 09:30 开盘
+_FX_SESSION_CLOSE_HOUR = 3      # 次日 03:00 收市（跨零点）
+# 交易时段文案，告警/跳过详情里复用，避免几处说法漂移
+_FX_HOURS_TEXT = "CFETS 人民币外汇即期 9:30-次日3:00，周六日及法定节假日休市"
+
+
+def _is_fx_trading_hours(now: datetime | None = None) -> bool:
+    """判断当前是否处于银行间人民币外汇即期交易时段（9:30 - 次日 3:00）。
+
+    ⚠️ 不是「9:30-23:30」。CFETS 已将人民币外汇市场延长到次日 03:00 收市，
+    所以**凌晨 01:20 的巡检落在交易时段内**，这时拿不到数据是真故障、要告警。
+    （团队最初的判断是「01:20 属非交易时段」，与官方时段和实测都不符：
+      2026-09-11 02:30 的巡检是 ✅ 通过。已按实测口径实现。）
+
+    跨零点的处理：03:00 之前的时刻属于**前一交易日**的夜盘，所以要先回退一天
+    再判周末，否则周六 01:00（属于周五夜盘、本应开市）会被误判成休市。
+
+    Args:
+        now: 本地时间，便于测试注入；None 表示取当前时间。
+
+    Returns:
+        True 表示处于交易时段。
+    """
+    now = now or datetime.now()
+    # 03:00 之前 → 归到前一交易日的场次
+    anchor = now - timedelta(days=1) if now.hour < _FX_SESSION_CLOSE_HOUR else now
+    if anchor.weekday() >= 5:  # 5=周六 6=周日
+        return False
+    hhmm = now.hour * 100 + now.minute
+    if _FX_SESSION_CLOSE_HOUR * 100 <= hhmm < _FX_SESSION_OPEN_HHMM:
+        return False  # 每日 03:00-09:30 盘面重置空档
+    return True
 
 
 def _check_akshare(check: dict) -> dict:
@@ -183,6 +229,13 @@ def _check_forex(check: dict) -> dict:
             return {"ok": False, "detail": f"返回值类型异常: {type(data).__name__}"}
 
         if not data.get("available"):
+            # 非交易时段（03:00-09:30 盘面重置空档 / 周末）拿不到在岸报价是预期
+            # 行为，不是故障——见 _is_fx_trading_hours 的时段说明与实测佐证。
+            # 只在非交易时段降级为「跳过」，交易时段仍然照常判失败并告警。
+            if not _is_fx_trading_hours():
+                return {"ok": True, "status": "⏭️",
+                        "detail": f"非交易时段（{_FX_HOURS_TEXT}），"
+                                  f"无在岸报价属预期，不告警"}
             return {"ok": False, "detail": "available=False，未解析出 usdcny（数据源有数据但解析失败？）"}
 
         usd = data.get("usdcny") or {}
@@ -199,7 +252,13 @@ def _check_forex(check: dict) -> dict:
         # 说明主源已故障、正在用离岸价兜底——必须判失败并告警，
         # 不能因为「还有个值」就当没事（这正是 2026-09-11 的病根：
         # 主源坏了靠降级撑着，全靠一行没人看的日志）。
+        # 例外：非交易时段在岸主源本来就没有报价，落到离岸兜底是**预期路径**，
+        # 这时降级成「跳过」而不是告警，否则每天 08:30 都会误报一次。
         if usd.get("proxy"):
+            if not _is_fx_trading_hours():
+                return {"ok": True, "status": "⏭️",
+                        "detail": (f"非交易时段（{_FX_HOURS_TEXT}）：在岸主源无报价属预期，"
+                                   f"当前为 Tushare 离岸 USD/CNH 兜底 = {rate_val}，不告警")}
             return {
                 "ok": False,
                 "detail": (f"⚠️ 主源降级：当前 USD/CNY 由 Tushare 离岸 USD/CNH 兜底 "
@@ -282,7 +341,9 @@ def run_health_check() -> list:
         else:
             result = {"ok": False, "detail": "未知数据源"}
 
-        status = "✅" if result["ok"] else "❌"
+        # 允许检查函数自带 status（如外汇在非交易时段返回 ⏭️「跳过」），
+        # 否则按 ok 推断 ✅/❌。
+        status = result.get("status") or ("✅" if result["ok"] else "❌")
         results.append({
             "name": name,
             "source": source,

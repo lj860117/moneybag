@@ -1922,12 +1922,21 @@ def step_overnight_check():
             # 主源（AKShare 在岸）挂了、落到 Tushare 离岸价时，必须把币种标出来。
             # 否则晨报会静默地把离岸 USD/CNH 当成在岸 USD/CNY 推给用户
             # ——和 dxy_proxy 拿 USDCNY 充数是同一类语义错误。
+            #
+            # as_of：时点标注（v9.9.20）。文案与 services/global_market.py 的
+            # 快照 summary、pages/insight.js 的汇率行三处保持一致，一致性由
+            # tests/test_model_attribution_labels.py 扫描三处渲染点守住。
+            # 时点取自后端 usdcny.as_of，**不要在这里现取 datetime.now()**：
+            # 这个价可能来自缓存，标成推送此刻就成了误导。
+            _as_of = usd.get("as_of") or ""
+            _as_of_txt = f"（{_as_of}）" if _as_of else ""
             if usd.get("proxy"):
-                parts.append(f"💱 美元/人民币(离岸CNH兜底): {usd['rate']:.4f}")
+                parts.append(
+                    f"💱 美元/人民币(离岸CNH兜底): {usd['rate']:.4f}{_as_of_txt}")
                 log(f"  ⚠️ 汇率主源降级：当前为离岸 USD/CNH 兜底价 {usd['rate']}，"
                     f"非在岸 USD/CNY")
             else:
-                parts.append(f"💱 美元/人民币: {usd['rate']:.4f}")
+                parts.append(f"💱 美元/人民币: {usd['rate']:.4f}{_as_of_txt}")
     except Exception as e:
         log(f"  汇率数据失败: {e}")
 

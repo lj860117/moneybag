@@ -309,8 +309,25 @@ class _NoCache:
         return None
 
 
+def _is_comment_line(line: str) -> bool:
+    """注释行判定（用于把「注释里提到了 proxy」从合规证据里剔掉）。
+
+    这条是 v9.9.20 补的：加了 as_of 之后我发现，±8 行窗口里只要注释里写了
+    「as_of 时点标注」，扫描就判合规 —— 负向对照（把模板变量删掉）居然照样
+    全绿。注释不是代码，不能当证据，否则这条规则形同虚设。
+    """
+    stripped = line.strip()
+    return stripped.startswith(("#", "//", "/*", "*", '"""', "'''"))
+
+
 def _collect_fx_render_sites():
-    """返回 [(相对路径, 行号, 该渲染点附近是否出现 proxy 判断)]。"""
+    """返回 [(相对路径, 行号, 代码里是否判 proxy, 代码里是否带 as_of)]。
+
+    两个标记一起扫，是为了守住 v9.9.20 补的时点标注：P2-3 的教训就是「一处防了
+    漏一处」，所以新增 as_of 时直接复用同一套扫描，不另起一个近似规则。
+
+    窗口内只看**代码行**，注释行不算数（见 _is_comment_line）。
+    """
     sites = []
     for path in _iter_source_files():
         try:
@@ -324,8 +341,10 @@ def _collect_fx_render_sites():
                 continue
             lo = max(0, idx - FX_RENDER_WINDOW)
             hi = min(len(lines), idx + FX_RENDER_WINDOW + 1)
-            has_proxy = any("proxy" in probe for probe in lines[lo:hi])
-            sites.append((rel, idx + 1, has_proxy))
+            code_window = [p for p in lines[lo:hi] if not _is_comment_line(p)]
+            has_proxy = any("proxy" in probe for probe in code_window)
+            has_as_of = any("as_of" in probe for probe in code_window)
+            sites.append((rel, idx + 1, has_proxy, has_as_of))
     return sites
 
 
@@ -392,13 +411,13 @@ def test_all_usdcny_render_sites_handle_proxy():
     # 防呆 2：参照实现必须被识别到且判定为合规，否则说明规则本身就判错了
     ref_sites = [s for s in sites if s[0] == FX_REFERENCE_FILE]
     assert ref_sites, "没抓到参照实现 %s，扫描范围或规则变了" % FX_REFERENCE_FILE
-    assert all(ok for _, _, ok in ref_sites), (
+    assert all(ok for _, _, ok, _ in ref_sites), (
         "参照实现 %s 被判为未处理 proxy，检测规则有问题" % FX_REFERENCE_FILE
     )
 
     violations = [
         "%s:%d" % (rel, lineno)
-        for rel, lineno, ok in sites
+        for rel, lineno, ok, _ in sites
         if not ok
     ]
     assert not violations, (
@@ -407,3 +426,55 @@ def test_all_usdcny_render_sites_handle_proxy():
         + "\n修法：proxy 为真时输出「💱 美元/人民币(离岸CNH兜底): {rate}」，"
         "参照 backend/scripts/night_worker.py。"
     )
+
+
+def test_all_usdcny_render_sites_also_stamp_as_of():
+    """v9.9.20：三处渲染点都必须带时点标注，且时点取自后端而不是现取当前时间。
+
+    为什么连「不能现取时间」一起管：这个价可能来自缓存（外汇 300s / 快照 300s /
+    API 层还有 4 小时文件缓存），渲染时现取 datetime.now() 会把几小时前的价说成
+    「现在」，比不标更误导。所以扫描只认 as_of，不认 now()。
+    """
+    sites = _collect_fx_render_sites()
+
+    assert len(sites) >= 3, "抓到的汇率渲染点异常少（%d），检测规则可能失效" % len(sites)
+
+    violations = ["%s:%d" % (rel, lineno) for rel, lineno, _, ok in sites if not ok]
+    assert not violations, (
+        "以下位置渲染美元/人民币却没有标时点，用户无从判断这个价是什么时候的：\n"
+        + "\n".join(violations)
+        + "\n修法：渲染后端下发的 usdcny.as_of（形如「（截至 09-11 10:58）」），"
+        "不要在这里调 datetime.now()/new Date()。"
+    )
+
+    # 三处文案必须落在同一个文件集合里，避免出现「晨报标了、前端没标」
+    files_with_marker = {
+        rel for rel, _, _, ok in sites if ok
+    }
+    for expected in ("backend/services/global_market.py",
+                     "backend/scripts/night_worker.py",
+                     "pages/insight.js"):
+        assert expected in files_with_marker, (
+            "%s 的汇率行没有时点标注，三处渲染点必须一致" % expected
+        )
+
+
+def test_fx_as_of_comes_from_backend_not_render_time(monkeypatch):
+    """时点必须是「取数时刻」并随缓存返回，不能是渲染时才生成。"""
+    from services import global_market as gm
+
+    frozen = gm._fx_as_of_text()
+    # 后端在取数时就把 as_of 写进结果里，缓存命中时返回的仍是同一个值
+    summary = _snapshot_summary(
+        monkeypatch,
+        {"rate": 6.7115, "name": "USD/CNY", "source": "akshare",
+         "proxy": False, "as_of": frozen},
+    )
+    assert frozen in summary, (
+        "渲染时没有原样用后端下发的 as_of，时点标注失真：\n" + summary
+    )
+    # 在岸口径是「截至 MM-DD HH:MM」
+    assert frozen.startswith("截至 "), "在岸时点文案口径变了：%r" % frozen
+    # 离岸口径是数据源自己的交易日 +「收盘」，不能标成取数时刻
+    offshore = gm._fx_as_of_text("20260910")
+    assert offshore == "09-10 收盘", "离岸时点应标数据源交易日，实测 %r" % offshore
