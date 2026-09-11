@@ -675,3 +675,209 @@ def test_doubao_turbo_under_llm_light_keeps_default_thinking(monkeypatch):
 
     assert body["model"] == "doubao-seed-2-1-turbo-260628"
     assert "thinking" not in body
+
+
+# -----------------------------------------------------------------------------
+# P2-4b：stream_sync 的同一份判据（对话页真实路径）
+# -----------------------------------------------------------------------------
+# api/chat.py:72 / 618 / 835 三个对话入口全走 stream_sync。同步侧改了、流式侧
+# 没改，等于「手动选 Pro 保留 thinking」在真实路径上不生效。这里把上面 6 条
+# 断言对称地搬到流式路径，两份逻辑必须始终一致。
+
+def _capture_stream_body(monkeypatch, *, prompt, model_tier, module="",
+                         explicit_model="", max_tokens=1200,
+                         force_no_thinking=False):
+    """跑一次 stream_sync，拦截 httpx 返回真正发出去的 request body。"""
+    import httpx
+
+    import infra.llm.gateway as gw_mod
+
+    bodies = []
+
+    class _FakeStreamResp:
+        status_code = 200
+
+        def read(self):
+            return b""
+
+        def iter_lines(self):
+            yield 'data: {"choices":[{"delta":{"content":"ok"}}]}'
+            yield ('data: {"choices":[{"delta":{}}],'
+                   '"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}')
+            yield "data: [DONE]"
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+    class _FakeClient:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+        def stream(self, method, url, headers=None, json=None, **kwargs):
+            bodies.append(json)
+            return _FakeStreamResp()
+
+    monkeypatch.setattr(httpx, "Client", _FakeClient)
+    monkeypatch.setenv("LLM_API_KEY", "ds")
+    monkeypatch.setenv("DOUBAO_API_KEY", "db")
+
+    gw = gw_mod.LLMGateway()
+    list(gw.stream_sync(
+        prompt,
+        system="",
+        model_tier=model_tier,
+        module=module,
+        max_tokens=max_tokens,
+        explicit_model=explicit_model,
+        force_no_thinking=force_no_thinking,
+    ))
+
+    assert len(bodies) == 1, "期望发出 1 次流式请求，实际 %d 次" % len(bodies)
+    return bodies[0]
+
+
+def test_stream_llm_heavy_disables_thinking(monkeypatch):
+    """P2-4b 核心：流式侧 llm_heavy 解析成 flash，必须关 thinking。"""
+    body = _capture_stream_body(
+        monkeypatch,
+        prompt="流式 llm_heavy thinking 断言",
+        model_tier="llm_heavy",
+        module="morning_brief",
+    )
+
+    assert body["model"] == "deepseek-v4-flash"
+    assert body.get("thinking") == {"type": "disabled"}, (
+        "流式侧 model_tier=llm_heavy 解析出来的是 flash，却仍保留 thinking；"
+        "同步侧已修，流式侧必须与之一致"
+    )
+    # 守住 gateway.py 流式侧的 max_tokens 下限未被本次改动波及
+    assert body["max_tokens"] == 3000
+
+
+def test_stream_llm_light_disables_thinking(monkeypatch):
+    """流式 llm_light：与改动前一致，仍要关。"""
+    body = _capture_stream_body(
+        monkeypatch,
+        prompt="流式 llm_light thinking 断言",
+        model_tier="llm_light",
+        module="self_audit",
+    )
+
+    assert body["model"] == "deepseek-v4-flash"
+    assert body.get("thinking") == {"type": "disabled"}
+
+
+def test_stream_chat_explicit_pro_keeps_thinking(monkeypatch):
+    """P2-4b 用户决策的落点：对话页手动选 Pro，流式路径必须保留 thinking。
+
+    改动前这条是红的：explicit_model=deepseek-v4-pro + model_tier=llm_light 会被
+    判成「轻档」而关掉 thinking —— 用户显式花钱选了 Pro，反而拿到无推理输出。
+    """
+    body = _capture_stream_body(
+        monkeypatch,
+        prompt="流式对话页手动选 Pro thinking 断言",
+        model_tier="llm_light",
+        module="chat",
+        explicit_model="deepseek-v4-pro",
+    )
+
+    assert body["model"] == "deepseek-v4-pro"
+    assert "thinking" not in body, (
+        "对话页走的是 stream_sync，用户显式选了 Pro 却被关掉 thinking；"
+        "流式判据必须与同步侧一致，按实际解析出的模型判"
+    )
+
+
+def test_stream_force_no_thinking_overrides_explicit_pro(monkeypatch):
+    """流式短输出点显式要求关推理时，即便实际模型是 Pro 也要关掉。"""
+    body = _capture_stream_body(
+        monkeypatch,
+        prompt="流式 force_no_thinking 覆盖 Pro 断言",
+        model_tier="llm_light",
+        module="chat",
+        explicit_model="deepseek-v4-pro",
+        force_no_thinking=True,
+    )
+
+    assert body["model"] == "deepseek-v4-pro"
+    assert body.get("thinking") == {"type": "disabled"}
+
+
+def test_stream_doubao_turbo_under_llm_heavy_still_disables_thinking(monkeypatch):
+    """流式豆包保持 v9.5.130 既有逻辑：llm_heavy + doubao turbo 仍要关 thinking。
+
+    与同步侧同一条防线：挡住「把豆包分支也换成 _fallback_tier_for(use_model)」
+    的偷懒改法 —— doubao-seed-2-1-turbo 不含 "pro"，会被判成轻档而漏关。
+    """
+    body = _capture_stream_body(
+        monkeypatch,
+        prompt="流式豆包 turbo 重档 thinking 断言",
+        model_tier="llm_heavy",
+        module="morning_brief",
+        explicit_model="doubao-seed-2-1-turbo-260628",
+    )
+
+    assert body["model"] == "doubao-seed-2-1-turbo-260628"
+    assert body.get("thinking") == {"type": "disabled"}
+
+
+def test_stream_doubao_turbo_under_llm_light_keeps_default_thinking(monkeypatch):
+    """流式豆包轻档：既有逻辑就是不设 thinking，不得被本次改动带偏。"""
+    body = _capture_stream_body(
+        monkeypatch,
+        prompt="流式豆包 turbo 轻档 thinking 断言",
+        model_tier="llm_light",
+        module="chat",
+        explicit_model="doubao-seed-2-1-turbo-260628",
+    )
+
+    assert body["model"] == "doubao-seed-2-1-turbo-260628"
+    assert "thinking" not in body
+
+
+def test_stream_and_sync_thinking_policy_are_identical(monkeypatch):
+    """同步/流式两份 thinking 判据必须逐例一致，防止将来只改一边。
+
+    直接比对 gateway 源码里两段判据的「有效判断骨架」：把变量名
+    （body / stream_body、_is_deepseek_v4 / _is_deepseek_v4_stream）归一化后
+    应当完全相同。
+    """
+    import re
+
+    from infra.llm import gateway as gw_mod
+
+    src = Path(gw_mod.__file__).read_text(encoding="utf-8", errors="ignore")
+
+    def _skeleton(text, marker):
+        start = text.index(marker)
+        segment = text[start:text.index("with httpx.Client", start)]
+        lines = []
+        for line in segment.splitlines():
+            stripped = line.strip()
+            if not stripped or stripped.startswith("#"):
+                continue
+            lines.append(stripped)
+        blob = "\n".join(lines)
+        blob = re.sub(r"_is_deepseek_v4_stream", "_is_deepseek_v4", blob)
+        blob = re.sub(r"stream_body", "body", blob)
+        # 两段截取的起点落在各自的 body 字典内部，多带一个字段名
+        # （同步 "temperature": 0.7 / 流式 "stream": True），归一化掉
+        blob = re.sub(r'^"[a-z_]+": [^,]+,$', "<BODY_FIELD>", blob, flags=re.M)
+        return blob
+
+    sync_block = _skeleton(src, '"temperature": 0.7,')
+    stream_block = _skeleton(src, '"stream": True,')
+
+    assert sync_block == stream_block, (
+        "同步与流式的 thinking 判据不一致，说明只改了一边：\n"
+        "--- sync ---\n%s\n--- stream ---\n%s" % (sync_block, stream_block)
+    )

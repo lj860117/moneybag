@@ -590,8 +590,17 @@ class LLMGateway:
             timeout = 60
             # 关闭 thinking 的策略（reasoning_content 与 content 共享 max_tokens）：
             # 1) force_no_thinking=True：调用方显式要求（短输出点），强制关闭所有推理模型
-            # 2) DeepSeek V4 轻量档：关闭（轻量任务不需要推理，避免截断，P0-1）
+            # 2) DeepSeek 实际跑到 flash 档：关闭（避免截断 P0-1，且实测省 token）
             # 3) 豆包 Seed 非推理档：关闭（v9.5.130 既有逻辑）
+            # 其余（DeepSeek 实际是 pro 档，即用户在对话页显式选 Pro）：保留推理，
+            #     靠上方「llm_heavy 抬高 max_tokens 下限」提预算兜底
+            #
+            # v9.9.19：判据与 call_sync 完全一致（同步/流式两份逻辑本就互为镜像），
+            # 从 model_tier 标签改成「实际解析出的模型」。对话页三个入口
+            # （api/chat.py:72/618/835）全走流式，同步侧改了流式没改，等于
+            # 「手动选 Pro 保留 thinking」这条决策在真实路径上不生效。
+            # 复用 _fallback_tier_for()，与降级档位共用同一个「是不是 pro 档」的
+            # 定义，不新造平行判断函数。
             stream_body = {
                 "model": use_model,
                 "messages": messages,
@@ -599,12 +608,18 @@ class LLMGateway:
                 "temperature": 0.7,
                 "stream": True,
             }
+            _is_deepseek_v4_stream = use_model.startswith("deepseek-v4")
             if force_no_thinking:
-                if use_model.startswith("deepseek-v4") or "doubao-seed" in use_model:
+                if _is_deepseek_v4_stream or "doubao-seed" in use_model:
                     stream_body["thinking"] = {"type": "disabled"}
-            elif model_tier == "llm_light" and use_model.startswith("deepseek-v4"):
-                stream_body["thinking"] = {"type": "disabled"}
+            elif _is_deepseek_v4_stream:
+                # 只有「实际解析出 pro」才保留 thinking；flash 一律关掉
+                if _fallback_tier_for(use_model) == "llm_light":
+                    stream_body["thinking"] = {"type": "disabled"}
             elif model_tier != "llm_light":
+                # 豆包：保持 v9.5.130 既有逻辑，本次不动。
+                # 注意这里仍按 model_tier 判，不能换成 _fallback_tier_for(use_model)：
+                # doubao-seed-2-1-turbo 不含 "pro" 会被判成轻档而漏关。
                 if "doubao-seed" in use_model:
                     stream_body["thinking"] = {"type": "disabled"}
             with httpx.Client(timeout=timeout) as client:
