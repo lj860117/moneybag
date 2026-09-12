@@ -276,14 +276,32 @@ else
     # 跳过，等于没防住。因此这里无条件执行，任何模式都跑。
     # 背景：2026-09-12 有人验证脚本时漏写 --no-deploy，直接把 /tmp 克隆
     # 发到了生产并重启服务（PID 2063791→2071104），靠手动回滚才恢复。
+    # 横幅按【显示宽度】动态右补空格（中文/全角按 2 列算）。原来每行是手写
+    # 固定空格，版本号一变长（如 9.9.22 → 10.0.1）右侧竖线就会对不齐。
+    # ⚠️ 不要用 [ x -lt 1 ] && x=1 这种写法：在 set -e 下测试为假时整个
+    # 复合命令返回 1，会直接把脚本杀掉（和这次修的 pipefail 是同一类坑）。
+    _banner_line() {
+        local s="$1" w=0 i c pad
+        for (( i=0; i<${#s}; i++ )); do
+            c="${s:i:1}"
+            if [ "${#c}" -eq "$(printf '%s' "$c" | wc -c | tr -d ' ')" ]; then
+                w=$((w+1))                      # 单字节 = 1 列
+            else
+                w=$((w+2))                      # 中文/全角 = 2 列
+            fi
+        done
+        pad=$(( 49 - w ))
+        pad=$(( pad < 1 ? 1 : pad ))
+        printf '!! %s%*s!!\n' "$s" "$pad" ""
+    }
     echo ""
     echo "!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!"
-    echo "!!  ⚠️  即将部署到【生产服务器】                      !!"
-    echo "!!     目标:   ubuntu@150.158.47.189:/opt/moneybag     !!"
-    echo "!!     版本:   ${CURRENT_VERSION} → ${NEW_VERSION}     !!"
-    echo "!!     动作:   rsync 覆盖 + 重启 moneybag 服务         !!"
-    echo "!!                                                    !!"
-    echo "!!  3 秒后开始。现在按 Ctrl-C 可取消（尚未做任何改动）。!!"
+    _banner_line "警告：即将部署到【生产服务器】"
+    _banner_line "   目标:    ubuntu@150.158.47.189:/opt/moneybag"
+    _banner_line "   版本:    ${CURRENT_VERSION} -> ${NEW_VERSION}"
+    _banner_line "   动作:    rsync 覆盖 + 重启 moneybag 服务"
+    _banner_line ""
+    _banner_line "3 秒后开始，Ctrl-C 可取消（尚未做任何改动）。"
     echo "!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!"
     sleep 3
     echo "🚀 开始部署到服务器..."
