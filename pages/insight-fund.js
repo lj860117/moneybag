@@ -1,5 +1,11 @@
 let fundPickSearch = "";
 
+// v9.9.26 P1-9: 与后端 config.MIN_CONFIDENCE_FOR_DIRECTION 保持一致。
+// 后端已判定并写入 trend_confidence_sufficient；这里仅作为"读到旧缓存
+// （没有该标记）时的兜底"，避免旧数据仍然渲染出方向图标。
+// 改动后端阈值时必须同步改这里。
+const MIN_CONFIDENCE_FOR_DIRECTION = 50;
+
 // ============================================================
 // insight-fund.js — 基金选基模块（从 insight.js 拆分，v9.5.48 E1）
 // 函数依赖：必须在 app.js 之后、insight.js 之前加载
@@ -31,12 +37,24 @@ function _fundTagsHTML(f){
   }
   // v9.5.123: 走势预估标签（8维评分+置信度）
   if(f.trend_label){
-    const tColor = f.trend_direction==='up'?'#86EFAC':f.trend_direction==='down'?'#FCA5A5':'#9AA1AC';
-    const tBg = f.trend_direction==='up'?'rgba(134,239,172,.08)':f.trend_direction==='down'?'rgba(252,165,165,.08)':'rgba(148,163,184,.06)';
+    // v9.9.26 P1-9: 置信度不足（或后端已标记为 unknown）时，一律走"数据不足"渲染：
+    // 不出现 ↗/↘、不带正负分、不出现偏多/偏空字样 —— 绝不能长得像"判断为中性"。
+    const _confOK = f.trend_confidence_sufficient!==undefined
+      ? !!f.trend_confidence_sufficient
+      : (Number(f.trend_confidence)||0) >= MIN_CONFIDENCE_FOR_DIRECTION;
+    const _dirUnknown = f.trend_direction==='unknown' || !_confOK;
+    const tColor = _dirUnknown?'#9AA1AC':f.trend_direction==='up'?'#86EFAC':f.trend_direction==='down'?'#FCA5A5':'#9AA1AC';
+    const tBg = _dirUnknown?'rgba(148,163,184,.10)':f.trend_direction==='up'?'rgba(134,239,172,.08)':f.trend_direction==='down'?'rgba(252,165,165,.08)':'rgba(148,163,184,.06)';
     const tScore = f.trend_score||0;
     const tConf = f.trend_confidence||0;
-    const confTag = tConf>=70?`<span style="opacity:0.6;font-size:9px;margin-left:2px">置信${tConf}%</span>`:tConf<50?`<span style="opacity:0.7;font-size:9px;margin-left:2px;color:#F59E0B">⚠置信${tConf}%</span>`:'';
-    h+=`<div style="font-size:11px;padding:3px 8px;border-radius:5px;margin-bottom:4px;background:${tBg};color:${tColor};display:inline-flex;align-items:center;gap:4px"><span style="font-weight:600">${f.trend_label} ${tScore>0?'+':''}${tScore}分</span><span style="opacity:0.8;font-size:10px">${f.trend_reason||''}</span>${confTag}</div>`;
+    // 置信度数值永远展示（用户可自行判断），只是不翻译成方向
+    const confTag = _dirUnknown
+      ? `<span style="opacity:0.85;font-size:9px;margin-left:2px;color:#9AA1AC">置信${(f.trend_confidence==null?'未知':f.trend_confidence)}%</span>`
+      : (tConf>=70?`<span style="opacity:0.6;font-size:9px;margin-left:2px">置信${tConf}%</span>`:tConf<MIN_CONFIDENCE_FOR_DIRECTION?`<span style="opacity:0.7;font-size:9px;margin-left:2px;color:#F59E0B">⚠置信${tConf}%</span>`:'');
+    const tLabel = _dirUnknown ? '❓ 数据不足' : f.trend_label;
+    const tScoreHtml = _dirUnknown ? '' : ` ${tScore>0?'+':''}${tScore}分`;
+    const tReason = _dirUnknown ? '方向判断需置信度≥'+MIN_CONFIDENCE_FOR_DIRECTION+'%' : (f.trend_reason||'');
+    h+=`<div style="font-size:11px;padding:3px 8px;border-radius:5px;margin-bottom:4px;background:${tBg};color:${tColor};display:inline-flex;align-items:center;gap:4px"><span style="font-weight:600">${tLabel}${tScoreHtml}</span><span style="opacity:0.8;font-size:10px">${tReason}</span>${confTag}</div>`;
   }
   if(tags.length||policyBadges){
     h+='<div style="display:flex;gap:4px;flex-wrap:wrap;margin-bottom:4px">'+
@@ -375,10 +393,21 @@ function _showMyHoldings(listEl){
       const tags = [];
       // 走势预估在最顶部（最醒目）
       if(trendLabel){
-        const tColor = trendDir==='up'?'#86EFAC':trendDir==='down'?'#FCA5A5':'#9AA1AC';
-        const tBg = trendDir==='up'?'rgba(134,239,172,.12)':trendDir==='down'?'rgba(252,165,165,.12)':'rgba(154,161,172,.08)';
-        tags.push(`<span style="background:${tBg};color:${tColor};padding:1px 6px;border-radius:8px;font-weight:600">${trendLabel} ${trendScore>0?'+':''}${trendScore}分</span>`);
-        if(trendReason) tags.push(`<span style="color:${tColor};opacity:.85">${trendReason}</span>`);
+        // v9.9.26 P1-9: 同选基榜单 —— 置信度不足时不渲染方向图标/正负分
+        const tOK = ef.trend_confidence_sufficient!==undefined
+          ? !!ef.trend_confidence_sufficient
+          : (Number(trendConf)||0) >= MIN_CONFIDENCE_FOR_DIRECTION;
+        const tUnknown = trendDir==='unknown' || !tOK;
+        const tColor = tUnknown?'#9AA1AC':trendDir==='up'?'#86EFAC':trendDir==='down'?'#FCA5A5':'#9AA1AC';
+        const tBg = tUnknown?'rgba(154,161,172,.14)':trendDir==='up'?'rgba(134,239,172,.12)':trendDir==='down'?'rgba(252,165,165,.12)':'rgba(154,161,172,.08)';
+        const tLabel2 = tUnknown?'❓ 数据不足':trendLabel;
+        const tScore2 = tUnknown?'':` ${trendScore>0?'+':''}${trendScore}分`;
+        tags.push(`<span style="background:${tBg};color:${tColor};padding:1px 6px;border-radius:8px;font-weight:600">${tLabel2}${tScore2}${tUnknown?' 置信'+(trendConf==null?'未知':trendConf)+'%':''}</span>`);
+        if(tUnknown){
+          tags.push(`<span style="color:${tColor};opacity:.85">方向判断需置信度≥${MIN_CONFIDENCE_FOR_DIRECTION}%</span>`);
+        } else if(trendReason){
+          tags.push(`<span style="color:${tColor};opacity:.85">${trendReason}</span>`);
+        }
       }
       // v9.5.123: 双因子定投建议标签
       const dcaLabel = ef.dca_label || '';

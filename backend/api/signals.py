@@ -48,6 +48,96 @@ from services.ds_enhance import (
 from services.backtest_engine import backtest_single, backtest_portfolio
 
 
+# ============================================================
+# P1-9: 置信度不足闸门
+# ============================================================
+# trend_confidence 是"模型有多看懂"的自评，trend_direction 是"看懂之后得出的
+# 方向"。原实现把两者完全解耦：置信度 35（多空分歧）照样输出「↗️ 偏多」，
+# 于是「数据不够、模型自己承认没看懂」被伪装成了「判断为看多」。
+#
+# 三条硬约束（违反任意一条都等于制造新的假信号）：
+#   1. 只**降级表述**，绝不修改置信度数值本身 —— 禁止任何"为了好看"的向上
+#      抹平写法（把低置信度抬到阈值之上，或缺失时当成满值/中值处理）。
+#   2. 原始分数保留在 trend_score_raw，只是不再翻译成方向。
+#   3. 置信度缺失 / None / 非数字一律按**不足**处理 —— 缺失 ≠ 高置信度。
+#
+# 阈值与文案定义在 config.py（MIN_CONFIDENCE_FOR_DIRECTION 等），
+# 来源标注（经验值/未校准）也在那边，不要在这里写魔法数字。
+
+def is_confidence_sufficient(confidence) -> bool:
+    """置信度是否足以支撑方向性结论。
+
+    None / 缺失 / 非数字 / NaN 一律返回 False —— 缺失不等于高置信度，
+    绝不当成 50 或 100 处理。
+    """
+    try:
+        c = float(confidence)
+    except (TypeError, ValueError):
+        return False
+    if c != c:  # NaN 与自身不相等
+        return False
+    return c >= config.MIN_CONFIDENCE_FOR_DIRECTION
+
+
+def apply_confidence_gate(item: dict) -> dict:
+    """对单个标的（基金 / 股票 dict）施加置信度闸门，原地修改并返回。
+
+    充足（>= config.MIN_CONFIDENCE_FOR_DIRECTION）：只补一个
+    trend_confidence_sufficient=True 标记，方向性字段原样不动。
+
+    不足：方向性改写为非方向性的「数据不足」——
+      trend_direction → "unknown"（不是 "flat"：flat 是"判断为震荡"，仍是结论）
+      trend_label     → config.INSUFFICIENT_DATA_LABEL
+      trend_score     → None（原始值移到 trend_score_raw，避免把带符号分数
+                        当成看多/看空强度继续展示）
+      trend_reason    → 非方向性说明，但**保留原始置信度数值**
+    原始 trend_confidence 数值**始终保留**，用户可自行判断。
+    """
+    if not isinstance(item, dict):
+        return item
+
+    raw_conf = item.get("trend_confidence")
+    sufficient = is_confidence_sufficient(raw_conf)
+    item["trend_confidence_sufficient"] = sufficient
+
+    if sufficient:
+        # 充足时补齐 raw 字段，让前端/下游拿得到同一套键（历史缓存没有该键）
+        if item.get("trend_score_raw") is None:
+            item["trend_score_raw"] = item.get("trend_score")
+        return item
+
+    threshold = config.MIN_CONFIDENCE_FOR_DIRECTION
+    item["trend_score_raw"] = item.get("trend_score")
+    item["trend_direction"] = config.INSUFFICIENT_DATA_DIRECTION
+    item["trend_label"] = config.INSUFFICIENT_DATA_LABEL
+    item["trend_score"] = None
+    # 缺失时明确写"未知"，不编一个数字出来
+    shown_conf = "未知" if raw_conf is None else f"{raw_conf}"
+    item["trend_reason"] = (
+        f"置信度{shown_conf}%（方向判断需≥{threshold}%），数据不足，不给出方向"
+    )
+    return item
+
+
+def demote_low_confidence(items: list) -> list:
+    """把置信度不足的标的**稳定**后移，避免"分数刚好高"就占了推荐首位。
+
+    只做分区、不做加权：置信度足的一组在前，不足的一组在后，组内保持原顺序
+    （Python 的 sort 是稳定的）。之所以用分区而不是"分数 × 置信度"的软加权，
+    是因为软加权仍允许低置信度标的靠高分冲到第一 —— 那正是要修的问题。
+
+    原地排序并返回原 list。
+    """
+    if not items:
+        return items
+    items.sort(
+        key=lambda x: 0 if is_confidence_sufficient(
+            x.get("trend_confidence") if isinstance(x, dict) else None
+        ) else 1
+    )
+    return items
+
+
 # ---- 买卖信号 ----
 
 @router.post("/api/signals")
@@ -501,6 +591,10 @@ def _compute_fund_screen(fund_type, sort_by, top_n, userId):
         # v9.9.24 P0-4: 择时"谨慎/回避"的标的不许占推荐首位（必须在全部富化之后，
         # 因为 price_signal 是在 _enrich_fund_holding_relation 里算出来的）
         _apply_recommendation_ranking(result["funds"])
+        # v9.9.26 P1-9: 置信度不足的标的同样不许占推荐首位。
+        # 放在 P0-4 之后，让"置信度不足"成为比择时分区更硬的一层门禁：
+        # 没看懂（数据不足）比"看得懂但位置偏高"更不该被推荐。
+        demote_low_confidence(result["funds"])
 
     result["market_timing"] = _get_market_timing_summary()
     result["style_timing"] = _get_style_timing_summary()
@@ -1662,7 +1756,10 @@ def _enrich_trend_forecast(funds: list, *, include_dimensions: bool = False) -> 
         # 信号冲突始终写入（DCA 引擎需要）
         if conflict:
             f["trend_conflict"] = conflict
-        
+
+        # v9.9.26 P1-9: 置信度闸门 —— 低置信度不许把结论翻译成方向
+        apply_confidence_gate(f)
+
         # 完整维度分解（Layer 2/3 详情用）
         if include_dimensions:
             f["trend_dimensions"] = dims
@@ -2058,7 +2155,10 @@ def _enrich_stock_trend_forecast(stocks: list, *, include_dimensions: bool = Fal
         s["trend_reason"] = "·".join(top_reasons)
         s["trend_score"] = total
         s["trend_confidence"] = confidence
-        
+
+        # v9.9.26 P1-9: 置信度闸门 —— 低置信度不许把结论翻译成方向
+        apply_confidence_gate(s)
+
         if include_dimensions:
             s["trend_dimensions"] = dims
             if conflict:
@@ -2223,6 +2323,9 @@ def _compute_stock_screen(top_n, userId):
         _enrich_stock_holding_relation(result["stocks"], userId)
         # v9.5.122: 走势预估
         _enrich_stock_trend_forecast(result["stocks"])
+        # v9.9.26 P1-9: 置信度不足的不排在推荐前面（screen_stocks 只按分数排序，
+        # 不看置信度，低置信度标的会靠"分数刚好高"挤到前面）
+        demote_low_confidence(result["stocks"])
     result["market_timing"] = _get_market_timing_summary()
     result["style_timing"] = _get_style_timing_summary()
     result["my_stock_summary"] = _get_my_stock_summary(userId)
