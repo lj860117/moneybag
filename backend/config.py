@@ -77,6 +77,60 @@ STOCK_SCREEN_WEIGHTS = {
     "sentiment": 0.10,
 }
 
+# ---- 选股 7 维权重：按市场状态（regime）固化的权重表 ----
+#
+# 【来源标注 · 必读】
+# 下面每个 regime 的 7 个权重都是**经验设定，未经过任何回测验证**。
+# 2026-09 本项目刚清理掉三处硬编码假统计（34.6% 准确率 / +3.7% 超额 /
+# 85% 盈利概率），这里的数字与它们是同一类东西的反面教材：我们明确写下
+# 它**没有**样本区间、没有样本数、没有任何收益证据支撑，只是把
+# 「牛市提权动量与舆情、熊市提权价值质量与风险」这类定性共识翻译成了
+# 具体数值。要把它当"优化结果"对外讲之前，必须先补回测；在回测结论
+# 落地前，任何引用都必须与「经验值，未回测」同时出现。
+#
+# 为什么从「LLM 每次现编权重」改成固化表（P1-7）：
+#   现编 = 同一天跑两次可能得到两套权重 → 同一批股票排名就变了，
+#   用户无法复现也无法信任；而且只喂 3 个市场指标就让模型输出 7 个精确
+#   数值，本质是在让 LLM 编数字。现在 LLM 只做它擅长的离散分类（判断
+#   regime），权重一律由本表查得 —— 同一 regime 永远得到同一份权重。
+#
+# 约束：每个 regime 的 7 个权重之和必须为 1.0
+# （tests/test_stock_screen_weights_regime.py 有容差 1e-6 的断言守着）。
+STOCK_FACTOR_WEIGHTS_BY_REGIME = {
+    # 牛市：估值偏高+情绪贪婪 → 提权动量/成长/舆情，降权价值/风险
+    "牛市": {
+        "value": 0.12, "growth": 0.18, "quality": 0.15, "momentum": 0.24,
+        "risk": 0.08, "liquidity": 0.09, "sentiment": 0.14,
+    },
+    # 熊市：估值偏低+情绪恐惧 → 提权价值/质量/风险，降权动量/舆情
+    "熊市": {
+        "value": 0.26, "growth": 0.10, "quality": 0.24, "momentum": 0.06,
+        "risk": 0.20, "liquidity": 0.09, "sentiment": 0.05,
+    },
+    # 震荡：估值适中 → 均衡，与 STOCK_SCREEN_WEIGHTS 基线一致（即默认权重）
+    "震荡": {
+        "value": 0.20, "growth": 0.15, "quality": 0.18, "momentum": 0.15,
+        "risk": 0.12, "liquidity": 0.10, "sentiment": 0.10,
+    },
+    # 轮动：资金在行业间流动 → 提权动量/流动性，降权长期基本面
+    "轮动": {
+        "value": 0.14, "growth": 0.16, "quality": 0.14, "momentum": 0.22,
+        "risk": 0.10, "liquidity": 0.14, "sentiment": 0.10,
+    },
+}
+
+# LLM 允许输出的 regime 枚举：只做离散分类，不含任何权重数字。
+# 返回值不在这个枚举里 → 一律视为识别失败，回退默认权重表。
+STOCK_FACTOR_REGIME_ENUM = ("牛市", "熊市", "震荡", "轮动")
+
+# 权重来源标记（供下游判断这次权重是怎么来的，避免静默降级）：
+#   llm_regime  — LLM 成功识别 regime，权重由固化表查得
+#   rule_regime — LLM 不可用/返回非法，由估值+恐贪规则推断 regime
+#   fallback    — 连规则推断都失败，直接用默认权重表
+STOCK_FACTOR_WEIGHT_SOURCE_LLM = "llm_regime"
+STOCK_FACTOR_WEIGHT_SOURCE_RULE = "rule_regime"
+STOCK_FACTOR_WEIGHT_SOURCE_FALLBACK = "fallback"
+
 # ---- 估值阈值 ----
 VALUATION_LOW = 20       # 低估百分位
 VALUATION_MID_LOW = 40

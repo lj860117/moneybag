@@ -27,139 +27,195 @@ MODULE_META = {
     "output": "screened_stocks",
     "cost": "llm_light",
     "tags": ["选股", "30因子", "动态权重"],
-    "description": "30因子7维打分V3，DeepSeek动态权重+LLM因子加分",
+    "description": "30因子7维打分V3，DeepSeek判regime+固化权重表（经验值未回测）+LLM因子加分",
     "layer": "analysis",
     "priority": 2,
 }
 
 _stock_cache = MemoryCache(default_ttl=3600)
 
-# ---- 30 因子权重配置（默认值，可被 AI 覆盖）----
+# ---- 30 因子权重配置（默认权重，不再被 AI 覆盖）----
 # FIX 2026-04-19 F4: 权重统一从 config.STOCK_SCREEN_WEIGHTS 读取（Single Source of Truth）
 # 原来本地写了一份 quality=0.18，与 config.py 的 0.15 不一致
-from config import STOCK_SCREEN_WEIGHTS as DEFAULT_DIM_WEIGHTS
+# P1-7：AI 不再覆盖权重。LLM 只判断 regime（离散分类），7 维权重一律由
+#       config.STOCK_FACTOR_WEIGHTS_BY_REGIME 固化的表查得 —— 旧实现让
+#       LLM 每次现编 7 个精确数值，同一天跑两次结果不同，排名不可复现。
+from config import (
+    STOCK_SCREEN_WEIGHTS as DEFAULT_DIM_WEIGHTS,
+    STOCK_FACTOR_REGIME_ENUM,
+    STOCK_FACTOR_WEIGHT_SOURCE_LLM,
+    STOCK_FACTOR_WEIGHT_SOURCE_RULE,
+    STOCK_FACTOR_WEIGHT_SOURCE_FALLBACK,
+)
 
-# ---- DeepSeek 动态权重调整 ----
+# ---- 动态权重：LLM 判 regime，权重查固化表 ----
 _WEIGHT_CACHE_TTL = 3600  # 1 小时
 _weight_cache = MemoryCache(default_ttl=_WEIGHT_CACHE_TTL)
 
+# LLM 只能从这几个离散值里选一个；不在枚举内 → 视为识别失败，走回退。
+_REGIME_ENUM = tuple(STOCK_FACTOR_REGIME_ENUM)
 
-def _get_dynamic_weights() -> dict:
-    """让 DeepSeek 根据市场环境动态调整 7 维权重
-    牛市→加动量减风险 / 熊市→加风险减动量 / 震荡→加质量加价值
-    失败则返回默认权重
+
+def _normalize_weights(raw: dict) -> dict:
+    """把任意权重 dict 归一化成「7 个维度齐全、和为 1.0」的权重。
+
+    纯函数：相同输入永远得到相同输出，不读时间、不读随机、不读外部状态
+    —— 可复现性全靠这一点。固化表是手写的，所以仍需防 NaN/负数/缺 key。
     """
-    cache_key = "dynamic_weights"
-    now = time.time()
-    cached = _weight_cache.get(cache_key)
-    if cached is not None:
-        return cached
+    out = {}
+    for key in DEFAULT_DIM_WEIGHTS:
+        fallback = DEFAULT_DIM_WEIGHTS[key]
+        try:
+            w = float(raw.get(key, fallback))
+        except (TypeError, ValueError):
+            w = fallback
+        if w != w or w in (float("inf"), float("-inf")):  # NaN / inf
+            w = fallback
+        out[key] = max(0.0, w)
+
+    total = sum(out.values())
+    if total <= 0:
+        return dict(DEFAULT_DIM_WEIGHTS)
+    return {k: v / total for k, v in out.items()}
+
+
+def get_weights_for_regime(regime) -> dict:
+    """regime → 7 维权重。纯查表，不含任何 LLM 现编数字。
+
+    regime 为 None / 空串 / 未在固化表里（如 "火星牛市"）→ 返回默认权重，
+    不抛异常。权重表是经验值、未回测，来源说明见 config.py 的表定义处。
+    """
+    from config import STOCK_FACTOR_WEIGHTS_BY_REGIME
+
+    key = str(regime).strip() if regime is not None else ""
+    raw = (STOCK_FACTOR_WEIGHTS_BY_REGIME or {}).get(key)
+    if not isinstance(raw, dict):
+        return _normalize_weights(DEFAULT_DIM_WEIGHTS)
+    return _normalize_weights(raw)
+
+
+def _build_market_ctx() -> str:
+    """收集市场环境上下文（供 LLM 判断 regime 用），任一数据源失败就跳过。"""
+    market_ctx = ""
+    try:
+        from services.data_layer import get_valuation_percentile, get_fear_greed_index
+        val = get_valuation_percentile()
+        fgi = get_fear_greed_index()
+        val_pct = val.get("percentile", 50)
+        fgi_score = fgi.get("score", 50)
+        market_ctx += f"估值百分位: {val_pct:.0f}% | 恐贪指数: {fgi_score:.0f}\n"
+    except Exception:
+        pass
 
     try:
-        from config import LLM_API_KEY
-        if not LLM_API_KEY:
-            return DEFAULT_DIM_WEIGHTS
+        from services.factor_data import get_news_sentiment_score
+        sentiment = get_news_sentiment_score()
+        if sentiment.get("available"):
+            market_ctx += f"新闻情绪: {sentiment.get('score', 0):+d}分 ({sentiment.get('level', '中性')})\n"
+    except Exception:
+        pass
 
-        # 收集市场环境数据
-        market_ctx = ""
-        try:
-            from services.data_layer import get_valuation_percentile, get_fear_greed_index
-            val = get_valuation_percentile()
-            fgi = get_fear_greed_index()
-            val_pct = val.get("percentile", 50)
-            fgi_score = fgi.get("score", 50)
-            market_ctx += f"估值百分位: {val_pct:.0f}% | 恐贪指数: {fgi_score:.0f}\n"
-        except Exception:
-            pass
+    try:
+        from services.macro_extended import get_market_breadth
+        breadth = get_market_breadth()
+        if breadth.get("available"):
+            market_ctx += f"涨跌家数: 涨{breadth.get('up', 0)} 跌{breadth.get('down', 0)} 活跃度{breadth.get('activity', 0)}%\n"
+    except Exception:
+        pass
 
-        try:
-            from services.factor_data import get_news_sentiment_score
-            sentiment = get_news_sentiment_score()
-            if sentiment.get("available"):
-                market_ctx += f"新闻情绪: {sentiment.get('score', 0):+d}分 ({sentiment.get('level', '中性')})\n"
-        except Exception:
-            pass
+    return market_ctx or "市场数据暂不可用"
 
-        try:
-            from services.macro_extended import get_market_breadth
-            breadth = get_market_breadth()
-            if breadth.get("available"):
-                market_ctx += f"涨跌家数: 涨{breadth.get('up', 0)} 跌{breadth.get('down', 0)} 活跃度{breadth.get('activity', 0)}%\n"
-        except Exception:
-            pass
 
-        if not market_ctx:
-            market_ctx = "市场数据暂不可用"
+def _classify_regime_by_llm(market_ctx: str) -> tuple:
+    """让 LLM 判断市场状态（离散分类），**不让它输出任何权重数字**。
 
-        prompt = f"""你是量化投资权重优化师。请根据当前市场环境，动态调整选股因子的 7 个维度权重。
+    返回 (regime, reason)；识别失败 / 返回非法值 → ("", "")，由调用方回退。
+    """
+    from config import LLM_API_KEY
+    if not LLM_API_KEY:
+        return "", ""
+
+    enum_desc = "\n".join([
+        "- 牛市：估值偏高 + 情绪贪婪 + 普涨",
+        "- 熊市：估值偏低 + 情绪恐惧 + 普跌",
+        "- 震荡：估值适中 + 指数区间波动，缺乏趋势",
+        "- 轮动：资金在行业间快速流动，结构分化明显",
+    ])
+    prompt = f"""你是 A 股市场环境分类员。请判断当前市场属于哪一种状态。
 
 当前市场环境：
 {market_ctx}
 
-7 个维度及默认权重：
-- value（价值）: 20% — PE/PB/股息率等
-- growth（成长）: 15% — 营收增速/ROE趋势
-- quality（质量）: 18% — ROE/毛利率/现金流
-- momentum（动量）: 15% — 5日/20日/60日涨跌
-- risk（风险）: 12% — 振幅/负债率/极端值
-- liquidity（流动性）: 10% — 换手率/市值/成交额
-- sentiment（舆情）: 10% — 新闻情绪/社交热度
+可选状态（四选一，不要自造状态名）：
+{enum_desc}
 
-调整原则：
-- 牛市（估值高+贪婪）→ 提权动量+舆情，降权价值
-- 熊市（估值低+恐惧）→ 提权价值+质量+风险，降权动量
-- 震荡（估值适中）→ 提权质量+价值，保持均衡
-- 7 个权重加起来必须 = 1.00
+注意：你只需要给出状态分类和一句话理由，**不要输出任何权重、百分比或数字**。
 
 返回 JSON，格式：
-{{"value":0.20,"growth":0.15,"quality":0.18,"momentum":0.15,"risk":0.12,"liquidity":0.10,"sentiment":0.10,"regime":"牛市/熊市/震荡","reason":"一句话说明"}}
+{{"regime":"牛市","reason":"一句话说明"}}
 只返回 JSON。"""
 
-        from infra.llm.gateway import LLMGateway
-        gw = LLMGateway.instance()
-        result = gw.call_sync(
-            prompt,
-            system="",
-            model_tier="llm_light",
-            user_id="",
-            module="dyn_weight",
-            max_tokens=300,
-        )
-        if result.get("fallback") or not result.get("content"):
-            print(f"[DYN_WEIGHT] LLM gateway fallback: {result.get('source')}")
-            return DEFAULT_DIM_WEIGHTS
+    from infra.llm.gateway import LLMGateway
+    gw = LLMGateway.instance()
+    result = gw.call_sync(
+        prompt,
+        system="",
+        model_tier="llm_light",
+        user_id="",
+        module="dyn_weight",
+        max_tokens=200,
+    )
+    if result.get("fallback") or not result.get("content"):
+        print(f"[DYN_WEIGHT] LLM gateway fallback: {result.get('source')}")
+        return "", ""
 
-        text = result["content"]
-        from services.json_extract import extract_json_object
-        parsed = extract_json_object(text)
-        if parsed is None:
-            return DEFAULT_DIM_WEIGHTS
+    from services.json_extract import extract_json_object
+    parsed = extract_json_object(result["content"])
+    if not isinstance(parsed, dict):
+        return "", ""
 
-        # 验证权重合法性
-        weights = {}
-        total = 0
-        for key in DEFAULT_DIM_WEIGHTS:
-            w = float(parsed.get(key, DEFAULT_DIM_WEIGHTS[key]))
-            w = max(0.03, min(0.40, w))  # 单维度 3%-40%
-            weights[key] = w
-            total += w
+    regime = str(parsed.get("regime", "") or "").strip()
+    reason = str(parsed.get("reason", "") or "")
+    if regime not in _REGIME_ENUM:
+        print(f"[DYN_WEIGHT] LLM 返回非法 regime={regime!r}，按识别失败处理")
+        return "", ""
+    return regime, reason
 
-        # 归一化
-        for key in weights:
-            weights[key] = round(weights[key] / total, 3)
 
-        regime = parsed.get("regime", "未知")
-        reason = parsed.get("reason", "")
-        weights["_regime"] = regime
-        weights["_reason"] = reason
-        print(f"[DYN_WEIGHT] regime={regime}, weights={weights}, reason={reason}")
+def _get_dynamic_weights() -> dict:
+    """7 维权重：LLM 只负责判断 regime，权重一律由 config 固化表查得。
 
-        _weight_cache.set(cache_key, weights)
-        return weights
+    返回值除 7 个维度权重外，还带三个下划线前缀的元信息（调用方 pop 掉即可）：
+      _regime: 市场状态，空串表示未识别
+      _reason: LLM 给的分类理由，可能为空
+      _source: 权重来源（"llm_regime"/"rule_regime"/"fallback"）——
+               降级必须可见，不允许静默返回一套"看起来合理"的权重
+    """
+    cache_key = "dynamic_weights"
+    cached = _weight_cache.get(cache_key)
+    if cached is not None:
+        return dict(cached)  # 拷贝：调用方会 pop 元信息，别污染缓存里的那份
 
+    regime, reason = "", ""
+    try:
+        regime, reason = _classify_regime_by_llm(_build_market_ctx())
     except Exception as e:
-        print(f"[DYN_WEIGHT] Failed: {e}")
-        return DEFAULT_DIM_WEIGHTS
+        print(f"[DYN_WEIGHT] regime 分类失败，回退默认权重: {e}")
+        regime, reason = "", ""
+
+    if regime:
+        source = STOCK_FACTOR_WEIGHT_SOURCE_LLM
+    else:
+        source = STOCK_FACTOR_WEIGHT_SOURCE_FALLBACK
+    weights = get_weights_for_regime(regime)
+
+    weights["_regime"] = regime
+    weights["_reason"] = reason
+    weights["_source"] = source
+    print(f"[DYN_WEIGHT] regime={regime or '未识别'} source={source} weights={weights}")
+
+    _weight_cache.set(cache_key, weights)
+    return dict(weights)
 
 
 # ---- 舆情因子真正接入 ----
@@ -587,14 +643,15 @@ def screen_stocks(top_n: int = 50) -> dict:
     try:
         from services.stock_data_provider import get_stock_data
 
-        # Step 0: 获取动态权重
+        # Step 0: 获取权重（LLM 判 regime → 查固化表；失败则规则推断 → 默认表）
         weights_data = _get_dynamic_weights()
         regime = weights_data.pop("_regime", "") if "_regime" in weights_data else ""
         weight_reason = weights_data.pop("_reason", "") if "_reason" in weights_data else ""
+        weight_source = weights_data.pop("_source", STOCK_FACTOR_WEIGHT_SOURCE_FALLBACK)
         # 清理非权重 key
         DIM_WEIGHTS = {k: v for k, v in weights_data.items() if not k.startswith("_")}
 
-        # regime 为空或"未知"时，从 /api/regime 的独立计算结果降级
+        # regime 为空或"未知"时，从估值+恐贪的规则推断降级（仍然是固化表查权重）
         if not regime or regime == "未知":
             try:
                 from services.market_data import get_valuation_percentile, get_fear_greed_index
@@ -608,10 +665,15 @@ def screen_stocks(top_n: int = 50) -> dict:
                     regime = "震荡"
                 else:
                     regime = "轮动"
+                weight_source = STOCK_FACTOR_WEIGHT_SOURCE_RULE
+                weight_reason = weight_reason or "LLM 未识别市场状态，按估值+恐贪规则推断"
                 print(f"[STOCK_SCREEN] regime 从市场数据推断: {regime} (val_pct={val_pct}, fgi={fgi})")
             except Exception as _e:
                 regime = "震荡"  # 最终兜底，不显示"未知"
+                weight_source = STOCK_FACTOR_WEIGHT_SOURCE_FALLBACK
+                weight_reason = "市场数据不可用，使用默认权重（经验值，未回测）"
                 print(f"[STOCK_SCREEN] regime 推断失败，使用默认: {_e}")
+            DIM_WEIGHTS = get_weights_for_regime(regime)
         # 确保有所有必需的 key
         for k in DEFAULT_DIM_WEIGHTS:
             if k not in DIM_WEIGHTS:
@@ -892,9 +954,10 @@ def screen_stocks(top_n: int = 50) -> dict:
         # 因子说明（含动态权重）
         w_desc = " / ".join([f"{k}({int(DIM_WEIGHTS[k]*100)}%)" for k in DIM_WEIGHTS])
         factor_desc = (
-            f"30因子7维打分 V3 — 动态权重\n"
+            f"30因子7维打分 V3 — 按市场状态取固化权重\n"
             f"市场状态: {regime} | {weight_reason}\n"
             f"权重: {w_desc}\n"
+            f"权重来源: {weight_source}（经验值，未回测）\n"
             f"舆情因子已接入 LLM 新闻情绪评分"
         )
 
@@ -924,6 +987,10 @@ def screen_stocks(top_n: int = 50) -> dict:
             },
             "regime": regime,
             "weights": {k: round(v * 100, 1) for k, v in DIM_WEIGHTS.items()},
+            # P1-7：权重怎么来的必须可见（LLM 判 regime / 规则推断 / 兜底），
+            # 不允许静默降级后还伪装成"AI 动态调权"
+            "weights_source": weight_source,
+            "weights_disclaimer": "经验值，未回测",
             "note": f"数据源: {source} | 财务数据: {fin_count}/{len(codes_50)} | 市场: {regime}",
         }
         _stock_cache.set(cache_key, result)
