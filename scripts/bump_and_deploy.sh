@@ -269,7 +269,23 @@ if $NO_DEPLOY; then
     echo "   要手动部署请跑："
     echo "   bash backend/scripts/deploy_to_server.sh"
 else
+    # 强制播报 + 强制等待。注意它【不是】确认，也绝不能挂在 $YES 分支上：
+    # 本脚本的部署分支从来没有任何 read -r -p 确认，部署是【默认行为】、
+    # --no-deploy 才是例外，所以交互模式下同样不会问。若把防护写成
+    # "非 --yes 才提示"，那 --yes（文档里标注"适合脚本调用"的模式）就会被
+    # 跳过，等于没防住。因此这里无条件执行，任何模式都跑。
+    # 背景：2026-09-12 有人验证脚本时漏写 --no-deploy，直接把 /tmp 克隆
+    # 发到了生产并重启服务（PID 2063791→2071104），靠手动回滚才恢复。
     echo ""
+    echo "!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!"
+    echo "!!  ⚠️  即将部署到【生产服务器】                      !!"
+    echo "!!     目标:   ubuntu@150.158.47.189:/opt/moneybag     !!"
+    echo "!!     版本:   ${CURRENT_VERSION} → ${NEW_VERSION}     !!"
+    echo "!!     动作:   rsync 覆盖 + 重启 moneybag 服务         !!"
+    echo "!!                                                    !!"
+    echo "!!  3 秒后开始。现在按 Ctrl-C 可取消（尚未做任何改动）。!!"
+    echo "!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!"
+    sleep 3
     echo "🚀 开始部署到服务器..."
     echo "---"
     bash "$REPO_ROOT/backend/scripts/deploy_to_server.sh"

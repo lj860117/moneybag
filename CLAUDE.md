@@ -292,6 +292,9 @@ api/ → use_cases/ → domain/ → infra/
   - 有前端改动 → 三处**一起** bump：`backend/config.py` 的 `APP_VERSION` + `index.html` 的 `?v=` + `sw.js` 的 `CACHE_NAME`
   - 纯后端改动 → **只** bump `APP_VERSION`，用 `bash scripts/bump_and_deploy.sh X.Y.Z --backend-only`。前端 `?v=` 与 `CACHE_NAME` 保持不动（改了只会让所有用户白重下资源且 SW 缓存整体作废）
 - ⚠️ 前端 `?v=` / SW `CACHE_NAME` 漏改的后果：用户浏览器继续吃旧副本，改了等于没改（2026-09-11 踩过）。纯后端 bump 会出现「后端版本领先前端缓存标记」的临时状态，这是允许的，下一轮动前端时三处收拢
+- ⚠️ **验证/试跑 `bump_and_deploy.sh` 时必须带 `--no-deploy`**（部署是默认行为、从不二次确认；`--yes` 还会跳过其余所有交互）。端到端验证建议 clone 到 /tmp 并把 origin 指到空壳裸库再跑
+  - 补充：部署分支里**没有任何 `read -r -p` 确认**——不是"`--yes` 跳过了确认"，而是**部署从来就不问**，去掉 `--yes` 也防不住，只能靠显式 `--no-deploy`
+  - 兜底：即使真忘了，部署前也会无条件打印生产警示横幅并 `sleep 3` 给你 Ctrl-C 的机会（`--yes` 下同样生效，不挂在 `$YES` 分支上）
 
 ---
 
