@@ -328,13 +328,20 @@ def screen_longterm_funds(force: bool = False) -> dict:
 
     # Step3: 补充行业描述 + AKShare 晨星评级
     if funds:
-        # 行业描述（用 industry_templates 的关键词映射）
+        # 行业描述（v9.9.24 P0-4: 改用与选基页同一套分类——重仓股反推，
+        # 与用户持仓可比；只有它拿不到数据时才退回名称关键词）
+        try:
+            from services.fund_industry import classify_funds
+            classify_funds(funds)
+        except Exception:
+            pass
         try:
             from services.industry_templates import get_fund_industry
             for f in funds:
-                match = get_fund_industry(f.get("name", ""))
-                f["industry_tag"] = match.get("tag", "")
-                f["industry_desc"] = match.get("desc", "")
+                if not f.get("industry_tag"):
+                    match = get_fund_industry(f.get("name", ""))
+                    f["industry_tag"] = match.get("tag", "")
+                    f["industry_desc"] = match.get("desc", "")
         except Exception:
             pass
 

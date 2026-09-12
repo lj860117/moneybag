@@ -744,6 +744,20 @@ def step_r1_phase1():
     )
     analysis = _call_v3(prompt, 800, system=ANTI_HALLUCINATION_SYSTEM, force_no_thinking=True)
     if analysis:
+        # v9.9.24: 先过事实锚点 —— data_text 就是喂给 LLM 的全部数据，
+        # 正文里的关键数字必须在里面找得到出处。顺序不能反：
+        # 先删编造数字，再查 prompt 泄漏，否则泄漏行里的数字会抢先触发
+        # 整段降级，把"只有数字问题"的正文也一起吃掉，反而更看不出问题。
+        try:
+            from services.fact_anchor import guard_fact_anchors
+            analysis, _fa_hits = guard_fact_anchors(
+                analysis, data_text, fallback=fallback_macro,
+                log=log, context="morning_briefing/macro")
+            if _fa_hits:
+                log(f"  ⚠️ 宏观研判事实锚点命中 {len(_fa_hits)} 处")
+        except Exception as e:
+            log(f"  ⚠️ 事实锚点校验不可用（不影响生成）: {e}")
+
         # v9.5.124: 过滤 prompt 泄漏和思考链
         try:
             # 同 _call_v3：模块顶部 bootstrap 已保证 backend/ 在 sys.path，无需重复 insert
@@ -2332,10 +2346,16 @@ def _inject_hallucination_label(briefings: dict) -> dict:
     检测晨报文本中的常见幻觉模式：
     1. prompt 泄漏关键词（防御层漏网之鱼）
     2. 估值/regime 矛盾（one_line 无估值警示但简报含"低估/风控正常"+ 实际高估值）
-    3. 数字明显异常（百分比 >100% 或 <-100%）
+    3. 数字明显异常（百分比 >200%）
 
-    发现问题 → 在该用户晨报顶部追加 ⚠️ [AI质检] 一行标注，正文不改
-    无问题  → 原样返回
+    发现问题 → 在该用户晨报顶部追加 ⚠️ [AI质检] 一行标注。
+
+    v9.9.24 行为变更（此前只标注不拦截）：
+      「prompt 泄漏」与「异常涨幅数字」是**事实型**问题 —— 泄漏行和编造数字
+      对用户没有任何价值，标一行 ⚠️ 照样会误导人（9/10 线上出现过
+      「异常涨幅数字 229.7%」被原样推送）。这两类现在直接删除命中句。
+      「估值矛盾」「疑似编造名称」是**判断型**问题，规则本身有误判可能，
+      删句的代价大于收益，仍只标注、正文不改。
     """
     import re as _re_hc
 
@@ -2401,14 +2421,29 @@ def _inject_hallucination_label(briefings: dict) -> dict:
     except Exception:
         pass
 
+    # v9.9.24: 按句切分，用于「删除命中句」而不是「删几个字符」——
+    # 半句话比整句更难懂，删词会留下"涨了 ，已经接近"这种残片
+    _SENT_SPLIT_RE = _re_hc.compile(r'(?<=[。！？；;\n])')
+
+    def _sentences_of(t):
+        return [s for s in _SENT_SPLIT_RE.split(t) if s.strip()]
+
     result = {}
     for uid, text in briefings.items():
+        # v9.9.24: issues 存 (类别, 明细) —— 类别进推送标注，明细**只进 log**。
+        # 曾经把明细直接拼进标注行，结果正文删掉的「229.7%」又被标注行原样
+        # 回显一遍，用户照样看到脏数字，等于防了个寂寞。
         issues = []
+        # v9.9.24: 需要被删掉的整句（事实型问题才进这里）
+        drop_sentences = set()
 
         # 1. prompt 泄漏检测
         for kw in LEAK_KW:
             if kw in text:
-                issues.append(f"prompt泄漏「{kw}」")
+                issues.append(("prompt泄漏", kw))
+                for _s in _sentences_of(text):
+                    if kw in _s:
+                        drop_sentences.add(_s)
                 break  # 一条就够，不刷屏
 
         # 2. 估值语义矛盾（low/normal 表述 + 实际高估值 ≥85%）
@@ -2416,7 +2451,7 @@ def _inject_hallucination_label(briefings: dict) -> dict:
             suspicious = ['风控正常', '估值合理', '低估', '底部区域', '可以大胆']
             for kw in suspicious:
                 if kw in text:
-                    issues.append(f"估值矛盾「{kw}」(实际{mt_pct:.0f}%分位)")
+                    issues.append(("估值矛盾", f"{kw}(实际{mt_pct:.0f}%分位)"))
                     break
 
         # 3. 数字夸大（单段涨幅 >200%，大概率幻觉，不含标题行）
@@ -2430,7 +2465,10 @@ def _inject_hallucination_label(briefings: dict) -> dict:
             except ValueError:
                 continue
             if val > 200:
-                issues.append(f"异常涨幅数字「{m.group(0)}」")
+                issues.append(("异常涨幅数字", m.group(0)))
+                for _s in _sentences_of(text):
+                    if m.group(0) in _s:
+                        drop_sentences.add(_s)
                 break
 
         # 4. v9.5.129: 持仓速览中出现的"X基金"名称是否在真实持仓里
@@ -2451,15 +2489,40 @@ def _inject_hallucination_label(briefings: dict) -> dict:
                         continue
                     # 如果这个名字没在任何真实持仓前4字里，就可疑
                     if fn4 not in _real and fn not in _real:
-                        issues.append(f"疑似编造名称「{fn}」")
+                        issues.append(("疑似编造名称", fn))
                         break  # 一条就够
 
-        if issues:
-            label = "⚠️ [AI质检] 本报告含可疑内容：" + "、".join(issues) + "，数据仅供参考，请核实\n\n"
-            result[uid] = label + text
-            log(f"  ⚠️ {uid} 晨报标注：{issues}")
-        else:
+        if not issues:
             result[uid] = text
+            continue
+
+        # v9.9.24: 事实型问题删命中句，判断型问题（估值矛盾 / 疑似编造名称）只标注
+        body = text
+        if drop_sentences:
+            body = ''.join(s for s in _SENT_SPLIT_RE.split(text) if s not in drop_sentences)
+            body = _re_hc.sub(r'\n{3,}', '\n\n', body).strip()
+
+        # 标注行只报类别与数量，绝不回显命中内容 —— 回显等于把刚删掉的
+        # 脏数字又念一遍给用户听（9/10「异常涨幅数字 229.7%」就是这么漏的）
+        _cats = []
+        for _cat, _ in issues:
+            if _cat not in _cats:
+                _cats.append(_cat)
+        if drop_sentences:
+            label = (
+                f"⚠️ [AI质检] 本报告已自动删除 {len(drop_sentences)} 处无法核实的内容"
+                f"（{'、'.join(_cats)}），数据仅供参考\n\n")
+        else:
+            label = (
+                f"⚠️ [AI质检] 本报告含 {len(issues)} 处可疑内容"
+                f"（{'、'.join(_cats)}），数据仅供参考，请核实\n\n")
+        result[uid] = label + body
+
+        _detail = "、".join(f"{c}「{d}」" for c, d in issues)
+        if drop_sentences:
+            log(f"  🚫 {uid} 晨报已拦截 {len(drop_sentences)} 句：{_detail}")
+        else:
+            log(f"  ⚠️ {uid} 晨报标注：{_detail}")
 
     return result
 

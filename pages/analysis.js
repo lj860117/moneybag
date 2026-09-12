@@ -3,7 +3,7 @@ async function renderFactorIC(el, force=false){
 el.innerHTML=`<div class="dashboard-card" style="overflow:hidden">
 <div class="dashboard-card-title">🔬 因子 IC 检验</div>
 <div style="font-size:12px;color:var(--text2);margin-bottom:8px">验证30因子中哪些真正具有收益预测能力（Spearman IC）</div>
-<div style="font-size:11px;color:var(--accent);margin-bottom:12px;padding:6px 8px;background:rgba(245,158,11,.06);border-radius:6px">📊 |IC| > 0.05 = 优秀因子 · |IC| > 0.03 = 有效因子 · 参考 Barra 多因子模型标准</div>
+<div style="font-size:11px;color:var(--accent);margin-bottom:12px;padding:6px 8px;background:rgba(245,158,11,.06);border-radius:6px">📊 |IC| &gt; 0.05 = 优秀 · |IC| &gt; 0.03 = 有效 · 且 |t| ≥ 2 才算显著（Barra 标准）<br><span style="opacity:.85">口径：T 日因子值 vs T→T+N 真实前瞻收益，多截面汇总，无未来函数</span></div>
 <div id="factorICContent"><div style="text-align:center;padding:30px;color:var(--text2)"><div class="loading-spinner" style="width:24px;height:24px;margin:0 auto 8px;border-width:2px"></div>${force?'强制重新计算中，约30-60秒...':'正在计算因子IC，需获取200只股票数据...'}<br><span style="font-size:11px;opacity:0.6">首次约30-60秒</span></div></div></div>`;
 try{
 const url=API_BASE+'/factor-ic?forward_days=20&pool_size=200'+(force?'&force=true':'');
@@ -16,6 +16,7 @@ const summary=d.summary||{};
 const recs=d.recommendations||[];
 const ineffectiveIc=d.ineffective_factors||[];
 const insufficientData=d.insufficient_data_factors||[];
+const noPanel=d.no_panel_factors||[];
 // 统计数：真正无效(IC低) vs 数据不足
 const realInvalid=insufficientData.length+ineffectiveIc.length;
 let html=`<div style="display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin-bottom:16px">
@@ -35,6 +36,13 @@ const names=insufficientData.slice(0,5).map(f=>FACTOR_NAMES[f]||f).join('、');
 html+=`<div style="background:rgba(245,158,11,.06);border:1px solid rgba(245,158,11,.2);border-radius:10px;padding:10px 12px;margin-bottom:12px;font-size:11px;color:var(--accent)">
 ⚠️ <strong>数据不足（${insufficientData.length}个因子）：</strong>${names}<br>
 <span style="opacity:0.8">非交易日财务数据接口限流所致，非因子本身失效，下个交易日自动恢复</span></div>`}
+// 无历史面板提示（时间切片模式下拿不到 point-in-time 历史的因子）
+if(noPanel.length>0){
+const NP_NAMES={'F01_PE':'市盈率(PE)','F02_PB':'市净率(PB)','F03_EP':'盈利收益率(EP)','F04_ROE_PB':'ROE/PB复合','F05_EPS':'每股收益(EPS)','F07_REV_GROWTH':'营收增速','F08_NP_GROWTH':'净利增速','F09_ROE':'ROE','F13_GROSS_MARGIN':'毛利率','F14_NET_MARGIN':'净利率','F15_DEBT_RATIO':'资产负债率','F16_CASHFLOW':'每股现金流','F17_MARKET_CAP':'市值(对数)','F22_AMPLITUDE':'振幅(反)','F26_TURNOVER':'换手率','F27_MCAP_LIQ':'市值(流动性)'};
+const npNames=noPanel.slice(0,6).map(f=>NP_NAMES[f]||f).join('、');
+html+=`<div style="background:rgba(148,163,184,.08);border:1px solid rgba(148,163,184,.2);border-radius:10px;padding:10px 12px;margin-bottom:12px;font-size:11px;color:#94a3b8">
+🚫 <strong>无历史面板（${noPanel.length}个因子）：</strong>${npNames}<br>
+<span style="opacity:0.85">当前数据源只提供最新快照，无法构造 T 日截面值；强行用当期值会引入前视偏差，因此不出 IC</span></div>`}
 // 建议
 if(recs.length){html+=`<div style="background:rgba(59,130,246,.06);border-radius:10px;padding:10px 12px;margin-bottom:16px;font-size:12px;line-height:1.8;color:var(--text)">
 <div style="font-weight:700;margin-bottom:4px">💡 分析建议</div>
@@ -44,15 +52,16 @@ html+=`<div style="font-size:13px;font-weight:700;margin-bottom:8px">📊 因子
 <div style="display:grid;grid-template-columns:30px 1fr 60px 60px 60px;gap:4px;font-size:11px;color:var(--text2);font-weight:600;padding:6px 0;border-bottom:1px solid rgba(148,163,184,.1)">
 <div>#</div><div>因子</div><div style="text-align:right">IC</div><div style="text-align:right">样本</div><div style="text-align:right">评级</div></div>`;
 ranking.forEach((f,i)=>{
-const isInsufficient=f.invalid_reason==='data_insufficient';
+const isNoPanel=f.invalid_reason==='no_historical_panel';
+const isInsufficient=f.invalid_reason==='data_insufficient'||isNoPanel;
 const levelColor=f.level==='优秀'?'var(--green)':f.level==='有效'?'#3B82F6':f.level==='微弱'?'var(--accent)':isInsufficient?'#94a3b8':'var(--red)';
 const rowOpacity=isInsufficient?'opacity:0.5;':'';
 const icColor=f.ic>0?'var(--green)':'var(--red)';
-const levelLabel=isInsufficient?'数据缺':f.level;
+const levelLabel=isNoPanel?'无面板':isInsufficient?'数据缺':f.level;
 html+=`<div style="display:grid;grid-template-columns:30px 1fr 60px 60px 60px;gap:4px;padding:8px 0;border-bottom:1px solid rgba(148,163,184,.04);align-items:center;${rowOpacity}">
 <div style="font-size:11px;color:var(--text2);font-weight:700">${isInsufficient?'—':i+1}</div>
 <div><div style="font-size:12px;font-weight:600">${f.name_cn||f.factor}</div>
-<div style="font-size:10px;color:var(--text2)">${isInsufficient?'⚠️ 数据不足，非交易日可能缺失':(f.direction||'')+' · '+f.factor}</div></div>
+<div style="font-size:10px;color:var(--text2)">${isNoPanel?'⚠️ 无 point-in-time 历史面板，不给 IC':isInsufficient?'⚠️ 数据不足，非交易日可能缺失':(f.direction||'')+' · '+f.factor+(f.icir!=null?' · ICIR '+f.icir+' · t '+f.t_stat:'')}</div></div>
 <div style="text-align:right;font-size:13px;font-weight:700;color:${isInsufficient?'#94a3b8':icColor}">${isInsufficient?'N/A':(f.ic>0?'+':'')+f.ic}</div>
 <div style="text-align:right;font-size:11px;color:var(--text2)">${f.samples}</div>
 <div style="text-align:right"><span style="font-size:10px;padding:2px 6px;border-radius:4px;background:${levelColor}20;color:${levelColor}">${levelLabel}</span></div></div>`});

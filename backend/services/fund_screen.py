@@ -138,6 +138,8 @@ def screen_funds(
             r3m = _safe_float(row.get(_find_col(cols, ["近3月"]), None))
             rytd = _safe_float(row.get(_find_col(cols, ["今年来"]), None))
             fee = str(row.get(_find_col(cols, ["手续费"]), ""))
+            # v9.9.24: 单位净值（榜单自带，零成本）— 给 Tushare 份额算规模用
+            unit_nav = _safe_float(row.get(_find_col(cols, ["单位净值"]), None))
 
             # 至少有1年收益率才纳入
             if r1y is None:
@@ -231,6 +233,7 @@ def screen_funds(
                 "reason": reason,           # 一句话理由
                 "risk_level": risk_level,   # low / mid / high
                 "scale_billion": round(current_scale, 1) if current_scale else None,  # v9.5.89: 规模（亿）
+                "unit_nav": unit_nav,       # v9.9.24: 单位净值（补算 scale_billion 用）
             })
         except Exception:
             continue
@@ -380,6 +383,45 @@ def _filter_small_scale(candidates: list, min_scale: float = 5.0) -> list:
     # v9.5.108: 批量结束后保存到磁盘（一次性，避免每条都写文件）
     _save_scale_cache()
     return out
+
+
+def enrich_scale_billion(funds: list) -> None:
+    """v9.9.24: 补 scale_billion（规模，亿元）= 最新份额（亿份） × 单位净值。
+
+    AKShare 基金排行里没有规模列，线上 /api/fund-screen 的 scale_billion 常年为
+    null，前端"⚠️ 规模过小"等提示因此永远不生效。这里用 Tushare `fund_share`
+    （份额，5000 积分档）× 榜单自带的单位净值补算，复用既有 _scale_cache
+    （24h TTL + 落盘），单只失败不抛异常、保持 null。
+    """
+    if not funds:
+        return
+    import time as _t
+    now = _t.time()
+    dirty = False
+    for f in funds:
+        code = str(f.get("code", "") or "")
+        if not code or f.get("scale_billion"):
+            continue
+        cached = _scale_cache.get(code)
+        if cached and (now - cached[1]) < _SCALE_CACHE_TTL:
+            scale = cached[0]
+        else:
+            scale = None
+            try:
+                from services.tushare_data import get_fund_share
+                share_data = get_fund_share(f"{code}.OF", days=400)
+                shares_yi = share_data.get("shares_latest")
+                nav = f.get("unit_nav")
+                if shares_yi and nav:
+                    scale = round(float(shares_yi) * float(nav), 2)
+            except Exception:
+                pass
+            _scale_cache[code] = (scale, now)
+            dirty = True
+        if scale:
+            f["scale_billion"] = scale
+    if dirty:
+        _save_scale_cache()
 
 
 def _compute_quality_score(r1y, r3y, r6m, r3m, fee, list_date, issue_amount) -> float:

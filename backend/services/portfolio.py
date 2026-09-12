@@ -604,7 +604,7 @@ def generate_allocation_advice(
         "advice": advice,
         "valuation_zone": zone_label,
         "valuation_pct": round(valuation_pct, 1),
-        "fear_greed": round(fear_greed, 1),
+        "fear_greed": round(fear_greed),
         "total_market": round(total_market, 2),
         "summary": summary,
         "adjustments": adjustments,
@@ -787,7 +787,7 @@ def get_recommend_allocations(risk_profile: str = "稳健型", with_ai: bool = F
         "adjustments": adjustments,
         "marketData": {
             "valuationPct": round(val_pct, 1),
-            "fearGreed": round(fgi, 1),
+            "fearGreed": round(fgi),
         },
     }
 

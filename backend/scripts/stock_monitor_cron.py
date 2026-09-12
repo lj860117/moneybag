@@ -37,6 +37,8 @@ from services.llm_output_guard import (
     PROMPT_ECHO_MARKERS as _PROMPT_ECHO_MARKERS,
     strip_prompt_echo as _strip_prompt_echo,
 )
+# v9.9.24: 事实锚点校验 —— 推送正文里的关键数字必须在传给 LLM 的数据包里有出处
+from services.fact_anchor import guard_fact_anchors
 
 # v9.9.10: 复盘/诊断文本被守卫判定为不可用时的统一兜底文案
 _SAFE_PUSH_FALLBACK = "今日复盘已生成，请打开钱袋子查看"
@@ -1094,6 +1096,8 @@ def run_close_review():
         
         # ---- R1 深度持仓诊断（只有有持仓的用户才跑）----
         diagnosis_text = ""
+        # v9.9.24: 喂给 LLM 的数据包原文，推送前用它做事实锚点校验
+        _diag_packet = ""
         try:
             from services.stock_monitor import load_stock_holdings
             from services.fund_monitor import load_fund_holdings
@@ -1135,7 +1139,31 @@ def run_close_review():
                         print(f"  [诊断] {name}: 温度计已注入 ({len(thermometer_text)}字)")
                 except Exception as e:
                     print(f"  [诊断] {name}: 温度计失败: {e}")
-                
+
+                # v9.9.24: 数据诚实层 —— 持仓快照是文件缓存，可能已过期。
+                # 过期时不阻断（旧数据仍能复盘），但要把新鲜度写进 prompt，
+                # 否则 AI 会把三天前的净值当今天的、自信地分析一通。
+                _scan_envelope_note = ""
+                try:
+                    from services.data_honesty import DataEnvelope
+                    if scan_file.exists():
+                        _age = int(datetime.now().timestamp() - scan_file.stat().st_mtime)
+                        _env = DataEnvelope.cached(
+                            scan_data, source="monitor:latest.json", cache_age_seconds=_age)
+                        if not _env.is_reliable:
+                            _scan_envelope_note = (
+                                f"\n\n## 数据新鲜度提示\n持仓快照数据可信度：{_env.level}"
+                                f"（{_env.to_ai_tag()}）。涉及具体数值时请说明数据可能不是最新。")
+                            print(f"  [诊断] {name}: ⚠️ 持仓快照不可信 "
+                                  f"(level={_env.level}, age={_age // 3600}h)")
+                except Exception as e:
+                    print(f"  [诊断] {name}: 数据新鲜度检查失败: {e}")
+
+                # v9.9.24: 事实锚点 —— 校验时以"喂给 LLM 的原文"为准，
+                # 推送正文里的数字必须在这里找得到出处
+                _diag_packet = "\n".join(
+                    p for p in (scan_data, thermometer_text, holdings_news_text) if p)
+
                 # 加载 close_review prompt
                 from pathlib import Path as _P
                 _review_prompt = _P(__file__).parent.parent / "prompts" / "close_review.md"
@@ -1169,6 +1197,7 @@ def run_close_review():
 {holdings_news_text if holdings_news_text else "暂无个股/基金新闻"}
 
 {steward_ctx}
+{_scan_envelope_note}
 请按 close_review 格式输出收盘复盘，800 字以内。
 重点：基于盈亏锚点，告诉用户哪只已浮盈多少、是否接近止盈，哪只还在亏损需要持有。
 重要：用普通人能看懂的大白话，不要输出 JSON，不要英文术语。
@@ -1228,6 +1257,26 @@ def run_close_review():
 
                     # 3. AI诊断（完整版）
                     if diagnosis_text:
+                        # v9.9.24: 这段诊断此前只过 _sanitize_push_text（只认 JSON
+                        # 形态），prompt 泄漏 / 思考链 / 内部枚举词 / 编造数字全部
+                        # 裸奔到用户。现在补三道：
+                        #   ① 硬泄漏（内部枚举 / JSON 契约 / 指令复读）→ 整段拦截
+                        #   ② 其余泄漏按行清理（不整段降级，避免误杀整条推送）
+                        #   ③ 事实锚点：正文里的关键数字必须在 _diag_packet 里有出处
+                        if LLMOutputGuard.has_hard_leak(diagnosis_text):
+                            print(f"  [诊断] {name}: ⚠️ 命中硬泄漏，整段拦截为兜底文案")
+                            diagnosis_text = _SAFE_PUSH_FALLBACK
+                        else:
+                            diagnosis_text = LLMOutputGuard.filter_push(
+                                diagnosis_text, extra_keywords=_PROMPT_ECHO_MARKERS)
+                        if _diag_packet:
+                            diagnosis_text, _fa_hits = guard_fact_anchors(
+                                diagnosis_text, _diag_packet,
+                                fallback=_SAFE_PUSH_FALLBACK,
+                                log=lambda m: print(f"  {m}"),
+                                context=f"{uid}/close_review")
+                            if _fa_hits:
+                                print(f"  [诊断] {name}: 事实锚点命中 {len(_fa_hits)} 处")
                         safe_diag = _sanitize_push_text(diagnosis_text)
                         # v9.9.12 FIX-G(b)：推送侧兜底。
                         # (a) 已经在 prompt 里注入了管家结论并要求 LLM 显式说明分歧，

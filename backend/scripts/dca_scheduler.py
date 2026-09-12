@@ -273,15 +273,24 @@ def weekly_prediction_review():
     up_predictions = [p for p in predictions if p["predicted"] == "up"]
     down_predictions = [p for p in predictions if p["predicted"] == "down"]
     
-    # 目前无法精确验证(需要上周净值快照), 先输出统计概况
+    # v9.9.24: 此处原硬编码「历史回测综合准确率 34.6%」「双因子定投超额 +3.7%」，
+    # 无任何计算支撑（推送文案引用的 scripts/accuracy_stats.py 从未存在），属编造
+    # 指标，已移除。禁止再次写入任何未经计算的准确率 / 超额收益数字。
+    #
+    # 真实准确率必须按「预测当时净值 → 当前净值」逐周比对，而现有快照只存预测方向
+    # 不存当时净值，因此当前不可计算 —— 此处只如实报告样本积累进度，不给数字。
+    try:
+        _snapshot_weeks = len(list(cache_dir.glob("prediction_snapshot_*.json")))
+    except Exception:
+        _snapshot_weeks = 0
+
     report_lines = [
         f"📊 **本周预测复盘** ({last_monday.strftime('%m/%d')}-{today.strftime('%m/%d')})\n",
         f"本周给出方向判断的基金: **{len(predictions)}只**",
         f"  ↗️ 偏多预测: {len(up_predictions)}只",
         f"  ↘️ 偏空预测: {len(down_predictions)}只",
-        f"\n> 📈 历史回测综合准确率: **34.6%**",
-        f"> 💰 双因子定投超额: **+3.7%**",
-        f"\n> ℹ️ 精确周准确率需要净值快照对比,下周起自动记录",
+        f"\n> ℹ️ 方向判断准确率需按「预测时净值 → 当前净值」逐周比对得出，",
+        f"> 已积累 {_snapshot_weeks} 周快照样本；样本足以统计前不提供准确率数字",
     ]
     
     msg = "\n".join(report_lines)

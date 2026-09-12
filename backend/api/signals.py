@@ -20,6 +20,16 @@ router = APIRouter(tags=["信号与策略"])
 FUND_SCREEN_FRESH_SECONDS = 10 * 3600
 FUND_SCREEN_STALE_SECONDS = 72 * 3600
 
+# v9.9.24 P0-4: 候选基金与用户持仓的行业敞口重叠度阈值（0~1）。
+# Σ min(候选行业权重, 持仓行业权重) >= 此值 → 判定"🟡 风格重叠"。
+# 0.25 含义：候选的主赛道至少吃掉你现有组合 1/4 的敞口，买入即显著加重集中度。
+OVERLAP_DUPLICATE_THRESHOLD = 0.25
+
+# v9.9.24 P0-4: price_signal.level 的推荐优先级（数字越小越靠前）。
+# 用于把"谨慎买入/暂时回避"的标的从推荐首位踢下去 —— 之前 Top1 同时挂着
+# nav_percentile=85「历史高位」和 price_signal「🟡 谨慎买入」却排推荐第一。
+PRICE_SIGNAL_RANK = {"strong_buy": 0, "buy": 1, "neutral": 2, "caution": 3, "avoid": 4}
+
 from models.schemas import Portfolio
 from services.data_layer import (
     get_fund_nav, get_fear_greed_index, get_valuation_percentile,
@@ -57,7 +67,8 @@ def get_signals(portfolio: Portfolio):
     if val["percentile"] < 30:
         signals.append({
             "icon": "🟢", "title": f"当前是好的入场时机！",
-            "message": f"{val['index']}估值百分位 {val['percentile']}%（{val['level']}），处于近3年较低水平。历史上低估区间买入，持有3年盈利概率超85%。现在入场性价比高。",
+            # v9.9.24: 移除"持有3年盈利概率超85%"——无回测支撑的编造统计，禁止再写回
+            "message": f"{val['index']}估值百分位 {val['percentile']}%（{val['level']}），处于近3年较低水平，估值性价比优于历史多数时段。注意：低估值不等于短期上涨，仍需结合自身仓位与持有期限判断。",
             "type": "timing", "severity": "opportunity",
         })
     elif val["percentile"] < 50:
@@ -459,11 +470,20 @@ def _compute_fund_screen(fund_type, sort_by, top_n, userId):
     result = screen_funds(fund_type, sort_by, top_n, user_id=userId)
     if result.get("funds"):
         result["funds"] = comment_fund_picks(result["funds"])
-        from services.industry_templates import enrich_fund_with_industry, get_fund_industry
         for f in result["funds"]:
             f["timing_label"] = _fund_timing_label(f)
-            enrich_fund_with_industry(f)
-        _enrich_fund_holding_relation(result["funds"], userId, get_fund_industry)
+        # v9.9.24 P0-4: 统一 taxonomy — 候选基金与用户持仓都用【重仓股反推】的行业分类，
+        # 不再用基金简称关键词猜（简称里没有行业词 → 50% 候选退化成"📈 主动混合"，
+        # 与持仓的半导体/AI科技标签永远匹配不上，holding_relation 恒为"新敞口"）
+        from services.fund_industry import classify_funds
+        classify_funds(result["funds"])
+        _enrich_fund_holding_relation(result["funds"], userId)
+        # v9.9.24 P0-4: 补 scale_billion（AKShare 排行无规模列，常年 null）
+        try:
+            from services.fund_screen import enrich_scale_billion
+            enrich_scale_billion(result["funds"])
+        except Exception as _se:
+            print(f"[FUND_SCREEN] scale enrich failed: {_se}")
         _enrich_holding_funds_with_dividend(result["funds"])
         # v9.5.123 P3: 风格标签
         _enrich_style_tag(result["funds"])
@@ -477,7 +497,10 @@ def _compute_fund_screen(fund_type, sort_by, top_n, userId):
         _enrich_realtime_estimate(result["funds"])
         # v9.9.x T02: 性价比标签注入（读共享缓存；未命中入队后台补算）
         _enrich_risk_adjusted(result["funds"])
-        result["my_holdings_summary"] = _get_my_fund_holdings_summary(userId, get_fund_industry)
+        result["my_holdings_summary"] = _get_my_fund_holdings_summary(userId)
+        # v9.9.24 P0-4: 择时"谨慎/回避"的标的不许占推荐首位（必须在全部富化之后，
+        # 因为 price_signal 是在 _enrich_fund_holding_relation 里算出来的）
+        _apply_recommendation_ranking(result["funds"])
 
     result["market_timing"] = _get_market_timing_summary()
     result["style_timing"] = _get_style_timing_summary()
@@ -560,10 +583,11 @@ def _do_potential_compute(userId: str, limit: int, cache_file: str):
     import os as _os, json as _json, time as _time
     result = screen_funds("all", "score", top_n=80, user_id=userId)
     if result.get("funds"):
-        from services.industry_templates import enrich_fund_with_industry, get_fund_industry
         for f in result["funds"]:
             f["timing_label"] = _fund_timing_label(f)
-            enrich_fund_with_industry(f)
+        # v9.9.24 P0-4: 与选基页共用同一套分类（重仓股反推），避免同基金两个标签
+        from services.fund_industry import classify_funds
+        classify_funds(result["funds"])
         # 加 nav_percentile + 潜力评分（限制并发数避免过慢）
         for f in result["funds"]:
             try:
@@ -898,24 +922,34 @@ def _get_fund_nav_percentile(code: str) -> dict:
         return {}
 
 
-def _enrich_fund_holding_relation(funds: list, user_id: str, get_fund_industry_fn) -> None:
+def _enrich_fund_holding_relation(funds: list, user_id: str, get_fund_industry_fn=None) -> None:
     """给推荐基金列表标注与用户持仓的关联（已持仓/风格重叠/新敞口）。
     v9.5.76: 增加再平衡缺口方向标注（欠配方向优先提示）
     v9.5.77: 增加与用户持仓的 Pearson 相关系数（低相关=对冲候选）
+    v9.9.24 P0-4: 重叠判断改用【行业敞口分布】而非标签集合相等。
+
+        旧逻辑：`f_tag in my_tags`（字符串精确相等）。两边都用基金简称关键词
+        分类，候选 50% 退化成"📈 主动混合"、持仓被分成半导体/AI科技，集合永不相交
+        → 恒为"🟢 新敞口"，并输出"你目前没有📈 主动混合方向"这种自相矛盾的话。
+
+        新逻辑：两边都先用重仓股反推出 {行业标签: 权重}（同一 taxonomy），再用
+        Σ min(候选权重, 持仓权重) 算重叠度，>= OVERLAP_DUPLICATE_THRESHOLD 才算
+        风格重叠。兜底/风格类标签（主动混合、成长、红利低波…）不参与"没有X方向"
+        这类判断，避免再次输出荒谬结论。
     """
     if not user_id or not funds:
         return
     try:
         from services.fund_monitor import load_fund_holdings
+        from services.fund_industry import (aggregate_holdings_mix, overlap_score,
+                                            is_generic_tag)
         my_funds = load_fund_holdings(user_id) or []
         if not my_funds:
             return
-        my_tags: set = set()
         my_codes = {f.get("code", "") for f in my_funds}
-        for mf in my_funds:
-            match = get_fund_industry_fn(mf.get("name", ""))
-            if match.get("tag"):
-                my_tags.add(match["tag"])
+        # 与候选基金同一套分类（重仓股反推），否则没有可比性
+        my_mix, _my_per_fund = aggregate_holdings_mix(my_funds)
+        my_top_desc = "、".join(f"{t}{w:.0%}" for t, w in list(my_mix.items())[:3]) or "未识别"
 
         # v9.5.87: 轻仓判断 — 从 V4 transactions 计算总持仓金额
         # 总金额 < 1000 时放宽"风格重叠"限制，改为推荐"同方向更好品种"
@@ -1009,20 +1043,38 @@ def _enrich_fund_holding_relation(funds: list, user_id: str, get_fund_industry_f
             if code in my_codes:
                 f["holding_relation"] = "🔵 已持仓"
                 f["holding_hint"] = "你已经持有这只基金"
-            elif f_tag and f_tag in my_tags:
-                if _is_light_position:
-                    # v9.5.87: 轻仓时放宽风格重叠限制，推荐"同方向更好品种"
-                    f["holding_relation"] = "💡 可升级品种"
-                    f["holding_hint"] = f"你有{f_tag}方向（轻仓），这是同方向中评分更高的选择"
-                else:
-                    f["holding_relation"] = "🟡 风格重叠"
-                    f["holding_hint"] = f"你已有{f_tag}方向的基金，买入会加重该方向集中度"
-            elif f_tag:
-                f["holding_relation"] = "🟢 新敞口"
-                f["holding_hint"] = f"你目前没有{f_tag}方向，可作为分散配置考虑"
             else:
-                f["holding_relation"] = "⚪ 行业待识别"
-                f["holding_hint"] = "该基金行业特征不明显，可能为宽基/跨行业配置，与现有持仓重叠风险较低"
+                cand_mix = f.get("industry_mix") or {}
+                if is_generic_tag(f_tag) and cand_mix:
+                    # 十大重仓行业分散（兜底标签）时，展示用第一大行业，不要说"主动混合"
+                    display_tag = next(iter(cand_mix))
+                else:
+                    display_tag = f_tag
+                usable_mix = {t: w for t, w in cand_mix.items() if not is_generic_tag(t)}
+                if not usable_mix and f_tag and not is_generic_tag(f_tag):
+                    usable_mix = {f_tag: 1.0}
+                my_usable = {t: w for t, w in my_mix.items() if not is_generic_tag(t)}
+                ov = overlap_score(usable_mix, my_usable)
+                f["overlap_score"] = ov
+                if not usable_mix or not my_usable:
+                    # 两边至少一边没有可比的行业敞口 → 不编造"新敞口"
+                    f["holding_relation"] = "⚪ 行业待识别"
+                    f["holding_hint"] = (
+                        "该基金十大重仓行业分散、无明确主赛道，无法判断是否与你现有持仓重叠"
+                        if not usable_mix else
+                        f"你的持仓行业敞口暂无法识别，暂不判断与{display_tag or '该基金'}的重叠度"
+                    )
+                elif ov >= OVERLAP_DUPLICATE_THRESHOLD:
+                    if _is_light_position:
+                        # v9.5.87: 轻仓时放宽风格重叠限制，推荐"同方向更好品种"
+                        f["holding_relation"] = "💡 可升级品种"
+                        f["holding_hint"] = f"与你的持仓重叠 {ov:.0%}（主要 {display_tag}），这是同方向中评分更高的选择"
+                    else:
+                        f["holding_relation"] = "🟡 风格重叠"
+                        f["holding_hint"] = f"与你现有持仓重叠 {ov:.0%}（主要 {display_tag}），买入会加重该方向集中度"
+                else:
+                    f["holding_relation"] = "🟢 新敞口"
+                    f["holding_hint"] = f"你目前主要持有 {my_top_desc}，与{display_tag}重叠仅 {ov:.0%}，可作为分散配置考虑"
 
             # 附加缺口方向标注（独立字段，不覆盖 holding_relation）
             if is_gap:
@@ -2035,27 +2087,76 @@ def _enrich_holding_funds_with_dividend(funds: list) -> None:
         print(f"[FUND_SCREEN] dividend enrich failed: {e}")
 
 
-def _get_my_fund_holdings_summary(user_id: str, get_fund_industry_fn) -> dict:
-    """获取用户基金持仓摘要（用于选基 my_holdings_summary 字段）。"""
+def _get_my_fund_holdings_summary(user_id: str) -> dict:
+    """获取用户基金持仓摘要（用于选基 my_holdings_summary 字段）。
+
+    v9.9.24 P0-4: tags 改用与候选基金同一套分类（重仓股反推），并给出带权重的
+    mix。旧的 name 关键词版会输出「覆盖方向：🏭 高端制造, 💎 半导体, 🚀 成长,
+    🤖 AI/科技」——其中"🚀 成长"只是从"灵活配置"四个字猜出来的风格词，和候选
+    侧的"📈 主动混合"对不上，正是双轨制的直接证据。
+    """
     if not user_id:
         return {}
     try:
         from services.fund_monitor import load_fund_holdings
+        from services.fund_industry import aggregate_holdings_mix
         my_funds = load_fund_holdings(user_id) or []
         if not my_funds:
             return {"count": 0, "tags": [], "hint": "暂无基金持仓记录"}
-        my_tags: set = set()
-        for mf in my_funds:
-            match = get_fund_industry_fn(mf.get("name", ""))
-            if match.get("tag"):
-                my_tags.add(match["tag"])
+        my_mix, _per_fund = aggregate_holdings_mix(my_funds)
+        tags = list(my_mix.keys())
+        top_desc = "、".join(f"{t} {w:.0%}" for t, w in list(my_mix.items())[:4]) or "未识别"
         return {
             "count": len(my_funds),
-            "tags": sorted(my_tags),
-            "hint": f"你已持有 {len(my_funds)} 只基金，覆盖方向：{', '.join(sorted(my_tags)) or '未分类'}",
+            "tags": tags,
+            "mix": my_mix,
+            "hint": f"你已持有 {len(my_funds)} 只基金，行业敞口（按十大重仓股测算）：{top_desc}",
         }
     except Exception as e:
         return {}
+
+
+def _apply_recommendation_ranking(funds: list) -> None:
+    """v9.9.24 P0-4: 把择时"谨慎买入/暂时回避"的标的从推荐首位移下去。
+
+    问题：排序只按 score，而 price_signal 是后期富化算出来的，完全不参与排序。
+    结果 Top1 同时挂着 nav_percentile=85「历史高位 85% 🔴」和
+    price_signal「🟡 谨慎买入」——系统在推荐用户买一个它自己标了谨慎的标的。
+
+    做法：按 price_signal.level 稳定分区重排（strong_buy > buy > neutral >
+    caution > avoid），同一档内保留原 score 顺序。被后置的标的打上
+    recommend_blocked / recommend_block_reason，前端可直接展示"暂不推荐买入"。
+    """
+    if not funds:
+        return
+
+    def _rank(f):
+        level = (f.get("price_signal") or {}).get("level", "neutral")
+        return PRICE_SIGNAL_RANK.get(level, 2)
+
+    blocked = []
+    for f in funds:
+        lvl = (f.get("price_signal") or {}).get("level")
+        if lvl in ("caution", "avoid"):
+            ps = f.get("price_signal") or {}
+            reason = ps.get("reason") or ps.get("label") or "择时信号偏谨慎"
+            f["recommend_blocked"] = True
+            f["recommend_block_reason"] = (
+                f"该标的暂不推荐买入 —— 净值处于历史高位{f.get('nav_percentile')}%"
+                if f.get("nav_percentile") is not None and lvl == "caution"
+                else f"该标的暂不推荐买入 —— {reason}"
+            )
+            blocked.append(f.get("code", ""))
+
+    funds.sort(key=_rank)
+    if blocked:
+        # top 级提示：让调用方/前端能直接拿到一句结论，不必自己拼
+        try:
+            funds[0]["recommend_note"] = (
+                f"已把 {len(blocked)} 只择时谨慎（净值历史高位）的标的移到推荐列表后部"
+            )
+        except Exception:
+            pass
 
 
 @router.get("/api/stock-screen")

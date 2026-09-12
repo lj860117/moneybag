@@ -303,6 +303,64 @@ def get_financials(code: str) -> dict:
     }
 
 
+def get_financials_history(code: str, start_date: str = "", end_date: str = "") -> list:
+    """历史财务指标序列（point-in-time，供回测 / 因子 IC 检验使用）
+
+    与 :func:`get_financials` 的区别：后者只取「最近一期」，没有时间维度，
+    拿去做历史截面回测会引入前视偏差（用未来才公告的财报评价过去）。
+    本函数按区间拉多期，每行同时带 ``ann_date``（公告日）和 ``end_date``（报告期）。
+
+    ⚠️ 调用方必须自行按 ``ann_date <= 截面日 T`` 过滤，只取当时**已经公告**的
+    那一期，否则等于用未来信息选股。
+
+    Args:
+        code: 纯数字代码
+        start_date / end_date: YYYYMMDD 区间；建议 start_date 往前多留 2~3 年，
+            保证窗口起点之前最近一期的公告也能被拉到（不同版本接口对这两个参数
+            是按报告期还是公告日过滤有歧义，多留冗余窗口最稳）。
+
+    Returns:
+        [{"ann_date", "end_date", "roe", "eps", "gross_margin", "net_margin",
+          "debt_ratio", "cash_flow_per_share", "netprofit_yoy", "revenue_yoy"}, ...]
+        按 ann_date 升序；无数据返回 []
+    """
+    ts_code = _code_to_ts(code)
+    params = {"ts_code": ts_code}
+    if start_date:
+        params["start_date"] = start_date
+    if end_date:
+        params["end_date"] = end_date
+
+    rows = _call_tushare(
+        "fina_indicator",
+        params,
+        "ts_code,ann_date,end_date,roe,roe_waa,grossprofit_margin,netprofit_margin,"
+        "debt_to_assets,ocfps,eps,netprofit_yoy,or_yoy",
+    )
+    if not rows:
+        return []
+
+    out = []
+    for r in rows:
+        ann = r.get("ann_date")
+        if not ann:
+            continue
+        out.append({
+            "ann_date": str(ann),
+            "end_date": r.get("end_date"),
+            "roe": r.get("roe") or r.get("roe_waa"),
+            "eps": r.get("eps"),
+            "gross_margin": r.get("grossprofit_margin"),
+            "net_margin": r.get("netprofit_margin"),
+            "debt_ratio": r.get("debt_to_assets"),
+            "cash_flow_per_share": r.get("ocfps"),
+            "netprofit_yoy": r.get("netprofit_yoy"),
+            "revenue_yoy": r.get("or_yoy"),
+        })
+    out.sort(key=lambda x: x["ann_date"])
+    return out
+
+
 # ============================================================
 # 3. 批量估值（选股用，一次拉多只）
 # ============================================================

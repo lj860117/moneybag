@@ -288,7 +288,12 @@ def get_fear_greed_index() -> dict:
                          dim3_score * FGI_DIM_WEIGHTS["volume"])
 
             # 翻转为「贪婪分」: 0=极度恐惧, 100=极度贪婪（符合 CNN FGI 直觉）
-            greed_score = round(100 - composite, 1)
+            # v9.9.24: 取整输出。三个维度各自只有 5~7 档粗分桶
+            # （动量 7 档 × 波动率 5 档 × 量能 7 档 ≈ 245 种组合），权重是
+            # 0.4/0.3/0.3，算出来的值必然是 0.1 的整数倍。显示成 62.5 会
+            # 让人以为精度到 0.1 分，实际只是"20 日动量跌了 3~8%"这类粗判。
+            # 取整不丢任何信息，去掉的是伪精度。
+            greed_score = int(round(100 - composite))
             result["score"] = greed_score
 
             if greed_score >= 75:
@@ -319,6 +324,12 @@ def get_fear_greed_index() -> dict:
             cached = get_precomputed("fear_greed")
             if cached and "score" in cached:
                 cached["_degraded"] = "precomputed_cache"
+                # 缓存里可能存着旧版带小数的分数，一并取整，否则降级路径
+                # 照样把 62.5 这种伪精度透给用户
+                try:
+                    cached["score"] = int(round(float(cached["score"])))
+                except (TypeError, ValueError):
+                    pass
                 print(f"[FGI] 降级至 precomputed_cache: score={cached['score']}")
                 return cached
         except Exception:

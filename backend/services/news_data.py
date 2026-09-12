@@ -381,6 +381,135 @@ def analyze_news_impact(news_list: list) -> list:
 
 
 # ============================================================
+# 持仓新闻：利好利空标签 + 去重 + 影响映射（v9.9.24 P1-1）
+# ============================================================
+
+# 个股/基金新闻的确定性情感词典。
+# 为什么要有它：NEWS_IMPACT_MAP 是「宏观政策 → 板块/基金」的映射，对个股新闻
+# （如「贵州茅台三季报净利润+15%」）一条都匹配不上。没有这层，持仓新闻的
+# 利好利空标签就只能全落「中性」，等于没做。
+# 顺序重要：先长词后短词，避免「业绩预增」被「增」类短词抢先命中。
+SENTIMENT_LEXICON = {
+    "利好": [
+        "业绩预增", "净利润增长", "净利润同比", "扭亏为盈", "扭亏", "超预期",
+        "中标", "回购", "增持", "分红", "提价", "获批", "涨停", "创新高",
+        "大额订单", "扩产", "战略合作", "上调评级", "业绩预喜",
+    ],
+    "利空": [
+        "业绩预减", "净利润下降", "净利润亏损", "预亏", "亏损", "下滑",
+        "减持", "诉讼", "被罚", "退市", "问询函", "警示函", "跌停", "创新低",
+        "商誉减值", "违规", "召回", "裁员", "债务违约", "业绩暴雷",
+    ],
+}
+
+
+def classify_sentiment(title: str, code: str = "") -> tuple:
+    """
+    判定一条新闻的利好/利空。
+
+    三级判定，全部可追溯（返回 label_source）：
+      1. SENTIMENT_LEXICON —— 个股/基金微观事件（业绩、增减持、诉讼…）
+      2. NEWS_IMPACT_MAP    —— 宏观政策事件，且本持仓代码命中规则的 bullish/bearish
+      3. 都没命中           —— labeled=False，sentiment 记「中性」
+
+    注意第 3 种情况：sentiment=中性 **不等于**「判定为中性」，而是「没判出来」。
+    下游（置信度、推送裁决）必须看 labeled 字段，不能把未判定当成中性信号，
+    否则又是一次「没有数据 = 没风险」的假绿。
+
+    Returns:
+        (sentiment, labeled, label_source, tag)
+        sentiment ∈ {"利好", "利空", "中性"}
+    """
+    text = (title or "").strip()
+    if not text:
+        return "中性", False, "none", None
+
+    pos_hits = [kw for kw in SENTIMENT_LEXICON["利好"] if kw in text]
+    neg_hits = [kw for kw in SENTIMENT_LEXICON["利空"] if kw in text]
+    if pos_hits or neg_hits:
+        if len(pos_hits) > len(neg_hits):
+            return "利好", True, "lexicon", None
+        if len(neg_hits) > len(pos_hits):
+            return "利空", True, "lexicon", None
+        # 多空信号同时出现（如"业绩预增但遭大股东减持"）—— 不猜，标中性并如实说明
+        return "中性", True, "lexicon_conflict", None
+
+    # 宏观政策：只有明确命中本持仓代码时才敢下结论
+    if code:
+        for rule in NEWS_IMPACT_MAP:
+            if not any(kw in text for kw in rule["keywords"]):
+                continue
+            if code in rule["bullish"]:
+                return "利好", True, "impact_map", rule["tag"]
+            if code in rule["bearish"]:
+                return "利空", True, "impact_map", rule["tag"]
+            # 命中规则但本持仓不在 bullish/bearish 名单里 → 影响不确定
+            return "中性", False, "impact_map_unmapped", rule["tag"]
+
+    return "中性", False, "none", None
+
+
+def _norm_title(title: str) -> str:
+    """标题归一化（用于去重）：去空白 + 去标点，避免同一条新闻因空格/全半角被算成两条"""
+    import string as _string
+    s = (title or "").strip()
+    table = str.maketrans("", "", _string.whitespace + _string.punctuation + "　，。、；：？！“”‘’（）《》")
+    return s.translate(table).lower()
+
+
+def summarize_holdings_news(items: list, use_llm: bool = True, max_tokens: int = 200) -> tuple:
+    """
+    持仓新闻一句话摘要。
+
+    诚实原则（v9.9.24 P1-1）：LLM 拿不到就 **明确说拿不到**，绝不用
+    "市场整体平稳" 这类看起来像结论的模板话术冒充摘要 —— 那正是 P0 系列
+    一直在清的"假绿"。
+
+    Returns:
+        (summary, source)  source ∈ {"llm", "rule", "none"}
+    """
+    if not items:
+        return "", "none"
+
+    pos = sum(1 for i in items if i.get("sentiment") == "利好")
+    neg = sum(1 for i in items if i.get("sentiment") == "利空")
+    unlabeled = sum(1 for i in items if not i.get("labeled"))
+    fact_line = f"共 {len(items)} 条持仓新闻（利好 {pos} / 利空 {neg} / 未判定 {unlabeled}）"
+
+    if not use_llm:
+        return fact_line, "rule"
+
+    try:
+        from infra.llm.gateway import LLMGateway
+        bullet = "\n".join(
+            f"- [{i.get('sentiment', '中性')}] {i.get('title', '')}" for i in items[:15]
+        )
+        prompt = (
+            "下面是某用户持仓相关的最新新闻（方括号内是系统按关键词规则打的利好/利空标签，"
+            "仅供参考）。请用一句话（不超过60字）概括这些新闻对该用户持仓的整体影响。\n"
+            "要求：只说新闻里真有的事；没有明确方向就说'方向不明确'；"
+            "不要编造任何新闻里没有出现的数字、公司名或结论。\n\n"
+            f"{bullet}"
+        )
+        result = LLMGateway.instance().call_sync(
+            prompt,
+            system="你是严谨的财经资讯编辑，只做摘要，不做投资建议，不编造信息。",
+            model_tier="llm_light",
+            user_id="",
+            module="news_data",
+            max_tokens=max_tokens,
+        )
+        text = (result or {}).get("content", "").strip()
+        # fallback=True 表示降级/兜底，内容不可信 → 按拿不到处理
+        if text and not result.get("fallback"):
+            return text, "llm"
+    except Exception as e:
+        print(f"[NEWS] holdings news summary failed: {e}")
+
+    return f"{fact_line}；摘要未生成（LLM 不可用）", "rule"
+
+
+# ============================================================
 # 个股/基金新闻统一接口（v3.0 新增，供各模块复用）
 # ============================================================
 
@@ -458,22 +587,82 @@ def _is_relevant_news(title: str, code: str, stock_name: str) -> bool:
     return False
 
 
-def get_holdings_news(stock_holdings: list, fund_holdings: list, limit_per: int = 3) -> dict:
+def get_holdings_news(
+    stock_holdings: list,
+    fund_holdings: list,
+    limit_per: int = 3,
+    llm_summary: bool = False,
+) -> dict:
     """批量拉取持仓新闻（盯盘/复盘/诊断共用）
-    返回: {"stocks": {code: [news]}, "funds": {code: [news]}, "summary": "一句话"}
+
+    v9.9.24 P1-1 新增三件事（原实现只做"拉取"，标签/去重/映射全缺）：
+      1. 利好利空标签 —— 每条新闻带 sentiment / labeled / label_source / tag
+      2. 全局去重     —— 同一条新闻（归一化标题）只保留一次，其余记为 affected_holdings
+      3. 持仓影响映射 —— impact_map 给出每个持仓的利好/利空/未判定计数
+
+    返回（**向后兼容**：stocks / funds / summary 三个键的语义不变）：
+        {
+          "stocks": {code: [news...]}, "funds": {code: [news...]},
+          "summary": "一句话", "summary_source": "llm"|"rule"|"none",
+          "duplicates_removed": int,
+          "impact_map": {code: {"利好":n,"利空":n,"中性":n,"未判定":n}},
+          "labeled_count": int, "unlabeled_count": int,
+        }
     """
-    result = {"stocks": {}, "funds": {}, "summary": ""}
-    all_titles = []
+    result = {
+        "stocks": {},
+        "funds": {},
+        "summary": "",
+        "summary_source": "none",
+        "duplicates_removed": 0,
+        "impact_map": {},
+        "labeled_count": 0,
+        "unlabeled_count": 0,
+    }
+
+    seen_titles = {}      # norm_title -> news item（跨持仓去重）
+    all_items = []        # 去重后的全部条目（供摘要用）
+
+    def _absorb(code: str, kind: str, raw_news: list):
+        """把某个持仓的新闻并入结果：打标签 + 去重 + 记录影响归属"""
+        kept = []
+        for n in raw_news:
+            title = n.get("title", "")
+            if not title:
+                continue
+            norm = _norm_title(title)
+            item = dict(n)
+            item.setdefault("code", code)
+            item.setdefault("kind", kind)  # stock / fund
+
+            if norm in seen_titles:
+                # 同一条新闻已经在别的持仓下出现过 —— 不重复计数，
+                # 但把本持仓记进 affected_holdings（这就是"影响映射"）
+                first = seen_titles[norm]
+                if code not in first["affected_holdings"]:
+                    first["affected_holdings"].append(code)
+                result["duplicates_removed"] += 1
+                continue
+
+            sentiment, labeled, label_source, tag = classify_sentiment(title, code)
+            item["sentiment"] = sentiment
+            item["labeled"] = labeled
+            item["label_source"] = label_source
+            item["tag"] = tag
+            item["affected_holdings"] = [code]
+            seen_titles[norm] = item
+            all_items.append(item)
+            kept.append(item)
+
+        if kept:
+            result[kind + "s"][code] = kept
 
     # 股票持仓新闻
     for h in (stock_holdings or [])[:10]:
         code = h.get("code", "")
         if not code:
             continue
-        news = get_stock_news_by_code(code, limit_per)
-        if news:
-            result["stocks"][code] = news
-            all_titles.extend([n["title"] for n in news])
+        _absorb(code, "stock", get_stock_news_by_code(code, limit_per))
 
     # 基金持仓新闻
     for h in (fund_holdings or [])[:10]:
@@ -483,31 +672,52 @@ def get_holdings_news(stock_holdings: list, fund_holdings: list, limit_per: int 
         try:
             news = get_fund_news(code, limit_per)
             valid = [n for n in news if n.get("title") and "加载中" not in n.get("title", "")]
-            if valid:
-                result["funds"][code] = valid
-                all_titles.extend([n["title"] for n in valid])
+            _absorb(code, "fund", valid)
         except Exception:
             pass
 
-    # 一句话摘要
-    total = len(result["stocks"]) + len(result["funds"])
-    if total:
-        result["summary"] = f"拉取了 {total} 只持仓的最新新闻，共 {len(all_titles)} 条"
+    # 每个持仓的影响汇总（按 affected_holdings 归属，含被去重掉的）
+    for item in all_items:
+        for code in item["affected_holdings"]:
+            bucket = result["impact_map"].setdefault(
+                code, {"利好": 0, "利空": 0, "中性": 0, "未判定": 0}
+            )
+            if not item["labeled"]:
+                bucket["未判定"] += 1
+            else:
+                bucket[item["sentiment"]] += 1
+
+    result["labeled_count"] = sum(1 for i in all_items if i["labeled"])
+    result["unlabeled_count"] = sum(1 for i in all_items if not i["labeled"])
+
+    # 一句话摘要：默认走规则（零成本、零延迟），llm_summary=True 才调模型
+    if all_items:
+        result["summary"], result["summary_source"] = summarize_holdings_news(
+            all_items, use_llm=llm_summary
+        )
     return result
 
 
 def format_holdings_news_for_prompt(holdings_news: dict) -> str:
-    """把持仓新闻格式化为 prompt 注入文本"""
-    lines = []
-    for code, news in holdings_news.get("stocks", {}).items():
-        lines.append(f"\n### {code} 个股新闻")
-        for n in news:
-            lines.append(f"- {n['title']}")
+    """把持仓新闻格式化为 prompt 注入文本
 
-    for code, news in holdings_news.get("funds", {}).items():
-        lines.append(f"\n### {code} 基金新闻")
-        for n in news:
-            lines.append(f"- {n['title']}")
+    v9.9.24 P1-1：带上利好利空标签，并把「同时影响多个持仓」标出来，
+    让 LLM 看到的是结构化的影响关系，而不是一串无差别的标题。
+    """
+    lines = []
+    for kind, label in (("stocks", "个股"), ("funds", "基金")):
+        for code, news in holdings_news.get(kind, {}).items():
+            lines.append(f"\n### {code} {label}新闻")
+            for n in news:
+                tag = n.get("sentiment", "中性")
+                # 未判定的不能叫"中性"，否则 LLM 会当成"确认无影响"
+                if not n.get("labeled", False):
+                    tag = "未判定"
+                affected = n.get("affected_holdings") or []
+                extra = ""
+                if len(affected) > 1:
+                    extra = f"（同时影响：{'/'.join(c for c in affected if c != code)}）"
+                lines.append(f"- [{tag}] {n['title']}{extra}")
 
     return "\n".join(lines) if lines else ""
 
@@ -533,10 +743,13 @@ def enrich(ctx):
         holdings_news = {}
         if getattr(ctx, "stock_holdings", None) or getattr(ctx, "fund_holdings", None):
             try:
+                # P1-1：只有 Pipeline 这条链路开 LLM 摘要（盯盘/复盘走规则摘要，
+                # 保持零额外延迟）。summary_source 会如实标明摘要是模型写的还是规则的。
                 holdings_news = get_holdings_news(
                     getattr(ctx, "stock_holdings", []),
                     getattr(ctx, "fund_holdings", []),
                     limit_per=2,
+                    llm_summary=True,
                 )
             except Exception as e:
                 print(f"[NEWS] holdings news failed: {e}")
@@ -566,6 +779,9 @@ def enrich(ctx):
             "impacts": impacts[:5],  # 只保留前5条给 LLM
             "policy_news_count": len(policy_news),
             "holdings_news_summary": holdings_news.get("summary", ""),
+            "holdings_news_summary_source": holdings_news.get("summary_source", "none"),
+            # P1-1：每个持仓的 利好/利空/未判定 计数，供下游置信度与推送裁决使用
+            "holdings_news_impact": holdings_news.get("impact_map", {}),
             "triggered_tags": triggered_tags,
         }
 

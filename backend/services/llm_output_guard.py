@@ -105,6 +105,24 @@ _JSON_KV_LEAK_PATTERN = re.compile(
 )
 
 
+# v9.9.24: 「硬泄漏」标记 —— 命中即说明这段输出根本不是面向用户的人话，
+# 应整段拦截（降级为兜底文案），而不是按行删掉几行就放行。
+# 与 _COMMON_LEAK_KEYWORDS 的区别：这里只放**中文用户文案里绝不可能出现**的
+# 内部枚举名 / JSON 契约词 / 显式指令复读，误杀面为零才可以进这张表。
+HARD_LEAK_MARKERS = [
+    # 内部状态枚举（regime 值）
+    'high_vol_bear', 'high_vol_bull', 'trending_bull', 'trending_bear',
+    'oscillating', 'rotation',
+    # 内部字段名
+    'modules_results', 'gate_decision', 'market_data',
+    # JSON 契约 / 指令复读
+    '严格 JSON', '只输出 JSON', '我们需要输出', '我们要输出',
+    '必须输出', '不要输出任何', '按以下格式', '输出格式',
+    '用户提供了', '深层需求', '铁律要求',
+    '输入：', '输入:', '用户问题：', '用户问题:',
+]
+
+
 def looks_like_json_leak(text: str) -> bool:
     """判断文本是否含泄漏的 JSON 键值片段（含无花括号的截断形态）。
 
@@ -365,6 +383,30 @@ class LLMOutputGuard:
                 return retry_fallback or "（AI 诊断思考链异常，已过滤。建议手动查看持仓页详情）"
 
         return cleaned
+
+    @staticmethod
+    def has_hard_leak(text: str) -> bool:
+        """是否存在「硬泄漏」——命中即应整段拦截，不做行级修补。
+
+        判定依据（满足任一）：
+          1. 含泄漏的 JSON 键值片段（含无花括号的截断形态）
+          2. 含内部枚举名 / 内部字段名 / 显式指令复读
+
+        与 filter_* 系列的区别：filter_* 只按行删命中行，泄漏严重时会
+        留下"删了但没删干净"的半截内容；而出现硬泄漏标记时，说明模型
+        把 system prompt 当正文吐出来了，整段都不可信。
+
+        Args:
+            text: 待检测文本。
+
+        Returns:
+            True 表示应整段降级为兜底文案。
+        """
+        if not text:
+            return False
+        if looks_like_json_leak(text):
+            return True
+        return any(marker in text for marker in HARD_LEAK_MARKERS)
 
     @staticmethod
     def needs_retry(filtered_text: str) -> bool:
