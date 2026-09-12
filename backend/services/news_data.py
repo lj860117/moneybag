@@ -16,12 +16,22 @@ MODULE_META = {
     "layer": "data",
     "priority": 2,
 }
+import re
 import time
 from datetime import datetime, timedelta
 from config import NEWS_CACHE_TTL
 from infra.cache import MemoryCache
 
 _news_cache = MemoryCache(default_ttl=NEWS_CACHE_TTL)
+
+# 政策级判定关键词（原为 get_policy_news() 内部变量，P2-13 提到模块级复用）：
+# 重要度排序里的"政策级"必须和"政策新闻"接口用同一套判据，
+# 不能同一条新闻在一个地方算政策、在另一个地方算普通。
+# PROVENANCE: [经验值] 人工枚举，未做统计校准。
+POLICY_KEYWORDS = ["政策", "央行", "国务院", "财政", "降准", "降息", "LPR",
+                   "关税", "贸易", "制裁", "外交", "中美", "特朗普", "拜登",
+                   "战争", "地缘", "OPEC", "美联储", "加息", "缩表",
+                   "刺激", "基建", "新质", "科技", "半导体", "芯片"]
 
 
 def get_fund_news(code: str, limit: int = 3) -> list:
@@ -210,11 +220,6 @@ def get_policy_news(limit: int = 20) -> list:
     cached = _news_cache.get(cache_key)
     if cached is not None:
         return cached
-
-    POLICY_KEYWORDS = ["政策", "央行", "国务院", "财政", "降准", "降息", "LPR",
-                       "关税", "贸易", "制裁", "外交", "中美", "特朗普", "拜登",
-                       "战争", "地缘", "OPEC", "美联储", "加息", "缩表",
-                       "刺激", "基建", "新质", "科技", "半导体", "芯片"]
 
     all_news = []
     try:
@@ -510,6 +515,241 @@ def summarize_holdings_news(items: list, use_llm: bool = True, max_tokens: int =
 
 
 # ============================================================
+# v9.9.26 P2-13：事件聚类 + 噪音过滤 + 重要度排序
+#
+# 三条设计红线：
+#   1. 宁可漏合并，不可错合并 —— 两条不同事件被揉成一条，用户会少看到一条真实
+#      要闻；漏合并只是多展示一条重复报道。危害不对称，所以阈值取保守值。
+#   2. 被过滤的新闻不许凭空消失 —— 必须给出计数 + 命中规则名，可追溯。
+#   3. 不许编造权重 —— 所有阈值/权重都是显式常量并写明 PROVENANCE（来源）。
+#      [经验值] = 工程经验设定，未用统计方法校准；[派生] = 由其他已存在数据推导。
+# ============================================================
+
+# --- 聚类 ---
+
+# 同事件判定阈值：归一化标题 2-gram 集合的 Jaccard 相似度。
+# PROVENANCE: [经验值] 未校准。
+# 取舍：宁可漏合并不错合并，阈值取在正负样本之间偏保守的位置。
+# 标定样本（实测值，见 tests/test_news_cluster_filter_rank.py）：
+#   应合并（同一事件的不同报道）: 0.524 / 0.600 / 0.857
+#   不得合并（确为不同事件）    : 0.130 / 0.200  ← 由本阈值拦截
+#                                0.750（预增vs预减）← 由 OPPOSITE_TERM_PAIRS 拦截
+# 注意 0.750 那一组：纯字符相似度对「只差一个反义字」的标题无能为力，
+# 所以阈值再怎么调也救不了，必须靠 OPPOSITE_TERM_PAIRS 硬性否决。
+CLUSTER_JACCARD_THRESHOLD = 0.50
+
+# 反向词对：字面高度相似、语义完全相反的词。
+# PROVENANCE: [经验值] 手工枚举，主要来自 SENTIMENT_LEXICON 中方向相反的词，未穷举。
+# 为什么必须单独列出：字集相似度分辨不了「业绩预增」和「业绩预减」（只差一个字，
+# 相似度远高于阈值），一旦合并，就是把一条利好和一条利空揉成一条 ——
+# 这是本项目能犯的最严重的错合并，所以做成硬性否决项，优先级高于相似度。
+OPPOSITE_TERM_PAIRS = (
+    ("预增", "预减"), ("预喜", "预亏"), ("增长", "下降"), ("上涨", "下跌"),
+    ("增持", "减持"), ("上调", "下调"), ("利好", "利空"), ("扭亏", "亏损"),
+    ("创新高", "创新低"), ("涨停", "跌停"), ("扩产", "减产"), ("中标", "流标"),
+    ("加仓", "减仓"), ("买入", "卖出"), ("扭亏为盈", "业绩暴雷"),
+)
+
+# 簇代表选取打分：同簇内选「信息量最高」的一条。
+# PROVENANCE: [经验值] 未校准。原则：可核实的字段优先于长度（有链接 > 有发布时间
+# > 有来源），标题长度只作为并列时的次级依据，避免「标题越长越像要闻」的长度偏见。
+INFO_SCORE_HAS_URL = 3
+INFO_SCORE_HAS_TIME = 2
+INFO_SCORE_HAS_SOURCE = 1
+
+# --- 噪音过滤 ---
+
+# 盘面播报噪音规则：命中即判定为「盘面播报」→ 进行情区（market_noise），不进要闻。
+# PROVENANCE: [经验值] 人工归纳财经快讯标题里常见的盘面播报句式，未做统计校准。
+#   mode="any"：任一组内任一关键词命中即算命中
+#   mode="all"：每个分组都必须至少命中其一（分组内任一命中即可）
+# 之所以要分组 + all：单用「收盘」会误伤「某公司收盘涨停」，单用「沪指」会误伤
+# 「央行降准，沪指大涨」这类有真实增量的新闻。
+NOISE_RULES = (
+    {"name": "index_boardcast", "mode": "any",
+     "keywords": (("三大指数", "盘面播报", "收盘播报", "开盘播报", "盘前播报",
+                   "收评", "午评", "早评", "两市成交额", "沪深两市"),),
+     "note": "纯指数/大盘盘面播报，无个股或政策增量信息"},
+    {"name": "session_index_move", "mode": "all",
+     "keywords": (("开盘", "收盘", "早盘", "午盘", "半日", "盘中"),
+                  ("指数", "沪指", "深证成指", "创业板指", "大盘", "两市", "A股")),
+     "note": "时段词+指数词同时出现才算播报，避免误伤个股新闻"},
+)
+
+# --- 重要度排序 ---
+
+# 来源权重：渠道权威度权重，用于重要度排序。
+# PROVENANCE: [经验值] **未校准** —— 按「是否一手信源/官方口径」人工分档，
+# 不是统计得出的权重。项目目前没有「新闻来源 → 用户点击/采纳」的回馈日志，
+# 因此这里不能声称有任何统计依据；等有日志后再做回归校准。
+SOURCE_WEIGHTS = {
+    # 一手/官方信源
+    "证监会": 1.3, "央行": 1.3, "国务院": 1.3, "上交所": 1.3, "深交所": 1.3,
+    "财政部": 1.3, "发改委": 1.3, "统计局": 1.3,
+    # 官方媒体 / 主流财经媒体
+    "新华社": 1.2, "人民日报": 1.2, "证券时报": 1.2, "上海证券报": 1.2,
+    "中国证券报": 1.2, "财联社": 1.1,
+    # 聚合平台（默认档）
+    "东方财富": 1.0, "同花顺": 1.0, "新浪财经": 1.0, "雪球": 1.0,
+}
+# 未收录来源：不惩罚也不奖赏（1.0），避免「来源没被收录就被判低优」的隐性偏差。
+# PROVENANCE: [经验值] 未校准。
+DEFAULT_SOURCE_WEIGHT = 1.0
+
+# 层级权重：涉及持仓 > 政策级 > 普通。
+# PROVENANCE: [经验值] 未校准。取值刻意拉开，保证层级优先**严格成立**、不会被
+# 来源权重翻转：最低档持仓 1.0×3.0=3.0 > 最高档政策 1.3×2.0=2.6 > 最高档普通
+# 1.3×1.0=1.3。即来源权重只能在层内排序，不能跨层翻转。
+IMPORTANCE_LEVEL_WEIGHTS = {"holding": 3.0, "policy": 2.0, "general": 1.0}
+
+
+def _cluster_tokens(title: str) -> set:
+    """归一化标题 → 2-gram 集合（聚类用的轻量「分词」）。
+
+    不引入 jieba / scikit-learn：项目没有这些依赖，也不值得为标题去重引入它们。
+    中文没有空格分词边界，2-gram 是效果/成本比最合适的近似。
+    """
+    s = _norm_title(title)
+    s = re.sub(r"[0-9０-９]+", "", s)
+    if len(s) < 2:
+        return set(s)
+    return {s[i:i + 2] for i in range(len(s) - 1)}
+
+
+def title_similarity(a: str, b: str) -> float:
+    """两条标题的相似度（2-gram Jaccard），0~1。"""
+    ta, tb = _cluster_tokens(a), _cluster_tokens(b)
+    if not ta or not tb:
+        return 0.0
+    return len(ta & tb) / len(ta | tb)
+
+
+def has_opposite_terms(a: str, b: str) -> bool:
+    """两条标题是否含有语义相反的词对（预增/预减、增持/减持…）。
+
+    这是防错合并的**硬性否决项**：字集相似度分辨不了只差一个字的反义标题。
+    """
+    for x, y in OPPOSITE_TERM_PAIRS:
+        if (x in a and y in b) or (y in a and x in b):
+            return True
+    return False
+
+
+def is_same_event(title_a: str, title_b: str) -> bool:
+    """判定两条标题是否为同一事件的不同报道。
+
+    宁可漏合并不错合并：反向词对一票否决，相似度还需过阈值。
+    """
+    if has_opposite_terms(title_a, title_b):
+        return False
+    return title_similarity(title_a, title_b) >= CLUSTER_JACCARD_THRESHOLD
+
+
+def _info_score(item: dict) -> tuple:
+    """簇内代表选取的打分键。max() 取首个最大值 → 输入顺序固定则结果固定。"""
+    score = 0
+    if (item.get("url") or "").strip():
+        score += INFO_SCORE_HAS_URL
+    if (item.get("time") or "").strip():
+        score += INFO_SCORE_HAS_TIME
+    if (item.get("source") or "").strip():
+        score += INFO_SCORE_HAS_SOURCE
+    return (score, len(item.get("title") or ""))
+
+
+def cluster_news_items(items: list) -> list:
+    """把同一事件的多篇报道聚成一簇。
+
+    原地给每个 item 打上 cluster_id / is_representative / related_count，
+    返回簇列表（每簇给出代表条目与成员标题，便于追溯）。
+
+    锚点 = 簇内第一条；代表 = 簇内信息量最高的一条。比较只与锚点做，
+    因此结果与输入顺序一一对应，可复现。
+    """
+    clusters = []
+    for it in items:
+        title = it.get("title", "") or ""
+        toks = _cluster_tokens(title)
+        for c in clusters:
+            if is_same_event(c["anchor_title"], title):
+                c["members"].append(it)
+                break
+        else:
+            clusters.append({"anchor_title": title, "members": [it]})
+
+    out = []
+    for idx, c in enumerate(clusters):
+        members = c["members"]
+        rep = max(members, key=_info_score)
+        for m in members:
+            m["cluster_id"] = idx
+            m["is_representative"] = m is rep
+            m["related_count"] = len(members) - 1
+        out.append({
+            "cluster_id": idx,
+            "representative": rep,
+            "size": len(members),
+            "related_count": len(members) - 1,
+            "member_titles": [m.get("title", "") for m in members],
+        })
+    return out
+
+
+def match_noise_rule(title: str):
+    """标题命中盘面播报噪音规则则返回 (rule_name, note)，否则返回 None。
+
+    被过滤的新闻必须能追溯「为什么被过滤」，所以返回规则名而不是 bool。
+    """
+    text = title or ""
+    for rule in NOISE_RULES:
+        hits = [any(k in text for k in group) for group in rule["keywords"]]
+        ok = all(hits) if rule["mode"] == "all" else any(hits)
+        if ok:
+            return rule["name"], rule["note"]
+    return None
+
+
+def _source_weight(source: str) -> float:
+    """来源权重（子串匹配，dict 插入序固定 → 结果确定）。"""
+    s = (source or "").strip()
+    if not s:
+        return DEFAULT_SOURCE_WEIGHT
+    for key, w in SOURCE_WEIGHTS.items():
+        if key in s:
+            return w
+    return DEFAULT_SOURCE_WEIGHT
+
+
+def importance_level(item: dict) -> str:
+    """层级判定：涉及持仓 > 政策级 > 普通。"""
+    if item.get("affected_holdings"):
+        return "holding"
+    text = item.get("title", "") or ""
+    # 政策级判据复用 POLICY_KEYWORDS，与 get_policy_news() 保持同一套标准
+    if item.get("tag") or any(k in text for k in POLICY_KEYWORDS):
+        return "policy"
+    return "general"
+
+
+def score_importance(item: dict) -> float:
+    """重要度分值 = 层级权重 × 来源权重（round 4 位，避免浮点噪声影响可复现性）。"""
+    return round(
+        IMPORTANCE_LEVEL_WEIGHTS[importance_level(item)] * _source_weight(item.get("source", "")),
+        4,
+    )
+
+
+def rank_by_importance(items: list) -> list:
+    """重要度降序排序；同分保持输入顺序（排序键带原始下标 → 完全稳定可复现）。"""
+    scored = [(idx, score_importance(it), it) for idx, it in enumerate(items)]
+    scored.sort(key=lambda t: (-t[1], t[0]))
+    for _, sc, it in scored:
+        it["importance_score"] = sc
+        it["importance_level"] = importance_level(it)
+    return [it for _, _, it in scored]
+
+
+# ============================================================
 # 个股/基金新闻统一接口（v3.0 新增，供各模块复用）
 # ============================================================
 
@@ -600,13 +840,25 @@ def get_holdings_news(
       2. 全局去重     —— 同一条新闻（归一化标题）只保留一次，其余记为 affected_holdings
       3. 持仓影响映射 —— impact_map 给出每个持仓的利好/利空/未判定计数
 
-    返回（**向后兼容**：stocks / funds / summary 三个键的语义不变）：
+    v9.9.26 P2-13 再追加三件事：
+      4. 事件聚类     —— 同一事件的不同报道聚成一簇，簇内保留信息量最高的一条
+      5. 噪音过滤     —— 盘面播报不进要闻，但**不凭空消失**（market_noise + 规则名）
+      6. 重要度排序   —— 来源权重 × 层级（涉及持仓 > 政策级 > 普通），排序稳定可复现
+
+    返回（**向后兼容**：stocks / funds / summary 三个键的语义不变，
+    新增信息一律走新键追加）：
         {
           "stocks": {code: [news...]}, "funds": {code: [news...]},
           "summary": "一句话", "summary_source": "llm"|"rule"|"none",
           "duplicates_removed": int,
           "impact_map": {code: {"利好":n,"利空":n,"中性":n,"未判定":n}},
           "labeled_count": int, "unlabeled_count": int,
+          # --- P2-13 新增键 ---
+          "clusters": [{"cluster_id","representative","size","related_count","member_titles"}],
+          "clusters_merged": int,          # 被合并进簇的非代表条目数
+          "filtered_noise": int,           # 被判为盘面播报的条数
+          "market_noise": [news...],       # 被过滤项（带 noise_rule），供行情区展示
+          "importance_ranked": [news...],  # 要闻区：去噪 + 簇代表，按重要度降序
         }
     """
     result = {
@@ -618,6 +870,12 @@ def get_holdings_news(
         "impact_map": {},
         "labeled_count": 0,
         "unlabeled_count": 0,
+        # --- P2-13 新增键（默认空，保证下游 .get() 永远拿得到）---
+        "clusters": [],
+        "clusters_merged": 0,
+        "filtered_noise": 0,
+        "market_noise": [],
+        "importance_ranked": [],
     }
 
     seen_titles = {}      # norm_title -> news item（跨持仓去重）
@@ -690,6 +948,29 @@ def get_holdings_news(
     result["labeled_count"] = sum(1 for i in all_items if i["labeled"])
     result["unlabeled_count"] = sum(1 for i in all_items if not i["labeled"])
 
+    # ---- P2-13 (4) 事件聚类：同一事件的不同报道聚成一簇 ----
+    # 在 exact-dedupe（duplicates_removed）之后再做，两者分开计数互不混淆。
+    result["clusters"] = cluster_news_items(all_items)
+    result["clusters_merged"] = sum(c["related_count"] for c in result["clusters"])
+
+    # ---- P2-13 (5) 噪音过滤：盘面播报进行情区，不进要闻 ----
+    # 被过滤项照旧留在 stocks/funds 里（保证兼容），只是不再进 importance_ranked，
+    # 并且全部登记在 market_noise 里、带上命中的规则名，绝不凭空消失。
+    for _it in all_items:
+        hit = match_noise_rule(_it.get("title", ""))
+        _it["is_noise"] = hit is not None
+        _it["noise_rule"] = hit[0] if hit else None
+        if hit:
+            _it["noise_rule_note"] = hit[1]
+            result["market_noise"].append(_it)
+    result["filtered_noise"] = len(result["market_noise"])
+
+    # ---- P2-13 (6) 重要度排序：要闻区 = 去噪 + 簇代表 ----
+    result["importance_ranked"] = rank_by_importance([
+        _it for _it in all_items
+        if not _it["is_noise"] and _it.get("is_representative") is True
+    ])
+
     # 一句话摘要：默认走规则（零成本、零延迟），llm_summary=True 才调模型
     if all_items:
         result["summary"], result["summary_source"] = summarize_holdings_news(
@@ -703,12 +984,18 @@ def format_holdings_news_for_prompt(holdings_news: dict) -> str:
 
     v9.9.24 P1-1：带上利好利空标签，并把「同时影响多个持仓」标出来，
     让 LLM 看到的是结构化的影响关系，而不是一串无差别的标题。
+
+    v9.9.26 P2-13：同一事件的多篇报道只展示簇代表，其余折叠为「另有N条相关报道」，
+    避免同一个事在 prompt 里重复喂给 LLM 三遍。
     """
     lines = []
     for kind, label in (("stocks", "个股"), ("funds", "基金")):
         for code, news in holdings_news.get(kind, {}).items():
             lines.append(f"\n### {code} {label}新闻")
             for n in news:
+                # 非簇代表（同一事件的其他报道）已折叠进代表条目，不再重复注入
+                if n.get("is_representative") is False:
+                    continue
                 tag = n.get("sentiment", "中性")
                 # 未判定的不能叫"中性"，否则 LLM 会当成"确认无影响"
                 if not n.get("labeled", False):
@@ -717,6 +1004,9 @@ def format_holdings_news_for_prompt(holdings_news: dict) -> str:
                 extra = ""
                 if len(affected) > 1:
                     extra = f"（同时影响：{'/'.join(c for c in affected if c != code)}）"
+                related = n.get("related_count") or 0
+                if related > 0:
+                    extra += f"（另有{related}条相关报道）"
                 lines.append(f"- [{tag}] {n['title']}{extra}")
 
     return "\n".join(lines) if lines else ""
