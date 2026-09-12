@@ -27,10 +27,9 @@ function _formatModelName(model, fallbackUsed){
   if(!model) return fallbackUsed ? '🔄 降级' : 'DeepSeek';
   const lc = String(model).toLowerCase();
   let name = 'AI';
-  if(lc.includes('qwen3.6-plus') || lc.includes('qwen-plus')) name = '通义千问 Plus';
-  else if(lc.includes('qwen3.6-flash') || lc.includes('qwen-flash')) name = '通义千问 Flash';
-  else if(lc.includes('qwen')) name = '通义千问';
-  else if(lc.includes('seed-2-1-pro') || lc.includes('seed-2.1-pro')) name = '豆包 Seed 2.1 Pro';
+  // 千问（qwen）分支已于 2026-09-12 移除：服务欠费下线，/api/models 已不再返回，
+  // 这些分支永远命中不到。留着只会让人误以为千问还在用。
+  if(lc.includes('seed-2-1-pro') || lc.includes('seed-2.1-pro')) name = '豆包 Seed 2.1 Pro';
   else if(lc.includes('seed-2-1-turbo') || lc.includes('seed-2.1-turbo')) name = '豆包 Seed 2.1 Turbo';
   else if(lc.includes('doubao-seed-1-6') || lc.includes('seed-1-6') || lc.includes('seed-1.6')) name = '豆包 Seed 1.6';
   else if(lc.includes('doubao-1-5-pro') || lc.includes('doubao-pro')) name = '豆包 Pro';
