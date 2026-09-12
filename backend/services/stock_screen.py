@@ -452,6 +452,23 @@ def _score_momentum(s: dict) -> float:
     return max(0, min(score, 100))
 
 
+_MOMENTUM_FIELDS = ("change_5d", "change_20d", "change_60d", "change_pct")
+
+
+def _momentum_coverage(s: dict) -> str:
+    """动量维度的数据完整度，形如 "2/4"（4 个因子里有几个真有数据）。
+
+    为何必须单独输出：`_score_momentum` 对缺失因子不增不减，于是
+    「4 个因子全部缺失」与「数据齐全、综合判断为中性的股票」都会落在 50 附近。
+    下游与用户若只看分数，会把「根本没数据」误读成「判断为中性」——
+    这与 P1-1「未判定不得显示为中性」是同一条数据诚实准则。
+    """
+    if not s:
+        return f"0/{len(_MOMENTUM_FIELDS)}"
+    have = sum(1 for f in _MOMENTUM_FIELDS if s.get(f) is not None)
+    return f"{have}/{len(_MOMENTUM_FIELDS)}"
+
+
 def _score_risk(s: dict, fin: dict) -> float:
     """风险维度：振幅 + 负债率 + 现金流 + PE极端值（4 因子）"""
     score = 70
@@ -715,6 +732,14 @@ def screen_stocks(top_n: int = 50) -> dict:
                     "score": round(total, 1),
                     "scores": {k: round(v, 0) for k, v in scores.items()},
                     "llm_bonus": round(llm_bonus, 1),
+                    # v9.9.24 数据完整度：让「没数据」与「判断为中性」可区分。
+                    # 缺动量数据时 _score_momentum 不给也不扣，分数仍落在 50 附近，
+                    # 与「数据齐全且中性」无法分辨，故必须显式带出覆盖率。
+                    "data_completeness": {
+                        "momentum": _momentum_coverage(s),
+                        "financials": bool(fin.get("available")),
+                        "llm_bonus_active": bool(llm_bonus > 0),
+                    },
                     # 展示用的财务指标（顶层 + financials 子对象兼容前端）
                     "roe": fin.get("roe"),
                     "eps": fin.get("eps"),
@@ -873,6 +898,13 @@ def screen_stocks(top_n: int = 50) -> dict:
             f"舆情因子已接入 LLM 新闻情绪评分"
         )
 
+        # v9.9.24 数据质量总览：让调用方知道这批结论建立在多少真实数据上。
+        # 财务覆盖率长期只有个位数百分比，若不显式带出，下游会把「50 只里只有 1 只
+        # 有财报」算出来的排名，当成全样本结论来用。
+        _dq = [x.get("data_completeness", {}) for x in scored]
+        _llm_active = sum(1 for d in _dq if d.get("llm_bonus_active"))
+        _mom_full = sum(1 for d in _dq if d.get("momentum") == "4/4")
+
         result = {
             "stocks": top,
             "total": len(filtered),  # 全市场筛选后的候选数（不是TOP数）
@@ -881,6 +913,15 @@ def screen_stocks(top_n: int = 50) -> dict:
             "version": "V3_dynamic_weights",
             "method": factor_desc,
             "financials_available": fin_count,
+            "data_quality": {
+                "financials_available": fin_count,
+                "financials_total": len(codes_50),
+                "financials_pct": (round(fin_count / len(codes_50) * 100, 1)
+                                   if codes_50 else 0.0),
+                "momentum_full_count": _mom_full,
+                "llm_bonus_active_count": _llm_active,
+                "scored_count": len(scored),
+            },
             "regime": regime,
             "weights": {k: round(v * 100, 1) for k, v in DIM_WEIGHTS.items()},
             "note": f"数据源: {source} | 财务数据: {fin_count}/{len(codes_50)} | 市场: {regime}",
