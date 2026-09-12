@@ -20,7 +20,12 @@ import config
 import time
 import os
 import json as _json
-from config import FUND_RANK_CACHE_TTL, DATA_DIR
+from config import (
+    FUND_RANK_CACHE_TTL,
+    DATA_DIR,
+    RISK_ADJUSTED_WINDOW_DAYS,
+    ANNUALIZATION_FACTOR,
+)
 from infra.cache import MemoryCache
 from services.fund_rank import _load_fund_rank_data
 from services.utils import find_col as _find_col, safe_float as _safe_float, parse_fee as _parse_fee
@@ -270,6 +275,12 @@ def screen_funds(
     # 原因: 天天基金H5页面限流/正则误匹配,导致错误地把大量基金判定为<5亿
     # 规模已在硬过滤阶段通过 issue_amount/scale_col >= 5亿检查,不需要二次验证
     top = candidates[:top_n]
+    # v9.9.26 P2-10: 补决策指标（份额/净资产/最大回撤/卡玛/经理任职年限/换手率）。
+    # 全部走 24h 缓存；取不到写 None + reason，绝不写占位值。任一只失败不影响整体。
+    try:
+        enrich_fund_metrics(top)
+    except Exception as _me:
+        print(f"[FUND_SCREEN] metrics enrich failed: {_me}")
     result = {
         "funds": top,
         "total": len(candidates),
@@ -833,6 +844,379 @@ def _enrich_from_tushare(code: str) -> dict:
     except Exception as e:
         print(f"[FUND_SCREEN] tushare fallback error for {code}: {e}")
         return {"code": code, "name": f"错误({code})", "error": str(e), "score": 0}
+
+
+# =====================================================================
+# v9.9.26 P2-10：选基页决策指标补齐
+#   基金规模（份额/净资产）· 最大回撤 · 卡玛比率 · 基金经理任职年限 · 换手率
+# =====================================================================
+# 写在最前面的红线（项目刚清理掉 dca_scheduler 34.6%/3.7% 与 signals 85%
+# 三处硬编码假统计，同样的错误不许再犯）：
+#   1. 取不到一律 None，并在同名 _reason 字段写清原因；
+#   2. 禁止用行业平均 / 经验值 / 占位数字填充；
+#   3. 每个字段的数据源与计算方式写在字段定义处的注释里；
+#   4. 派生指标（卡玛）分母异常（回撤=0 / 负数 / 数据不足）必须留空，
+#      绝不返回 0 或无穷大；
+#   5. Tushare 当前积分档确实拿不到的指标，如实留空并说明，不硬凑替代算法。
+
+# 净值序列 / 经理 / 份额都是重数据，缓存 24h（跨请求复用，不重复打 Tushare）
+_FUND_METRICS_CACHE_TTL = 86400
+# 有效净值点少于 60 个 → 判「数据不足」，最大回撤与卡玛都不计算
+# （60 ≈ 3 个月交易日；低于此算出的回撤只是噪音，宁可留空）
+_MIN_DRAWDOWN_NAV_POINTS = 60
+# 单次最多给前 N 只候选补指标，控制 Tushare 调用量（榜单靠后的标的用不上）
+_FUND_METRICS_ENRICH_LIMIT = 20
+# 回撤/卡玛窗口：与 services.fund_risk_adjusted 的近 3 年口径保持一致，
+# 避免选基页和基金详情页出现两个不同的数
+_FUND_METRICS_WINDOW_DAYS = RISK_ADJUSTED_WINDOW_DAYS
+
+# 换手率：Tushare 5000 积分档没有场外基金换手率接口（换手率只在基金半年报/
+# 年报披露），fund_nav / fund_adj 也推不出来。拿不到就如实留空，不找替代品。
+_TURNOVER_UNAVAILABLE_REASON = (
+    "Tushare 5000 积分档无基金换手率接口（换手率仅在半年报/年报披露，"
+    "fund_nav/fund_adj 无法推导），暂不填充"
+)
+
+_fund_metrics_cache = MemoryCache(default_ttl=_FUND_METRICS_CACHE_TTL)
+
+
+def _positive_float(value):
+    """净值/份额转 float：非法、非正、NaN/Inf 一律 None（不静默当 0 用）。"""
+    if value is None or value == "":
+        return None
+    try:
+        v = float(value)
+    except (ValueError, TypeError):
+        return None
+    if v != v or v in (float("inf"), float("-inf")) or v <= 0:
+        return None
+    return v
+
+
+def compute_max_drawdown_pct(nav_values) -> "float | None":
+    """最大回撤，正百分比（25.0 表示回撤 25%）。
+
+    数据源：Tushare `fund_nav` 的复权净值序列。
+    计算：遍历序列维护历史峰值 peak，(peak − nav) / peak 取最大值。
+
+    数学实现复用 services.fund_risk_adjusted.compute_max_drawdown（同口径），
+    保证选基页与基金详情页不会算出两个数。
+    """
+    vals = [v for v in (_positive_float(x) for x in (nav_values or [])) if v is not None]
+    if len(vals) < 2:
+        return None
+    from services.fund_risk_adjusted import compute_max_drawdown as _fra_mdd
+
+    mdd = _fra_mdd(vals)          # 比例形式（0.25 = 25%）
+    if mdd is None:
+        return None
+    return round(mdd * 100, 2)
+
+
+def compute_calmar_ratio(nav_values, annualization_factor: int = ANNUALIZATION_FACTOR) -> "float | None":
+    """卡玛比率 = 年化收益（μ·252）/ 最大回撤幅度。
+
+    口径与 services.fund_risk_adjusted.compute_calmar 完全一致（日收益算术年化）。
+    最大回撤为 0 / 缺失 / 日收益不足时返回 None —— 绝不返回 0 或 ∞。
+    """
+    vals = [v for v in (_positive_float(x) for x in (nav_values or [])) if v is not None]
+    if len(vals) < 2:
+        return None
+    from services.fund_risk_adjusted import compute_calmar as _fra_calmar
+    from services.fund_risk_adjusted import compute_daily_returns as _fra_returns
+
+    calmar = _fra_calmar(_fra_returns(vals), vals, annualization_factor)
+    if calmar is None:
+        return None
+    return round(calmar, 2)
+
+
+def build_drawdown_metrics(nav_values, basis: str = "") -> dict:
+    """由净值序列产出「最大回撤 + 卡玛比率」，带缺失原因。永不抛异常。
+
+    输出口径：`max_drawdown` 是**负百分比**（-25.0 = 最大回撤 25%），与
+    api/signals.py 维度7「波动率风险」的 `max_drawdown < -30` 判定一致；
+    注意 api/fund_detail.py 的 `max_drawdown` 是正百分比，两处勿混用。
+    """
+    out = {
+        "max_drawdown": None,          # 负百分比；None = 算不出，前端应显示"暂无"
+        "max_drawdown_reason": None,
+        "calmar_ratio": None,          # 年化收益 / 最大回撤；分母异常时 None
+        "calmar_ratio_reason": None,
+        "nav_points": 0,               # 参与计算的有效净值点数
+        "nav_basis": basis or None,    # adj_nav(复权) / unit_nav(未复权，分红会放大回撤)
+    }
+    vals = [v for v in (_positive_float(x) for x in (nav_values or [])) if v is not None]
+    out["nav_points"] = len(vals)
+
+    if len(vals) < _MIN_DRAWDOWN_NAV_POINTS:
+        reason = (f"净值序列不足 {_MIN_DRAWDOWN_NAV_POINTS} 个交易日"
+                  f"（实得 {len(vals)}），最大回撤与卡玛比率不计算")
+        out["max_drawdown_reason"] = reason
+        out["calmar_ratio_reason"] = reason
+        return out
+
+    mdd_pct = compute_max_drawdown_pct(vals)
+    if mdd_pct is None:
+        out["max_drawdown_reason"] = "净值序列无有效净值点，最大回撤不计算"
+        out["calmar_ratio_reason"] = "最大回撤不可用，卡玛比率不计算"
+        return out
+    if mdd_pct <= 0:
+        # 回撤为 0（净值单调不回撤）或计算结果为负（异常值）→ 按红线留空
+        out["max_drawdown_reason"] = (
+            f"最大回撤计算为 {mdd_pct}%（非正值），不填充占位值"
+        )
+        out["calmar_ratio_reason"] = "最大回撤为 0，卡玛比率分母为 0 无定义，留空（不填 0 或 ∞）"
+        return out
+
+    out["max_drawdown"] = -round(mdd_pct, 1)
+
+    calmar = compute_calmar_ratio(vals)
+    if calmar is None:
+        out["calmar_ratio_reason"] = "卡玛比率不可用（日收益不足或最大回撤为 0），留空"
+    else:
+        out["calmar_ratio"] = calmar
+    return out
+
+
+def _normalize_date8(value) -> str:
+    """把 20200701 / 2020-07-01 / '2020-07-01 00:00:00' 统一成 8 位数字串。"""
+    if value is None:
+        return ""
+    import re as _re
+
+    return "".join(_re.findall(r"\d", str(value)))[:8]
+
+
+def compute_manager_tenure_years(begin_date, end_date=None, now=None) -> "float | None":
+    """基金经理任职年限 =（结束日 − 起始日）/ 365.25。
+
+    end_date 为空表示仍在任，结束日取今天。日期非法 / 早于起始日 → None。
+    """
+    from datetime import datetime as _dt
+
+    b = _normalize_date8(begin_date)
+    if len(b) != 8:
+        return None
+    try:
+        begin_dt = _dt.strptime(b, "%Y%m%d")
+    except ValueError:
+        return None
+
+    e = _normalize_date8(end_date)
+    if len(e) == 8:
+        try:
+            end_dt = _dt.strptime(e, "%Y%m%d")
+        except ValueError:
+            end_dt = None
+    else:
+        end_dt = None
+    if end_dt is None:
+        end_dt = now if isinstance(now, _dt) else _dt.now()
+
+    days = (end_dt - begin_dt).days
+    if days < 0:
+        return None
+    return round(days / 365.25, 1)
+
+
+def build_manager_metrics(code: str) -> dict:
+    """现任基金经理 + 任职年限。
+
+    数据源：Tushare `fund_manager`（begin_date / end_date / name）。
+    多人共管时取「在任且任职起始日最早」的那位（任职时间最长）。
+    end_date 实测可能是单个空格 ' '（Tushare 脏数据），判空前必须 strip。
+    """
+    out = {
+        "manager_name": None,
+        "manager_tenure_years": None,
+        "manager_begin_date": None,
+        "manager_tenure_reason": None,
+    }
+    from services.tushare_data import get_fund_manager
+
+    data = get_fund_manager(code) or {}
+    managers = [m for m in (data.get("managers") or []) if isinstance(m, dict)]
+    if not managers:
+        out["manager_tenure_reason"] = "Tushare fund_manager 无该基金的经理记录"
+        return out
+
+    active = [m for m in managers if not str(m.get("end_date") or "").strip()]
+    pool = active or managers
+
+    picked = None
+    for m in pool:
+        years = compute_manager_tenure_years(m.get("begin_date"), m.get("end_date"))
+        if years is None:
+            continue
+        if picked is None or years > picked[1]:
+            picked = (m, years)
+    if picked is None:
+        out["manager_tenure_reason"] = "经理记录缺少可解析的任职起始日(begin_date)"
+        return out
+
+    mgr, years = picked
+    out["manager_name"] = mgr.get("name") or None
+    out["manager_tenure_years"] = years
+    out["manager_begin_date"] = _normalize_date8(mgr.get("begin_date")) or None
+    return out
+
+
+def build_scale_metrics(code: str, unit_nav=None) -> dict:
+    """基金规模：份额（亿份）+ 净资产（亿元）。
+
+    数据源：Tushare `fund_share` 的 fd_share（单位万份，÷1e4 得亿份）。
+    净资产 = 最新份额（亿份）× 最新单位净值 —— 是**派生估算值**：
+    场外基金的份额按季度更新（最新季度末口径），并非基金公司披露的实时净资产。
+    """
+    out = {
+        "shares_billion": None,        # 亿份
+        "shares_date": None,           # 份额数据日期（场外基金为季度末）
+        "net_asset_billion": None,     # 亿元 = 份额 × 单位净值（估算）
+        "shares_reason": None,
+        "net_asset_reason": None,
+    }
+    from services.tushare_data import get_fund_share
+
+    data = get_fund_share(f"{code}.OF", days=400) or {}
+    shares = _positive_float(data.get("shares_latest")) if data.get("available") else None
+    if shares is None:
+        out["shares_reason"] = "Tushare fund_share 无该基金份额数据"
+        out["net_asset_reason"] = "份额缺失，净资产（= 份额 × 单位净值）无法计算"
+        return out
+
+    out["shares_billion"] = shares
+    out["shares_date"] = data.get("data_date") or None
+
+    nav = _positive_float(unit_nav)
+    if nav is None:
+        out["net_asset_reason"] = "单位净值缺失，净资产（= 份额 × 单位净值）无法计算"
+        return out
+    out["net_asset_billion"] = round(shares * nav, 2)
+    return out
+
+
+def _extract_nav_series(nav_data: dict) -> tuple:
+    """从 get_fund_nav 的返回里抽出净值序列。
+
+    优先复权净值 adj_nav（分红再投，回撤不会被分红砸出假坑）；
+    adj_nav 覆盖不足时退回单位净值 unit_nav —— 此时分红日会出现"假回撤"，
+    因此必须把 basis 如实回传，让前端/调用方知道口径。
+    """
+    rows = (nav_data or {}).get("navs") or []
+    adj = [_positive_float(r.get("adj_nav")) for r in rows if isinstance(r, dict)]
+    adj_vals = [v for v in adj if v is not None]
+    if len(adj_vals) >= _MIN_DRAWDOWN_NAV_POINTS:
+        return adj_vals, "adj_nav"
+    unit_vals = [v for v in (_positive_float(r.get("unit_nav")) for r in rows
+                             if isinstance(r, dict)) if v is not None]
+    return unit_vals, "unit_nav" if unit_vals else ""
+
+
+def build_fund_metrics(code: str, window_days: int = _FUND_METRICS_WINDOW_DAYS) -> dict:
+    """单只基金的补充决策指标（规模 / 回撤 / 卡玛 / 经理年限 / 换手率）。
+
+    契约：永不抛异常；取不到 → 字段为 None + 同名 _reason 说明原因。
+    """
+    out = {
+        # 规模
+        "shares_billion": None,
+        "shares_date": None,
+        "net_asset_billion": None,
+        "shares_reason": None,
+        "net_asset_reason": None,
+        # 回撤 / 卡玛
+        "max_drawdown": None,
+        "max_drawdown_reason": None,
+        "calmar_ratio": None,
+        "calmar_ratio_reason": None,
+        "nav_points": 0,
+        "nav_basis": None,
+        # 基金经理
+        "manager_name": None,
+        "manager_tenure_years": None,
+        "manager_begin_date": None,
+        "manager_tenure_reason": None,
+        # 换手率（当前数据源拿不到，恒留空并说明原因）
+        "turnover_rate": None,
+        "turnover_rate_reason": _TURNOVER_UNAVAILABLE_REASON,
+        # 口径标注
+        "metrics_window_days": window_days,
+        "metrics_source": "tushare",
+    }
+
+    try:
+        from services.tushare_data import get_fund_nav, is_configured
+    except Exception as e:
+        reason = f"数据源不可用: {e}"
+        for k in ("shares_reason", "net_asset_reason", "max_drawdown_reason",
+                  "calmar_ratio_reason", "manager_tenure_reason"):
+            out[k] = reason
+        out["metrics_source"] = None
+        return out
+
+    if not is_configured():
+        reason = "Tushare 未配置（TUSHARE_TOKEN 缺失），补充指标全部留空"
+        for k in ("shares_reason", "net_asset_reason", "max_drawdown_reason",
+                  "calmar_ratio_reason", "manager_tenure_reason"):
+            out[k] = reason
+        out["metrics_source"] = None   # 没真取到数据就不许标 tushare
+        return out
+
+    try:
+        nav_data = get_fund_nav(code, days=window_days) or {}
+    except Exception as e:
+        nav_data = {}
+        out["max_drawdown_reason"] = f"净值拉取失败: {e}"
+        out["calmar_ratio_reason"] = f"净值拉取失败: {e}"
+
+    values, basis = _extract_nav_series(nav_data)
+    out.update(build_drawdown_metrics(values, basis))
+
+    unit_nav = nav_data.get("unit_nav")
+    try:
+        out.update(build_scale_metrics(code, unit_nav))
+    except Exception as e:
+        out["shares_reason"] = f"份额拉取失败: {e}"
+        out["net_asset_reason"] = f"份额拉取失败: {e}"
+
+    try:
+        out.update(build_manager_metrics(code))
+    except Exception as e:
+        out["manager_tenure_reason"] = f"经理数据拉取失败: {e}"
+
+    return out
+
+
+def get_fund_metrics(code: str, window_days: int = _FUND_METRICS_WINDOW_DAYS) -> dict:
+    """带 24h 缓存的补充指标（净值序列这类重数据不重复打 Tushare）。
+
+    返回副本，避免调用方就地修改污染缓存。
+    """
+    key = f"fund_metrics_{code}_{window_days}"
+    cached = _fund_metrics_cache.get(key)
+    if cached is not None:
+        return dict(cached)
+    metrics = build_fund_metrics(code, window_days)
+    _fund_metrics_cache.set(key, metrics, ttl=_FUND_METRICS_CACHE_TTL)
+    return dict(metrics)
+
+
+def enrich_fund_metrics(funds: list, limit: int = _FUND_METRICS_ENRICH_LIMIT) -> None:
+    """给候选基金列表补决策指标（原地写入；取不到就是 None，不写占位值）。"""
+    if not funds:
+        return
+    for f in funds[:limit]:
+        code = str(f.get("code", "") or "")
+        if not code or not isinstance(f, dict):
+            continue
+        try:
+            metrics = get_fund_metrics(code)
+        except Exception as e:
+            print(f"[FUND_SCREEN] metrics enrich error for {code}: {e}")
+            continue
+        for k, v in metrics.items():
+            f[k] = v
 
 
 def _apply_single_user_enrich(fund: dict, user_id: str) -> dict:
