@@ -29,6 +29,7 @@
 
 3. **三态都要测**：持有 / 不持有 / 无法确定（记录空或格式不认识时必须说原因，不许猜）。
 """
+import re
 import sys
 from pathlib import Path
 from types import SimpleNamespace
@@ -42,6 +43,7 @@ if str(_BACKEND) not in sys.path:
 from api import shared_helpers as sh
 from api.shared_helpers import (
     _build_portfolio_context,
+    _extract_specific_target,
     _rule_based_reply,
     _rule_based_reply_structured,
     _specific_holding_reply,
@@ -179,6 +181,90 @@ def test_asks_about_unheld_stock_answers_no(ctx_frontend):
     assert "无法从记录中确定" not in reply, "查得到明细就不该说无法确定"
     assert "中性" not in reply and "观察" not in reply
     assert reply != _fallback_text()
+
+
+# ============================================================
+# 2b. 线上原始观测句（逐字，不许"改干净"）—— 本次缺陷的复现句
+# ============================================================
+
+# 原句取自 `tests/test_ai_chat_regression.py:118`（test_03_main_deny_not_held），
+# 也正是本次线上 `/api/chat` 实测失败、据此派单的原始观测句。
+# **不要改成"更干净"的写法**：这个「？…。」+ 后续小句的长句形态，正是当年
+# `$` 锚定抽不出标的（整句落兜底）、去掉句号又回溯出半句垃圾（`宁德时代吗？没有就说`）
+# 的触发条件；改干净就等于把这两个退化重新放回漏网区。
+# 实测退化记录（000 修复前的 0dc823a）：本条用例不存在 → 探针显示
+#   `_extract_specific_target('我持有宁德时代吗？没有就说没有。') -> None`
+_VERBATIM_PRODUCTION_Q = "我持有宁德时代吗？没有就说没有"
+
+
+@pytest.mark.parametrize("q", [
+    _VERBATIM_PRODUCTION_Q + "。",
+    _VERBATIM_PRODUCTION_Q,
+])
+def test_verbatim_production_sentence(q, ctx_frontend):
+    assert _extract_specific_target(q) == "宁德时代", \
+        "标的抽取退化：整句会重新落到兜底话术"
+
+    reply = _rule_based_reply(q, "", ctx_frontend)
+    assert "没有记录到你持有" in reply, "结论错：这句的真答案就是「没有记录到」"
+    assert "宁德时代" in reply
+    assert "需要更多上下文" not in reply, "仍是旧的兜底假理由"
+    assert "AI 暂时不可用" not in reply, "仍是兜底话术（新文案）——说明新分支根本没命中"
+    assert "没有就说" not in reply, "缺陷B：把用户半句话当成标的名回显"
+
+
+def test_long_sentence_with_real_holding_still_answers_yes(ctx_frontend):
+    """反向：放宽抽取模式后，长句里的真持仓问句不能被弄丢。"""
+    q = "我持有贵州茅台吗？没有就说没有"
+    assert _extract_specific_target(q) == "贵州茅台"
+    reply = _rule_based_reply(q, "", ctx_frontend)
+    assert "持有" in reply and "贵州茅台" in reply
+    assert "没有记录到" not in reply
+    assert "AI 暂时不可用" not in reply
+
+
+# ============================================================
+# 2c. 缺陷B的类：回显的标的名必须 == 抽取结果（不许截出半句）
+# ============================================================
+
+_ECHO_PATTERNS = [
+    re.compile(r'没有记录到你持有 (.+?)[。\n]'),
+    re.compile(r'你是否持有 (.+?)。'),
+]
+
+
+def _echoed_target(reply: str) -> str | None:
+    """把回答里回显的标的名抠出来（只认「不持有」与「无法确定」两种模板）。"""
+    for pat in _ECHO_PATTERNS:
+        m = pat.search(reply)
+        if m:
+            return m.group(1).strip().strip('*').strip()
+    return None
+
+
+@pytest.mark.parametrize("q", [
+    "我持有宁德时代吗？没有就说没有。",   # 原始观测句
+    "我持有宁德时代吗？没有就说没有",
+    "我持有贵州茅台吗？没有就说没有",
+    "我有没有宁德时代，别猜",
+    "我持有 宁德时代 吗",
+    "我持有600519吗？",
+])
+def test_echoed_target_must_equal_extracted_target(q, ctx_frontend):
+    """回答里回显的标的名必须**恰好等于**抽取结果，不允许中间被别的路径截出半句。"""
+    target = _extract_specific_target(q)
+    assert target is not None, f"{q!r} 抽不出标的，会用兜底话术，属退化"
+    # 缺陷B的形状守卫：标的里混进疑问词/标点，就是"半句被当成标的名"
+    assert not re.search(r'[吗么嘛？?。，,！!；;：:]', target), \
+        f"{q!r}：抽出的标的名 {target!r} 混入了疑问词/标点（半句垃圾）"
+
+    reply = _rule_based_reply(q, "", ctx_frontend)
+    echoed = _echoed_target(reply)
+    if echoed is None:
+        # 走的是"持有"分支：回显的是记录里的全名，至少必须包含抽取结果
+        assert target in reply, f"{q!r}：持有分支却没回显标的 {target!r}"
+        return
+    assert echoed == target, f"{q!r}：回显 {echoed!r} != 抽取 {target!r}（用户半句被当成标的名）"
 
 
 # ============================================================
