@@ -32,11 +32,35 @@ from services.holding_intelligence import (
 )
 from services.data_layer import get_stock_financials, get_fund_holding_detail
 
-from api.shared_helpers import _build_market_context, _load_prompt_template, _alert_cooldown
+from api.shared_helpers import (
+    _build_market_context, _load_prompt_template, _load_named_prompt, _alert_cooldown,
+)
 
 from config import DATA_DIR
 
 _SCAN_CACHE_DIR = DATA_DIR / "_cache"
+
+# ========================================================
+# AI 持仓体检 Prompt 落盘（prompts/holding_diagnose.md）
+# ========================================================
+# 版本常量与 prompts/versions/holding_diagnose.v1.md 一一对应，便于换模型时归因。
+HOLDING_DIAGNOSE_PROMPT_VERSION = "v1"
+HOLDING_DIAGNOSE_PROMPT_FILE = "holding_diagnose.md"
+
+# 降级兜底：md 读不到时用这一份（与原内联串逐字节一致，保证诊断不中断）。
+_HOLDING_DIAGNOSE_SYSTEM_DEFAULT = """你是专业的基金投资组合分析师。请对用户的持仓组合做一次全面深度体检。
+
+规则：
+1. 绝不预测价格，绝不给出具体仓位百分比或买卖金额
+2. 不提"建议买入X%"这类话，只给方向性建议
+3. 用数据说话，引用具体百分位/集中度/收益率
+4. 如果数据不足无法判断，明确说"数据不足，无法判断"
+5. 回答务必简洁精炼，每个维度 1-3 句话"""
+
+
+def _load_holding_diagnose_prompt() -> str:
+    """读取持仓体检 system prompt；缺失时回退内置默认串。"""
+    return _load_named_prompt(HOLDING_DIAGNOSE_PROMPT_FILE, _HOLDING_DIAGNOSE_SYSTEM_DEFAULT)
 
 
 def _read_scan_cache(name: str, max_age_hours: float = 2.0):
@@ -1281,14 +1305,7 @@ def _compute_ai_checkup(userId: str) -> dict:
 
 {market_ctx}"""
 
-    system_prompt = """你是专业的基金投资组合分析师。请对用户的持仓组合做一次全面深度体检。
-
-规则：
-1. 绝不预测价格，绝不给出具体仓位百分比或买卖金额
-2. 不提"建议买入X%"这类话，只给方向性建议
-3. 用数据说话，引用具体百分位/集中度/收益率
-4. 如果数据不足无法判断，明确说"数据不足，无法判断"
-5. 回答务必简洁精炼，每个维度 1-3 句话"""
+    system_prompt = _load_holding_diagnose_prompt()
 
     user_prompt = f"""{data_section}
 
@@ -1319,6 +1336,7 @@ def _compute_ai_checkup(userId: str) -> dict:
         )
         
         if result.get("content"):
+            print(f"[AI_CHECKUP] prompt={HOLDING_DIAGNOSE_PROMPT_FILE}@{HOLDING_DIAGNOSE_PROMPT_VERSION}")
             return {
                 "status": "ok",
                 "analysis": result["content"],
@@ -1328,6 +1346,8 @@ def _compute_ai_checkup(userId: str) -> dict:
                 # 新增（additive）：DeepSeek 失败转豆包时让页脚能显示「降级」，
                 # 否则模型名会静默变成豆包而看不出是降级导致。
                 "fallback_used": bool(result.get("fallback_used", False)),
+                # 新增（additive）：prompt 版本号，换模型/改 prompt 时可归因到具体版本
+                "prompt_version": HOLDING_DIAGNOSE_PROMPT_VERSION,
                 "dimensions": {
                     "fund_count": len(funds),
                     "avg_nav_pct": round(avg_pct) if avg_pct else None,

@@ -11,7 +11,7 @@
 ```
 moneybag/backend/prompts/
 ├── system_prompt.md              ← 线上版（生产代码读这个）
-├── portfolio_diagnose.md
+├── holding_diagnose.md
 ├── ...
 └── versions/                     ← 历史版本 + 实验版本
     ├── CHANGELOG.md              ← 本文件
@@ -44,6 +44,42 @@ moneybag/backend/prompts/
   - `weekly_report.v1.md` — 周报
 - **A/B 结果**：N/A（基线）
 - **状态**：线上运行中
+
+---
+
+### v9.9.26 P2 Prompt 治理 — 2026-09-13
+
+- **动机**：消除"同一功能两套口径 / 改了不生效的死 prompt"两类漂移源。
+  `api/holdings.py:_compute_ai_checkup` 的 AI 持仓体检 system prompt 一直内联在 .py 里，
+  改 prompt 要翻代码；同时 `prompts/portfolio_diagnose.md` 是无人加载的孤儿文件，
+  容易让人误以为它在生效。
+- **内容**：
+  1. **新增落盘**：`prompts/holding_diagnose.md` ← 从 `api/holdings.py` 内联串原样外移，
+     **正文与原内联串逐字节一致（169 字符，末尾无换行）**，属纯搬家、零行为变更。
+     归档为 `versions/holding_diagnose.v1.md`（首次落盘即 v1；为与线上正文逐字节对齐，
+     该归档同样不带结尾换行，是本目录唯一的无尾换行文件）。
+     代码级版本常量 `api/holdings.py:HOLDING_DIAGNOSE_PROMPT_VERSION = "v1"`，
+     与归档文件名一一对应；AI 体检返回体新增 additive 字段 `prompt_version`，便于归因。
+     读取走 api 层统一入口 `shared_helpers._load_named_prompt()`（同一 `backend/prompts/` 目录、
+     fail-open 回退到内联默认串），不再新增第三套 loader。
+  2. **删除死 prompt**：`prompts/portfolio_diagnose.md`。
+     理由（证据）：全仓 `.py` **无任何**加载点；其声明的输出键
+     `overall_grade` / `strengths` / `weaknesses` / `action_items` 全仓 **0 处消费**；
+     其声明的宿主 `services/portfolio_doctor.enrich()` 最终实现为**纯规则**
+     （stress_test + HHI 集中度 + health_score），从未接 LLM。
+     即：它是 `docs/moneybag-v4-ultimate-plan.md`「Prompt工程」表里一项**从未落地**的设计稿，
+     而非 holdings 体检的重复实现 —— 两处口径并不重叠（portfolio_doctor 覆盖股票+基金+HHI+压力测试，
+     holdings 体检只覆盖基金净值百分位+行业集中度，输出自由文本）。
+     保留归档 `versions/portfolio_diagnose.v1.md`，若日后要建 portfolio_doctor 的 LLM 层，
+     请以新版本号重新落盘，而不是让一个没人读的文件继续挂在线上目录里。
+     同步删除 `scripts/prompt_ab_cases.json` 中指向该已删文件的 `portfolio_diagnose` 用例块
+     （否则 `prompt_ab_test.py --prompt portfolio_diagnose` 会 FileNotFoundError）。
+  3. **约束可测化**：新增 `tests/test_prompt_governance.py`（离线，只读文件+扫源码）：
+     落盘一致性 / 孤儿 md 反向断言（白名单显式豁免）/ 防编造硬约束存在性 / 数值禁令。
+- **A/B 结果**：N/A（本次为 prompt 搬家与死文件清理，未改动任何 prompt 正文）
+- **状态**：线上运行中
+- **仍未解决**：`prompts/signal_extract.md`、`prompts/weekly_report.md` 同为**无代码加载**的孤儿 md
+  （在测试里以白名单显式豁免并注明原因），需另派任务决定「接线 or 删除」。
 
 ---
 

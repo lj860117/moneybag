@@ -83,45 +83,6 @@
     ]
   },
 
-  "portfolio_diagnose": {
-    "target_prompt_file": "portfolio_diagnose",
-    "description": "持仓诊断 prompt，生成持仓健康评估",
-    "cases": [
-      {
-        "id": "diag-01-concentrated",
-        "category": "集中度过高",
-        "holdings_mock": [
-          { "name": "贵州茅台", "cost": 1600, "current": 1720, "qty": 50, "ratio": 0.85 },
-          { "name": "招商银行", "cost": 42, "current": 45, "qty": 100, "ratio": 0.15 }
-        ]
-      },
-      {
-        "id": "diag-02-balanced",
-        "category": "均衡配置",
-        "holdings_mock": [
-          { "name": "沪深300ETF", "cost": 4.1, "current": 4.25, "qty": 5000, "ratio": 0.4 },
-          { "name": "纳斯达克ETF", "cost": 3.2, "current": 3.5, "qty": 3000, "ratio": 0.3 },
-          { "name": "国债ETF", "cost": 105, "current": 106, "qty": 100, "ratio": 0.3 }
-        ]
-      },
-      {
-        "id": "diag-03-big-loss",
-        "category": "巨亏 -30%",
-        "holdings_mock": [
-          { "name": "某新能源股", "cost": 50, "current": 35, "qty": 2000, "ratio": 1.0 }
-        ]
-      },
-      {
-        "id": "diag-04-cash-heavy",
-        "category": "现金过多",
-        "holdings_mock": [
-          { "name": "货币基金", "cost": 1, "current": 1.01, "qty": 500000, "ratio": 0.95 },
-          { "name": "沪深300ETF", "cost": 4.1, "current": 4.2, "qty": 1000, "ratio": 0.05 }
-        ]
-      }
-    ]
-  },
-
   "scoring_rules": {
     "forbidden_phrases_strict": [
       "保本保息", "保本", "稳赚不赔", "稳赚",
