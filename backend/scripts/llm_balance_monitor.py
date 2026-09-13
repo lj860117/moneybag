@@ -205,8 +205,24 @@ def _priority_of(dedupe_key: str) -> str:
 def _push_alert(title: str, content: str) -> bool:
     """推送告警到企微（懒加载，避免非生产环境 import 失败影响主流程）。
 
-    返回 True 表示企微已配置并已尝试推送（应计入当日去重）；
-    返回 False 表示未配置/模块加载失败（不应消费当日额度）。
+    返回值语义（**决定要不要消费当日去重额度，务必看清**）：
+        True  = 至少送达了一个收件人 ⇒ 调用方记当日去重（当天不再推）
+        False = 未配置 / 测试环境被拦 / 模块加载失败 / **全部收件人未送达**
+                ⇒ 一律不记去重，把额度留给下一次机会
+
+    FIX 2026-09-13 W2（与 services/llm_quota_alert.py 同源缺陷）：
+        旧实现 `send_daily_report_to(uid, ...)` **完全不看返回值**，异常也只
+        LOG.warning 吞掉，然后无条件 `LOG.info("✅ 已推送")` + `return True`。
+        于是「企微返回 ok=False 未送达」和「send 抛异常」都会让调用方
+        `_emit_alert` 去 `mark_alert_sent_today()` —— **用户一条没收到，系统
+        却认为今天已经通知过了**，这条告警当天永久丢失。
+        现在：送达判定复用 services.llm_quota_alert.push_delivered（两条链路
+        共用同一口径），至少一次成功才返回 True；日志按实际结果区分
+        成功 / 部分失败 / 全部失败，没送达就绝不再打"✅ 已推送"。
+
+    ⚠️ 这里**故意不加** llm_quota_alert 那套 30 分钟失败节流：本脚本的 cron
+        是 `5 8 * * *`（每天 8:05 只跑一次），不存在"每次 LLM 失败都走一遍"
+        的风暴风险；加节流只会让它更容易漏。失败不记账就够了。
 
     FIX 2026-09-13 测试环境短路（与 services/llm_quota_alert.py 同款）：
         本函数是**第二条**真实推送出口，而且它不走 maybe_alert_quota ——
@@ -244,13 +260,34 @@ def _push_alert(title: str, content: str) -> bool:
             LOG.warning("企微未配置，跳过推送（标题: %s）", title)
             return False
 
+        # 送达判定与 llm_quota_alert 共用同一口径（不在这里另写一套）
+        from services.llm_quota_alert import push_delivered
+
+        delivered = 0
+        failed = 0
         for uid in _ALERT_RECIPIENTS:
             try:
-                send_daily_report_to(uid, content, title=title)
+                if push_delivered(send_daily_report_to(uid, content, title=title)):
+                    delivered += 1
+                else:
+                    failed += 1
+                    LOG.warning("推送给 %s 未送达（企微返回 not-ok）| title=%s",
+                                uid, title)
             except Exception as e:  # noqa: BLE001
+                failed += 1
                 LOG.warning("推送给 %s 失败: %s", uid, e)
-        LOG.info("✅ 已推送企微告警: %s", title)
-        return True
+
+        if delivered:
+            if failed:
+                LOG.warning("[PUSH_PARTIAL] 部分收件人未送达（成功 %d / 失败 %d，"
+                            "已按送达记账）| title=%s", delivered, failed, title)
+            LOG.info("✅ 已推送企微告警（成功 %d/%d）: %s",
+                     delivered, len(_ALERT_RECIPIENTS), title)
+            return True
+
+        LOG.warning("[PUSH_FAILED] 全部收件人未送达，未记当日去重"
+                    "（记了这条告警当天就丢了）| title=%s", title)
+        return False
     except Exception as e:  # noqa: BLE001
         LOG.warning("企微推送模块加载失败: %s", e)
         return False

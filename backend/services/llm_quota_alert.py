@@ -288,8 +288,13 @@ def _mark_failed(dedupe_key: str):
     _save_state(state)
 
 
-def _push_delivered(result: object) -> bool:
-    """判断一次 send 是否真的送达。
+def push_delivered(result: object) -> bool:
+    """判断一次 send 是否真的送达（**两条告警链路共用的唯一口径**）。
+
+    【对外】本函数同时被 scripts/llm_balance_monitor.py::_push_alert 复用：
+    「事前巡检」和「事后告警」是两条独立的推送出口，但**什么算送达**必须只有
+    一个答案 —— 各判各的就会出现"同一条告警，一条链路认为发了、另一条认为没发"，
+    去重状态随之错位。改名公开就是为了让它能被第二条链路 import。
 
     生产实现（`send_daily_report_to` → `send_markdown`）返回
     `{"ok": bool, "data": {...}, ...}`，未送达时返回 `ok=False` **而不抛异常**
@@ -791,7 +796,7 @@ def maybe_alert_quota(
         delivered = 0
         for uid in ["LeiJiang", "BuLuoGeLi"]:
             try:
-                if _push_delivered(send_daily_report_to(uid, content, title=title)):
+                if push_delivered(send_daily_report_to(uid, content, title=title)):
                     delivered += 1
             except Exception as e:
                 print(f"[QUOTA_ALERT] push to {uid} failed: {e}")
