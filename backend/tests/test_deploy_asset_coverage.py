@@ -2,6 +2,8 @@
 
 ## 为什么需要这个测试
 
+### 第一例：前端 sw.js
+
 2026-09-13 v9.9.26 上线后对账实测：线上 ``/opt/moneybag/sw.js`` 的 ``CACHE_NAME``
 冻在 ``moneybag-v9923-cache``，而同一时刻 ``index.html`` 已是 ``?v=9.9.26``、
 ``app.js`` 也已同步。根因不是漏跑部署，而是 **``deploy_to_server.sh`` 的
@@ -9,24 +11,40 @@
 就是不上线。
 
 同批还查出 ``manifest.json`` / ``styles/`` / ``icons/`` 同样不在任何同步清单里，
-只是它们自 5 月起没改过，所以还没露馅。**清单是手工维护的，加文件就漏** ——
-这不是个案，是需要机械化守卫的结构性缺陷。
+只是它们自 5 月起没改过，所以还没露馅。
+
+### 第二例：后端 prompts/
+
+同一轮的三方对账（本地 / GitHub / 服务器逐文件内容哈希）又查出
+``backend/prompts/`` 也不在 ``BACKEND_DIRS`` 里：线上 ``close_review.md`` 停在 8/30
+旧版、``holding_diagnose.md`` 整个缺失、并滞留三个本地已删除的死 prompt。
+后果尤其严重 —— ``api/shared_helpers.py._load_named_prompt()`` 在**运行时**按文件名
+读这些 md，缺失时 fail-open 走内置兜底。于是本轮「给 close_review 补防编造约束」
+变成了**代码上线了、prompt 没上线**，改动等于白做。
+
+### 共同根因
+
+**同步清单是手工维护的，加文件/加目录就漏。** 这不是个案，是需要机械化守卫的
+结构性缺陷。
 
 ## 判据
 
-「被 ``index.html`` / ``sw.js`` / ``manifest.json`` 引用到的本地静态资产」
-必须全部落在部署脚本的同步范围内（``FRONTEND_FILES`` 直接同步，
-或父目录在 ``FRONTEND_DIRS`` / ``BACKEND_DIRS`` / ``pages/`` 里被 rsync）。
+1. 「被 ``index.html`` / ``sw.js`` / ``manifest.json`` 引用到的本地静态资产」
+   必须全部落在同步范围内（``FRONTEND_FILES`` 直接同步，或父目录被 rsync）。
+2. 「代码在运行时从磁盘读取的目录」（当前为 ``backend/prompts/``）必须被同步。
 
 ## 反「闸门空转」设计（本仓血教训）
 
 本套件最危险的失效模式不是"漏判"，而是**解析器返回空集导致断言真空通过**：
 一旦 ``deploy_to_server.sh`` 的数组写法变了、正则失配，``covered`` 变成 ``set()``，
-若断言写成 ``泄露的资产为空`` 就会永远绿。因此：
+若断言写成「泄露的资产为空」就会永远绿。因此：
 
-* ``test_parser_really_parses_*`` 显式断言解析器必须解析出已知条目（非空 + 含 ''sw.js''）
-* ``test_checker_detects_injected_gap`` 用**故障注入**证明判据真的会红：
-  把 ``sw.js`` 从清单里摘掉，检查器必须报出这个泄漏
+* ``test_parser_really_parses_*`` 显式断言解析器必须解析出已知条目（非空 + 含 ``index.html``）
+* ``test_prompt_loader_reads_from_a_synced_directory`` 从 loader **源码**推导目录，
+  不硬编码路径，避免代码漂移后守卫失效
+* ``test_checker_detects_injected_*`` 用**故障注入**证明判据真的会红
+
+（已实测：摘 ``sw.js`` → 红；破坏解析器 → 5 failed；摘 ``backend/prompts/`` → 3 failed。）
 """
 
 from __future__ import annotations
@@ -259,4 +277,82 @@ def test_checker_actually_flags_uncovered_asset():
     gaps = find_coverage_gaps({"totally-not-deployed.js"}, set(), _synced_dirs())
     assert gaps == ["totally-not-deployed.js"], (
         f"检查器对明显未覆盖的资产没有报错，判据是死的。实际：{gaps}"
+    )
+
+
+# --------------------------------------------------------------------------
+# 4) 运行时资产目录：代码在运行时从磁盘读取的目录，必须同步
+# --------------------------------------------------------------------------
+# 2026-09-13 v9.9.26 上线后三方对账查出（同一类缺陷的第二例）：
+# backend/prompts/ 不在 BACKEND_DIRS 里 —— 线上 close_review.md 停在 8/30 旧版、
+# holding_diagnose.md 整个缺失、并滞留三个本地已删除的死 prompt。
+# 后果：本轮的 prompt 防编造加固「代码上线了、prompt 没上线」，等于白做。
+RUNTIME_ASSET_DIRS = {
+    "backend/prompts/": "api/shared_helpers.py._load_named_prompt() 运行时按文件名读取的提示词",
+}
+
+PROMPT_LOADER = BACKEND / "api" / "shared_helpers.py"
+
+
+def test_runtime_asset_dirs_are_deployed():
+    """运行时资产目录必须全部落在部署同步范围内。"""
+    synced = _synced_dirs()
+    missing = [d for d in RUNTIME_ASSET_DIRS if d not in synced]
+    assert not missing, (
+        "以下目录会被代码在运行时读取，但不在部署同步范围内 —— 代码上线了、资产没上线：\n"
+        + "\n".join(f"  - {d}（{RUNTIME_ASSET_DIRS[d]}）" for d in missing)
+        + "\n修法：加进 backend/scripts/deploy_to_server.sh 的 BACKEND_DIRS。"
+    )
+
+
+def test_prompt_loader_reads_from_a_synced_directory():
+    """交叉校验：**从 loader 源码推导**它真正读取的目录，断言该目录已同步。
+
+    刻意不写死 ``backend/prompts/`` —— 若将来有人把 prompt 目录挪走，
+    硬编码的断言会变成假的绿，而本测试会跟着报红。
+    """
+    assert PROMPT_LOADER.is_file(), f"prompt 加载器不存在：{PROMPT_LOADER}"
+    src = PROMPT_LOADER.read_text(encoding="utf-8")
+
+    m = re.search(r'Path\(__file__\)(.+?)/\s*"([A-Za-z_]+)"\s*/\s*filename', src)
+    assert m, (
+        "未能在 shared_helpers.py 中定位 prompt loader 的路径拼接形式 "
+        "（期待形如 Path(__file__).parent.parent / \"prompts\" / filename）。"
+        "若 loader 写法已变更，请同步更新本测试的解析式。"
+    )
+    ups = m.group(1).count("parent")
+    dirname = m.group(2)
+
+    # 从 loader 文件本身起算：Path(__file__).parent.parent 即「文件路径套两层 parent」，
+    # 不是「已套一层 parent 的目录再套两层」。
+    resolved = PROMPT_LOADER
+    for _ in range(ups):
+        resolved = resolved.parent
+    resolved = resolved / dirname
+
+    rel = resolved.relative_to(REPO_ROOT).as_posix().rstrip("/") + "/"
+    assert rel in _synced_dirs(), (
+        f"loader 实际从 {rel} 读取 prompt，但该目录不在部署同步范围内。"
+        f"当前同步目录：{sorted(_synced_dirs())}"
+    )
+    # 落盘约定：该目录里必须真的有生产 prompt，否则说明推导结果跑偏了
+    assert (resolved / "close_review.md").is_file(), (
+        f"{rel} 下找不到 close_review.md，推导出的目录可能不对：{resolved}"
+    )
+
+
+def test_deleted_prompts_will_be_pruned_on_server():
+    """死 prompt 的删除必须能传导到线上。
+
+    rsync 带 ``--delete``，所以只要父目录在同步范围内，本地删除就会同步到线上。
+    本测试锁定「父目录在范围内」这一前提 —— 否则线上会一直滞留着已删除的 prompt，
+    而 fail-open 的 loader 读到的就是一个本该消失的文件。
+    """
+    synced = _synced_dirs()
+    for dead in ("portfolio_diagnose.md", "signal_extract.md", "weekly_report.md"):
+        assert not (BACKEND / "prompts" / dead).exists(), (
+            f"{dead} 已被判定为死 prompt 并删除，却又出现在本地目录里"
+        )
+    assert "backend/prompts/" in synced, (
+        "backend/prompts/ 不在同步范围内，本地已删除的死 prompt 会一直滞留在线上服务器。"
     )

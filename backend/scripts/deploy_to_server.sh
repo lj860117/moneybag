@@ -72,6 +72,13 @@ BACKEND_DIRS=(
     "backend/infra/knowledge/"
     "backend/use_cases/"
     "backend/scripts/"
+    # ⚠️ 运行时资产目录：api/shared_helpers.py._load_named_prompt() 会按文件名读取
+    # backend/prompts/{x}.md，缺失时 fail-open 走内置兜底。此前不在本清单里 ——
+    # 2026-09-13 实测线上 close_review.md 停在 8/30 旧版、holding_diagnose.md 整个缺失，
+    # 即本轮 prompt 加固根本没生效；同时线上还滞留三个已删除的死 prompt
+    # (portfolio_diagnose.md / signal_extract.md / weekly_report.md)。
+    # 加 --delete 后，本地删除会同步到线上。
+    "backend/prompts/"
 )
 
 for d in "${BACKEND_DIRS[@]}"; do
