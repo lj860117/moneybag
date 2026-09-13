@@ -546,6 +546,39 @@ ${shownStocks.map((s,i)=>{
     ? `<div style="font-size:11px;color:#A5B4FC;line-height:1.5;margin-top:6px;padding:6px 10px;background:rgba(99,102,241,.08);border-radius:6px">🤖 ${aiText}</div>`
     : '';
 
+  // 走势预估（8维评分 + 置信度）—— 与基金页 insight-fund.js:39-60 完全同一套口径。
+  // 后端 _enrich_stock_trend_forecast（signals.py:2253+）本来就算好了 trend_* 字段，
+  // 但此前这个页面 **0 处引用**，所以 46/50 只被 P1-9 闸门正确压成 trend_score=null 的
+  // 股票，用户在个股页上完全看不到 —— 闸门在跑，结论没露面。
+  // ⚠️ MIN_CONFIDENCE_FOR_DIRECTION 由 insight-fund.js:7 声明为顶层 const；两个脚本同处
+  // 全局词法作用域（index.html:39-40 先后加载），**这里绝不能再 `const` 一次** ——
+  // 重复声明会 SyntaxError 崩掉整个页面。用 typeof 兜底，单独加载本页时也能工作。
+  const _MCFD = (typeof MIN_CONFIDENCE_FOR_DIRECTION==='number') ? MIN_CONFIDENCE_FOR_DIRECTION : 50;
+  let trendHtml = '';
+  if(s.trend_label){
+    // 置信度不足（或后端已标记 unknown）时一律走"数据不足"渲染：不出现 ↗/↘、
+    // 不带正负分、不出现偏多/偏空字样 —— 绝不能长得像"判断为中性"。
+    const _confOK = s.trend_confidence_sufficient!==undefined
+      ? !!s.trend_confidence_sufficient
+      : (Number(s.trend_confidence)||0) >= _MCFD;
+    const _dirUnknown = s.trend_direction==='unknown' || !_confOK;
+    const tColor = _dirUnknown?'#9AA1AC':s.trend_direction==='up'?'#86EFAC':s.trend_direction==='down'?'#FCA5A5':'#9AA1AC';
+    const tBg = _dirUnknown?'rgba(148,163,184,.10)':s.trend_direction==='up'?'rgba(134,239,172,.08)':s.trend_direction==='down'?'rgba(252,165,165,.08)':'rgba(148,163,184,.06)';
+    const tScore = s.trend_score||0;
+    const tConf = (typeof s.trend_confidence==='number'&&isFinite(s.trend_confidence))?s.trend_confidence:null;
+    // 置信度数值永远展示（用户可自行判断），越界值（历史遗留 >100）交由
+    // MB.confidenceHtml 显示为 —，**不静默 clamp 成 100**（那是改写事实）。
+    const confTxt = (tConf!=null && window.MB && window.MB.confidenceHtml)
+      ? window.MB.confidenceHtml(tConf) : (tConf!=null?String(tConf):'未知');
+    const confTag = _dirUnknown
+      ? `<span style="opacity:0.85;font-size:9px;margin-left:2px;color:#9AA1AC">置信${confTxt}</span>`
+      : (tConf!=null&&tConf>=70?`<span style="opacity:0.6;font-size:9px;margin-left:2px">置信${confTxt}</span>`:(tConf!=null&&tConf<_MCFD?`<span style="opacity:0.7;font-size:9px;margin-left:2px;color:#F59E0B">⚠置信${confTxt}</span>`:''));
+    const tLabel = _dirUnknown ? '❓ 数据不足' : s.trend_label;
+    const tScoreHtml = _dirUnknown ? '' : ` ${tScore>0?'+':''}${tScore}分`;
+    const tReason = _dirUnknown ? '方向判断需置信度≥'+_MCFD+'%' : (s.trend_reason||'');
+    trendHtml = `<div style="margin-top:8px;padding-left:66px"><div style="font-size:11px;padding:3px 8px;border-radius:5px;background:${tBg};color:${tColor};display:inline-flex;align-items:center;gap:4px;max-width:100%"><span style="font-weight:600;white-space:nowrap">${tLabel}${tScoreHtml}</span><span style="opacity:0.8;font-size:10px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${tReason}</span>${confTag}</div></div>`;
+  }
+
   return`<div style="padding:12px 0;border-bottom:1px solid rgba(148,163,184,.06);cursor:pointer" onclick="showStockDetailModal(window._stockScreenData[${dataIdx}])">
     <!-- 行1: 序号 + 评分圆 + 名字/标签云 + 涨跌 -->
     <div style="display:flex;align-items:center;gap:10px">
@@ -566,6 +599,8 @@ ${shownStocks.map((s,i)=>{
         <div style="font-size:9px;color:var(--text-tertiary,#7A8499);margin-top:3px" title="A股交易日 9:30-15:00 显示当日实时；非交易时段显示最近一个交易日">${_lastTradeDayLabel()}</div>
       </div>
     </div>
+    <!-- 行1.5: 走势预估（与基金页同一套置信度闸门口径） -->
+    ${trendHtml}
     <!-- 行2: 横向指标 -->
     ${metricsHtml?`<div style="margin-top:8px;padding-left:66px">${metricsHtml}</div>`:''}
     <!-- 行3: AI 评论 -->
