@@ -238,9 +238,80 @@ def _was_sent_today(dedupe_key: str) -> bool:
     return state.get(dedupe_key) == date.today().isoformat()
 
 
+# ============================================================
+# 推送失败节流（FIX 2026-09-13 W2：失败不得消费当日去重额度，也不能风暴）
+# ============================================================
+# 背景：maybe_alert_quota 挂在 infra/llm/gateway.py:110 —— **每次 LLM 调用失败
+# 都会走一遍**，真欠费时一天几百次调用。
+#
+# 旧行为：推送循环跑完就无条件 `_mark_sent_today()`。于是「两次 send 都抛异常」
+# 也算"今天已推过" —— **失败推送消费了当天的去重额度，这条告警当天彻底丢失**
+# （用户一条都没收到，系统却认为已经通知过了）。
+#
+# 但直接改成"只有成功才记账"会翻出另一个 P0：企微一抖动，每次调用都重试 ⇒
+# 几百条告警风暴。所以必须**配套节流**：
+#     成功 ≥ 1 次  → 记 sent_today（当天不再推，原行为不变）
+#     全部失败      → **不记** sent_today，改记失败时间戳；30 分钟内不再尝试
+# 效果：
+#     企微短暂抖动（<30min）→ 窗口内不重试（不风暴），30min 后自愈送达
+#     企微长期挂掉          → 每 30min 试一次（一天最多 ~48 次），不会永久静默
+#
+# 存储：与 sent_today **并列**放在同一个 state dict 里，但用 `failed|` 前缀的
+# 独立 key，绝不塞进 sent_today 的 key 里 —— 老状态文件（只有 `{key: date}`）
+# 读进来完全不受影响，`_was_sent_today()` 的语义也一个字没动。
+_FAILED_PREFIX = "failed|"
+FAILED_THROTTLE_SECONDS = 30 * 60
+
+
+def _failed_key(dedupe_key: str) -> str:
+    """失败节流专用 key：`failed|<alert_type>|<model>`（与去重 key 并列）。"""
+    return f"{_FAILED_PREFIX}{dedupe_key}"
+
+
+def _recently_failed(dedupe_key: str) -> bool:
+    """最近一次「全部推送失败」是否还在节流窗口内（窗口内 ⇒ 不再尝试）。
+
+    时间戳损坏 / 缺失 / 类型不对时一律返回 False（宁可多试一次，不可静默丢告警）。
+    """
+    raw = _load_state().get(_failed_key(dedupe_key))
+    try:
+        last = float(raw)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return False
+    return (time.time() - last) < FAILED_THROTTLE_SECONDS
+
+
+def _mark_failed(dedupe_key: str):
+    """记录一次「全部推送失败」的时间戳（不写 sent_today）。"""
+    state = _load_state()
+    state[_failed_key(dedupe_key)] = time.time()
+    _save_state(state)
+
+
+def _push_delivered(result: object) -> bool:
+    """判断一次 send 是否真的送达。
+
+    生产实现（`send_daily_report_to` → `send_markdown`）返回
+    `{"ok": bool, "data": {...}, ...}`，未送达时返回 `ok=False` **而不抛异常**
+    —— 只看"有没有抛异常"会把这类失败当成成功。
+
+    但**只有明确的 ok=False 才算失败**：返回值不是 dict / 没有 ok 字段时
+    （测试里的假 sender 多为 lambda、返回 None）**保守当成功**。理由：
+      1. 那是我们无法判定送达与否的情形，按旧行为记账是安全的（最多漏重试）；
+      2. 若判成失败，既有"用假 sender 演练推送"的合法用例（返回 None）会全部
+         退化成"被节流拦下" —— 用例仍然绿，但绿的原因是空转，**守卫不能靠
+         改坏别人的合法路径来生效**。
+    """
+    if isinstance(result, dict) and "ok" in result:
+        return bool(result.get("ok"))
+    return True
+
+
 def _mark_sent_today(dedupe_key: str):
     state = _load_state()
     state[dedupe_key] = date.today().isoformat()
+    # 已送达 ⇒ 不再需要失败重试，顺手清掉节流标记（文件保持整洁）
+    state.pop(_failed_key(dedupe_key), None)
     _save_state(state)
 
 
@@ -691,6 +762,17 @@ def maybe_alert_quota(
         if _was_sent_today(dedupe_key):
             return
 
+        # 失败节流：距上次「全部推送失败」不足 30 分钟 ⇒ 本次不重试（防风暴）。
+        # 必须排在 _was_sent_today 之后：已送达是更强的抑制条件，且成功时
+        # _mark_sent_today 会清掉节流标记，两者不会互相打架。
+        if _recently_failed(dedupe_key):
+            print(
+                f"[QUOTA_ALERT][THROTTLED] 距上次推送失败不足 "
+                f"{FAILED_THROTTLE_SECONDS // 60} 分钟，本次不重试（防风暴） | "
+                f"alert_type={alert_type} priority={priority} {tag}"
+            )
+            return
+
         title, content = build_alert_message(
             alert_type, provider, status_code, err_code, snippet,
             model=model, module=module,
@@ -701,14 +783,30 @@ def maybe_alert_quota(
         if not is_configured():
             return
 
+        # FIX 2026-09-13 W2：只有真的送出去了才记当日去重。
+        # 旧代码无条件 _mark_sent_today ⇒ 两次都失败时"当天已推过"照样成立，
+        # 这条告警对用户而言凭空消失（静默丢失）。改成：
+        #   成功 ≥ 1 → 记 sent_today（原行为）
+        #   全失败   → 只记失败时间戳 + 30 分钟节流，去重额度留给下次重试
+        delivered = 0
         for uid in ["LeiJiang", "BuLuoGeLi"]:
             try:
-                send_daily_report_to(uid, content, title=title)
+                if _push_delivered(send_daily_report_to(uid, content, title=title)):
+                    delivered += 1
             except Exception as e:
                 print(f"[QUOTA_ALERT] push to {uid} failed: {e}")
 
-        _mark_sent_today(dedupe_key)
-        print(f"[QUOTA_ALERT] ✅ 已推送告警: {alert_type}({priority}) | {tag}")
+        if delivered:
+            _mark_sent_today(dedupe_key)
+            print(f"[QUOTA_ALERT] ✅ 已推送告警: {alert_type}({priority}) | {tag}")
+        else:
+            _mark_failed(dedupe_key)
+            print(
+                f"[QUOTA_ALERT][PUSH_FAILED_DEFERRED] 2 个收件人全部失败，"
+                f"未记当日去重（否则这条告警当天就丢了），"
+                f"{FAILED_THROTTLE_SECONDS // 60} 分钟后重试 | "
+                f"alert_type={alert_type} priority={priority} {tag}"
+            )
 
     except Exception as e:
         print(f"[QUOTA_ALERT] err: {e}")

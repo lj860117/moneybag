@@ -48,6 +48,7 @@ import json
 import os
 import subprocess
 import sys
+import time
 from datetime import date, timedelta
 
 import pytest
@@ -88,6 +89,43 @@ def _install_fake_sender(monkeypatch, pushed: list):
 
     monkeypatch.setattr(wp, "is_configured", lambda: True, raising=True)
     monkeypatch.setattr(wp, "send_daily_report_to", _fake, raising=True)
+
+
+def _install_scripted_sender(monkeypatch, pushed, outcomes):
+    """按调用顺序编排每次 send 的返回值（或要抛出的异常）。
+
+    用于模拟「企微抖动 / 挂掉」：outcomes 里放 `{"ok": False}` 表示未送达，
+    放异常实例表示 send 直接抛错。用完后默认返回 `{"ok": True}`，这样"多推了"
+    会以"不该出现的成功"形式暴露出来，而不是悄悄变绿。
+    """
+    def _fake(uid, content, title=""):
+        pushed.append({"uid": uid, "title": title, "content": content})
+        outcome = outcomes.pop(0) if outcomes else {"ok": True}
+        if isinstance(outcome, BaseException):
+            raise outcome
+        return outcome
+
+    monkeypatch.setattr(wp, "is_configured", lambda: True, raising=True)
+    monkeypatch.setattr(wp, "send_daily_report_to", _fake, raising=True)
+
+
+def _dedupe_key(model: str = MODEL_TURBO) -> str:
+    return f"doubao_balance_exhausted|{model}"
+
+
+def _shift_failed_marker(state_file, dedupe_key: str, seconds: float) -> float:
+    """把失败节流时间戳**往前挪**（数值平移，不改存储格式）。
+
+    用"挪时间戳"而不是"改小节流窗口"，是为了让用例跑的是真实窗口常量
+    （30 分钟）的真实算术，而不是把守卫配置改成 0 后自己骗自己。
+    """
+    state = json.loads(state_file.read_text(encoding="utf-8"))
+    fk = qa._failed_key(dedupe_key)
+    assert isinstance(state.get(fk), (int, float)), \
+        f"失败节流应存数值时间戳（改了存储格式要同步改本用例）：{state}"
+    state[fk] = state[fk] - seconds
+    state_file.write_text(json.dumps(state, ensure_ascii=False), encoding="utf-8")
+    return state[fk]
 
 
 @pytest.fixture
@@ -554,3 +592,230 @@ def test_production_like_process_state_file_is_reused_next_day(tmp_path, monkeyp
     qa.mark_alert_sent_today(key)
     assert qa.was_alert_sent_today(key) is True, \
         "标记之后必须立刻生效（对外 API 与内部去重共享同一份状态文件）"
+
+
+# ============================================================
+# W2：推送失败不得消费当日去重额度（配 30 分钟节流，防「静默丢失」翻成「风暴」）
+# ============================================================
+# 修之前的语义：推送循环跑完就无条件 _mark_sent_today ⇒ 两次 send 全失败也
+# 算"今天已推过"，这条告警当天凭空消失。
+# 修之后的语义：
+#   成功 ≥ 1 次 → 记 sent_today（当天不再推，原行为不变）
+#   全部失败    → 只记失败时间戳，30 分钟内不重试；30 分钟后允许重试
+# 本组用例按「反空转」标准写：每条都先断言 send 真的被调用过。
+def test_all_pushes_failed_does_not_consume_daily_quota(dedupe_env, monkeypatch, capsys):
+    """全部失败：不写 sent_today，改写失败节流时间戳。"""
+    _assert_is_p0()
+    _install_scripted_sender(
+        monkeypatch, dedupe_env.pushed, [{"ok": False}, {"ok": False}] * 2
+    )
+
+    dedupe_env.alert()
+
+    # 反空转：send 真的被调用过（否则"没记账"可能只是压根没走到推送）
+    assert len(dedupe_env.pushed) == 2, f"反空转：应尝试推给 2 个人：{dedupe_env.pushed}"
+    state = dedupe_env.read_state()
+    assert _dedupe_key() not in state, \
+        f"全部失败时绝不能记 sent_today（记了就等于把这条告警当天抹掉）：{state}"
+    assert isinstance(state.get(qa._failed_key(_dedupe_key())), (int, float)), \
+        f"应写失败节流时间戳（供 30 分钟后重试）：{state}"
+
+    out = capsys.readouterr().out
+    assert "[QUOTA_ALERT][PUSH_FAILED_DEFERRED]" in out, f"应打印失败暂缓日志：{out}"
+    assert "✅ 已推送告警" not in out, f"没送出去却报成功（日志失真）：{out}"
+
+
+def test_second_trigger_within_throttle_window_does_not_retry(
+    dedupe_env, monkeypatch, capsys,
+):
+    """30 分钟内二次触发：不再尝试推送（这是 W2 必须配节流的原因 —— 防风暴）。
+
+    背景：maybe_alert_quota 挂在 gateway 回退分支，**每次 LLM 调用失败都会走
+    一遍**。真欠费时一天几百次调用，失败不节流就是几百条推送尝试。
+    """
+    _assert_is_p0()
+    _install_scripted_sender(
+        monkeypatch, dedupe_env.pushed, [{"ok": False}, {"ok": False}] * 2
+    )
+    dedupe_env.alert()
+    assert len(dedupe_env.pushed) == 2, "反空转：第一次应真的尝试过 2 次"
+
+    dedupe_env.alert()  # 同一窗口内再次触发
+
+    assert len(dedupe_env.pushed) == 2, \
+        f"节流窗口内不得重试（否则就是告警风暴）：{dedupe_env.pushed}"
+    out = capsys.readouterr().out
+    assert "[QUOTA_ALERT][THROTTLED]" in out, \
+        f"反空转：应打印节流日志（证明是节流拦的，不是别的分支拦的）：{out}"
+
+
+def test_retry_after_throttle_window_expires(dedupe_env, monkeypatch, capsys):
+    """窗口过后必须重试 —— 否则企微长期挂掉时告警永久静默丢失。"""
+    _assert_is_p0()
+    _install_scripted_sender(
+        monkeypatch, dedupe_env.pushed, [{"ok": False}, {"ok": False}] * 2
+    )
+    dedupe_env.alert()
+    old_marker = _shift_failed_marker(
+        dedupe_env.state_file, _dedupe_key(), qa.FAILED_THROTTLE_SECONDS + 60
+    )
+
+    dedupe_env.alert()
+
+    assert len(dedupe_env.pushed) == 4, \
+        f"窗口过期后必须重试一次（不重试 = 永久静默丢失）：{dedupe_env.pushed}"
+    new_marker = dedupe_env.read_state()[qa._failed_key(_dedupe_key())]
+    assert new_marker > old_marker, "重试仍失败时应刷新节流时间戳（滚动窗口）"
+    out = capsys.readouterr().out
+    assert "[QUOTA_ALERT][THROTTLED]" not in out, f"窗口已过却仍被节流：{out}"
+
+
+def test_throttle_window_boundary_is_30_minutes(dedupe_env, monkeypatch):
+    """节流窗口边界：10 分钟前失败 ⇒ 仍在窗口内；31 分钟前 ⇒ 已过期可重试。
+
+    ⚠️ 偏移量**故意写死绝对秒数**（10min / 31min），不拿 FAILED_THROTTLE_SECONDS
+    去推导 —— 用常量推导的话，把窗口改成 24 小时这条用例照样全绿：
+    故障注入 C（窗口 30min → 24h）实测**整套 23 条全绿**，守卫自己骗自己，
+    正是本项目最忌讳的"闸门空转仍显绿"。窗口真要调，请连本用例一起改 ——
+    这份"改动摩擦"是刻意留的。
+
+    上一条 `test_retry_after_throttle_window_expires` 用常量推导偏移（保证算术
+    对任意窗口成立），这一条用绝对秒数（保证窗口本身不被偷偷改掉）—— 两条
+    互补，缺一个就漏。
+    """
+    assert qa.FAILED_THROTTLE_SECONDS == 30 * 60, \
+        "节流窗口被改了，请同步改本用例的边界偏移量（并确认这是有意为之）"
+
+    _assert_is_p0()
+    _install_scripted_sender(
+        monkeypatch, dedupe_env.pushed, [{"ok": False}, {"ok": False}] * 3
+    )
+
+    dedupe_env.alert()  # 第 1 次：全失败，写节流标记
+    _shift_failed_marker(dedupe_env.state_file, _dedupe_key(), 10 * 60)
+
+    dedupe_env.alert()  # 10 分钟前失败 ⇒ 仍在 30 分钟窗口内
+    assert len(dedupe_env.pushed) == 2, \
+        f"10 分钟 < 30 分钟窗口，不应重试：{dedupe_env.pushed}"
+
+    _shift_failed_marker(dedupe_env.state_file, _dedupe_key(), 21 * 60)  # 累计 31 分钟
+
+    dedupe_env.alert()
+    assert len(dedupe_env.pushed) == 4, \
+        f"31 分钟 > 30 分钟窗口，应重试：{dedupe_env.pushed}"
+
+
+def test_partial_success_still_marks_sent_today(dedupe_env, monkeypatch, capsys):
+    """第一个失败、第二个成功 ⇒ 记 sent_today（只要有一个人收到就算送达）。"""
+    _assert_is_p0()
+    _install_scripted_sender(
+        monkeypatch, dedupe_env.pushed, [{"ok": False}, {"ok": True}]
+    )
+
+    dedupe_env.alert()
+
+    assert len(dedupe_env.pushed) == 2, f"反空转：应尝试 2 次：{dedupe_env.pushed}"
+    state = dedupe_env.read_state()
+    assert state.get(_dedupe_key()) == date.today().isoformat(), \
+        f"部分成功也应记 sent_today：{state}"
+    assert qa._failed_key(_dedupe_key()) not in state, \
+        f"送达后应清掉失败标记：{state}"
+    assert "✅ 已推送告警" in capsys.readouterr().out
+
+    dedupe_env.alert()  # 当天第二次
+    assert len(dedupe_env.pushed) == 2, "送达后当天不再推（原行为不变）"
+
+
+def test_exception_from_sender_counts_as_failure_and_throttles(
+    dedupe_env, monkeypatch,
+):
+    """send 抛异常也算失败：不记 sent_today，且同样进节流窗口。"""
+    _assert_is_p0()
+    _install_scripted_sender(
+        monkeypatch, dedupe_env.pushed,
+        [RuntimeError("boom"), RuntimeError("boom")] * 2,
+    )
+
+    dedupe_env.alert()
+
+    assert len(dedupe_env.pushed) == 2, f"反空转：应尝试 2 次：{dedupe_env.pushed}"
+    state = dedupe_env.read_state()
+    assert _dedupe_key() not in state, f"抛异常也不应记 sent_today：{state}"
+    assert qa._failed_key(_dedupe_key()) in state, f"应写失败节流时间戳：{state}"
+
+    dedupe_env.alert()
+    assert len(dedupe_env.pushed) == 2, "异常导致的失败同样要节流（防风暴）"
+
+
+def test_unknown_sender_return_value_counts_as_delivered(dedupe_env, monkeypatch):
+    """返回值不是 {"ok": ...}（含 None）时**保守当成功** —— 兼容既有假 sender。
+
+    这条防的是「守卫靠改坏别人的合法路径来生效」：既有用例
+    （test_alert_push_test_mode_guard.py / test_llm_quota_alert_classify.py 的
+    lambda 假件）返回 None。若把 None 判成失败，它们会全部退化成"被节流拦下"
+    的空转绿 —— 表面上更严，实际是守卫失效。未知返回值按旧行为记账最安全。
+    """
+    _assert_is_p0()
+    monkeypatch.setattr(wp, "is_configured", lambda: True, raising=True)
+    monkeypatch.setattr(
+        wp, "send_daily_report_to",
+        lambda uid, content, title="": dedupe_env.pushed.append({"uid": uid}),
+        raising=True,
+    )
+
+    dedupe_env.alert()
+
+    assert len(dedupe_env.pushed) == 2, f"反空转：应尝试 2 次：{dedupe_env.pushed}"
+    assert dedupe_env.read_state().get(_dedupe_key()) == date.today().isoformat(), \
+        "未知返回值应按送达处理（保持既有合法用例的语义）"
+
+
+def test_failure_then_success_after_window_marks_sent_today(
+    dedupe_env, monkeypatch,
+):
+    """完整自愈链路：全失败 → 窗口过后重试成功 → 当天不再推。"""
+    _assert_is_p0()
+    _install_scripted_sender(
+        monkeypatch, dedupe_env.pushed,
+        [{"ok": False}, {"ok": False}, {"ok": True}, {"ok": True}],
+    )
+
+    dedupe_env.alert()
+    assert dedupe_env.read_state().get(_dedupe_key()) is None, "第一次全失败，不应记账"
+
+    _shift_failed_marker(
+        dedupe_env.state_file, _dedupe_key(), qa.FAILED_THROTTLE_SECONDS + 60
+    )
+    dedupe_env.alert()  # 重试并成功
+
+    assert len(dedupe_env.pushed) == 4, f"窗口过后应重试：{dedupe_env.pushed}"
+    state = dedupe_env.read_state()
+    assert state.get(_dedupe_key()) == date.today().isoformat(), f"重试成功应记账：{state}"
+    assert qa._failed_key(_dedupe_key()) not in state, f"送达后应清掉失败标记：{state}"
+
+    dedupe_env.alert()  # 当天第三次
+    assert len(dedupe_env.pushed) == 4, "已送达 ⇒ 当天不再推"
+
+
+def test_throttle_marker_does_not_collide_with_dedupe_keys(dedupe_env):
+    """节流 key 与去重 key 必须严格隔离（老状态文件读进来不受影响）。
+
+    「失败节流」是本文件引入的新字段，用 `failed|` 前缀与 sent_today 的
+    `alert_type|model` 并列存放。这两条断言锁住：
+      • 只有节流标记时，对外 was_alert_sent_today 仍为 False（不该拦新告警）
+      • 老格式状态文件（只有 {key: date}，没有节流字段）照常生效
+    """
+    key = _dedupe_key()
+
+    dedupe_env.state_file.write_text(
+        json.dumps({qa._failed_key(key): time.time() - 1}, ensure_ascii=False),
+        encoding="utf-8",
+    )
+    assert qa.was_alert_sent_today(key) is False, \
+        "节流标记不得被当成「今天已推过」（前缀必须隔离）"
+
+    dedupe_env.state_file.write_text(
+        json.dumps({key: date.today().isoformat()}, ensure_ascii=False),
+        encoding="utf-8",
+    )
+    assert qa.was_alert_sent_today(key) is True, "老格式状态文件必须照常生效"
