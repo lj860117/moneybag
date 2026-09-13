@@ -19,6 +19,29 @@ teardown 把 config 恢复成会话基线（**直接改属性，不 reload**，�
 
 本文件的用例刻意**主动制造污染且不还原**，用来证明防护真的存在 ——
 没有这条，防护在不在从测试结果上完全看不出来（空转的绿）。
+
+故障注入指纹（FI-1）
+--------------------
+复现方式：把 conftest `_restore_config_module_state` teardown 里的
+`                setattr(cfg, name, baseline_value)`
+替换成 pass，然后跑全量（`cd backend && env -u PYTHONPATH python3 -m pytest tests/ -q`）。
+
+**当前预期：全量 5 failed**，固定为下面这 5 条（不多不少）：
+
+  1. tests/test_config_module_state_restored.py::test_2_next_test_sees_baseline_restored
+  2. tests/test_config_module_state_restored.py::test_3_baseline_is_under_pytest_isolated_dir
+  3. tests/test_config_module_state_restored.py::test_6_scalar_config_value_restored
+  4. tests/test_config_module_state_restored.py::test_7_downstream_module_path_derives_from_baseline
+  5. tests/test_llm_quota_alert_dedupe.py::test_state_file_lives_under_data_dir
+
+用法（两个方向都会响，别只盯一个）：
+  • 红**多于** 5 → 有别的用例也在吃 config 基线，说明污染面比已知的大；
+  • 红**少于** 5（比如掉回 3）→ 更危险：说明第 4 条（test_7，跨模块真实消费方）
+    或第 5 条（dedupe 那条真断言）变空转了，守卫只剩下自证自话的守卫用例。
+
+历史：ec41999 的 commit message 里写的是「3 failed」，那是 test_6/test_7 补进来
+之前的旧数 + 当时 dedupe 那条断言还处于被逼删状态。真实值是 5（software-engineer
+于 68033f7 把 dedupe 的真断言加回后指出并已复核）。以本段为准，commit message 不可改。
 """
 
 import importlib
