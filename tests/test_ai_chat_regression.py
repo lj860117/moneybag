@@ -4,7 +4,12 @@ AI 对话 + 多账号回归测试
 覆盖方向文档 §11 的 12 个回归用例。
 
 用法：
-    MB_TEST_HOST=http://150.158.47.189:8000 pytest tests/test_ai_chat_regression.py -v
+    pytest tests/test_ai_chat_regression.py -v            # 默认打本地 127.0.0.1:8000
+
+    ⚠️ 本文件会**写数据**（module 级 autouse fixture POST 持仓，teardown 再 DELETE）。
+    默认目标必须是本地；只有操作者**显式**指定时才允许打生产：
+        MB_TEST_HOST=http://150.158.47.189:8000 pytest tests/test_ai_chat_regression.py -v
+    一旦这样跑，就会**往生产写测试数据**（历史上曾因此攒下 115 个 QA_* 垃圾条目）。
 
 验收标准：
 - HTTP 500 = 0
@@ -19,7 +24,9 @@ import time
 import pytest
 import httpx
 
-BASE = os.environ.get("MB_TEST_HOST", "http://150.158.47.189:8000")
+# 默认本地；打生产必须显式设 MB_TEST_HOST=http://150.158.47.189:8000（会写生产数据）。
+# 防复发守卫：backend/tests/test_no_prod_default_in_test_host.py
+BASE = os.environ.get("MB_TEST_HOST", "http://127.0.0.1:8000")
 MAIN_USER = f"QA_AIREGRESSION_{int(time.time())}"
 EMPTY_USER = f"QA_EMPTY_{int(time.time())}"
 
