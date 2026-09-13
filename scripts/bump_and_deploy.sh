@@ -45,6 +45,9 @@ trap 'rc=$?; echo ""; echo "❌ 脚本异常退出：第 ${LINENO} 行，exit=${
 NEW_VERSION="${1:-}"
 NO_DEPLOY=false
 DRY_RUN=false
+# 部署冒烟是否失败。deploy_to_server.sh 冒烟不过时返回非零，
+# 这里要接住（否则 set -e 会直接中断，用户只看到脚本半截退出，看不到结论）。
+DEPLOY_SMOKE_FAILED=false
 YES=false      # --yes 跳过交互确认
 BACKEND_ONLY=false  # --backend-only 只 bump config.py（纯后端改动用，不动前端缓存标记）
 COMMIT_MSG_ARG=""  # -m "message" 直接传 commit message
@@ -306,11 +309,22 @@ else
     sleep 3
     echo "🚀 开始部署到服务器..."
     echo "---"
-    bash "$REPO_ROOT/backend/scripts/deploy_to_server.sh"
+    if bash "$REPO_ROOT/backend/scripts/deploy_to_server.sh"; then
+        DEPLOY_SMOKE_FAILED=false
+    else
+        DEPLOY_SMOKE_FAILED=true
+    fi
 fi
 
 echo ""
 echo "==============================="
+if [ "$DEPLOY_SMOKE_FAILED" = "true" ]; then
+    echo "  ⚠️  bump + push 已完成，但部署冒烟未全部通过"
+    echo "  版本：${CURRENT_VERSION:-?} → ${NEW_VERSION}"
+    echo "  文件已同步、服务已重启；失败项见上方冒烟输出（不要当成全绿）。"
+    echo "==============================="
+    exit 1
+fi
 echo "  ✅ 全部完成！"
 echo "  版本：${CURRENT_VERSION:-?} → ${NEW_VERSION}"
 if ! $NO_DEPLOY; then

@@ -111,6 +111,18 @@ BACKEND_DIRS=(
     # (portfolio_diagnose.md / signal_extract.md / weekly_report.md)。
     # 加 --delete 后，本地删除会同步到线上。
     "backend/prompts/"
+    # ⚠️ 测试目录必须在清单里，否则服务器上的 backend/tests/ 是一份永不更新的化石。
+    # 2026-09-13 v9.9.30 实测：服务器只有 52 个 test_*.py（收集 1116 条），本地有 87 个
+    # （1834 条）。跑「服务器回归」= 拿 9/7、9/11 的旧测试打 9/13 的新源码，
+    # 报出 3 个 FAILED 全是假的：
+    #   - test_regression_signal_and_cache.py 的 fake_cfo 缺 cfo_cache_path/write_cfo_cache
+    #     （本地 9/13 已补，并顺带修掉「缓存重写没被测到」的假绿）
+    #   - test_chat_model_routing.py 的 _FakeGateway.pre_check() 缺 user_id 形参
+    #     （本地 9/13 已补）
+    # 假红和假绿一样有害：会让人去"修"根本没坏的东西，也会让人不再相信这套回归。
+    # 测试文件不被运行时 import，进生产无副作用；conftest.py 无条件隔离 DATA_DIR，
+    # 在服务器上跑也不会碰生产数据。
+    "backend/tests/"
 )
 
 for d in "${BACKEND_DIRS[@]}"; do
@@ -302,15 +314,36 @@ echo "[7/7] 冒烟测试..."
 sleep 5  # 等待服务启动
 BASE="http://$SERVER:8000"
 
+SMOKE_FAIL=0
+SMOKE_TOTAL=0
+
+# check_endpoint <url> <desc> [预算秒=10] [慢响应阈值秒=5]
+# 预算必须按端点冷启动真实耗时给：重启后内存缓存被清空，
+# 需要现算的端点（如晨报）冷态可到 40s+，硬编码 10s 会把健康端点误报为 ❌。
 check_endpoint() {
     local url="$1"
     local desc="$2"
-    local code
-    code=$(curl -s -o /dev/null -w "%{http_code}" --max-time 10 "$url" 2>/dev/null || echo "000")
+    local budget="${3:-10}"
+    local slow_at="${4:-5}"
+    local out code elapsed
+    SMOKE_TOTAL=$((SMOKE_TOTAL + 1))
+    out=$(curl -s -o /dev/null -w "%{http_code} %{time_total}" --max-time "$budget" "$url" 2>/dev/null || true)
+    [ -n "$out" ] || out="000 0"
+    out="${out%%$'\n'*}"   # 超时(curl rc!=0)时 curl 已打印 "000 <elapsed>"，避免再拼一行导致 elapsed 被读成 0
+    code="${out%% *}"
+    elapsed="${out##* }"
     if [ "$code" = "200" ]; then
-        echo "  ✅ $desc ($url)"
+        # 200 不等于体验可接受：冷启动慢的端点单独标注，别让它冒充绿
+        if awk "BEGIN{exit !($elapsed > $slow_at)}" 2>/dev/null; then
+            echo "  ⚠️  $desc — HTTP 200 但耗时 ${elapsed}s（冷启动慢，预算 ${budget}s）"
+        else
+            echo "  ✅ $desc ($url)"
+        fi
     else
-        echo "  ❌ $desc — HTTP $code ($url)"
+        SMOKE_FAIL=$((SMOKE_FAIL + 1))
+        # 注意：${code} 必须带花括号。紧跟全角字符时会话 locale 非 UTF-8 时
+        # bash 会把多字节字节当成变量名的一部分（unbound variable），set -e 下直接崩。
+        echo "  ❌ $desc — HTTP ${code}（预算 ${budget}s / 实测 ${elapsed}s）($url)"
     fi
 }
 
@@ -320,12 +353,18 @@ check_endpoint "$BASE/api/risk-metrics?userId=default"  "MB-017/016 风险指标
 check_endpoint "$BASE/api/news"                         "MB-012 新闻列表"
 check_endpoint "$BASE/api/news/deep-impact"             "MB-008 深度新闻分析"
 check_endpoint "$BASE/api/global/snapshot"              "MB-015 全球快照"
-check_endpoint "$BASE/api/steward/briefing?userId=default"         "MB-018 晨报缓存"
+check_endpoint "$BASE/api/steward/briefing?userId=default"         "MB-018 晨报缓存" 120 15
 check_endpoint "$BASE/api/steward/briefing-history?userId=default" "MB-005 往期晨报"
 
 # 验证新闻条数
 NEWS_COUNT=$(curl -s "$BASE/api/news?limit=20" | python3 -c "import sys,json;d=json.load(sys.stdin);print(len(d.get('news',[])))" 2>/dev/null || echo "?")
 echo "  📰 新闻条数: $NEWS_COUNT (期望 ≥15)"
+
+if [ "$SMOKE_FAIL" -eq 0 ]; then
+    echo "  ── 冒烟汇总: $SMOKE_TOTAL/$SMOKE_TOTAL 项通过 ──"
+else
+    echo "  ── 冒烟汇总: $SMOKE_FAIL/$SMOKE_TOTAL 项失败 ──"
+fi
 
 echo ""
 
@@ -349,6 +388,16 @@ if [ "$USE_PASSWORD_LOGIN" = true ]; then
     echo "═══════════════════════════════════════════════════════════"
 fi
 
-echo "=== 部署完成 ==="
 echo "验证 timing confidence: curl -s '$BASE/api/timing?userId=default' | python3 -m json.tool | grep confidence"
 echo "验证 risk-metrics GET:  curl -s '$BASE/api/risk-metrics?userId=default' | python3 -m json.tool | head -5"
+
+# 冒烟未通过时以非零码退出：文件同步成功≠服务健康。
+# 否则 200/❌ 都只打印在屏幕上，CI 和调用方（bump_and_deploy.sh）无从判断，
+# 就是「闸门空转仍显绿」。
+if [ "$SMOKE_FAIL" -ne 0 ]; then
+    echo ""
+    echo "=== 部署收尾：文件已同步、服务已重启，但冒烟测试 $SMOKE_FAIL/$SMOKE_TOTAL 项失败 ==="
+    exit 1
+fi
+
+echo "=== 部署完成 ==="
