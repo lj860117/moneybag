@@ -911,14 +911,28 @@ def _build_portfolio_context(p=None, user_id: str = "default") -> str:
 
 _system_prompt_template = ""
 
+_DEFAULT_SYSTEM_PROMPT = "你是钱袋子AI投顾，基于真实数据分析，不编造数字。"
+
+
+def _load_named_prompt(filename: str, default: str) -> str:
+    """按文件名读取 backend/prompts/{filename}；缺失或读取失败时返回 default（fail-open）。
+
+    api 层 Prompt 的统一落盘读取入口：与 `_load_prompt_template` 同一个目录、
+    同一套 Path 定位方式，避免各模块各自再写一套 loader（"改一处漏一处"的根因）。
+    """
+    try:
+        p = Path(__file__).parent.parent / "prompts" / filename
+        if p.exists():
+            return p.read_text(encoding="utf-8")
+    except Exception as e:  # pragma: no cover - 仅在磁盘异常时触发
+        print(f"[PROMPT] 读取 {filename} 失败，回退内置默认: {e}")
+    return default
+
+
 def _load_prompt_template():
     global _system_prompt_template
     if not _system_prompt_template:
-        p = Path(__file__).parent.parent / "prompts" / "system_prompt.md"
-        if p.exists():
-            _system_prompt_template = p.read_text(encoding="utf-8")
-        else:
-            _system_prompt_template = "你是钱袋子AI投顾，基于真实数据分析，不编造数字。"
+        _system_prompt_template = _load_named_prompt("system_prompt.md", _DEFAULT_SYSTEM_PROMPT)
     return _system_prompt_template
 
 
@@ -1000,10 +1014,37 @@ def classify_chat_intent(msg: str) -> dict:
 # 规则引擎降级回答
 # ========================================================
 
-def _rule_based_reply_structured(msg: str, market_ctx: str, portfolio_ctx: str) -> dict | None:
-    """规则引擎结构化回答 — 命中返回 {text, confidence, intent}，不命中返回 None。
+def _rule_reply(text: str, intent: str) -> dict:
+    """规则引擎回答的统一结构（唯一构造入口）。
 
-    confidence=0.85 表示规则精准匹配（用真实数据计算），比 LLM 编造更可靠。
+    v9.9.26 P1-9：**规则引擎回答没有"置信度"这回事**。
+
+    此前每条规则回答都把 confidence 字段一律写死成 0.8~0.95 之间的某个常数，
+    唯一消费方（api/chat.py 的非流式与流式两条快速路径）拿它做 `>= 0.7` 的
+    闸门判断——所有取值都 ≥ 0.7，也就是这个闸门**永远为真**、这个"置信度"
+    从来没有筛掉任何东西。它既不是测量值，也不是判据，只是一个看起来很像
+    指标的摆设数字。
+
+    规则回答的性质是**确定性**的：命中某个意图就查表/实时计算给出答案，
+    不存在"有多大概率对"这种中间状态。所以契约改成显式布尔：
+      - `deterministic=True` → 规则命中，可直接采用
+      - 不命中 → 返回 None（原本就是这个契约）
+    想区分"规则的确信程度"，应该去描述**数据可得性**，而不是编一个 0.85。
+    """
+    return {
+        "text": text,
+        "intent": intent,
+        "deterministic": True,
+        "source": "rule_engine",
+    }
+
+
+def _rule_based_reply_structured(msg: str, market_ctx: str, portfolio_ctx: str) -> dict | None:
+    """规则引擎结构化回答 — 命中返回 {text, intent, deterministic, source}，不命中返回 None。
+
+    v9.9.26 P1-9：返回值不再含 `confidence` 数字。规则回答是确定性的
+    （命中意图即用真实数据算出来），不是概率判断，因此没有置信度可言——
+    详见 `_rule_reply()` 的说明。调用方判断"是否采用"请看 `deterministic`。
     """
     msg_lower = msg.lower()
 
@@ -1013,7 +1054,7 @@ def _rule_based_reply_structured(msg: str, market_ctx: str, portfolio_ctx: str) 
                         "借钱炒股", "借钱投资", "贷款炒股", "杠杆炒股"]
     if any(k in msg_lower for k in _SAFETY_KEYWORDS):
         text = "🚫 我不能预测具体价格，也不能建议满仓、借钱投资或承诺保本收益。\n\n可以帮你做的：\n• 基于当前持仓做风险检查\n• 分析估值是否偏高\n• 给出仓位建议（但不是满仓）\n\n⚠️ 投资有风险，入市需谨慎。"
-        return {"text": text, "confidence": 0.95, "intent": "safety_refusal"}
+        return _rule_reply(text, "safety_refusal")
 
     # ★ v9.5.123: 操作指令(设目标/纪律线) — 识别后引导用户提供参数
     _GOAL_KW = ["设定目标", "设个目标", "财务目标", "设目标", "攒够", "攒到", "存够", "万的目标", "万目标"]
@@ -1029,7 +1070,7 @@ def _rule_based_reply_structured(msg: str, market_ctx: str, portfolio_ctx: str) 
             text += '请补充以下信息（直接回复）：\n• 目标名称（如"装修费"）\n• 预计截止日期（如"2028年底"）\n• 每月可存入金额（如"5000元"）'
         else:
             text += '请告诉我：\n• 目标金额（如"30万"）\n• 目标名称（如"装修费"）\n• 截止日期 + 每月存入\n\n示例：帮我设一个30万装修目标，每月存5000，2028年底前'
-        return {"text": text, "confidence": 0.85, "intent": "operation_goal"}
+        return _rule_reply(text, "operation_goal")
     
     if any(k in msg_lower for k in _DISC_KW):
         import re as _re_op2
@@ -1043,7 +1084,7 @@ def _rule_based_reply_structured(msg: str, market_ctx: str, portfolio_ctx: str) 
             text += '请指定基金代码或名称(如沪深300/005827)，我就帮你设好。到达纪律线时会通过企微推送提醒你执行。'
         else:
             text += '请告诉我：\n* 哪只基金(代码或名称)\n* 止盈线百分比(如+30%)\n* 止损线百分比(如-20%)\n\n示例：帮我给沪深300设止盈30%止损-20%'
-        return {"text": text, "confidence": 0.85, "intent": "operation_discipline"}
+        return _rule_reply(text, "operation_discipline")
 
     # ★ 最高优先级2：用户持仓/资产查询（必须基于真实数据回答）
     # 排除：问"老婆/家人"的持仓 — 直接规则拒绝
@@ -1051,7 +1092,7 @@ def _rule_based_reply_structured(msg: str, market_ctx: str, portfolio_ctx: str) 
     _asking_about_others = any(k in msg_lower for k in _OTHER_PERSON_KW)
     if _asking_about_others and any(k in msg_lower for k in ["持有", "资产", "持仓", "买了", "有什么"]):
         text = "🔒 当前钱袋子系统只能查看**你自己账号**的数据，无法读取其他家庭成员的持仓。\n\n如果想查看对方的资产，需要切换到对方的账号登录。\n\n⚠️ 账号之间数据完全隔离，互不可见。"
-        return {"text": text, "confidence": 0.90, "intent": "cross_account_refusal"}
+        return _rule_reply(text, "cross_account_refusal")
 
     _HOLDING_QUERY_KW = ["我有什么", "我的持仓", "我的资产",
                           "现在还在", "我刚才", "录入的", "我当前",
@@ -1079,7 +1120,7 @@ def _rule_based_reply_structured(msg: str, market_ctx: str, portfolio_ctx: str) 
         # 从 portfolio_ctx 中提取真实持仓信息
         if "没有任何持仓" in portfolio_ctx or "没有持仓" in portfolio_ctx or "尚未录入" in portfolio_ctx:
             text = "**结论：** 当前钱袋子系统没有记录到持仓/资产数据。\n\n**依据：** 股票持仓、基金持仓、手动资产均为空。\n\n**建议：** 去 持仓页 或 资产页 添加你的真实持仓，我就能给你个性化分析了。\n\n⚠️ 仅基于钱袋子系统记录。"
-            return {"text": text, "confidence": 0.90, "intent": "empty_holdings_query"}
+            return _rule_reply(text, "empty_holdings_query")
         elif "持仓明细" in portfolio_ctx:
             # 有持仓数据，把上下文中的持仓信息提取出来
             import re
@@ -1096,7 +1137,7 @@ def _rule_based_reply_structured(msg: str, market_ctx: str, portfolio_ctx: str) 
                 parts.append("\n**数据来源：** 钱袋子持仓记录 + 资产记录")
                 parts.append("\n⚠️ 以上仅基于系统记录，不包含未同步的券商/银行账户。")
                 text = "\n".join(parts)
-                return {"text": text, "confidence": 0.90, "intent": "holdings_query"}
+                return _rule_reply(text, "holdings_query")
         # 没提取到有用信息，交给 LLM
         pass
 
@@ -1115,19 +1156,19 @@ def _rule_based_reply_structured(msg: str, market_ctx: str, portfolio_ctx: str) 
         else:
             tip = "🔴 **不建议大额入场。** 估值高+市场贪婪，建议等待。"
         text = f"📊 入场时机分析：\n\n{tip}\n\n{val['index']}估值百分位：{val['percentile']}%（{val['level']}）\n恐惧贪婪指数：{fgi:.0f}\n\n💡 建议：不管时机好坏，定投永远是对的。定投的精髓就是穿越牛熊，低估时多买、高估时少买。\n\n⚠️ 以上仅供参考，不构成投资建议。"
-        return {"text": text, "confidence": 0.85, "intent": "timing"}
+        return _rule_reply(text, "timing")
 
     # 止盈止损
     if any(k in msg_lower for k in ["卖", "止盈", "止损", "价位", "该出", "什么时候出", "锁定利润", "减仓", "到了多少"]):
         text = "🔔 止盈止损策略：\n\n钱袋子采用**分批止盈法**，根据你的风险类型自动设定目标：\n\n🐢 保守型：+15% 止盈 / -8% 止损\n🐰 稳健型：+20% 止盈 / -10% 止损\n🦊 平衡型：+30% 止盈 / -15% 止损\n🦁 进取型：+50% 止盈 / -20% 止损\n🦅 激进型：+80% 止盈 / -25% 止损\n\n📌 操作建议：\n1️⃣ **到了止盈线，不用全卖** — 卖 1/3 锁利润，剩余继续持有\n2️⃣ **到了止损线，先看原因** — 如果基金基本面没变，可能反而是加仓机会\n3️⃣ **不设绝对卖点** — 结合估值百分位综合判断\n\n你可以在首页的 AI 信号里实时看到自己的止盈止损状态 📊\n\n⚠️ 以上仅供参考，不构成投资建议。"
-        return {"text": text, "confidence": 0.85, "intent": "take_profit"}
+        return _rule_reply(text, "take_profit")
 
     # 智能定投
     if any(k in msg_lower for k in ["定投", "智能", "固定还是", "怎么投", "投多少", "每月投", "dca"]):
         val = get_valuation_percentile()
         smart = calc_smart_dca(1000, val["percentile"])
-        text = f"🧠 智能定投 vs 固定定投：\n\n**固定定投**：每月投相同金额，简单省心，长期有效。\n**智能定投**：根据市场估值动态调整 — 低估多买、高估少买。\n\n钱袋子的智能定投策略：\n\n| 估值百分位 | 倍率 | 说明 |\n|-----------|------|------|\n| < 20% | 1.5x | 极度低估，多买 |\n| 20-30% | 1.3x | 低估，适当多买 |\n| 30-50% | 1.1x | 偏低，略多 |\n| 50-70% | 1.0x | 正常，标准额 |\n| 70-85% | 0.7x | 偏高，少买 |\n| > 85% | 0.3x | 高估，大幅减少 |\n\n📊 当前{val['index']}估值：{val['percentile']}%（{val['level']}）\n💡 建议本月倍率：{smart['multiplier']}x — {smart['advice']}\n\n智能定投比固定定投长期多赚约 15-20%，但需要坚持 3 年以上才能看到效果。\n\n⚠️ 以上仅供参考，不构成投资建议。"
-        return {"text": text, "confidence": 0.85, "intent": "dca"}
+        text = f"🧠 智能定投 vs 固定定投：\n\n**固定定投**：每月投相同金额，简单省心，长期有效。\n**智能定投**：根据市场估值动态调整 — 低估多买、高估少买。\n\n钱袋子的智能定投策略：\n\n| 估值百分位 | 倍率 | 说明 |\n|-----------|------|------|\n| < 20% | 1.5x | 极度低估，多买 |\n| 20-30% | 1.3x | 低估，适当多买 |\n| 30-50% | 1.1x | 偏低，略多 |\n| 50-70% | 1.0x | 正常，标准额 |\n| 70-85% | 0.7x | 偏高，少买 |\n| > 85% | 0.3x | 高估，大幅减少 |\n\n📊 当前{val['index']}估值：{val['percentile']}%（{val['level']}）\n💡 建议本月倍率：{smart['multiplier']}x — {smart['advice']}\n\n智能定投在低估区间多买、高估区间少买；长期效果取决于市场路径，无法预先给出具体超额收益，且通常需要数年才能体现。\n\n⚠️ 以上仅供参考，不构成投资建议。"
+        return _rule_reply(text, "dca")
 
     # 市场情绪 / 恐惧贪婪
     if any(k in msg_lower for k in ["情绪", "恐惧", "贪婪", "恐慌", "fgi", "市场情绪", "散户情绪"]):
@@ -1149,7 +1190,7 @@ def _rule_based_reply_structured(msg: str, market_ctx: str, portfolio_ctx: str) 
             level = "极度贪婪 🤑"
             advice = "市场过热，考虑适当减仓锁利。"
         text = f"🎭 市场情绪分析：\n\n恐惧贪婪指数：**{fgi:.0f}** — {level}\n\n{advice}\n\n{market_ctx}\n\n💡 「别人恐惧时我贪婪」说的容易做起来难，但数据不会骗人。\n\n⚠️ 以上仅供参考，不构成投资建议。"
-        return {"text": text, "confidence": 0.85, "intent": "sentiment"}
+        return _rule_reply(text, "sentiment")
 
     # 北向资金 / 外资 —— 净流入【永久不可得】，给确定性回答
     # 2024-08-19 起沪深交易所停止披露北向日频净买入（改为按季度公布），Tushare
@@ -1210,14 +1251,14 @@ def _rule_based_reply_structured(msg: str, market_ctx: str, portfolio_ctx: str) 
             text += "📊 北向成交额本次也未取到（数据源暂时无返回），所以这轮没有可用的北向数据。\n\n"
         text += ("💡 想看外资真实的净买入方向，只能等交易所的季度披露。\n\n"
                  "⚠️ 以上仅供参考，不构成投资建议。")
-        return {"text": text, "confidence": 0.85, "intent": "northbound"}
+        return _rule_reply(text, "northbound")
 
     # 宏观经济
     if any(k in msg_lower for k in ["宏观", "经济", "cpi", "pmi", "通胀", "利率", "货币", "m2", "gdp"]):
         events = get_macro_calendar()
         macro_text = "\n".join([f"{e['icon']} {e['name']}：{e['value']}（{e['date']}）\n  └ {e['impact']}" for e in events])
         text = f"🏛️ 宏观经济数据：\n\n{macro_text}\n\n💡 宏观数据影响市场整体方向。CPI低+PMI>50+M2宽松 = 对股市友好的环境。\n\n⚠️ 以上仅供参考，不构成投资建议。"
-        return {"text": text, "confidence": 0.85, "intent": "macro_summary"}
+        return _rule_reply(text, "macro_summary")
 
     # 新闻/资讯
     if any(k in msg_lower for k in ["新闻", "资讯", "消息", "发生", "怎么了", "什么情况", "为什么", "利空", "利好"]):
@@ -1294,7 +1335,7 @@ def _rule_based_reply_structured(msg: str, market_ctx: str, portfolio_ctx: str) 
                         text = f"**结论：** 当前没有检索到与{entity_name}直接相关的利空/负面新闻。\n\n📌 未检索到≠没有发生，可能是数据源延迟或信息尚未公开。\n💡 如果你听到了具体消息，可以告诉我内容，我来帮你判断真假和可能影响。\n⚠️ 以上仅供参考。"
                     else:
                         text = f"**结论：** 当前没有检索到与{entity_name}直接相关的重大新闻。\n\n📌 未检索到≠没有发生，可能是数据源延迟。\n⚠️ 以上仅供参考。"
-                return {"text": text, "confidence": 0.85, "intent": "stock_news"}
+                return _rule_reply(text, "stock_news")
             except Exception:
                 pass
 
@@ -1308,13 +1349,13 @@ def _rule_based_reply_structured(msg: str, market_ctx: str, portfolio_ctx: str) 
                 news_lines.append(f"📰 {n['title']}（{n['source']}）")
         news_text = "\n".join(news_lines)
         text = f"📰 最新市场资讯：\n\n{news_text}\n\n💡 建议：关注大趋势，不要因为单条新闻做决定。投资看的是长期逻辑。\n\n⚠️ 以上仅供参考，不构成投资建议。"
-        return {"text": text, "confidence": 0.85, "intent": "news"}
+        return _rule_reply(text, "news")
 
     # 技术分析
     if any(k in msg_lower for k in ["技术", "rsi", "macd", "布林", "超买", "超卖", "指标"]):
         tech = get_technical_indicators()
         text = f"📊 沪深300技术指标：\n\n📈 RSI(14)：{tech['rsi']}（{tech['rsi_signal']}）\n  └ >70 超买区，<30 超卖区\n\n📉 MACD：{tech['macd']['trend']}\n  └ DIF:{tech['macd']['dif']:.4f} DEA:{tech['macd']['dea']:.4f}\n\n📐 布林带：{tech['bollinger']['position']}\n  └ 上轨:{tech['bollinger']['upper']} 中轨:{tech['bollinger']['middle']} 下轨:{tech['bollinger']['lower']}\n\n💡 技术指标是辅助参考，不能单独作为买卖依据。结合估值+基本面综合判断更靠谱。\n\n⚠️ 以上仅供参考，不构成投资建议。"
-        return {"text": text, "confidence": 0.85, "intent": "technicals"}
+        return _rule_reply(text, "technicals")
 
     # 政策/地缘/影响
     if any(k in msg_lower for k in ["政策", "降息", "降准", "关税", "贸易战", "制裁", "战争", "地缘",
@@ -1331,7 +1372,7 @@ def _rule_based_reply_structured(msg: str, market_ctx: str, portfolio_ctx: str) 
                     impact_lines.append(f"🏷️ **{imp['tag']}**\n{imp['impact']}\n{bull} {bear}\n涉及行业：{', '.join(imp['sectors'])}")
                 impact_text = "\n\n".join(impact_lines)
                 text = f"🏛️ 当前事件对你持仓的影响分析：\n\n{impact_text}\n\n💡 建议：关注事件发展趋势，短期波动不改长期逻辑。如果你是定投模式，保持节奏即可。\n\n⚠️ 以上基于关键词匹配的初步分析，仅供参考，不构成投资建议。"
-                return {"text": text, "confidence": 0.85, "intent": "macro_impact"}
+                return _rule_reply(text, "macro_impact")
         except Exception:
             pass
         return None
@@ -1339,11 +1380,11 @@ def _rule_based_reply_structured(msg: str, market_ctx: str, portfolio_ctx: str) 
     # 晨报/周报请求 — 引导用户到正确功能
     if any(k in msg_lower for k in ["晨报", "早报", "briefing"]):
         text = "📋 你可以在首页查看每日晨报，或者直接访问 **分析页 → 管家晨报** 获取最新版。\n\n晨报内容包括：市场状态、持仓异动、风控提醒、今日建议。\n\n💡 晨报每天凌晨 4:30 自动生成，也可以手动刷新获取最新数据。"
-        return {"text": text, "confidence": 0.80, "intent": "briefing_request"}
+        return _rule_reply(text, "briefing_request")
 
     if any(k in msg_lower for k in ["周报", "weekly", "本周总结"]):
         text = "📊 你可以在 **分析页 → 周报** 查看本周投资总结。\n\n周报内容包括：本周净资产变动、持仓盈亏、市场回顾、下周关注点。\n\n💡 周报每周日自动生成，也可以在分析页手动触发生成。"
-        return {"text": text, "confidence": 0.80, "intent": "weekly_request"}
+        return _rule_reply(text, "weekly_request")
 
     # 现金安全垫/应急储备
     if any(k in msg_lower for k in ["安全垫", "应急", "现金够", "留多少现金", "备用金", "紧急备用"]):
@@ -1355,17 +1396,17 @@ def _rule_based_reply_structured(msg: str, market_ctx: str, portfolio_ctx: str) 
             text = f"💰 你当前记录的现金约 ¥{cash_str}。\n\n**安全垫建议：**\n• 保留 3-6 个月生活费作为应急储备\n• 放在 T+0 货币基金（如余额宝）\n• 不计入投资，随时可取\n\n**判断标准：**\n• 月支出 5000 → 安全垫 1.5-3 万\n• 月支出 10000 → 安全垫 3-6 万\n• 月支出 20000 → 安全垫 6-12 万\n\n如果现金不够安全垫，暂停新增高风险资产，优先攒够。\n\n⚠️ 以上仅供参考，不构成投资建议。"
         else:
             text = "💰 **安全垫建议：**\n\n保留 3-6 个月生活费作为应急储备，放在 T+0 货币基金。\n\n你目前没有录入现金数据，去 **资产页** 添加你的银行存款/余额宝金额，我就能帮你判断够不够了。\n\n⚠️ 以上仅供参考，不构成投资建议。"
-        return {"text": text, "confidence": 0.85, "intent": "cash_safety"}
+        return _rule_reply(text, "cash_safety")
 
     # 市场下跌安慰
     if any(k in msg_lower for k in ["跌", "亏", "赔", "绿", "下跌"]):
         text = f"📉 市场波动是正常现象。\n\n{market_ctx}\n\n长期投资（3年+）能大幅平滑短期波动。如果你的资产配比还在目标范围内，建议保持定投节奏，不要恐慌卖出。记住投资铁律：跌了别卖，越跌越该买。\n\n⚠️ 以上仅供参考，不构成投资建议。"
-        return {"text": text, "confidence": 0.85, "intent": "market_down"}
+        return _rule_reply(text, "market_down")
 
     # 市场上涨
     if any(k in msg_lower for k in ["涨", "赚", "红", "上涨", "牛"]):
         text = f"📈 恭喜！不过也别过于乐观。\n\n{market_ctx}\n\n赚钱时更要冷静，检查一下各资产的占比是否偏离目标太多。如果某类资产涨太多导致占比过高，可以考虑再平衡——卖掉一点涨多的，买入涨少的。\n\n⚠️ 以上仅供参考，不构成投资建议。"
-        return {"text": text, "confidence": 0.85, "intent": "market_up"}
+        return _rule_reply(text, "market_up")
 
     # 不命中 → 返回 None，交给 LLM
     return None
@@ -1447,7 +1488,7 @@ async def _do_ocr(file_path: Path, content: bytes) -> dict:
   "date": "日期(如有)",
   "bank_balance": 银行余额(如有),
   "records": [多条记录(如有)],
-  "confidence": 0.95
+  "confidence": 识别把握度(0 到 1 的小数，越不确定给越低；整张图看不清就给 0)
 }"""},
             {"role": "user", "content": [
                 {"type": "image_url", "image_url": {"url": f"data:{mime};base64,{b64}"}},

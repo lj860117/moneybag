@@ -331,8 +331,12 @@ async def chat_analysis(req: ChatRequest):
     _need_event_search = any(kw in user_msg for kw in _EVENT_KW_NONSTREAM)
     if intent["intent"] in FAST_PATH_INTENTS and not _need_event_search:
         rule_result = _rule_based_reply_structured(user_msg, market_ctx, portfolio_ctx)
-        if rule_result and rule_result["confidence"] >= 0.7:
-            print(f"[CHAT] ★ 规则优先命中: intent={rule_result['intent']}, confidence={rule_result['confidence']}")
+        if rule_result and rule_result.get("deterministic"):
+            # v9.9.26 P1-9: 这里原本是 `rule_result["confidence"] >= 0.7`，而规则
+            # 回答的 confidence 是写死的 0.85 → 条件恒为真，是个死判断。
+            # 规则回答的性质是确定性的（命中意图即查表/实时计算得出），没有
+            # 概率置信度可言，因此改用显式的确定性标记判断。
+            print(f"[CHAT] ★ 规则优先命中: intent={rule_result['intent']}")
             # 记录决策日志
             try:
                 from services.decision_log import log_decision
@@ -671,9 +675,10 @@ async def chat_analysis_stream(req: ChatRequest):
         # 但涉及时事的问题跳过规则引擎（规则引擎没有实时信息）
         if intent["intent"] in FAST_PATH_INTENTS and not _need_finance_search:
             rule_result = _rule_based_reply_structured(user_msg, market_ctx, portfolio_ctx)
-            if rule_result and rule_result["confidence"] >= 0.7:
+            if rule_result and rule_result.get("deterministic"):
                 # 规则引擎给出了有效回答，模拟打字逐段流式返回
-                print(f"[CHAT-STREAM] ★ 规则优先命中: intent={rule_result['intent']}, confidence={rule_result['confidence']}")
+                # v9.9.26 P1-9: 同非流式路径，去掉恒真的 confidence>=0.7 死判断
+                print(f"[CHAT-STREAM] ★ 规则优先命中: intent={rule_result['intent']}")
                 async def _rule_stream():
                     # 按段落分块模拟打字效果
                     text = rule_result["text"]
