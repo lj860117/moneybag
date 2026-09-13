@@ -122,7 +122,89 @@ def aggregate(rows: list[dict]) -> dict:
     }
 
 
+# ==================== 证据有效性 ====================
+
+# 短于此长度的正文不可能是有效的复盘/诊断回答
+MIN_VALID_ANSWER_CHARS = 5
+
+# run_case 拿不到真实模型回答时写入的占位串前缀
+FALLBACK_MARKER = "[FALLBACK:"
+
+
+def is_valid_answer(text: str) -> bool:
+    """这条回答是不是"真实模型回答"。
+
+    无效 = 占位串（`[FALLBACK: …]`）/ 空串 / 纯空白 / 短于 MIN_VALID_ANSWER_CHARS。
+    这类回答不含任何模型判断，却天然不含禁用词，拿去打分只会得到
+    "数据诚信率 100%" 的**假绿** —— 必须单独统计，不能混进评分。
+    """
+    body = (text or "").strip()
+    if not body:
+        return False
+    if FALLBACK_MARKER in body:
+        return False
+    return len(body) >= MIN_VALID_ANSWER_CHARS
+
+
+def answer_validity(answers: list[str]) -> dict:
+    """汇总一组回答的有效性，供指标表与判决闸门使用。"""
+    invalid = sum(1 for a in answers if not is_valid_answer(a))
+    return {"total_answers": len(answers), "invalid_answers": invalid}
+
+
 # ==================== 合并判决 ====================
+
+VERDICT_ALLOW = "allow"
+VERDICT_REJECT = "reject"
+VERDICT_INVALID = "invalid"
+
+
+def evidence_gate(old_agg: dict, new_agg: dict) -> list[str]:
+    """证据有效性闸门：返回阻断原因（空列表 = 证据有效，可继续判决）。
+
+    只要**存在任何**无效回答（fallback 占位串 / 空 / 过短），本次 A/B 就没有证据价值：
+    指标表里的比例（尤其"数据诚信率 100%"）只是占位串不含禁用词的结果，
+    绝不能当成通过依据。缺统计字段时同样拒绝给肯定判决（fail-closed）。
+    """
+    stats = []
+    for label, agg in (("旧版", old_agg), ("新版", new_agg)):
+        total = agg.get("total_answers")
+        invalid = agg.get("invalid_answers")
+        if total is None or invalid is None:
+            return [
+                "⛔ 判决无效：缺少证据有效性统计（total_answers / invalid_answers 未提供），"
+                "无法确认回答来自真实模型，拒绝给出肯定判决",
+            ]
+        if invalid:
+            stats.append(f"{label} {invalid}/{total}")
+
+    if not stats:
+        return []
+
+    total_all = (old_agg.get("total_answers", 0) + new_agg.get("total_answers", 0))
+    invalid_all = (old_agg.get("invalid_answers", 0) + new_agg.get("invalid_answers", 0))
+    lines = [
+        f"⛔ 判决无效：未取得真实模型回答（{invalid_all}/{total_all} 为 fallback/空），"
+        "本次 A/B 无证据价值",
+        "   分版本：" + "，".join(stats),
+        "   说明：指标表里的比例（含「数据诚信率 100%」）由占位串得出，不能作为通过依据；",
+        "   请在有 LLM key 的环境重跑后再据此判断是否合并。",
+    ]
+    return lines
+
+
+def decide(old_agg: dict, new_agg: dict, rules: dict) -> tuple[str, list[str]]:
+    """A/B 判决的**唯一入口**：先过证据有效性闸门，再走原有评分/阈值判决。
+
+    返回 (verdict, reasons)，verdict ∈ {allow, reject, invalid}。
+    回答全部真实时，结果与改动前完全一致（阈值与比较逻辑未动）。
+    """
+    blocked = evidence_gate(old_agg, new_agg)
+    if blocked:
+        return VERDICT_INVALID, blocked
+    allow, reasons = judge_merge(old_agg, new_agg, rules)
+    return (VERDICT_ALLOW if allow else VERDICT_REJECT), reasons
+
 
 def judge_merge(old_agg: dict, new_agg: dict, rules: dict) -> tuple[bool, list[str]]:
     """决定新版能否合并到线上，返回 (allow, reasons)"""
@@ -203,7 +285,11 @@ def run_case(system_prompt: str, case: dict) -> str:
 
 
 def ab_compare(prompt_name: str, old_ver: str, new_ver: str) -> int:
-    """主流程。返回 exit code: 0=允许合并, 1=拒绝合并, 2=脚本异常"""
+    """主流程。返回 exit code: 0=允许合并, 1=拒绝合并/判决无效, 2=脚本异常
+
+    注意：判决无效（回答里有 fallback/空，本次无证据价值）也返回 1 ——
+    「没拿到真实回答」绝不能被 CI/调用方读成通过。
+    """
     try:
         cases_json = json.loads(CASES_FILE.read_text(encoding="utf-8"))
         cases_block = cases_json.get(prompt_name)
@@ -224,6 +310,7 @@ def ab_compare(prompt_name: str, old_ver: str, new_ver: str) -> int:
         print(f"{'='*70}\n")
 
         old_scores, new_scores = [], []
+        old_answers, new_answers = [], []
         detail_rows = []
         stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         run_dir = OUTPUT_DIR / f"{prompt_name}_{old_ver}_vs_{new_ver}_{stamp}"
@@ -239,6 +326,7 @@ def ab_compare(prompt_name: str, old_ver: str, new_ver: str) -> int:
             old_out = run_case(old_prompt, case)
             old_s = scorer.score(old_out, case)
             old_scores.append(old_s)
+            old_answers.append(old_out)
             print(f"  旧版 {old_ver}: {len(old_out)} 字, 诚信={'✅' if old_s['data_integrity_ok'] else '❌'}, 免责={'✅' if old_s['safety_disclaimer'] else '❌'}, 耗时={time.time()-t0:.1f}s")
 
             # 跑新版
@@ -246,6 +334,7 @@ def ab_compare(prompt_name: str, old_ver: str, new_ver: str) -> int:
             new_out = run_case(new_prompt, case)
             new_s = scorer.score(new_out, case)
             new_scores.append(new_s)
+            new_answers.append(new_out)
             print(f"  新版 {new_ver}: {len(new_out)} 字, 诚信={'✅' if new_s['data_integrity_ok'] else '❌'}, 免责={'✅' if new_s['safety_disclaimer'] else '❌'}, 耗时={time.time()-t0:.1f}s")
 
             # 落盘详情
@@ -260,9 +349,11 @@ def ab_compare(prompt_name: str, old_ver: str, new_ver: str) -> int:
             detail_rows.append({"case": cid, "category": cat, "old": old_s, "new": new_s})
             print()
 
-        # 聚合
+        # 聚合（有效性统计与评分分开：无效回答不能进评分口径）
         old_agg = aggregate(old_scores)
         new_agg = aggregate(new_scores)
+        old_agg.update(answer_validity(old_answers))
+        new_agg.update(answer_validity(new_answers))
 
         print("="*70)
         print("📊 聚合对比")
@@ -284,19 +375,26 @@ def ab_compare(prompt_name: str, old_ver: str, new_ver: str) -> int:
             else:
                 print(f"{label:<23}{old_v:<20.1f}{new_v:<20.1f}{sign}{abs(delta):.1f}")
         print(f"{'非交易日违规次数':<23}{old_agg['holiday_violation_count']:<20}{new_agg['holiday_violation_count']:<20}")
+        old_invalid_txt = f"{old_agg['invalid_answers']}/{old_agg['total_answers']}"
+        new_invalid_txt = f"{new_agg['invalid_answers']}/{new_agg['total_answers']}"
+        print(f"{'无效回答数/总回答数':<20}{old_invalid_txt:<20}{new_invalid_txt:<20}")
 
-        # 判决
-        allow, reasons = judge_merge(old_agg, new_agg, rules)
+        # 判决（唯一入口 decide：先过证据有效性闸门，再走原评分/阈值判决）
+        verdict, reasons = decide(old_agg, new_agg, rules)
         print()
         print("="*70)
-        if allow:
+        if verdict == VERDICT_ALLOW:
             print("✅ 判决：允许合并")
-        else:
+        elif verdict == VERDICT_REJECT:
             print("❌ 判决：拒绝合并")
+        else:
+            print("⛔ 判决无效：本次 A/B 无证据价值")
         for r in reasons:
             print(f"  {r}")
         print("="*70)
         print(f"\n📁 详情落盘：{run_dir}\n")
+
+        allow = (verdict == VERDICT_ALLOW)
 
         # 写 summary
         (run_dir / "summary.json").write_text(
@@ -307,6 +405,7 @@ def ab_compare(prompt_name: str, old_ver: str, new_ver: str) -> int:
                 "timestamp": stamp,
                 "old_aggregate": old_agg,
                 "new_aggregate": new_agg,
+                "verdict": verdict,
                 "allow_merge": allow,
                 "reasons": reasons,
                 "cases_total": len(cases),
