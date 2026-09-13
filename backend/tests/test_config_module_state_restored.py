@@ -22,26 +22,61 @@ teardown 把 config 恢复成会话基线（**直接改属性，不 reload**，�
 
 故障注入指纹（FI-1）
 --------------------
-复现方式：把 conftest `_restore_config_module_state` teardown 里的
-`                setattr(cfg, name, baseline_value)`
-替换成 pass，然后跑全量（`cd backend && env -u PYTHONPATH python3 -m pytest tests/ -q`）。
+注入方式：把 conftest `_restore_config_module_state` teardown 里的
+`                setattr(cfg, name, baseline_value)` 换成 pass。
 
-**当前预期：全量 5 failed**，固定为下面这 5 条（不多不少）：
+**主推复现命令（0.3s，必须带本文件一起跑）**：
+```
+cd backend && env -u PYTHONPATH python3 -m pytest \
+    tests/test_config_module_state_restored.py \
+    tests/test_llm_quota_alert_dedupe.py -q
+```
+**预期：5 failed, 28 passed**，固定为下面 5 条（不多不少）：
 
-  1. tests/test_config_module_state_restored.py::test_2_next_test_sees_baseline_restored
-  2. tests/test_config_module_state_restored.py::test_3_baseline_is_under_pytest_isolated_dir
-  3. tests/test_config_module_state_restored.py::test_6_scalar_config_value_restored
-  4. tests/test_config_module_state_restored.py::test_7_downstream_module_path_derives_from_baseline
-  5. tests/test_llm_quota_alert_dedupe.py::test_state_file_lives_under_data_dir
+  1. test_config_module_state_restored.py::test_2_next_test_sees_baseline_restored
+  2. test_config_module_state_restored.py::test_3_baseline_is_under_pytest_isolated_dir
+  3. test_config_module_state_restored.py::test_6_scalar_config_value_restored
+  4. test_config_module_state_restored.py::test_7_downstream_module_path_derives_from_baseline
+  5. test_llm_quota_alert_dedupe.py::test_state_file_lives_under_data_dir
 
-用法（两个方向都会响，别只盯一个）：
-  • 红**多于** 5 → 有别的用例也在吃 config 基线，说明污染面比已知的大；
-  • 红**少于** 5（比如掉回 3）→ 更危险：说明第 4 条（test_7，跨模块真实消费方）
-    或第 5 条（dedupe 那条真断言）变空转了，守卫只剩下自证自话的守卫用例。
+⚠️ **必须带污染源一起跑**（这是个真坑，别踩）：
+```
+env -u PYTHONPATH python3 -m pytest tests/test_llm_quota_alert_dedupe.py -q
+→ 25 passed, **0 red**   ← 注入了也不红！
+```
+第 5 条的红色**完全来自排在它前面的污染源**（本文件的 test_1/test_5，或全量里
+天然排在前面的 test_fund_detail_ak_timeout.py 等）。单独跑它一个文件，注入了也
+全绿 —— 谁图省事这么验一次，会得出「这条断言是空的、删了吧」的**反向结论**。
+所以指纹必须用上面那条两文件命令，不能只跑被保护的那一半。
+
+**次级命令（可选，用于查污染面）**：
+```
+env -u PYTHONPATH python3 -m pytest \
+    tests/test_fund_detail_ak_timeout.py \
+    tests/test_llm_quota_alert_dedupe.py -q
+→ 1 failed, 41 passed   ← 只有第 5 条红
+```
+这条证明第 5 条**不是只靠本文件才红**：ak_timeout（全量里 f < l，天然排在前面）
+单独就能把它喂红。全量里它前面有 3 个独立污染源
+（test_fund_detail_ak_timeout.py:40 / test_user_optimistic_lock.py:43 /
+test_broker_research_quota_degradation.py:226）。
+
+**全量跑（`pytest tests/ -q`，约 3 分钟）不是主判据**：理论值 ≥5，但**从未实测完**
+（唯一一次跑到 11 分钟被 kill）。谁真跑了，请把数字补到本段替换这句话。
+
+判读（两个方向都会响，别只盯一个）：
+  • 红**多于** 5 → 还有别的用例在吃 config 基线，污染面比已知的大；
+  • 红**少于** 5 → 更危险，分两层看：
+      - 掉到 **4**：先看清是谁没红。少的是 **test_7** → 守卫丢了跨模块真实消费方；
+        少的是 **第 5 条** → 说明**三个污染源全没了**（不只是本文件被改），
+        概率低但性质更严重，先查那 3 个文件是不是被"顺手清理"了。
+      - 掉到 **3**：test_7 和第 5 条**都没红**，那才真是"守卫只剩自证自话"。
 
 历史：ec41999 的 commit message 里写的是「3 failed」，那是 test_6/test_7 补进来
 之前的旧数 + 当时 dedupe 那条断言还处于被逼删状态。真实值是 5（software-engineer
 于 68033f7 把 dedupe 的真断言加回后指出并已复核）。以本段为准，commit message 不可改。
+A/B/C 三组跑法数据由 software-engineer 提供、本人独立复现（A 25 passed 0 red /
+B 5 failed 0.27s / C 1 failed 41 passed 0.76s）。
 """
 
 import importlib

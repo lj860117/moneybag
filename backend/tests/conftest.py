@@ -439,7 +439,10 @@ def _restore_config_module_state():
 
     # teardown：只改回「和基线不一样」的属性，避免无谓的 setattr
     #
-    # ⚠️ 故障注入锚点：把下一行的 setattr 换成 pass，全量应当**正好 5 条红**。
+    # ⚠️ 故障注入锚点：把下一行的 setattr 换成 pass，应当**正好 5 条红**。
+    # 复现命令（0.3s，必须带守卫文件一起跑，只跑被保护的文件会 0 红）：
+    #   pytest tests/test_config_module_state_restored.py \
+    #          tests/test_llm_quota_alert_dedupe.py -q
     # 预期红的清单与「少于 5 条才是警报」的理由见
     # tests/test_config_module_state_restored.py 模块 docstring 的「故障注入指纹（FI-1）」。
     for name, baseline_value in _CONFIG_BASELINE.items():
