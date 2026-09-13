@@ -134,6 +134,29 @@ for d in "${BACKEND_DIRS[@]}"; do
     fi
 done
 
+# ---- 1.8 同步仓库根的 tests/（与 backend/tests/ 同一个理由，见 1.5 段末注释）----
+# ⚠️ 这里不只是"假红"，是一个**活的写入隐患**：
+# 2026-09-13 实测线上 /opt/moneybag/tests/test_ai_chat_regression.py 停在 5/17，
+# 第 22 行是 `os.environ.get("MB_TEST_HOST", "http://150.158.47.189:8000")` ——
+# 默认值直指生产，而它的 module 级 autouse fixture 会 POST /api/stock-holdings 与
+# POST /api/fund-holdings **写数据**。任何人只要在服务器上跑一次 `pytest tests/`
+# （不显式带 MB_TEST_HOST）就会往生产写垃圾（历史上攒下 115 条 QA_* 条目、
+# llm_usage/by_user/ 下 58 个）。本地 9/13 14:54 已把默认值改回 127.0.0.1，
+# 但没同步 → 线上一直是危险版本。
+# 另外 backend/tests/test_no_prod_default_in_test_host.py 会扫描本目录，
+# 扫不到 ≥3 处兜底点就会因"反空转断言"转红 —— 所以不能简单删掉服务器上的这份。
+TEST_DIRS=(
+    "tests/"
+)
+for d in "${TEST_DIRS[@]}"; do
+    if [ -d "$REPO_ROOT/$d" ]; then
+        echo "  → rsync $d"
+        eval "$RSYNC --exclude='__pycache__' --exclude='*.pyc' --exclude='.pytest_cache' \"$REPO_ROOT/$d\" \"$REMOTE_USER@$SERVER:$REMOTE_PATH/$d\""
+    else
+        echo "  ⚠️  跳过不存在: $d"
+    fi
+done
+
 # ---- 2. 同步前端改动文件 ----
 echo "[3/7] 同步前端代码..."
 # ⚠️ 手工维护的清单 —— 加前端根文件必须同时加到这里，否则「本地改了、线上永远旧」。
