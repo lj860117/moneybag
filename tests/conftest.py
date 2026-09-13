@@ -18,6 +18,65 @@ import pytest
 import httpx
 
 # ============================================================
+# 生产机自锁（FIX 2026-09-13）—— 必须在隔离逻辑与任何 fixture 之前执行
+# ============================================================
+# 事故（真实发生，2026-09-13 部署验收）：
+#   在生产服务器上直接跑 `pytest tests/`，一次往 /opt/moneybag/data 写入
+#   14 个 QA_* 路径（含 llm_usage/by_user/ 配额文件、decision_logs），并触发
+#   LLM 网关熔断（用户桶 qa_test_20260419  burst=10/10，daily=26/100）。
+#
+# 为什么下面那段 DATA_DIR 隔离挡不住（这是本次事故的关键，别误以为隔离没生效）：
+#   隔离只作用于**测试进程内直接 import 的代码**。而本套测试里大量是 HTTP e2e ——
+#   `BASE = os.environ.get("MB_TEST_HOST", "http://127.0.0.1:8000")` 打的是**另一个
+#   进程**（uvicorn）。开发机上那是临时后端；生产机上那就是生产服务本体，它用
+#   **自己的** DATA_DIR（/opt/moneybag/data）建用户、记账、写缓存。测试进程把
+#   DATA_DIR 换成临时目录，对它没有任何约束力。
+#
+# 所以这里不做"隔离"，而是**拒绝运行**：根 tests/ 是开发期 e2e 套件，其安全前提
+# 是"不在生产机上跑"。一旦检测到本机就是生产服务器，立刻失败并说明原因，而不是
+# 默默跑完再污染一遍。
+#
+# 逃生阀：MONEYBAG_ALLOW_E2E_ON_PROD=1（显式确认，例如需要在生产机上做一次受控
+# 验收）。与 MONEYBAG_PYTEST_DATA_DIR 同思路：写出来这个动作本身就是一次确认。
+def _detect_production_machine() -> str:
+    """返回非空字符串 = 本机是生产机的判定理由；空串 = 不是（或已显式放行）。"""
+    if os.environ.get("MONEYBAG_ALLOW_E2E_ON_PROD") == "1":
+        return ""
+    if os.environ.get("MONEYBAG_ENV", "").strip().lower() == "production":
+        return "环境变量 MONEYBAG_ENV=production"
+    prod_users = Path("/opt/moneybag/data/users")
+    if prod_users.is_dir():
+        try:
+            n = len(list(prod_users.glob("*.json")))
+        except OSError:
+            n = -1
+        return f"检测到生产部署目录 {prod_users.parent}（users/ 下 {n} 个真实用户文件）"
+    return ""
+
+
+_PROD_REASON = _detect_production_machine()
+if _PROD_REASON:
+    raise RuntimeError(
+        "\n" + "=" * 74
+        + "\n[conftest] 拒绝在**生产机**上运行根 tests/ —— 已阻断。"
+        + f"\n判定依据：{_PROD_REASON}"
+        + "\n"
+        + "\n原因：根 tests/ 是 HTTP e2e 套件，默认打 http://127.0.0.1:8000 —— 在生产机"
+        + "\n上那是生产服务本体（共用 /opt/moneybag/data）。跑一次就写生产数据并消耗真实"
+        + "\nLLM 配额（2026-09-13 实测：14 个 QA_* 路径 + 触发网关熔断）。"
+        + "\n注意：本文件顶部的 DATA_DIR 隔离对**跨进程 HTTP** 无效，挡不住这条路。"
+        + "\n"
+        + "\n正确做法："
+        + "\n  · 服务器上只跑 backend/tests/（已隔离、不依赖 HTTP）："
+        + "\n      cd /opt/moneybag/backend && env -u PYTHONPATH ../venv/bin/python -m pytest tests/ -q"
+        + "\n  · 根 tests/ 在开发机上跑（先本地起后端，或显式设 MB_TEST_HOST）"
+        + "\n"
+        + "\n确实需要在生产机上受控验收时，显式确认："
+        + "\n      MONEYBAG_ALLOW_E2E_ON_PROD=1 pytest tests/ -q"
+        + "\n" + "=" * 74
+    )
+
+# ============================================================
 # 数据隔离（FIX 2026-09-05）—— 必须在任何 fixture 定义之前执行
 # ============================================================
 # 为什么要有这一段（真实事故，不是防御性想象）：

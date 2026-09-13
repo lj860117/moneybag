@@ -145,6 +145,18 @@ done
 # 但没同步 → 线上一直是危险版本。
 # 另外 backend/tests/test_no_prod_default_in_test_host.py 会扫描本目录，
 # 扫不到 ≥3 处兜底点就会因"反空转断言"转红 —— 所以不能简单删掉服务器上的这份。
+#
+# ⚠️⚠️ 关键区分（2026-09-13 追加，别混淆）：**同步这份 ≠ 可以在服务器上跑这份。**
+# 本目录是 HTTP e2e 套件，默认打 http://127.0.0.1:8000 —— 在开发机上那是临时后端，
+# 在生产机上那就是**生产服务本体**（共用 /opt/moneybag/data）。9/13 部署验收时在
+# 服务器上跑了一次 `pytest tests/`，实测写进 14 个 QA_* 路径（含 llm_usage/by_user/
+# 配额文件、decision_logs）并触发 LLM 网关熔断（qa_test_20260419 burst=10/10）。
+# 注意：`tests/conftest.py` 顶部的 DATA_DIR 隔离只作用于**测试进程内 import 的代码**，
+# 对「HTTP 打到另一个进程」这条路无效 —— 隔离在，照样污染。
+# 因此已在 `tests/conftest.py` 顶部加**生产机自锁**：检测到本机是生产服务器就
+# 直接拒绝收集（逃生阀 MONEYBAG_ALLOW_E2E_ON_PROD=1）。所以：
+#   · 服务器上要跑测试 → 只跑 backend/tests/（已隔离、不依赖 HTTP）
+#   · 根 tests/ → 在开发机上跑；同步到服务器只为「消除化石版本 + 让守卫扫得到」
 TEST_DIRS=(
     "tests/"
 )
