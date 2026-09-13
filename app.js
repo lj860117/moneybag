@@ -623,7 +623,9 @@ function $(s){return document.querySelector(s)}
 function fmtMoney(n){if(Math.abs(n)>=10000)return(n/10000).toFixed(1)+'万';return n.toLocaleString('zh-CN')}
 function fmtFull(n){return'¥'+n.toLocaleString('zh-CN')}
 function getProfile(s){return RISK_PROFILES.find(p=>s>=p.min&&s<=p.max)||RISK_PROFILES[2]}
-function calcReturns(a,amt,sc){let t=0;a.forEach(x=>{t+=(amt*x.pct/100)*x.returns[sc]});return t}
+// v9.9.26 P0: 收益缺失不得当成 0 参与求和（那会把「不知道」算成「不赚不赔」）。
+// 返回 {total, missing, count, complete}；调用点必须检查 complete 再展示金额。
+function calcReturns(a,amt,sc){let t=0,missing=0;a=a||[];a.forEach(x=>{const r=x&&x.returns;const v=(r&&typeof r[sc]==='number'&&isFinite(r[sc]))?r[sc]:null;if(v===null){missing++;return}t+=(amt*x.pct/100)*v});return{total:t,missing:missing,count:a.length,complete:missing===0}}
 
 
 // ---- 客户端数据缓存（P0 性能优化：避免重复 fetch 造成的 3-4s 等待）----

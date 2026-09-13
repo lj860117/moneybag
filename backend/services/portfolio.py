@@ -74,6 +74,12 @@ def _save_file_cache(key: str, value: list):
 _FUND_COLORS = ["#3B82F6", "#10B981", "#F59E0B", "#F97316", "#EF4444", "#8B5CF6",
                 "#EC4899", "#14B8A6", "#F43F5E", "#6366F1"]
 
+# 货币基金年化三情景 —— **假设值**（非实测、未回测）。
+# P0 数据诚实：这组数字没有真实数据支撑，因此必须随附 returns_source=
+# "assumption" 与 returns_reason，绝不允许被当成实测收益展示。
+_CASH_FUND_RETURNS = {"good": 0.02, "mid": 0.018, "bad": 0.015}
+_CASH_FUND_RETURNS_REASON = "货币基金年化区间假设（非实测，未回测）"
+
 
 # ============================================================
 # v9.5.11 规则引擎选基 — 0 LLM，纯数据驱动
@@ -159,6 +165,39 @@ def _make_reason(fund: dict, ftype: str, val_pct: float, fgi: float) -> str:
     return f"评分{score:.0f}，多因子精选"
 
 
+# P0（v9.9.26）：收益率三情景 → 候选池字段映射。
+# good/mid/bad 分别对应候选池的 1y/6m/3m（沿用既有口径，不改语义）。
+_RETURN_FIELDS = (("1y", "good", "近1年"), ("6m", "mid", "近6月"), ("3m", "bad", "近3月"))
+
+
+def _candidate_returns(r) -> tuple:
+    """把候选池的真实收益构造为 good/mid/bad 三情景值（数据诚实，禁止兜底）。
+
+    规则：
+      - 有真实数值就用真实数值，**包括真实的 0**（0 必须保持 0，绝不能被
+        `or` 吞成默认百分数——旧实现对 1y / 6m / 3m 各兜底了 15 / 5 / -5，
+        会把真实的 0 收益谎报成默认值）；
+      - 缺失 / None / 非数值 → 该项为 None，并记录缺失原因；
+      - 三项齐全 → source="candidate_pool"；任一项缺失 → source="partial"。
+
+    返回 (returns_dict, source, reason)。
+    """
+    r = r if isinstance(r, dict) else {}
+    out = {}
+    missing = []
+    for key, field, label in _RETURN_FIELDS:
+        v = r.get(key)
+        # bool 是 int 的子类，显式排除；只接受真正的数值
+        if isinstance(v, (int, float)) and not isinstance(v, bool):
+            out[field] = round(v / 100, 2)
+        else:
+            out[field] = None
+            missing.append(label)
+    if missing:
+        return out, "partial", "候选池未提供" + "、".join(missing) + "收益"
+    return out, "candidate_pool", ""
+
+
 def _rule_pick_funds(risk_profile: str, val_pct: float, fgi: float) -> list:
     """规则引擎选基 — 0 LLM，按风险偏好 + 市场环境 + 评分排序
     返回: [{name, code, fullName, color, pct, category, assetType, ruleReason, returns, score}, ...]
@@ -204,6 +243,7 @@ def _rule_pick_funds(risk_profile: str, val_pct: float, fgi: float) -> list:
                 r = fund.get("returns", {}) or {}
                 # 类别映射：bond → bond，其它都算 stock，方便前端饼图聚合
                 category = "bond" if ftype == "bond" else ("qdii" if ftype == "qdii" else "stock")
+                ret, ret_src, ret_reason = _candidate_returns(r)
                 result.append({
                     "name": fund.get("name", "")[:24],
                     "code": str(fund.get("code", "")),
@@ -214,11 +254,9 @@ def _rule_pick_funds(risk_profile: str, val_pct: float, fgi: float) -> list:
                     "assetType": "fund",
                     "ruleReason": _make_reason(fund, ftype, val_pct, fgi),
                     "score": fund.get("score", 0),
-                    "returns": {
-                        "good": round((r.get("1y") or 12) / 100, 2),
-                        "mid":  round((r.get("6m") or 4) / 100, 2),
-                        "bad":  round((r.get("3m") or -4) / 100, 2),
-                    },
+                    "returns": ret,
+                    "returns_source": ret_src,
+                    "returns_reason": ret_reason,
                 })
                 color_idx += 1
 
@@ -233,7 +271,9 @@ def _rule_pick_funds(risk_profile: str, val_pct: float, fgi: float) -> list:
                 "category": "cash",
                 "assetType": "fund",
                 "ruleReason": "现金应急储备（塔勒布反脆弱）",
-                "returns": {"good": 0.02, "mid": 0.018, "bad": 0.015},
+                "returns": dict(_CASH_FUND_RETURNS),
+                "returns_source": "assumption",
+                "returns_reason": _CASH_FUND_RETURNS_REASON,
             })
 
         # 总和归一化到 100
@@ -254,8 +294,13 @@ def _rule_pick_funds(risk_profile: str, val_pct: float, fgi: float) -> list:
 
 
 def _ai_pick_funds(risk_profile: str, val_pct: float, fgi: float) -> list:
-    """让 DeepSeek 从 fund_screen 排行里选出最优 5 只基金 + 货币基金兜底
-    返回: [{name, code, fullName, color, category, returns, aiReason}, ...]
+    """让 DeepSeek 从 fund_screen 排行里选出最优 5 只基金（仅定性选择）。
+
+    返回: [{name, code, fullName, color, pct, pct_source, category, returns,
+            returns_source, returns_reason, aiReason, ...}, ...]
+    P0：占比由 _allocate_picks 按风险模板确定性计算（pct_source 标为
+    deterministic_template），LLM 在 JSON 里给出的 pct 一律忽略；
+    收益三情景只取候选池真实值，缺失则 None + returns_reason，绝不兜底。
     优先级：内存缓存 → 文件缓存（7天）→ 实时LLM调用
     """
     cache_key = f"ai_fund_{risk_profile}_{int(val_pct//10)*10}_{int(fgi//10)*10}"  # 按10%精度分桶，减少缓存碎片
@@ -320,10 +365,11 @@ def _ai_pick_funds(risk_profile: str, val_pct: float, fgi: float) -> list:
 1. 选 5 只，涵盖不同类型（不要全选同类型）
 2. 根据市场环境调整选择（高估多配债/低估多配股）
 3. 给每只基金一句话理由（15字内）
-4. 给出建议占比（5只加起来=95%，剩5%给货币基金应急）
+4. 你只负责「挑哪些基金」这个定性判断；**不要输出任何占比、百分比或数字**
+   ——具体占比由系统按风险等级模板确定性计算，你给出的任何占比都会被忽略。
 
 返回 JSON 数组，格式：
-[{{"code":"110020","name":"沪深300","reason":"低估值反弹机会","pct":25,"category":"stock"}},...]
+[{{"code":"110020","name":"沪深300","reason":"低估值反弹机会","category":"stock"}},...]
 只返回 JSON 数组，不要其他内容。"""
 
         # v9.5.140: 走 gateway 统一管理，模型由 MODEL_ROUTING 路由，
@@ -352,43 +398,29 @@ def _ai_pick_funds(risk_profile: str, val_pct: float, fgi: float) -> list:
 
         picks = json.loads(json_match.group())
 
-        # 构造标准格式
-        result = []
+        # 构造标准格式：LLM 只贡献 code/name/reason/category（定性选择），
+        # 占比一律交给 _allocate_picks 按风险模板确定性计算——即使 LLM 在
+        # JSON 里塞回 "pct" 也一律忽略（P0：LLM 不再现编数字）。
         candidate_map = {f["code"]: f for f in all_candidates}
-        for i, p in enumerate(picks[:5]):
+        normalized = []
+        for p in picks[:5]:
             code = str(p.get("code", ""))
             cand = candidate_map.get(code, {})
-            cat = p.get("category", "stock")
-            r = cand.get("returns", {})
-            result.append({
-                "name": p.get("name", cand.get("name", code)),
+            normalized.append({
                 "code": code,
+                "pick_name": p.get("name", cand.get("name", code)),
                 "fullName": cand.get("name", p.get("name", "")),
-                "color": _FUND_COLORS[i % len(_FUND_COLORS)],
-                "pct": p.get("pct", 19),
-                "category": cat,
-                "assetType": "fund",  # AI选出的都是基金
-                "aiReason": p.get("reason", ""),
+                "reason": p.get("reason", ""),
+                "category": p.get("category", "stock"),
                 "score": cand.get("score", 0),
-                "returns": {
-                    "good": round((r.get("1y", 15) or 15) / 100, 2),
-                    "mid": round((r.get("6m", 5) or 5) / 100, 2),
-                    "bad": round((r.get("3m", -5) or -5) / 100, 2),
-                },
+                "returns": cand.get("returns", {}),
             })
 
-        # 加货币基金兜底（5%）
-        result.append({
-            "name": "货币(应急)",
-            "code": "余额宝",
-            "fullName": "余额宝",
-            "color": "#E5E7EB",
-            "pct": 5,
-            "category": "cash",
-            "assetType": "fund",
-            "aiReason": "应急储备",
-            "returns": {"good": 0.02, "mid": 0.018, "bad": 0.015},
-        })
+        if not normalized:
+            print("[AI_FUND] LLM 未返回有效标的，降级")
+            return None
+
+        result = _allocate_picks(normalized, risk_profile)
 
         print(f"[AI_FUND] Picked {len(result)} funds for {risk_profile}")
         _ai_fund_cache.set(cache_key, result)
@@ -420,6 +452,100 @@ RISK_TEMPLATES = {
     "积极型": {"stock": 0.70, "bond": 0.15, "cash": 0.15},
     "激进型": {"stock": 0.80, "bond": 0.10, "cash": 0.10},
 }
+
+# AI 选基最终会追加的现金储备（塔勒布反脆弱）——固定 5%，与规则引擎保持一致。
+_CASH_RESERVE_PCT = 5
+
+
+def _allocate_picks(picks: list, risk_profile: str) -> list:
+    """把（LLM 选出的）基金按风险模板**确定性**分配占比。
+
+    P0 数据诚实：LLM 只做定性选择（选哪些基金），占比一律由本函数查表计算，
+    不允许 LLM 现编任何数字（与 stock_screen P1-7 同一原则）。
+
+    规则：
+      - 目标权重取自 RISK_TEMPLATES[risk_profile]，取不到回退「稳健型」；
+      - 模板里的 cash 份额由末尾单独追加的「货币(应急) 余额宝 5%」代表，
+        因此这里只对非现金部分按比例缩放到 95%（基金合计 95% + 货基 5% = 100%）；
+      - 同一 category 内多只基金等分该类别权重，取整余数补到最后一只，
+        保证类内合计与整体合计都精确（不出现 95% / 101% 这类漂移）；
+      - 某类别没选到基金时，其目标权重按比例转移给确实选到基金的类别。
+
+    returns 三情景沿用 _candidate_returns：有真实数据用真实数据（含真实的 0），
+    缺失则 None + returns_reason，绝不兜底成数字。
+    """
+    template = RISK_TEMPLATES.get(risk_profile) or RISK_TEMPLATES.get("稳健型") or {}
+    non_cash = {k: float(v) for k, v in template.items() if k != "cash" and v}
+    if not non_cash:
+        non_cash = {"stock": 1.0}
+
+    def _norm_cat(c) -> str:
+        # 模板只有 stock/bond 两类；index/qdii/other/缺失一律按权益(stock)归集
+        return "bond" if str(c or "").strip().lower() == "bond" else "stock"
+
+    groups = {}  # category → [原始下标...]
+    for i, p in enumerate(picks):
+        groups.setdefault(_norm_cat(p.get("category")), []).append(i)
+
+    # 只保留确实选到基金的类别
+    active = {k: v for k, v in non_cash.items() if groups.get(k)}
+    if not active:
+        active = {k: v for k, v in non_cash.items()}
+
+    total_active = sum(active.values()) or 1.0
+    raw = {k: v / total_active * 95.0 for k, v in active.items()}
+    targets = {k: int(round(v)) for k, v in raw.items()}
+    drift = 95 - sum(targets.values())
+    if drift:
+        # 取整误差全部补偿到原始权重最大的类别，保证合计精确 = 95
+        anchor = max(raw, key=lambda k: raw[k])
+        targets[anchor] += drift
+
+    pcts = [0] * len(picks)
+    for cat, idxs in groups.items():
+        t = targets.get(cat)
+        if t is None:
+            continue
+        n = len(idxs)
+        base, rem = divmod(t, n)
+        for j, idx in enumerate(idxs):
+            pcts[idx] = base + (rem if j == n - 1 else 0)
+
+    result = []
+    for i, p in enumerate(picks):
+        ret, ret_src, ret_reason = _candidate_returns(p.get("returns", {}))
+        result.append({
+            "name": p.get("pick_name") or p.get("fullName") or p.get("code", ""),
+            "code": p.get("code", ""),
+            "fullName": p.get("fullName", ""),
+            "color": _FUND_COLORS[i % len(_FUND_COLORS)],
+            "pct": pcts[i],
+            "pct_source": "deterministic_template",
+            "category": p.get("category", "stock"),
+            "assetType": "fund",  # AI 选出的都是基金
+            "aiReason": p.get("reason", ""),
+            "score": p.get("score", 0),
+            "returns": ret,
+            "returns_source": ret_src,
+            "returns_reason": ret_reason,
+        })
+
+    # 货币基金兜底（固定 5%，占比来源同样是确定性规则而非 AI）
+    result.append({
+        "name": "货币(应急)",
+        "code": "余额宝",
+        "fullName": "余额宝",
+        "color": "#E5E7EB",
+        "pct": _CASH_RESERVE_PCT,
+        "pct_source": "deterministic_template",
+        "category": "cash",
+        "assetType": "fund",
+        "aiReason": "应急储备",
+        "returns": dict(_CASH_FUND_RETURNS),
+        "returns_source": "assumption",
+        "returns_reason": _CASH_FUND_RETURNS_REASON,
+    })
+    return result
 
 
 def _dynamic_adjust(base: dict, val_pct: float, fgi: float) -> dict:
@@ -630,6 +756,13 @@ RECOMMENDED_FUNDS = [
      "returns": {"good": 0.02, "mid": 0.018, "bad": 0.015}, "category": "cash", "assetType": "fund"},
 ]
 
+# 经典配置的收益三情景是**模型假设值**（既非实测也非回测），不是真实数据。
+# P0 数据诚实：显式标注来源，避免被下游当成事实。
+_CLASSIC_FUND_RETURNS_REASON = "经典配置模型假设收益（非实测，未回测）"
+for _f in RECOMMENDED_FUNDS:
+    _f["returns_source"] = "assumption"
+    _f["returns_reason"] = _CLASSIC_FUND_RETURNS_REASON
+
 
 def get_recommend_allocations(risk_profile: str = "稳健型", with_ai: bool = False, preference: str = "fund") -> dict:
     """返回推荐配置列表 + 配置理由 + 可选 AI 点评
@@ -680,6 +813,7 @@ def get_recommend_allocations(risk_profile: str = "稳健型", with_ai: bool = F
             if ai_picks:
                 allocations = ai_picks
                 adjustments.append("🤖 AI 从全量基金排行中动态精选")
+                adjustments.append("📐 占比来自风险等级模板（确定性计算），非 AI 现编数字")
             else:
                 pcts = config.RISK_ALLOC_PCTS.get(risk_profile, config.RISK_ALLOC_PCTS["稳健型"])
                 for i, fund in enumerate(RECOMMENDED_FUNDS):
@@ -722,7 +856,9 @@ def get_recommend_allocations(risk_profile: str = "稳健型", with_ai: bool = F
                         "category": "stock",
                         "assetType": "stock",  # 明确标记：个股，只能券商买
                         "score": s.get("totalScore", 0),
-                        "returns": {"good": 0.25, "mid": 0.12, "bad": -0.15},
+                        # P0：选股引擎不提供预期收益率，绝不自己编数字
+                        "returns": None,
+                        "returns_reason": "选股引擎未提供预期收益率，未做假设",
                     })
                 adjustments.append(f"📊 推荐 {len(allocations)} 只选股引擎 TOP 精选个股")
         except Exception as e:
@@ -761,7 +897,9 @@ def get_recommend_allocations(risk_profile: str = "稳健型", with_ai: bool = F
                     "category": "stock",
                     "assetType": "stock",  # 明确标记：个股
                     "score": s.get("totalScore", 0),
-                    "returns": {"good": 0.22, "mid": 0.10, "bad": -0.12},
+                    # P0：选股引擎不提供预期收益率，绝不自己编数字
+                    "returns": None,
+                    "returns_reason": "选股引擎未提供预期收益率，未做假设",
                 })
             adjustments.append(f"🔄 混合模式：{len(fund_slice)} 只基金 + {len(stocks[:3])} 只精选股票")
         except Exception as e:

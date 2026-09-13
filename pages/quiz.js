@@ -29,7 +29,7 @@ currentAllocs=al;
 // 保存偏好到 portfolio
 const pp=loadPortfolio();pp.preference=pref;savePortfolio(pp);
 const prefLabels={'fund':'🏦 纯基金','stock':'📊 纯股票','mixed':'🔄 混合'};
-const gR=calcReturns(al,amt,'good'),mR=calcReturns(al,amt,'mid'),bR=calcReturns(al,amt,'bad');
+const gR=calcReturns(al,amt,'good'),mR=calcReturns(al,amt,'mid'),bR=calcReturns(al,amt,'bad');const projComplete=gR.complete&&mR.complete&&bR.complete;
 const adjHtml=_recAdjustments.length?`<div style="background:rgba(139,92,246,.08);border:1px solid rgba(139,92,246,.2);border-radius:12px;padding:12px;margin:8px 0"><div style="font-size:13px;font-weight:700;color:#8B5CF6;margin-bottom:8px">⚙️ 配置逻辑</div><div style="font-size:12px;line-height:1.8;color:var(--text1)">${_recAdjustments.map(a=>`<div>${a}</div>`).join('')}</div>${_recMarketData.valuationPct?`<div style="font-size:11px;color:var(--text2);margin-top:6px">数据来源：沪深300估值 ${_recMarketData.valuationPct}% · 恐贪指数 ${_recMarketData.fearGreed}</div>`:''}</div>`:'';
 $('#app').innerHTML=`<div class="result-page">
 <div class="profile-card"><div class="profile-emoji">${pf.emoji}</div><div class="profile-name" style="color:${pf.color}">你是「${pf.name}」投资者</div><div class="profile-desc">${pf.desc}</div><div class="profile-period">建议投资周期：${pf.period} · 偏好：${prefLabels[pref]||pref}</div></div>
@@ -42,17 +42,17 @@ ${adjHtml}
 <div class="section-title">📊 数据来源</div>
 <div class="data-source-card"><div class="data-source-title">配置依据</div><div class="data-source-item">Markowitz均值-方差模型(1952诺贝尔经济学奖)</div><div class="data-source-item">参考Vanguard Target-Date基金系列配比</div><div class="data-source-item">各类资产过去10-20年历史年化回报</div><div style="margin-top:12px"><div class="data-source-title">实时数据 <span class="api-status ${API_AVAILABLE?'on':'off'}">${API_AVAILABLE?'🟢已连接':'🔴离线'}</span></div></div></div>
 <div class="section-title">💰 一年后可能会怎样</div>
-<div class="projection-card"><div class="scenario-grid">
-<div class="scenario-item"><div>📈</div><div class="scenario-label">乐观</div><div class="scenario-return pos">+${(gR/amt*100).toFixed(1)}%</div><div class="scenario-money">赚${fmtMoney(Math.round(gR))}</div></div>
-<div class="scenario-item"><div>📊</div><div class="scenario-label">中性</div><div class="scenario-return pos">+${(mR/amt*100).toFixed(1)}%</div><div class="scenario-money">赚${fmtMoney(Math.round(mR))}</div></div>
-<div class="scenario-item"><div>📉</div><div class="scenario-label">悲观</div><div class="scenario-return ${bR>=0?'pos':'neg'}">${bR>=0?'+':''}${(bR/amt*100).toFixed(1)}%</div><div class="scenario-money">${bR>=0?'赚':'亏'}${fmtMoney(Math.abs(Math.round(bR)))}</div></div>
-</div><div style="font-size:13px;color:var(--text2);margin-bottom:8px">3年累计预测(中性场景)</div><div class="projection-chart-wrap"><canvas id="projChart"></canvas></div></div>
+<div class="projection-card">${projComplete?`<div class="scenario-grid">
+<div class="scenario-item"><div>📈</div><div class="scenario-label">乐观</div><div class="scenario-return pos">+${(gR.total/amt*100).toFixed(1)}%</div><div class="scenario-money">赚${fmtMoney(Math.round(gR.total))}</div></div>
+<div class="scenario-item"><div>📊</div><div class="scenario-label">中性</div><div class="scenario-return pos">+${(mR.total/amt*100).toFixed(1)}%</div><div class="scenario-money">赚${fmtMoney(Math.round(mR.total))}</div></div>
+<div class="scenario-item"><div>📉</div><div class="scenario-label">悲观</div><div class="scenario-return ${bR.total>=0?'pos':'neg'}">${bR.total>=0?'+':''}${(bR.total/amt*100).toFixed(1)}%</div><div class="scenario-money">${bR.total>=0?'赚':'亏'}${fmtMoney(Math.abs(Math.round(bR.total)))}</div></div>
+</div><div style="font-size:13px;color:var(--text2);margin-bottom:8px">3年累计预测(中性场景)</div><div class="projection-chart-wrap"><canvas id="projChart"></canvas></div>`:`<div style="padding:16px;font-size:13px;color:var(--text2);line-height:1.7">⚠️ 部分基金收益数据缺失，预期收益不可计算。<br>本工具不对缺失数据做任何假设，缺失原因见各基金的收益来源标注。</div>`}</div>
 <div id="signalsSection"></div>
 <div class="section-title">⚠️ 三条铁律</div>
 <div class="rules-card"><div class="rule-item"><div class="rule-num">1</div><div class="rule-text"><strong>跌了别卖</strong>—越跌越该买</div></div><div class="rule-item"><div class="rule-num">2</div><div class="rule-text"><strong>别看新闻瞎操作</strong>—关掉手机</div></div><div class="rule-item"><div class="rule-num">3</div><div class="rule-text"><strong>至少拿3年</strong>—3年赚钱概率>85%</div></div></div>
 <div class="bottom-actions"><button class="action-btn green" onclick="confirmPurchase()">✅ 我知道了，去录入持仓</button><button class="action-btn secondary" onclick="restart()">🔄 重新测评</button></div>
 <div class="footer-disclaimer">⚠️ 本工具仅供参考学习，不构成投资建议。投资有风险，入市需谨慎。</div></div>`;
-renderNav();setTimeout(()=>drawAllocChart(al),100);setTimeout(()=>drawProjChart(amt,mR/amt),200);loadSignals()}
+renderNav();setTimeout(()=>drawAllocChart(al),100);if(projComplete)setTimeout(()=>drawProjChart(amt,mR.total/amt),200);loadSignals()}
 
 async function loadSignals(){
 const el=document.getElementById('signalsSection');if(!el)return;
