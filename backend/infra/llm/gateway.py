@@ -1464,8 +1464,13 @@ class LLMGateway:
         except Exception:
             return _BudgetDecision("allow", "ok", "")
 
+        # mypy strict: TOKEN_BUDGET 是无类型注解的混合 dict（float + str），被推断成
+        # dict[str, object]，于是 int()/float() 直接吃 .get() 的返回值会报
+        # [call-overload] / [arg-type]。同文件 check_budget() 内早已用 cast(float, ...)
+        # 处理（见下方 daily_budget_rmb 等处），这 4 处此前漏了 —— 补齐，风格保持一致。
+        #
         # ① 单次 input 上限（防单次上下文失控）
-        max_input = int(TOKEN_BUDGET.get("max_input_per_call", 0) or 0)
+        max_input = int(cast(float, TOKEN_BUDGET.get("max_input_per_call", 0) or 0))
         if max_input > 0 and input_tokens_est > max_input:
             return _BudgetDecision(
                 "refuse", "input_over_budget",
@@ -1473,7 +1478,7 @@ class LLMGateway:
             )
 
         # ② 月度金额上限
-        budget = float(TOKEN_BUDGET.get("monthly_budget_rmb", 0) or 0)
+        budget = float(cast(float, TOKEN_BUDGET.get("monthly_budget_rmb", 0) or 0))
         on_exceed = str(TOKEN_BUDGET.get("on_exceed", "degrade")).strip().lower()
         if budget <= 0:
             return _BudgetDecision("allow", "ok", "")
@@ -1491,7 +1496,7 @@ class LLMGateway:
             # 默认 degrade → 不调 LLM，交回调用方的规则引擎
             return _BudgetDecision("refuse", "budget_exceeded", detail)
 
-        critical = float(TOKEN_BUDGET.get("critical_threshold", 0.9))
+        critical = float(cast(float, TOKEN_BUDGET.get("critical_threshold", 0.9)))
         if spend >= budget * critical:
             return _BudgetDecision(
                 "degrade", "monthly_critical",
@@ -1526,7 +1531,7 @@ class LLMGateway:
             # v9.9.30: 月度金额也是**真实闸门**了，健康检查必须一并如实报出，
             # 否则"日度 ok"会掩盖"月度已降级"。
             monthly_spend, monthly_days = self._monthly_spend_rmb()
-            monthly_budget = float(TOKEN_BUDGET.get("monthly_budget_rmb", 0) or 0)
+            monthly_budget = float(cast(float, TOKEN_BUDGET.get("monthly_budget_rmb", 0) or 0))
             monthly_pct = (monthly_spend / monthly_budget) if monthly_budget > 0 else 0.0
             if monthly_budget <= 0:
                 monthly_status = "unknown"
