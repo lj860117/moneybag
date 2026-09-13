@@ -248,8 +248,10 @@ def test_ocr_template_does_not_start_with_a_bare_number():
 def test_every_rule_reply_goes_through_the_single_constructor():
     code = _code_only(_HELPERS)
     assert 'return {"text": text, "confidence' not in code
-    # 21 个原 return 点都必须走统一构造入口
-    assert code.count("return _rule_reply(text,") == 21, (
+    # 22 个 return 点都必须走统一构造入口
+    # （22 = 原 21 处 + 本轮新增的「我持有 X 吗」确定性作答分支；新增分支请沿用
+    #  _rule_reply，不要各自写 dict 字面量，并同步更新这个数字。）
+    assert code.count("return _rule_reply(text,") == 22, (
         "规则回答的构造点数量变了：新增分支请沿用 _rule_reply，"
         "不要各自写 dict 字面量。")
 

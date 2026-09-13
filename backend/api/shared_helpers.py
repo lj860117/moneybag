@@ -1039,6 +1039,145 @@ def _rule_reply(text: str, intent: str) -> dict:
     }
 
 
+# ========================================================
+# 「我持有 X 吗」确定性作答（查真实持仓记录，绝不猜）
+# ========================================================
+# `portfolio_ctx` 由 `_build_portfolio_context()` 生成，持仓行只有两种真实格式：
+#   ① 前端传了 p.holdings  →  "  - 贵州茅台(600519)：¥80,000，目标占比 20%"
+#   ② 后端自拉真实持仓     →  "  - 股票：贵州茅台(600519) 100股 成本¥1700"
+#                              "  - 基金：易方达蓝筹(005827) 5000份 成本2.15"
+# 两种都是「以 `- ` 起头 + 名称后紧跟括号里 6 位代码」，所以用同一条正则解析。
+# 其它小节（【持仓关联情报】等）的行是 "  名称(代码) — 行业:…"，没有 `-` 前缀，
+# 不会被误当成持仓行。
+_HOLDING_ROW_RE = _re.compile(
+    r'^\s*[-•]\s*(?:(?:股票|基金)[：:]\s*)?'
+    r'(?P<name>[^\s(（：:,，]+?)\s*[（(](?P<code>\d{6})[)）](?P<detail>.*)$',
+    _re.MULTILINE,
+)
+
+# 持仓记录为空时的既有标记（与 `_build_portfolio_context` 的兜底文案一致）
+_HOLDING_EMPTY_MARKERS = ("没有任何持仓", "没有持仓", "尚未录入", "尚未建仓", "未建仓")
+
+# 「我持有 X 吗」的三种问法（X 是具体标的）
+_SPECIFIC_HOLDING_PATTERNS = [
+    _re.compile(r'我持有(.+?)(?:吗|么|嘛|没有|没)\s*[？?]?\s*$'),
+    _re.compile(r'我有没有(.+?)\s*[？?]?\s*$'),
+    _re.compile(r'是不是持有(.+?)(?:吗|么|嘛)?\s*[？?]?\s*$'),
+]
+
+# 这些是"分类词"而不是标的，不能拿来判定持有与否，命中则视为无法识别
+_GENERIC_TARGET_WORDS = ("股票", "基金", "资产", "持仓", "现金", "存款", "理财",
+                         "账户", "投资", "标的", "什么", "哪些", "多少")
+
+
+def _extract_specific_target(msg: str) -> str | None:
+    """从「我持有 X 吗」类句子中抽出标的 X；抽不出（或 X 只是分类词）返回 None。"""
+    text = (msg or "").strip()
+    for pat in _SPECIFIC_HOLDING_PATTERNS:
+        m = pat.search(text)
+        if not m:
+            continue
+        target = m.group(1).strip()
+        target = _re.sub(r'^(?:持有|有|买过|买)', '', target).strip().strip('的 ')
+        target = target.strip('，,。. ')
+        if not (2 <= len(target) <= 12):
+            continue
+        if not _re.fullmatch(r'\d{6}', target) and any(
+                g in target for g in _GENERIC_TARGET_WORDS):
+            continue
+        return target
+    return None
+
+
+def _extract_holding_rows(portfolio_ctx: str) -> list[dict]:
+    """解析 `portfolio_ctx` 里的持仓行（锚点是"名称 + 括号内 6 位代码"）。"""
+    rows = []
+    for m in _HOLDING_ROW_RE.finditer(portfolio_ctx or ""):
+        rows.append({
+            "name": m.group("name").strip(),
+            "code": m.group("code"),
+            "detail": (m.group("detail") or "").strip().lstrip("：:").strip(),
+        })
+    return rows
+
+
+def _match_holding_target(target: str, rows: list[dict]) -> dict | None:
+    """在持仓行里找目标标的。
+
+    名称双向包含（支持简称，如「茅台」→「贵州茅台」），命中多个时取公共片段最长者。
+    只识别是否匹配到；匹配不到由调用方按"记录里没有"作答。
+    """
+    if _re.fullmatch(r'\d{6}', target):
+        for r in rows:
+            if r["code"] == target:
+                return r
+        return None
+    best, best_len = None, 0
+    for r in rows:
+        name = r["name"]
+        if not name:
+            continue
+        if name == target:
+            return r
+        if name in target or target in name:
+            overlap = min(len(name), len(target))
+            if overlap > best_len:
+                best, best_len = r, overlap
+    return best
+
+
+def _specific_holding_reply(msg: str, portfolio_ctx: str) -> str | None:
+    """确定性回答「我持有 X 吗」。
+
+    三态，不允许含糊、不允许伪装：
+      - **持有**   → 明确说"持有"，并带上记录里已有的详情
+      - **不持有** → 明确说"记录里没有"，与"我没查到"区分开
+      - **无法确定** → 记录为空/格式不认识时显式给出真实原因，绝不猜
+
+    返回 None 表示：这不是可识别的具体标的问句，或者持仓记录本身为空
+    （后者沿用 `_rule_based_reply` 既有的"没有持仓/资产记录"分支统一作答，
+    避免两套文案）。返回 None 时由上层继续处理。
+    """
+    target = _extract_specific_target(msg)
+    if not target:
+        return None
+
+    ctx = portfolio_ctx or ""
+    # 记录本身为空 → 交给既有 `_rule_based_reply` 的空持仓分支，避免重复文案
+    if any(marker in ctx for marker in _HOLDING_EMPTY_MARKERS):
+        return None
+
+    if "【持仓明细】" not in ctx:
+        reason = ("没有获取到你的持仓记录（上下文为空）" if not ctx.strip()
+                  else "持仓记录的格式与预期不符，无法解析出持仓列表")
+        return (f"❓ **无法从记录中确定你是否持有 {target}。**\n\n"
+                f"原因：{reason}。这类事实我不会凭猜测回答——"
+                f"你可以到 **持仓页** 核对后再问我。\n\n"
+                f"⚠️ 仅基于钱袋子系统记录。")
+
+    rows = _extract_holding_rows(ctx)
+    if not rows:
+        # 有【持仓明细】小节却一行都解析不出 → 记录格式变了，同样不猜
+        return (f"❓ **无法从记录中确定你是否持有 {target}。**\n\n"
+                f"原因：持仓记录里没有可解析的持仓行（格式与预期不符）。"
+                f"这类事实我不会凭猜测回答——你可以到 **持仓页** 核对后再问我。\n\n"
+                f"⚠️ 仅基于钱袋子系统记录。")
+
+    hit = _match_holding_target(target, rows)
+    if hit:
+        text = f"✅ **持有。** 钱袋子记录中你有 **{hit['name']}（{hit['code']}）**。"
+        if hit["detail"]:
+            text += f"\n\n📋 记录详情：{hit['detail']}"
+        text += ("\n\n⚠️ 仅基于钱袋子系统记录，未同步的券商/银行账户不包含在内。"
+                 "需要分析这只持仓，可以问我「帮我看看持仓风险」。")
+        return text
+
+    return (f"📋 **没有记录到你持有 {target}。**\n\n"
+            f"已核对钱袋子系统中的持仓明细（共 {len(rows)} 条），没有匹配到该标的。\n\n"
+            f"👉 如果确实持有但还没录入，去 **持仓页** 添加后我就能确认。\n\n"
+            f"⚠️ 仅基于钱袋子系统记录。")
+
+
 def _rule_based_reply_structured(msg: str, market_ctx: str, portfolio_ctx: str) -> dict | None:
     """规则引擎结构化回答 — 命中返回 {text, intent, deterministic, source}，不命中返回 None。
 
@@ -1107,12 +1246,17 @@ def _rule_based_reply_structured(msg: str, market_ctx: str, portfolio_ctx: str) 
     if _has_decision_intent:
         return None  # 含决策意图，必须走 LLM 做个性化分析
 
-    # "我持有X吗/我有没有X/是不是持有X" + 具体标的名 → 交给LLM精准回答
+    # "我持有X吗/我有没有X/是不是持有X" + 具体标的名 → 直接查持仓记录确定性作答。
+    # 这是一个**事实查询**（记录里有没有这个标的），不需要也不该交给 LLM 去"推测"：
+    # 交给 LLM 时它只能看到 portfolio_ctx，AI 一降级就没人应答，反而给出假理由。
     _SPECIFIC_QUERY_KW = ["我有没有", "是不是持有"]
     _is_specific_query = any(k in msg_lower for k in _SPECIFIC_QUERY_KW)
-    # "我持有" + "吗" = 问具体标的，也交给LLM
     if "我持有" in msg_lower and "吗" in msg_lower:
         _is_specific_query = True
+    if _is_specific_query and not _asking_about_others:
+        text = _specific_holding_reply(msg, portfolio_ctx)
+        if text:
+            return _rule_reply(text, "holdings_query")
     # 纯 "我持有" 无 "吗" = 问全部持仓 → 走规则返回列表
     if "我持有" in msg_lower and "吗" not in msg_lower:
         _HOLDING_QUERY_KW.append("我持有")
@@ -1440,8 +1584,10 @@ def _rule_based_reply(msg: str, market_ctx: str, portfolio_ctx: str) -> str:
         if "没有任何持仓" in portfolio_ctx or "没有持仓" in portfolio_ctx or "尚未录入" in portfolio_ctx or "尚未建仓" in portfolio_ctx:
             return "📋 当前你的钱袋子系统中**没有持仓/资产记录**。\n\n如果之前有数据但已删除，确认已清空。\n如果是新账号，去 持仓页 或 资产页 添加数据即可。\n\n⚠️ 仅基于钱袋子系统记录。"
 
-    # 兜底回复（不倾倒市场概况，简短引导用户提出更明确的问题）
-    return "🤔 这个问题我需要更多上下文才能精准回答。\n\n你可以试试这些问法：\n📰 「最近有什么新闻？」\n📊 「技术指标怎么样？」\n🎯 「现在适合入场吗？」\n💰 「什么时候该卖？」\n🧠 「定投多少合适？」\n🔍 「茅台有什么利空？」（指定个股）\n\n或者直接告诉我你想了解的股票/基金代码，我来帮你查。\n\n⚠️ 以上仅供参考，不构成投资建议。"
+    # 兜底回复：不倾倒市场概况，简短引导用户提出更明确的问题。
+    # 注意：不要说"需要更多上下文"——上下文（市场数据/持仓）就在手里，
+    # 真正的原因是这类问题要 AI 分析、而当前 AI 不可用（走了降级分支）。
+    return "🤔 这类问题需要 AI 分析，但 AI 暂时不可用（服务降级中），我暂时只能给出内置规则的有限回答。\n\n你可以试试这些能直接回答的问法：\n📰 「最近有什么新闻？」\n📊 「技术指标怎么样？」\n🎯 「现在适合入场吗？」\n💰 「什么时候该卖？」\n🧠 「定投多少合适？」\n📋 「我持有什么？」\n🔍 「茅台有什么利空？」（指定个股）\n\n或者直接告诉我你想了解的股票/基金代码，我来帮你查。\n\n⚠️ 以上仅供参考，不构成投资建议。"
 
 
 # ========================================================
