@@ -904,7 +904,13 @@ def _direction_to_advice(direction: str) -> str:
 # gw.call_sync）是两条互不知情的推理链。管家判 neutral 时推送里会出现
 # 「不上不下的行情，没啥操作的必要」，紧接着 AI 诊断却可能说「先按纪律止盈
 # 一部分」—— 用户看到两个相反的结论且没有任何说明。
-# 这里不做裁决（那需要产品决策），只做"显式提示"。
+#
+# v9.9.26 P1-8 行为变更：v9.9.12 当时只做"显式提示"（插一句「两者口径不同，
+# 请结合自身情况判断」），结果是**把裁决责任甩回给用户**，两条矛盾结论照旧
+# 一起推。现在改为确定性裁决：调用 night_worker.arbitrate_advice，按
+# config.ADVICE_SOURCE_PRIORITY 判出唯一方向；同优先级裁不出来时明说
+# 「暂不给出方向，原因：X 与 Y 冲突」，而不是并列输出。
+# 下面的 `_steward_says_hold` 不再是"提示开关"，而是**冲突检测器**。
 
 #: AI 诊断里出现这些词说明在给具体操作建议
 _ACTION_WORD_RE = re.compile(r"(止盈|止损|减仓|加仓|补仓|清仓|卖出|赎回|割肉|离场)")
@@ -1234,6 +1240,16 @@ def run_close_review():
             try:
                 from services.wxwork_push import is_configured, send_daily_report_to
                 if is_configured():
+                    # v9.9.26 P1-8: 单一裁决出口 / 可执行性闸门 / 推送去重三大件
+                    # 都实现在 night_worker 里（本文件与它共用一套口径，避免
+                    # 两处各写一份导致"改一处漏一处"）。延迟 import 是因为
+                    # night_worker 在 import 期就会建目录，不能在模块顶层引。
+                    try:
+                        from scripts import night_worker as _nw
+                    except Exception as _e_nw:
+                        _nw = None
+                        print(f"  [裁决/闸门] night_worker 不可用，跳过裁决与闸门: {_e_nw}")
+
                     # v9.5.123: 重构推送 — 加今日盈亏+精简异动+加A50
                     msg_parts = [f"📊 {date} 收盘复盘"]
                     
@@ -1278,21 +1294,62 @@ def run_close_review():
                             if _fa_hits:
                                 print(f"  [诊断] {name}: 事实锚点命中 {len(_fa_hits)} 处")
                         safe_diag = _sanitize_push_text(diagnosis_text)
-                        # v9.9.12 FIX-G(b)：推送侧兜底。
-                        # (a) 已经在 prompt 里注入了管家结论并要求 LLM 显式说明分歧，
-                        #     但 LLM 不保证遵守，所以这里再加一道确定性提示：
-                        #     管家判 neutral（"没啥操作的必要"）而诊断文本却出现
-                        #     止盈/减仓这类动作词时，在两段之间插一行说明，
-                        #     避免用户看到"别操作"紧跟着"建议止盈"而无从判断。
-                        if _steward_says_hold(review) and _ACTION_WORD_RE.search(safe_diag):
-                            msg_parts.append(
-                                "\n⚠️ 管家今日判断为观望，而下方 AI 诊断含操作建议，"
-                                "两者口径不同，请结合自身情况判断。")
+
+                        if _nw is not None:
+                            # ---- v9.9.26 P1-8: 单一裁决出口 ----
+                            # 旧实现（v9.9.12 FIX-G(b)）在两个源打架时插一句
+                            # 「两者口径不同，请结合自身情况判断」—— 这是把裁决
+                            # 责任甩给用户，用户看到的仍是两条矛盾建议。现在改为
+                            # 确定性裁决：按 config.ADVICE_SOURCE_PRIORITY 判胜负，
+                            # 只推一个方向；同优先级裁不出胜负时明说
+                            # 「暂不给出方向」并删掉动作句，而不是让用户自己猜。
+                            _diag_action = ""
+                            _m_action = _ACTION_WORD_RE.search(safe_diag)
+                            if _m_action:
+                                _diag_action = _nw.normalize_advice_action(_m_action.group(1))
+                            _steward_action = _nw.normalize_advice_action(
+                                (review or {}).get("direction") or "neutral")
+
+                            _sources = []
+                            if _steward_action:
+                                _sources.append({
+                                    "source": "steward", "action": _steward_action,
+                                    "reason": (review or {}).get("conclusion", ""),
+                                })
+                            if _diag_action:
+                                _sources.append({
+                                    "source": "llm_diagnosis", "action": _diag_action,
+                                    "reason": _m_action.group(0),
+                                })
+                            _arb = _nw.arbitrate_advice(
+                                _sources, log_fn=lambda m: print(f"  {m}"))
+
+                            # 冲突输出统一走 render_conflict_conclusion，
+                            # 只出一份口径（裁不出就明说"暂不给出方向"）。
+                            if _steward_says_hold(review) and _ACTION_WORD_RE.search(safe_diag):
+                                _arb_line, safe_diag = _nw.render_conflict_conclusion(
+                                    _arb, safe_diag, log_fn=lambda m: print(f"  {m}"))
+                                msg_parts.append(_arb_line)
+                            elif _arb["conflict"]:
+                                # 其他方向冲突形态（如管家看多 / AI 却建议减仓）
+                                _arb_line, safe_diag = _nw.render_conflict_conclusion(
+                                    _arb, safe_diag, log_fn=lambda m: print(f"  {m}"))
+                                msg_parts.append(_arb_line)
+
+                            # ---- v9.9.26 P1-8: 建议可执行性闸门 ----
+                            # 真实事故：总市值 ¥754 的组合收到「分批止盈三分之一」。
+                            # 阈值见 config.MIN_AMOUNT_FOR_TRADE_ADVICE（经验值，未校准）。
+                            _total_value = _nw.get_portfolio_total_value(uid)
+                            safe_diag, _gate = _nw.apply_executability_gate(
+                                safe_diag, total_value=_total_value,
+                                log_fn=lambda m: print(f"  {m}"))
+
                         # v9.8.10: 不再截断，send_markdown 会自动分段推送长消息
                         msg_parts.append(f"\n🤖 AI诊断:\n{safe_diag}")
 
                     # 4. 持仓预警（合并盘中监控，每天收盘检查一次）
                     # v9.8.10: 长期投资者不需要盘中实时监控，合并到收盘复盘
+                    _alert_block = ""
                     try:
                         from services.fund_monitor import load_fund_holdings, detect_fund_alerts
                         fund_holdings = load_fund_holdings(uid)
@@ -1337,8 +1394,9 @@ def run_close_review():
                                     continue
                             
                             if alerts:
-                                msg_parts.append("\n🔔 持仓预警:")
-                                for alert in alerts[:5]:  # 最多显示5条
+                                # v9.9.26 P1-8: 先攒字符串，等异动明细也拿到后统一去重再入 msg_parts
+                                _alert_lines = ["\n🔔 持仓预警:"]
+                                for _ai, alert in enumerate(alerts[:5]):  # 最多显示5条
                                     level_emoji = "🔴" if alert.get("level") == "warning" else "🟡"
                                     # v9.9.12 FIX：这里原本写 `name = ...`，覆盖了外层的
                                     # `name`（L1030 `name = p.get("name", uid)` 是**用户名**）。
@@ -1347,14 +1405,19 @@ def run_close_review():
                                     # 一只基金的名字，直接误导线上排障。改用局部名。
                                     fund_name = alert.get("name", alert.get("code", ""))
                                     message = alert.get("message", alert.get("msg", ""))
-                                    msg_parts.append(f"{level_emoji} {fund_name}\n  {message}")
-                                    if len(msg_parts) > 8:  # 防止消息过长
-                                        msg_parts.append("  ...更多预警请打开钱袋子查看")
-                                        break
+                                    _alert_lines.append(f"{level_emoji} {fund_name}\n  {message}")
+                                # v9.9.26 P1-8: 截断条件从 `len(msg_parts) > 8` 改为按
+                                # **预警条数**判断。原写法把"还推不推预警"绑在 msg_parts
+                                # 已有长度上，本用户前面段落一多就一条预警都不显示
+                                # （静默丢预警）。现在固定展示 5 条，超出才提示去 App 看。
+                                if _ai == 4 and len(alerts) > 5:
+                                    _alert_lines.append("  ...更多预警请打开钱袋子查看")
+                                _alert_block = "\n".join(_alert_lines)
                     except Exception as e:
                         print(f"  [复盘] {name}: 持仓预警检查失败: {e}")
                     
                     # 5. 异动精简为TOP 3（不再全量推送）
+                    _move_block = ""
                     try:
                         all_summaries = build_daily_summary_text()
                         user_summary = all_summaries.get(uid, "")
@@ -1373,11 +1436,24 @@ def run_close_review():
                                 elif count >= 3:
                                     break
                             if filtered:
-                                msg_parts.append("\n" + "\n".join(filtered))
+                                _move_block = "\n".join(filtered)
                                 if count >= 3:
-                                    msg_parts.append("  ...更多异动请打开钱袋子查看")
+                                    _move_block += "\n  ...更多异动请打开钱袋子查看"
                     except Exception as e:
                         print(f"  [复盘] {name}: 异动明细拼接失败: {e}")
+
+                    # 5b. v9.9.26 P1-8: 持仓预警与异动明细讲同一只基金时合并，
+                    #     不让用户在同一条推送里把同一件事读两遍。
+                    if _alert_block:
+                        if _move_block and _nw is not None:
+                            _alert_block, _move_block, _removed = _nw.dedup_push_items(
+                                _alert_block, _move_block,
+                                log_fn=lambda m: print(f"  {m}"))
+                            if _removed and not _move_block.strip():
+                                _move_block = ""
+                        msg_parts.append(_alert_block)
+                    if _move_block:
+                        msg_parts.append("\n" + _move_block)
                     
                     # 6. A50期货(预判明天)
                     try:

@@ -31,6 +31,7 @@ if _BACKEND_DIR not in sys.path:
 
 import config
 import json
+import re as _re
 import time
 import asyncio
 from pathlib import Path
@@ -1212,23 +1213,25 @@ def generate_trading_decision(diag: str, val_pct: float, fg_index: int) -> list:
     Returns:
         操作建议列表（结构化数据）
     """
+    # v9.9.26 P1-8: 每条建议都带 source —— 单一裁决出口靠来源优先级判胜负，
+    # 没有 source 就只能并列输出，等于没裁决。
     decisions = []
     
     # 1. 基于估值 percentile 的建议
     if val_pct is not None:
         if val_pct >= 85:
             decisions.append({
-                "action": "reduce",
+                "action": "reduce", "source": "rule_engine",
                 "reason": f"市场估值过高（{val_pct:.0f}% 分位），建议减仓避险，保留 30%-50% 现金"
             })
         elif val_pct >= 70:
             decisions.append({
-                "action": "hold",
+                "action": "hold", "source": "rule_engine",
                 "reason": f"市场估值偏高（{val_pct:.0f}% 分位），建议谨慎追高，分批减仓"
             })
         elif val_pct <= 25:
             decisions.append({
-                "action": "add",
+                "action": "add", "source": "rule_engine",
                 "reason": f"市场估值偏低（{val_pct:.0f}% 分位），可以分批加仓优质标的"
             })
     
@@ -1236,47 +1239,89 @@ def generate_trading_decision(diag: str, val_pct: float, fg_index: int) -> list:
     if fg_index is not None:
         if fg_index >= 75:
             decisions.append({
-                "action": "sell",
+                "action": "sell", "source": "rule_engine",
                 "reason": f"市场情绪过热（恐贪指数 {fg_index}），建议止盈锁定收益"
             })
         elif fg_index <= 25:
             decisions.append({
-                "action": "buy",
+                "action": "buy", "source": "rule_engine",
                 "reason": f"市场情绪恐慌（恐贪指数 {fg_index}），可能是左侧布局机会"
             })
     
     # 3. 基于持仓诊断的建议（解析 diag 文本）
+    #    diag 是 phase2 由 LLM 生成的，故标 llm_diagnosis（可信度低于规则引擎）
     if diag:
         # 提取关键词
         if "集中" in diag or "同质化" in diag:
             decisions.append({
-                "action": "reduce",
+                "action": "reduce", "source": "llm_diagnosis",
                 "reason": "持仓过于集中，建议分散配置不同行业/风格"
             })
         if "高估值" in diag or "估值敏感" in diag:
             decisions.append({
-                "action": "hold",
+                "action": "hold", "source": "llm_diagnosis",
                 "reason": "持仓含高估值标的，建议关注业绩兑现情况"
             })
         if "防御" in diag or "对冲" in diag:
             decisions.append({
-                "action": "add",
+                "action": "add", "source": "llm_diagnosis",
                 "reason": "建议增配防御性资产（债券/红利/沪深300）对冲风险"
             })
         if "回撤" in diag or "波动" in diag:
             decisions.append({
-                "action": "reduce",
+                "action": "reduce", "source": "llm_diagnosis",
                 "reason": "持仓波动较大，建议设置止损线或降低仓位"
             })
     
     # 4. 如果没有明确建议，添加默认建议
     if not decisions:
         decisions.append({
-            "action": "hold",
+            "action": "hold", "source": "rule_engine",
             "reason": "市场中性，暂无明确操作建议，维持现有仓位"
         })
     
     return decisions
+
+
+def collapse_conflicting_decisions(decisions: list, log_fn=None) -> tuple:
+    """把多条**方向冲突**的建议收敛成单一出口（v9.9.26 P1-8）。
+
+    只保留裁决胜出的那个方向；裁决不了时返回一条「暂不给出方向」。
+    同向不冲突的原样返回（附一条裁决说明在返回结构里）。
+
+    Returns:
+        (decisions, arbitration_dict)
+    """
+    arb = arbitrate_advice(
+        [{"source": d.get("source", "rule_engine"),
+          "action": d.get("action"),
+          "reason": d.get("reason", "")}
+         for d in (decisions or []) if isinstance(d, dict)],
+        log_fn=log_fn,
+    )
+    if not arb["conflict"]:
+        return decisions, arb
+
+    if not arb["resolved"]:
+        return [{
+            "action": "none", "source": "",
+            "reason": arb["text"],
+            "suppressed": arb["suppressed"],
+            "conflict": True, "resolved": False,
+        }], arb
+
+    kept = [d for d in decisions
+            if isinstance(d, dict)
+            and normalize_advice_action(d.get("action")) == arb["action"]]
+    if not kept:
+        kept = list(decisions)
+    head = {
+        "action": arb["action"], "source": arb["source"],
+        "reason": f"[口径裁决] {arb['reason']}",
+        "suppressed": arb["suppressed"],
+        "conflict": True, "resolved": True,
+    }
+    return [head] + kept, arb
 
 
 def step_r1_phase3():
@@ -1326,10 +1371,28 @@ def step_r1_phase3():
                 
                 # 生成操作建议
                 decisions = generate_trading_decision(diag, val_pct, fg_index)
-                
+
+                # v9.9.26 P1-8: 单一裁决出口 —— 估值说减仓、恐贪说加仓这类
+                # 方向冲突不能再并列推给用户，这里收敛成一个方向。
+                decisions, arb = collapse_conflicting_decisions(decisions, log_fn=log)
+
+                # v9.9.26 P1-8: 可执行性闸门 —— 总市值很小时（真实事故：
+                # ¥754 的组合收到「分批止盈三分之一」），交易类建议降级为观察项。
+                _total_value = get_portfolio_total_value(uid)
+                decisions, gate_report = gate_trade_decisions(
+                    decisions, total_value=_total_value)
+
                 # 保存到 phase3（使用 decisions_{uid} 格式）
-                results[f"decisions_{uid}"] = {"decisions": decisions}
-                log(f"  ✅ {p.get('name', uid)}: 决策生成完成（{len(decisions)} 条建议）")
+                # arbitration / gate 一并存档，被否决的结论不凭空消失，便于复盘
+                results[f"decisions_{uid}"] = {
+                    "decisions": decisions,
+                    "arbitration": arb,
+                    "gate": gate_report,
+                }
+                log(f"  ✅ {p.get('name', uid)}: 决策生成完成（{len(decisions)} 条建议）"
+                    + (f"，冲突已裁决" if arb.get("conflict") and arb.get("resolved") else "")
+                    + (f"，冲突无法裁决" if arb.get("conflict") and not arb.get("resolved") else "")
+                    + (f"，闸门降级 {gate_report['count']} 条" if gate_report.get("gated") else ""))
                 
             except Exception as e:
                 log(f"  ❌ {p.get('name', uid)} 决策生成失败: {e}")
@@ -2525,6 +2588,489 @@ def _inject_hallucination_label(briefings: dict) -> dict:
             log(f"  ⚠️ {uid} 晨报标注：{_detail}")
 
     return result
+
+
+# ============================================================
+# v9.9.26 P1-8: 推送单一裁决出口 + 建议可执行性闸门
+# ============================================================
+#
+# 事故背景（来自服务器真实推送存档，不是猜测）：
+#   A. 同一条推送里「推送管家」说持有、「AI 诊断」说减仓，系统不裁决，
+#      两个矛盾结论并列推给用户，让用户自己判断。
+#   B. 用户总市值 ¥754，却收到「分批止盈三分之一」这种交易建议 —— 没有
+#      任何资金规模闸门来判断建议是否可执行。
+#
+# 设计取舍：
+#   - 裁决**只信优先级表，不做加权投票**。投票会产出「双方都有道理」这种
+#     和稀泥结论，正是本次要消灭的东西。同分即**不裁决**，明说冲突在哪。
+#   - 被否决的结论不凭空消失：进 suppressed 并写 log，便于复盘。
+
+#: 各种写法 → 规范化方向（add / reduce / hold）
+_ADVICE_ACTION_ALIASES = {
+    # 买入方向
+    "add": "add", "buy": "add", "bullish": "add",
+    "加仓": "add", "补仓": "add", "买入": "add", "建仓": "add", "增配": "add",
+    "低吸": "add", "抄底": "add",
+    # 卖出方向
+    "reduce": "reduce", "sell": "reduce", "bearish": "reduce",
+    "减仓": "reduce", "止盈": "reduce", "止损": "reduce", "清仓": "reduce",
+    "卖出": "reduce", "赎回": "reduce", "割肉": "reduce", "离场": "reduce",
+    "减半": "reduce", "套现": "reduce",
+    # 观察方向
+    "hold": "hold", "neutral": "hold", "观望": "hold", "持有": "hold",
+    "维持": "hold", "不动": "hold", "暂不操作": "hold", "不操作": "hold",
+}
+
+#: 文本里出现这些词，说明这条在给**交易类**建议（会被可执行性闸门管）
+_TRADE_ACTION_RE = _re.compile(
+    r"(止盈|止损|减仓|加仓|补仓|建仓|清仓|卖出|买入|赎回|割肉|离场|减半|套现|平仓)"
+)
+
+#: 行首装饰（项目符号 / emoji / 空白），降级改文案前先剥掉
+_LEAD_DECOR_RE = _re.compile(
+    "^[\\s•·・\\-*>\U0001F000-\U0001FAFF\u2190-\u27BF\u2B00-\u2BFF\uFE0F]*"
+)
+
+#: 行首的建议引导词，降级时一并去掉（不然会出现「观察项：建议减仓」这种自相矛盾）
+_LEAD_ADVICE_RE = _re.compile(r"^(?:建议|可以考虑|可以|考虑|不妨|应当|应该)\s*")
+
+#: 否定词。含否定词的句子方向是**反的**（"不宜加仓" ≠ "加仓"），
+#: 拿不准就返回空串（= 不参与裁决），宁可不判也不能判反。
+_NEGATION_RE = _re.compile(r"(不宜|不建议|不要|无需|不必|不应|切忌|避免|先别|别急|暂不)")
+
+#: 子句切分：中文/英文句读后切，用于「把含动作词的子句整段撤掉」
+_CLAUSE_SPLIT_RE = _re.compile(r"(?<=[，,。；;！!？?])")
+
+
+def normalize_advice_action(action) -> str:
+    """把各种写法的建议方向规范化成 add / reduce / hold，认不出来返回 ''。"""
+    if action is None:
+        return ""
+    key = str(action).strip().lower()
+    if key in _ADVICE_ACTION_ALIASES:
+        return _ADVICE_ACTION_ALIASES[key]
+    # 含否定词 → 方向可能是反的，不猜
+    if _NEGATION_RE.search(key):
+        return ""
+    # 中文长句里含动作词的（如"建议分批止盈三分之一"），按动作词判方向
+    for word, canon in _ADVICE_ACTION_ALIASES.items():
+        if len(word) >= 2 and word in key and word in ("加仓", "补仓", "买入", "建仓",
+                                                       "减仓", "止盈", "止损", "清仓",
+                                                       "卖出", "赎回", "割肉", "离场"):
+            return canon
+    return ""
+
+
+def _advice_priority(source: str) -> int:
+    """来源 → 优先级；未知来源一律最低（10），保证新接入的源不会意外压过老源。"""
+    return config.ADVICE_SOURCE_PRIORITY.get(str(source or "").strip().lower(), 10)
+
+
+def _advice_source_label(source: str) -> str:
+    src = str(source or "").strip().lower()
+    return config.ADVICE_SOURCE_LABELS.get(src, src or "未知来源")
+
+
+def arbitrate_advice(sources: list, log_fn=None) -> dict:
+    """多源冲突建议的**单一裁决出口**。
+
+    Args:
+        sources: 每条是 dict，至少含 source / action；可选 reason、detail。
+            source 见 config.ADVICE_SOURCE_PRIORITY 的键。
+            action 可以是 "reduce" / "减仓" / "建议分批止盈" 等任意写法。
+        log_fn: 可选日志函数（默认用 night_worker 的 log）。
+
+    Returns:
+        {
+          "action": "add"|"reduce"|"hold"|None,   # None = 无法裁决
+          "text": str,        # 直接可推给用户的一句话结论
+          "reason": str,      # 为什么选它（或为什么裁决不了）
+          "source": str,      # 胜出来源
+          "conflict": bool,   # 是否发生过冲突
+          "resolved": bool,   # 冲突是否被裁决掉
+          "suppressed": [...],# 被否决的结论（含 why），不凭空消失
+        }
+    """
+    _log = log_fn or log
+
+    norm = []
+    for raw in sources or []:
+        if not isinstance(raw, dict):
+            continue
+        act = normalize_advice_action(raw.get("action"))
+        if not act:
+            continue
+        norm.append({
+            "source": str(raw.get("source") or "").strip().lower(),
+            "source_label": _advice_source_label(raw.get("source")),
+            "priority": _advice_priority(raw.get("source")),
+            "action": act,
+            "reason": str(raw.get("reason") or ""),
+        })
+
+    if not norm:
+        return {
+            "action": None, "text": "暂不给出方向，原因：本轮没有任何可识别的建议来源",
+            "reason": "无有效建议输入", "source": "", "conflict": False,
+            "resolved": False, "suppressed": [],
+        }
+
+    actions = {x["action"] for x in norm}
+
+    # ---- 无冲突：直接采纳，但仍要走一遍（保留 suppressed=[] 的结构一致性）----
+    if len(actions) == 1:
+        # 同向时取优先级最高的那条作为发言代表，其余并入 suppressed（不重复推）
+        top = max(norm, key=lambda x: x["priority"])
+        others = [x for x in norm if x is not top]
+        out = {
+            "action": top["action"],
+            "text": f"{config.ADVICE_ACTION_LABELS.get(top['action'], top['action'])}"
+                    f"（{top['source_label']}）",
+            "reason": f"各来源口径一致，采纳 {top['source_label']} 的判断"
+                      + (f"：{top['reason']}" if top["reason"] else ""),
+            "source": top["source"],
+            "conflict": False,
+            "resolved": True,
+            "suppressed": [
+                {"source": o["source"], "action": o["action"], "reason": o["reason"],
+                 "why": "与胜出结论同向，未单独推送（避免重复）"}
+                for o in others
+            ],
+        }
+        return out
+
+    # ---- 有冲突：按来源优先级裁决 ----
+    ranked = sorted(norm, key=lambda x: -x["priority"])
+    top = ranked[0]
+    losers = ranked[1:]
+    # 与胜出者**方向不同**里优先级最高的那个，用来判断是否真的裁决得了
+    rivals = [x for x in losers if x["action"] != top["action"]]
+    top_rival = rivals[0] if rivals else None
+
+    if top_rival is not None and top["priority"] <= top_rival["priority"]:
+        # 同优先级 → 没有更高依据可裁决。明说哪两个源冲突，绝不给用户两个都推。
+        a, b = top, top_rival
+        who = (f"同一来源（{a['source_label']}）内部"
+               if a["source_label"] == b["source_label"]
+               else f"{a['source_label']} 与 {b['source_label']}")
+        text = (
+            f"暂不给出方向，原因：{who}给出相反结论（前者"
+            f"「{config.ADVICE_ACTION_LABELS.get(a['action'], a['action'])}」，"
+            f"后者「{config.ADVICE_ACTION_LABELS.get(b['action'], b['action'])}」），"
+            f"两者来源可信度相同（{a['priority']}），没有更高依据可裁决。"
+        )
+        _log(f"  ⚖️ 建议冲突无法裁决：{a['source_label']}({a['action']}) vs "
+             f"{b['source_label']}({b['action']})，同优先级 {a['priority']}")
+        return {
+            "action": None,
+            "text": text,
+            "reason": text,
+            "source": "",
+            "conflict": True,
+            "resolved": False,
+            "suppressed": [
+                {"source": x["source"], "action": x["action"], "reason": x["reason"],
+                 "why": f"与 {a['source_label']}/{b['source_label']} 冲突且同优先级"
+                        f"（{a['priority']}），无法裁决，未推送"}
+                for x in ranked
+            ],
+        }
+
+    # 优先级可裁决
+    suppressed = []
+    for x in losers:
+        if x["action"] == top["action"]:
+            why = "与胜出结论同向，未单独推送（避免重复）"
+        else:
+            why = (f"来源优先级 {x['priority']} < {top['priority']}"
+                   f"（{top['source_label']} 更可信），已否决")
+        suppressed.append({
+            "source": x["source"], "action": x["action"], "reason": x["reason"], "why": why,
+        })
+
+    _log(f"  ⚖️ 建议冲突已裁决：采纳 {top['source_label']}({top['action']}, "
+         f"优先级{top['priority']})，否决 {len([s for s in suppressed if '已否决' in s['why']])} 条")
+
+    label = config.ADVICE_ACTION_LABELS.get(top["action"], top["action"])
+    # 只点名被否决的**来源**，不复读它的动作词 —— 复读等于把已否决的建议
+    # 又推了一遍，用户扫一眼还是会看到两个方向。
+    rival_txt = ""
+    if top_rival is not None:
+        rival_txt = f"（{top_rival['source_label']} 的相反判断已按优先级较低否决）"
+    return {
+        "action": top["action"],
+        "text": f"{label}{rival_txt}",
+        "reason": (f"采纳 {top['source_label']} 的「{label}」：其来源优先级"
+                   f"{top['priority']} 高于其他来源"
+                   + (f"（{top_rival['source_label']} 为 {top_rival['priority']}）" if top_rival else "")
+                   + (f"；依据：{top['reason']}" if top["reason"] else "")),
+        "source": top["source"],
+        "conflict": True,
+        "resolved": True,
+        "suppressed": suppressed,
+    }
+
+
+def executability_verdict(*, total_value=None, position_value=None, position_pct=None) -> dict:
+    """判断「给交易建议」这件事在这个资金规模下是否可执行。
+
+    Args:
+        total_value:    组合总市值（元）
+        position_value: 该标的市场价值（元）；给了就优先用它
+        position_pct:   该标的占组合比例（百分点，0-100）
+
+    Returns:
+        {"blocked": bool, "reason": str, "amount": float|None, "pct": float|None}
+        blocked=True 表示交易类建议要降级为观察项。
+    """
+    amount = None
+    if position_value is not None:
+        try:
+            amount = float(position_value)
+        except (TypeError, ValueError):
+            amount = None
+    elif total_value is not None and position_pct is not None:
+        try:
+            amount = float(total_value) * float(position_pct) / 100.0
+        except (TypeError, ValueError):
+            amount = None
+    elif total_value is not None:
+        try:
+            amount = float(total_value)
+        except (TypeError, ValueError):
+            amount = None
+
+    try:
+        pct = float(position_pct) if position_pct is not None else None
+    except (TypeError, ValueError):
+        pct = None
+
+    min_amt = float(config.MIN_AMOUNT_FOR_TRADE_ADVICE)
+    min_pct = float(config.MIN_POSITION_PCT_FOR_TRADE_ADVICE)
+
+    # 拿不到金额 → 不拦。宁可漏拦，也不能在没数据时断言"金额较小"
+    # （那等于凭空造一个事实，与防幻觉原则冲突）。
+    if amount is None and pct is None:
+        return {"blocked": False, "reason": "金额未知，未执行闸门", "amount": None, "pct": pct}
+
+    reasons = []
+    if amount is not None and amount < min_amt:
+        reasons.append(f"金额较小：¥{amount:,.0f} < 门槛 ¥{min_amt:,.0f}")
+    if pct is not None and pct < min_pct:
+        reasons.append(f"仓位过小：占比 {pct:.1f}% < 门槛 {min_pct:.1f}%")
+
+    if not reasons:
+        return {"blocked": False, "reason": "", "amount": amount, "pct": pct}
+    return {
+        "blocked": True,
+        "reason": "；".join(reasons),
+        "amount": amount,
+        "pct": pct,
+    }
+
+
+def apply_executability_gate(text: str, *, total_value=None, position_value=None,
+                             position_pct=None, log_fn=None) -> tuple:
+    """把推送文本里的**交易类建议**在资金规模不足时降级为观察项。
+
+    非交易类信息（涨跌提醒、新闻、预警）原样保留，不误伤。
+
+    Returns:
+        (gated_text, report)
+        report = {"gated": bool, "count": int, "reason": str, "downgraded": [str]}
+    """
+    _log = log_fn or log
+    if not text:
+        return text, {"gated": False, "count": 0, "reason": "", "downgraded": []}
+
+    verdict = executability_verdict(
+        total_value=total_value, position_value=position_value, position_pct=position_pct)
+    if not verdict["blocked"]:
+        return text, {"gated": False, "count": 0,
+                      "reason": verdict["reason"], "downgraded": []}
+
+    out_lines = []
+    downgraded = []
+    for line in str(text).split("\n"):
+        if not _TRADE_ACTION_RE.search(line):
+            out_lines.append(line)
+            continue
+        body = _LEAD_ADVICE_RE.sub("", _LEAD_DECOR_RE.sub("", line)).strip()
+        # 关键：把**含动作词的子句整段撤掉**，而不是只在前面挂个"观察项"。
+        # 只挂标签的话，"分批止盈三分之一" 原样留着，用户扫一眼还是会照做，
+        # 等于没闸门。撤干净后才真的给不出交易指令。
+        rest = "".join(
+            c for c in _CLAUSE_SPLIT_RE.split(body)
+            if c.strip() and not _TRADE_ACTION_RE.search(c)
+        ).strip("，,。；; 　")
+        if rest:
+            new_line = f"👀 观察项：{rest}（因{verdict['reason']}，暂不给出交易建议）"
+        else:
+            new_line = f"👀 观察项：因{verdict['reason']}，暂不给出交易建议"
+        out_lines.append(new_line)
+        downgraded.append(line.strip())
+
+    if downgraded:
+        _log(f"  🚧 可执行性闸门：{len(downgraded)} 条交易建议降级为观察项"
+             f"（{verdict['reason']}）")
+    return "\n".join(out_lines), {
+        "gated": bool(downgraded),
+        "count": len(downgraded),
+        "reason": verdict["reason"],
+        "downgraded": downgraded,
+    }
+
+
+def render_conflict_conclusion(arb: dict, diag_text: str, log_fn=None) -> tuple:
+    """把裁决结果渲染成推送行（冲突输出统一收口在这里，只出一份口径）。
+
+    - 裁出结论 → 「⚖️ 口径裁决：<可解释理由>」；正文方向性表述**保留**
+      （方向已唯一，不会自相矛盾）。
+    - 裁不出结论 → 「⚖️ 暂不给出方向，原因：X 与 Y 冲突」；并把正文里
+      所有方向性表述**删掉** —— 否则用户读到的还是"两个方向"。
+
+    Returns:
+        (push_line: str, new_diag_text: str)
+    """
+    _log = log_fn or log
+    if not arb:
+        return "", diag_text
+
+    if arb.get("resolved"):
+        for s in arb.get("suppressed", []):
+            if "已否决" in s.get("why", ""):
+                _log(f"  [裁决] 已否决 {s.get('source')}({s.get('action')})"
+                     f" —— {s.get('why')}")
+        return f"\n⚖️ 口径裁决：{arb.get('reason', '')}", diag_text
+
+    new_diag, dropped = strip_trade_action_lines(diag_text)
+    if dropped:
+        _log(f"  [裁决] 无法裁决，已删除 {len(dropped)} 条方向性表述")
+    return f"\n⚖️ {arb.get('text', '')}", new_diag
+
+
+def strip_trade_action_lines(text: str) -> tuple:
+    """删掉文本里带交易动作词的行（裁决不了方向时用，只留非方向性描述）。
+
+    Returns:
+        (stripped_text, removed_lines)
+    """
+    if not text:
+        return text, []
+    kept, removed = [], []
+    for line in str(text).split("\n"):
+        if _TRADE_ACTION_RE.search(line):
+            removed.append(line.strip())
+        else:
+            kept.append(line)
+    return "\n".join(kept), removed
+
+
+def gate_trade_decisions(decisions: list, *, total_value=None, position_value=None,
+                         position_pct=None) -> tuple:
+    """generate_trading_decision() 产出的结构化建议过同一道闸门。
+
+    被拦住的条目 action 改为 "observe"，原判断保留在 reason 里便于复盘。
+
+    Returns:
+        (gated_decisions, report)  —— report 同 apply_executability_gate
+    """
+    verdict = executability_verdict(
+        total_value=total_value, position_value=position_value, position_pct=position_pct)
+    if not verdict["blocked"]:
+        return decisions, {"gated": False, "count": 0,
+                           "reason": verdict["reason"], "downgraded": []}
+
+    out = []
+    downgraded = []
+    for d in decisions or []:
+        if not isinstance(d, dict):
+            out.append(d)
+            continue
+        act = normalize_advice_action(d.get("action"))
+        if act in ("add", "reduce"):
+            out.append({
+                "action": "observe",
+                "reason": (f"因{verdict['reason']}，暂不给出交易建议，仅列为观察项"
+                           f"（原判断：{d.get('reason', '')}）"),
+                "original_action": d.get("action"),
+            })
+            downgraded.append(str(d.get("reason", "")))
+        else:
+            out.append(d)
+    return out, {
+        "gated": bool(downgraded),
+        "count": len(downgraded),
+        "reason": verdict["reason"],
+        "downgraded": downgraded,
+    }
+
+
+def get_portfolio_total_value(uid: str) -> float:
+    """读组合总市值（元）。取不到返回 None（调用方据此不执行闸门）。
+
+    口径复用 _build_portfolio_thermometer（它是市值唯一计算入口），只解析
+    其中的"当前市值"，避免在这里再写一套聚合逻辑导致两处口径打架。
+    """
+    try:
+        full = _build_portfolio_thermometer(uid)
+        if not full:
+            return None
+        import re as _re_v
+        m = _re_v.search(r"当前市值\s*¥([\d,]+(?:\.\d+)?)", full)
+        if not m:
+            return None
+        return float(m.group(1).replace(",", ""))
+    except Exception:
+        return None
+
+
+#: 中文实体名（>=3 字）与 6 位基金代码，用于推送去重时的实体识别
+_ENTITY_CODE_RE = _re.compile(r"\b\d{6}\b")
+_ENTITY_NAME_RE = _re.compile(r"[\u4e00-\u9fa5]{3,}")
+
+
+def dedup_push_items(primary_text: str, secondary_text: str, log_fn=None) -> tuple:
+    """次要段落里与主要段落讲同一件事的行 → 删掉，别让用户读两遍。
+
+    典型场景：收盘复盘里「🔔 持仓预警」已经报了某只基金，「📊 异动明细」
+    又把它列一遍。
+
+    Args:
+        primary_text:   保留优先的段落（如持仓预警）
+        secondary_text: 需要去重的段落（如异动明细）
+
+    Returns:
+        (primary_text, deduped_secondary_text, removed_lines)
+    """
+    _log = log_fn or log
+    if not secondary_text:
+        return primary_text, secondary_text, []
+
+    p_codes = set(_ENTITY_CODE_RE.findall(primary_text or ""))
+    p_text = primary_text or ""
+
+    kept = []
+    removed = []
+    for line in str(secondary_text).split("\n"):
+        hit = False
+        codes = set(_ENTITY_CODE_RE.findall(line))
+        if codes and (codes & p_codes):
+            hit = True
+        if not hit:
+            # 中文名取**最长连续串**，避免"持仓""预警"这类通用词造成误删
+            for name in _ENTITY_NAME_RE.findall(line):
+                if len(name) >= 3 and name in p_text:
+                    hit = True
+                    break
+        if hit:
+            removed.append(line.strip())
+        else:
+            kept.append(line)
+
+    if removed:
+        _log(f"  🧹 推送去重：已合并 {len(removed)} 行与前文重复的内容")
+    return primary_text, "\n".join(kept), removed
 
 
 def push_morning():
