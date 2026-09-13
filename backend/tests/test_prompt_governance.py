@@ -42,16 +42,13 @@ _SOURCE_EXCLUDE_PARTS = {"_archive", "__pycache__", "tests", ".git", "node_modul
 
 # 孤儿 md 白名单：**只列已经落盘、但当前无生产加载点**的 prompt，必须写明原因。
 # 断言 set(白名单) == set(实际孤儿)，所以这里既不能漏登记、也不能留过期条目。
-ORPHAN_WHITELIST = {
-    "signal_extract.md": (
-        "尚未接线。设计上属 signal_scout.enrich()（见 docs/moneybag-v4-ultimate-plan.md "
-        "「Prompt工程」表），当前生产无任何加载点。待接线或删除，勿直接复用。"
-    ),
-    "weekly_report.md": (
-        "尚未接线。设计上属周报 HEAVY 层，当前周报由规则实现产出，生产无加载点。"
-        "待接线或删除。"
-    ),
-}
+#
+# 现状：**空表**。原有两条已于 v9.9.26 按用户决策处理为"删活的、留归档"：
+#   - signal_extract.md —— 设计上属 signal_scout.enrich()，生产源码 0 引用；
+#   - weekly_report.md  —— 设计上属周报 HEAVY 层，实际周报由**规则实现**
+#                          （services/weekly_report.py）产出，prompt 本身 0 引用。
+# 归档留在 versions/ 下（审计链），由下方 test_deleted_dead_prompt_stays_deleted 守护。
+ORPHAN_WHITELIST: dict[str, str] = {}
 
 
 def _production_prompt_files() -> list[Path]:
@@ -170,15 +167,48 @@ def test_holding_diagnose_body_matches_its_v1_archive():
     )
 
 
+# 已判定为"死 prompt"并删除的线上文件 → (归档文件名, 删除原因)。
+# 必须同时满足两条：线上文件保持删除；versions/ 归档必须保留。
+# 「删活的、留归档」是本仓惯例（归档 = 审计链，也是将来真要接线时的设计参考），
+# 先例：portfolio_diagnose.md（v9.9.26 P2 之前就已删除，归档仍在）。
+# 2026-09-13（v9.9.26）扩充到 3 个。
+_DELETED_DEAD_PROMPTS: dict[str, tuple[str, str]] = {
+    "portfolio_diagnose.md": (
+        "portfolio_diagnose.v1.md",
+        "未被实现的 v4 持仓体检设计稿；线上实现走纯规则 portfolio_doctor.enrich()",
+    ),
+    "signal_extract.md": (
+        "signal_extract.v1.md",
+        "设计上属 signal_scout.enrich()，生产源码 0 引用；v9.9.26 按用户决策删除",
+    ),
+    "weekly_report.md": (
+        "weekly_report.v1.md",
+        "设计上属周报 HEAVY 层，实际周报由规则实现 services/weekly_report.py 产出；"
+        "prompt 本身 0 引用，v9.9.26 按用户决策删除",
+    ),
+}
+
+
 def test_deleted_dead_prompt_stays_deleted():
-    """portfolio_diagnose.md 是无人加载的死 prompt，已删除；归档必须保留。"""
-    assert not (PROMPTS_DIR / "portfolio_diagnose.md").exists(), (
-        "portfolio_diagnose.md 已判定为死 prompt 并删除，勿重新加回线上目录；"
-        "若确要启用，请以新版本号重新落盘并接线到具体模块。"
-    )
-    assert (VERSIONS_DIR / "portfolio_diagnose.v1.md").exists(), (
-        "portfolio_diagnose.v1.md 归档不应被删除（保留设计稿以备将来接线）"
-    )
+    """死 prompt 必须保持删除；versions/ 归档必须保留（删活的、留归档）。
+
+    覆盖 3 个：portfolio_diagnose / signal_extract / weekly_report。
+    用循环而不是 parametrize：本文件不依赖 pytest fixture，保持"纯读文件"风格。
+    """
+    problems: list[str] = []
+    for live, (archive, why) in _DELETED_DEAD_PROMPTS.items():
+        if (PROMPTS_DIR / live).exists():
+            problems.append(
+                f"{live} 已判定为死 prompt 并删除（原因：{why}），勿重新加回线上目录；"
+                "若确要启用，请以新版本号重新落盘并接线到具体模块。"
+            )
+        if not (VERSIONS_DIR / archive).exists():
+            problems.append(
+                f"{archive} 归档不应被删除 —— 本仓惯例是「删活的、留归档」（审计链，"
+                "也是将来真要接线时的设计参考）。若确实要清掉归档，"
+                "请同步改本测试的 _DELETED_DEAD_PROMPTS。"
+            )
+    assert not problems, "死 prompt 守卫失败:\n" + "\n".join(f"  - {p}" for p in problems)
 
 
 # ------------------------------------------------------------------

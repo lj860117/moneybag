@@ -119,6 +119,33 @@ moneybag/backend/prompts/
 
 ---
 
+### v9.9.26 删除两个死 prompt（signal_extract / weekly_report） — 2026-09-13
+
+- **动机**：切断"死 prompt 挂在线上目录"这一漂移源。这两个 prompt 自 v1 基线落盘以来
+  **从未被任何生产代码加载**，却一直躺在 `prompts/` 里，容易被误认为在生效。
+- **事实核验（删除前实测）**：
+  - 生产源码引用数均为 **0**（精确查 `.md` 文件名，已排除 `tests/` 与 `versions/`）
+  - `signal_scout.py` 内 `.md` / prompt / LLM 引用数 = 0（不存在加载器）
+  - ⚠️ **`weekly_report` 这个模块名是活的** —— `services/weekly_report.py` 被
+    `api/steward.py` / `scripts/weekly_review_cron.py` 调用；死掉的只是
+    `prompts/weekly_report.md` 这个 prompt 文件。**两者不要混淆。**
+- **处置口径：删活的、留归档**（沿用 `portfolio_diagnose.md` 先例）
+  - 删除 `prompts/signal_extract.md`、`prompts/weekly_report.md`
+  - **保留** `versions/signal_extract.v1.md`、`versions/weekly_report.v1.md`
+    （归档 = 审计链，也是将来真要接线时的设计参考）
+- **治理同步**：`tests/test_prompt_governance.py`
+  - `ORPHAN_WHITELIST` 清空为空表。原两条登记项随文件删除而失效；该测试断言
+    `set(白名单) == set(实际孤儿)`，孤儿集变空后白名单不清空**必红**。
+  - `test_deleted_dead_prompt_stays_deleted` 从只守 `portfolio_diagnose.md`
+    扩为守护 **3 个**死 prompt，且是**双向断言**：线上文件必须保持删除 +
+    归档必须保留。将来若有人"顺手清掉归档"，该测试会指路。
+- **A/B 结果**：N/A —— 删除无加载器的文件不改变任何线上行为，不存在 A/B 对象。
+- **状态**：线上 `prompts/` 已移除。`docs/moneybag-v4-*.md`（3 个规划文档）里仍写着
+  `prompts/signal_extract.md` / `weekly_report.md`，**保持原样**：它们是历史规划记录，
+  同时正好说明了"设计上本该由谁加载"，对将来真要接线有参考价值。
+
+---
+
 ## 🎯 A/B 评分维度（`scripts/prompt_ab_test.py` 使用）
 
 1. **数据诚信率**（硬指标）：不包含"保本保息/稳赚不赔"等禁用词的场景比例，**必须 = 100%**
