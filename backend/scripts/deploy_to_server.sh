@@ -55,6 +55,32 @@ for f in "${BACKEND_FILES[@]}"; do
     fi
 done
 
+# ---- 1.6 同步后端「松散」文件（不在任何 BACKEND_DIRS 子目录下的 python 文件）----
+# BACKEND_FILES 是 scp 逐文件清单、BACKEND_DIRS 是目录级 rsync，两者都不覆盖这类文件：
+#   - backend/domain/__init__.py / backend/infra/__init__.py —— 父包自身的 __init__.py。
+#     清单只列了它们的子目录，父包文件从未上线；而 domain. / infra. 作为包被 import 时
+#     这两个 __init__.py 会真的执行。
+#   - backend/__init__.py —— backend 包根（0 字节），一并纳入以保持一致。
+#   - backend/infra/auth.py —— main.py:40 与 api/auth.py:13 都 `from infra.auth import ...`，
+#     是运行时硬依赖，却直接躺在 infra/ 下、不在任何被同步的子目录里。
+# 单列一个数组而不是塞进 BACKEND_FILES，是为了让「后端根文件精确覆盖」与
+# 「松散包文件覆盖」两类语义清晰分开，便于后续增补时不再漏。
+BACKEND_LOOSE_FILES=(
+    "backend/__init__.py"
+    "backend/domain/__init__.py"
+    "backend/infra/__init__.py"
+    "backend/infra/auth.py"
+)
+
+for f in "${BACKEND_LOOSE_FILES[@]}"; do
+    if [ -f "$REPO_ROOT/$f" ]; then
+        echo "  → $f"
+        $SCP "$REPO_ROOT/$f" "$REMOTE_USER@$SERVER:$REMOTE_PATH/$f"
+    else
+        echo "  ⚠️  跳过不存在: $f"
+    fi
+done
+
 # ---- 1.5 同步后端新增目录（rsync 增量，M7+ 新模块）----
 echo "[2/7] 同步后端目录..."
 BACKEND_DIRS=(
@@ -71,6 +97,12 @@ BACKEND_DIRS=(
     "backend/infra/llm/"
     "backend/infra/knowledge/"
     "backend/use_cases/"
+    # ⚠️ backend/models/ 是运行时硬依赖：api/signals.py / api/user.py / api/chat.py /
+    # api/portfolio.py 都有 `from models.schemas import ...`。此前整个目录不在任何清单里，
+    # 服务器上的内容只是碰巧与本地一致（靠已废弃的旧根目录 deploy.sh 全量传过一次）；
+    # 以后改 schemas.py 永远上不了线。加进来后 --delete 会顺手清掉服务器上的
+    # schemas.py.bak-* 垃圾备份，这是期望行为。
+    "backend/models/"
     "backend/scripts/"
     # ⚠️ 运行时资产目录：api/shared_helpers.py._load_named_prompt() 会按文件名读取
     # backend/prompts/{x}.md，缺失时 fail-open 走内置兜底。此前不在本清单里 ——

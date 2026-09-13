@@ -22,6 +22,23 @@
 读这些 md，缺失时 fail-open 走内置兜底。于是本轮「给 close_review 补防编造约束」
 变成了**代码上线了、prompt 没上线**，改动等于白做。
 
+### 第三例（本文件新增的「类级」守卫要解决的）
+
+前两例都是「补一条具体条目」就完事，但根因不止于此：``BACKEND_DIRS`` 是
+**目录枚举**而不是文件覆盖。任何**不在这张目录表里的目录，或直接躺在父包下的
+松散文件**，都会静默不同步。已实测确认的漏网文件：
+
+* ``backend/models/`` —— 整个目录不在任何清单里，却是运行时硬依赖：
+  ``api/signals.py`` / ``api/user.py`` / ``api/chat.py`` / ``api/portfolio.py``
+  都有 ``from models.schemas import ...``。服务器上当前内容**只是碰巧**与本地一致
+  （靠已废弃的旧根目录 ``deploy.sh`` 全量传过一次），以后改 ``schemas.py`` 永远上不了线。
+* ``backend/domain/__init__.py`` / ``backend/infra/__init__.py`` —— 父包自身的
+  ``__init__.py``：清单只列了它们的子目录，父包文件从未同步，而这两个包被 import
+  时 ``__init__.py`` 会真的执行。
+* ``backend/infra/auth.py`` —— 直接躺在 ``infra/`` 下，``main.py:40`` 与
+  ``api/auth.py:13`` 都 ``from infra.auth import ...``，但 ``infra/`` 下只有若干
+  子目录在清单里。
+
 ### 共同根因
 
 **同步清单是手工维护的，加文件/加目录就漏。** 这不是个案，是需要机械化守卫的
@@ -32,6 +49,11 @@
 1. 「被 ``index.html`` / ``sw.js`` / ``manifest.json`` 引用到的本地静态资产」
    必须全部落在同步范围内（``FRONTEND_FILES`` 直接同步，或父目录被 rsync）。
 2. 「代码在运行时从磁盘读取的目录」（当前为 ``backend/prompts/``）必须被同步。
+3. **类级判据**：枚举 ``backend/`` 下**全部**可能参与运行时的源文件
+   （``**/*.py`` / ``**/*.md`` / backend 根下任意文件），每一个都必须被
+   ``BACKEND_FILES`` / ``BACKEND_LOOSE_FILES`` / ``BACKEND_DIRS`` 之一覆盖，
+   或命中一张**显式、带理由**的豁免表。缺一即失败，且报错必须逐条列出文件路径。
+   （前两例只是这条类级判据的三个具体实例。）
 
 ## 反「闸门空转」设计（本仓血教训）
 
@@ -42,13 +64,15 @@
 * ``test_parser_really_parses_*`` 显式断言解析器必须解析出已知条目（非空 + 含 ``index.html``）
 * ``test_prompt_loader_reads_from_a_synced_directory`` 从 loader **源码**推导目录，
   不硬编码路径，避免代码漂移后守卫失效
-* ``test_checker_detects_injected_*`` 用**故障注入**证明判据真的会红
-
-（已实测：摘 ``sw.js`` → 红；破坏解析器 → 5 failed；摘 ``backend/prompts/`` → 3 failed。）
+  （类级守卫同样有从 import 语句反推 ``backend/models/`` 的交叉校验）
+* ``test_checker_detects_*`` / ``test_backend_checker_detects_*`` 用**故障注入**
+  证明判据真的会红（含纯函数注入与文件级注入）
 """
 
 from __future__ import annotations
 
+import ast
+import fnmatch
 import json
 import re
 from pathlib import Path
@@ -355,4 +379,430 @@ def test_deleted_prompts_will_be_pruned_on_server():
         )
     assert "backend/prompts/" in synced, (
         "backend/prompts/ 不在同步范围内，本地已删除的死 prompt 会一直滞留在线上服务器。"
+    )
+
+
+# ==========================================================================
+# 5) 类级守卫：枚举全部后端源文件，逐个必须被覆盖或显式豁免
+# ==========================================================================
+# 第三例的根因是「目录枚举」而非「文件覆盖」——下面是把守卫从「守具体实例」
+# 升级为「守整类」的机械判据。
+#
+# 豁免表刻意写成「显式 + 每条带理由」，并在 test_exemptions_all_carry_a_reason
+# 里断言理由非空：宁可让新文件触发失败后人工判断，也不要静默放行。
+# --------------------------------------------------------------------------
+def _backend_files() -> set[str]:
+    return set(_parse_shell_array(_deploy_script_text(), "BACKEND_FILES"))
+
+
+def _backend_loose_files() -> set[str]:
+    return set(_parse_shell_array(_deploy_script_text(), "BACKEND_LOOSE_FILES"))
+
+
+def _backend_dirs() -> set[str]:
+    dirs = set(_parse_shell_array(_deploy_script_text(), "BACKEND_DIRS"))
+    return {d if d.endswith("/") else d + "/" for d in dirs}
+
+
+def _backend_synced_files() -> set[str]:
+    return _backend_files() | _backend_loose_files()
+
+
+# --- 豁免表：目录前缀 -----------------------------------------------------
+EXEMPT_BACKEND_DIR_PREFIXES: dict[str, str] = {
+    "backend/tests/": "测试代码不部署：生产服务器不跑 pytest，测试已在 CI 全量执行",
+    "backend/logs/": "运行时日志目录：由服务器本地生成，反向同步会污染本地",
+    "backend/data/": (
+        "运行时数据目录：服务器本地持仓/缓存数据，部署脚本另有 chown 修复逻辑，绝不能被覆盖"
+    ),
+    "backend/_archive/": "M1 之前的历史数据归档（纯数据、无 .py），不参与运行时",
+    "backend/infra/.cache/": "运行时缓存目录：服务器本地生成，被 --delete 清掉会丢缓存",
+    "backend/.mypy_cache/": "mypy 类型检查缓存，纯构建产物",
+    "backend/.pytest_cache/": "pytest 运行缓存，纯构建产物",
+    "backend/__pycache__/": "Python 字节码缓存目录",
+}
+
+# --- 豁免表：文件名 glob（只匹配 basename）--------------------------------
+EXEMPT_BACKEND_FILE_PATTERNS: dict[str, str] = {
+    ".env": "服务器本地密钥文件，覆盖会丢 TUSHARE_TOKEN 等生产凭据，绝不能被覆盖",
+    ".env.*": "环境变量文件（.env.example 只是模板），一律不上线",
+    "*.pyc": "Python 字节码缓存",
+    "*.pyo": "Python 字节码缓存",
+    "*.bak*": "垃圾备份文件（如服务器上的 schemas.py.bak-*），不该上线",
+    "*.log": "运行时日志（服务器本地生成）",
+    "requirements.txt": (
+        "依赖清单：服务器依赖由 /opt/moneybag/venv 预装，部署脚本只提示手动 pip install，"
+        "不走文件同步；依赖同步是另一类问题，不纳入本守卫"
+    ),
+    "Procfile": "Railway/Heroku 进程声明文件；本机部署走 systemd，与生产无关",
+    "railway.toml": "Railway 平台配置；本机部署走 systemd，与生产无关",
+    ".python-version": "pyenv 本地开发版本声明；服务器用 /opt/moneybag/venv 指定解释器",
+}
+
+# --- 豁免表：精确路径（用于「未接线的空占位包」）---------------------------
+EXEMPT_BACKEND_FILES: dict[str, str] = {
+    "backend/infra/config/__init__.py": (
+        "未接线的空占位包（仅 docstring，全仓无任何 import 引用），不属于运行时依赖"
+    ),
+    "backend/infra/events/__init__.py": (
+        "未接线的空占位包（仅 docstring，全仓无任何 import 引用），不属于运行时依赖"
+    ),
+}
+
+
+def _exemption_reason(rel: str) -> str | None:
+    """返回该 repo 相对路径的豁免理由；不豁免时返回 None。"""
+    if rel in EXEMPT_BACKEND_FILES:
+        return EXEMPT_BACKEND_FILES[rel]
+    for prefix, reason in EXEMPT_BACKEND_DIR_PREFIXES.items():
+        if rel.startswith(prefix):
+            return reason
+    base = rel.rsplit("/", 1)[-1]
+    for pattern, reason in EXEMPT_BACKEND_FILE_PATTERNS.items():
+        if fnmatch.fnmatch(base, pattern):
+            return reason
+    return None
+
+
+def _all_exemptions() -> dict[str, str]:
+    merged: dict[str, str] = dict(EXEMPT_BACKEND_FILES)
+    merged.update(EXEMPT_BACKEND_DIR_PREFIXES)
+    merged.update(EXEMPT_BACKEND_FILE_PATTERNS)
+    return merged
+
+
+def _enumerate_backend_sources() -> set[str]:
+    """枚举 ``backend/`` 下**全部**可能参与运行时的文件（repo 相对路径）。
+
+    枚举范围（刻意取宽，宁多勿漏）：
+    * ``backend/**/*.py``
+    * ``backend/**/*.md``（prompt / knowledge 等运行时可能读取的文本资产）
+    * ``backend/`` 根目录下的**任意**文件（``.txt`` / ``.json`` / ``.sh`` / 无后缀等）
+
+    刻意**不**依赖 ``git ls-files``（CI 上是浅克隆，且未跟踪的新文件正是最需要
+    被守卫发现的），改用文件系统遍历 ``Path.rglob``。豁免项不在这里过滤 ——
+    过滤统一在 ``find_backend_coverage_gaps`` 里做，便于故障注入直接喂脏数据。
+    """
+    found: set[str] = set()
+    if not BACKEND.is_dir():
+        return found
+    for p in sorted(BACKEND.rglob("*")):
+        if not p.is_file():
+            continue
+        rel = p.relative_to(REPO_ROOT).as_posix()
+        if p.suffix in (".py", ".md"):
+            found.add(rel)
+        elif p.parent == BACKEND:
+            found.add(rel)
+    return found
+
+
+def find_backend_coverage_gaps(
+    enumerated: set[str],
+    synced_files: set[str],
+    synced_dirs: set[str],
+) -> list[str]:
+    """返回「枚举到、但既不被同步也不豁免」的后端文件。空列表 = 覆盖完整。"""
+    gaps: list[str] = []
+    for rel in sorted(enumerated):
+        if _exemption_reason(rel) is not None:
+            continue
+        if rel in synced_files:
+            continue
+        if any(rel.startswith(d) for d in sorted(synced_dirs)):
+            continue
+        gaps.append(rel)
+    return gaps
+
+
+def _module_is_trivial(path: Path) -> bool:
+    """判断 .py 是否只有 docstring / 注释 / 空行（无可执行语句）。"""
+    tree = ast.parse(path.read_text(encoding="utf-8"))
+    for node in tree.body:
+        if isinstance(node, ast.Pass):
+            continue
+        if isinstance(node, ast.Expr) and isinstance(node.value, ast.Constant):
+            continue  # 裸字符串（docstring）或裸常量
+        return False
+    return True
+
+
+# --------------------------------------------------------------------------
+# 5.1 反空转：解析器与枚举器必须真的解析/枚举出东西
+# --------------------------------------------------------------------------
+def test_parser_really_parses_backend_manifests():
+    """三张后端清单都必须解析出非空且含已知条目 —— 否则后面断言真空通过。"""
+    files = _backend_files()
+    loose = _backend_loose_files()
+    dirs = _backend_dirs()
+
+    assert files, (
+        "BACKEND_FILES 解析结果为空。要么 deploy_to_server.sh 的数组写法变了、"
+        "正则失配，要么清单被清空 —— 无论哪种，类级覆盖断言都会变成「闸门空转仍显绿」。"
+    )
+    assert loose, (
+        "BACKEND_LOOSE_FILES 解析结果为空。父包 __init__.py / infra/auth.py 会重新变成"
+        "不同步状态，且类级覆盖断言会真空通过。"
+    )
+    assert dirs, "BACKEND_DIRS 解析结果为空 —— backend/models/ 等目录会重新变成不同步状态。"
+
+    assert "backend/main.py" in files, f"BACKEND_FILES 应含 backend/main.py，实际 {sorted(files)}"
+    assert "backend/infra/auth.py" in loose, (
+        f"BACKEND_LOOSE_FILES 应含 backend/infra/auth.py（运行时硬依赖），实际 {sorted(loose)}"
+    )
+    assert "backend/models/" in dirs, (
+        f"BACKEND_DIRS 应含 backend/models/（api/*.py 的运行时依赖），实际 {sorted(dirs)}"
+    )
+
+
+def test_backend_source_enumeration_is_not_empty():
+    """枚举结果不能为空，否则类级覆盖断言无对象可比。"""
+    enumerated = _enumerate_backend_sources()
+    assert enumerated, (
+        "未能枚举出任何后端源文件 —— 枚举逻辑已失效（BACKEND 路径不对 / rglob 未跑）。"
+    )
+    for known in (
+        "backend/api/chat.py",
+        "backend/models/schemas.py",
+        "backend/infra/auth.py",
+        "backend/prompts/close_review.md",
+        "backend/main.py",
+    ):
+        assert known in enumerated, (
+            f"枚举结果缺少已知文件 {known}，枚举范围可能被收窄了：共 {len(enumerated)} 个"
+        )
+
+
+def test_enumerated_backend_sources_all_exist_on_disk():
+    """枚举出的每个路径都必须真实存在（防枚举器产出幻觉路径）。"""
+    missing = [f for f in sorted(_enumerate_backend_sources()) if not (REPO_ROOT / f).is_file()]
+    assert not missing, "枚举结果包含并不存在的文件路径：\n" + "\n".join(f"  - {m}" for m in missing)
+
+
+def test_exemptions_all_carry_a_reason():
+    """豁免表必须显式且每条都带非空理由 —— 禁止静默放行。"""
+    for key, reason in _all_exemptions().items():
+        assert isinstance(reason, str), f"豁免项 {key} 的理由不是字符串：{reason!r}"
+        assert len(reason.strip()) >= 8, (
+            f"豁免项 {key} 的理由过于含糊（{reason!r}），必须写清为什么可以不上线"
+        )
+
+
+# --------------------------------------------------------------------------
+# 5.2 主判据（类级）：所有后端源文件必须被覆盖或豁免
+# --------------------------------------------------------------------------
+def test_backend_sources_are_all_deployed_or_exempt():
+    """**类级守卫**：枚举到的每个后端源文件都必须被同步或显式豁免。"""
+    gaps = find_backend_coverage_gaps(
+        _enumerate_backend_sources(), _backend_synced_files(), _backend_dirs()
+    )
+    assert not gaps, (
+        "以下后端源文件既不在部署清单（BACKEND_FILES / BACKEND_LOOSE_FILES / "
+        "BACKEND_DIRS）里，也不在豁免表里 —— 本地改了也永远不会上线：\n"
+        + "\n".join(f"  - {g}" for g in gaps)
+        + "\n修法：加进 deploy_to_server.sh 对应数组；若确认不该上线，"
+        "加进本文件 EXEMPT_BACKEND_DIR_PREFIXES / EXEMPT_BACKEND_FILE_PATTERNS / "
+        "EXEMPT_BACKEND_FILES 并写明理由。"
+    )
+
+
+def test_known_non_runtime_root_files_are_explicitly_exempt():
+    """把「backend 根下非运行时文件」的豁免决定钉在测试里，防止被无声改掉。"""
+    for rel, why in (
+        ("backend/requirements.txt", "依赖同步靠 venv 手动 pip install，不走文件同步"),
+        ("backend/Procfile", "Railway 进程声明，生产走 systemd"),
+        ("backend/railway.toml", "Railway 平台配置，生产走 systemd"),
+        ("backend/.python-version", "pyenv 本地版本声明，生产用 venv 解释器"),
+        ("backend/.env.example", "环境变量模板，服务器用真实 .env"),
+        ("backend/tests/test_deploy_asset_coverage.py", "测试代码不部署"),
+        ("backend/logs/x.log", "运行时日志"),
+        ("backend/data/x.json", "运行时数据"),
+        ("backend/infra/.cache/x.json", "运行时缓存"),
+        ("backend/models/schemas.py.bak-20260901", "垃圾备份"),
+    ):
+        reason = _exemption_reason(rel)
+        assert reason, f"{rel} 应被显式豁免（理由：{why}），实际未被豁免"
+
+
+# --------------------------------------------------------------------------
+# 5.3 交叉校验：从**源码里的 import 语句**反推运行时依赖，不能硬编码
+# --------------------------------------------------------------------------
+def _files_importing(module_prefix: str) -> list[str]:
+    """返回 backend 下所有 `from <module_prefix>... import` / `import <module_prefix>...`
+    的非豁免生产文件（排除 tests/ 与 _archive/）。"""
+    hits: list[str] = []
+    for rel in sorted(_enumerate_backend_sources()):
+        if rel.startswith(("backend/tests/", "backend/_archive/")):
+            continue
+        if not rel.endswith(".py"):
+            continue
+        src = (REPO_ROOT / rel).read_text(encoding="utf-8")
+        if re.search(rf"^\s*(from|import)\s+{re.escape(module_prefix)}\b", src, re.MULTILINE):
+            hits.append(rel)
+    return hits
+
+
+def test_models_package_is_required_by_runtime_imports():
+    """``backend/models/`` 必须被覆盖 —— 判据来自**源码里的 import 语句**。
+
+    刻意不写「backend/models/ 必须出现在某个数组里」这种硬编码：先从源码找出
+    到底哪些生产文件 import 了 models，再断言该包整体被同步覆盖。
+    """
+    importers = _files_importing("models")
+    assert importers, "没有找到任何 import models 的生产文件，交叉校验失去意义"
+    assert (BACKEND / "models" / "schemas.py").is_file(), (
+        "backend/models/schemas.py 不存在，但 api/*.py 仍在 import models.schemas —— "
+        "要么文件被误删，要么 import 路径已变，需人工确认"
+    )
+
+    synced_files = _backend_synced_files()
+    synced_dirs = _backend_dirs()
+    for target in ("backend/models/__init__.py", "backend/models/schemas.py"):
+        covered = target in synced_files or any(target.startswith(d) for d in synced_dirs)
+        assert covered, (
+            f"{target} 被以下生产文件在运行时 import 引用：{importers}，"
+            "但它不在部署同步范围内 —— 线上跑的是旧版/缺失模块。"
+        )
+
+
+def test_infra_auth_and_parent_package_inits_are_covered():
+    """``infra.auth`` 与父包 ``__init__.py`` 必须被覆盖，判据同样来自 import 源码。"""
+    importers = _files_importing("infra") + _files_importing("infra.auth")
+    assert any("infra/auth" in rel or "main.py" in rel for rel in importers), (
+        f"未能从源码定位 infra.auth 的引用方，实际命中：{importers}"
+    )
+
+    synced_files = _backend_synced_files()
+    synced_dirs = _backend_dirs()
+    for target in (
+        "backend/infra/auth.py",
+        "backend/infra/__init__.py",
+        "backend/domain/__init__.py",
+        "backend/__init__.py",
+    ):
+        covered = target in synced_files or any(target.startswith(d) for d in synced_dirs)
+        assert covered, (
+            f"{target} 不在部署同步范围内。infra/ 与 domain/ 作为包被 import 时其 "
+            f"__init__.py 会真的执行；infra/auth.py 被 {importers} 直接 import。"
+        )
+
+
+def test_exempt_placeholder_packages_stay_trivial():
+    """豁免的「空占位包」必须一直是空的：一旦有人往里写代码，本测试报红强制重新决策。"""
+    for rel, _reason in EXEMPT_BACKEND_FILES.items():
+        path = REPO_ROOT / rel
+        assert path.is_file(), f"被豁免的空占位包不存在了：{rel}（应同步更新豁免表）"
+        assert _module_is_trivial(path), (
+            f"{rel} 已被豁免为「未接线的空占位包」，但现在里面有可执行代码了 —— "
+            "说明该包已接线，必须从豁免表移出并加进部署清单。"
+        )
+
+
+# --------------------------------------------------------------------------
+# 5.4 故障注入：证明类级判据真的会红（纯函数级）
+# --------------------------------------------------------------------------
+def test_backend_checker_detects_injected_missing_dir_entry():
+    """摘掉 ``backend/models/``（真实踩过的那个坑），检查器必须点名报出里面的文件。"""
+    enumerated = _enumerate_backend_sources()
+    files = _backend_synced_files()
+    dirs = _backend_dirs()
+
+    assert not find_backend_coverage_gaps(enumerated, files, dirs), (
+        "注入前就存在覆盖缺口，说明清单没修干净，先修清单再看本测试"
+    )
+
+    injected = {d for d in dirs if d != "backend/models/"}
+    gaps = find_backend_coverage_gaps(enumerated, files, injected)
+    assert "backend/models/schemas.py" in gaps, (
+        "故障注入失败：摘掉 backend/models/ 后检查器仍未报出 backend/models/schemas.py，"
+        f"判据是死的。实际报出：{gaps}"
+    )
+    assert "backend/models/__init__.py" in gaps, (
+        f"摘掉 backend/models/ 后应同时报出 __init__.py。实际报出：{gaps}"
+    )
+
+
+def test_backend_checker_detects_injected_missing_loose_file():
+    """摘掉 ``backend/infra/auth.py``（松散文件的真实坑），必须被抓到并点名。"""
+    enumerated = _enumerate_backend_sources()
+    dirs = _backend_dirs()
+    injected = {f for f in _backend_synced_files() if f != "backend/infra/auth.py"}
+
+    gaps = find_backend_coverage_gaps(enumerated, injected, dirs)
+    assert "backend/infra/auth.py" in gaps, (
+        "故障注入失败：摘掉 backend/infra/auth.py 后检查器仍未报出，判据是死的。"
+        f"实际报出：{gaps}"
+    )
+
+
+def test_backend_checker_detects_injected_missing_parent_init():
+    """摘掉 ``backend/infra/__init__.py``，同样必须被抓到。"""
+    enumerated = _enumerate_backend_sources()
+    dirs = _backend_dirs()
+    injected = {f for f in _backend_synced_files() if f != "backend/infra/__init__.py"}
+
+    gaps = find_backend_coverage_gaps(enumerated, injected, dirs)
+    assert "backend/infra/__init__.py" in gaps, (
+        f"摘掉 backend/infra/__init__.py 后检查器未报出，判据不完整。实际报出：{gaps}"
+    )
+
+
+# --------------------------------------------------------------------------
+# 5.5 反向注入 / 正向对照：防假阳性、防死判据
+# --------------------------------------------------------------------------
+def test_backend_checker_does_not_flag_exempt_or_synced_paths():
+    """反向注入：豁免项与已同步项都不得被误报（防「宁可错杀」的假阳性）。"""
+    exempt_samples = {
+        "backend/tests/test_foo.py",
+        "backend/tests/fixtures/x.json",
+        "backend/logs/app.log",
+        "backend/data/users/a.json",
+        "backend/_archive/data-pre-m1/README.md",
+        "backend/infra/.cache/quote.json",
+        "backend/.mypy_cache/3.13/x.py",
+        "backend/.env",
+        "backend/.env.example",
+        "backend/requirements.txt",
+        "backend/Procfile",
+        "backend/railway.toml",
+        "backend/.python-version",
+        "backend/infra/config/__init__.py",
+        "backend/infra/events/__init__.py",
+        "backend/models/schemas.py.bak-20260901",
+    }
+    gaps = find_backend_coverage_gaps(exempt_samples, set(), _backend_dirs())
+    assert not gaps, f"豁免项被误报为覆盖缺口（假阳性）：{gaps}"
+
+    synced_samples = {
+        "backend/main.py",
+        "backend/config.py",
+        "backend/infra/auth.py",
+        "backend/__init__.py",
+        "backend/api/chat.py",
+        "backend/models/schemas.py",
+        "backend/prompts/close_review.md",
+        "backend/infra/knowledge/content/72-rule.md",
+    }
+    gaps = find_backend_coverage_gaps(
+        synced_samples, _backend_synced_files(), _backend_dirs()
+    )
+    assert not gaps, f"已同步的文件被误报为覆盖缺口（假阳性）：{gaps}"
+
+
+def test_backend_checker_actually_flags_uncovered_source():
+    """正向对照：一个既不在清单、也不豁免的源文件必须被点名报出。"""
+    fabricated = "backend/brand_new_package/nested/module.py"
+    gaps = find_backend_coverage_gaps({fabricated}, _backend_synced_files(), _backend_dirs())
+    assert gaps == [fabricated], (
+        f"检查器对明显未覆盖的源文件没有报错，判据是死的。实际：{gaps}"
+    )
+    assert fabricated in "\n".join(gaps), "报错信息必须点出具体文件路径"
+
+
+def test_backend_checker_respects_directory_prefix_boundary():
+    """前缀匹配必须按目录边界，不得把 ``backend/models2/`` 误认成 ``backend/models/``。"""
+    fabricated = "backend/models2/schemas.py"
+    gaps = find_backend_coverage_gaps({fabricated}, _backend_synced_files(), _backend_dirs())
+    assert gaps == [fabricated], (
+        f"目录前缀匹配越界了：{fabricated} 不应被 backend/models/ 覆盖。实际：{gaps}"
     )
