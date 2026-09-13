@@ -16,6 +16,22 @@ TEST_USER_ID = "test_user_phase3"
 TEST_DATA_DIR = Path(tempfile.mkdtemp())
 
 
+def _auth_headers(user_id: str = TEST_USER_ID) -> dict:
+    """构造 /api/* 需要的合法鉴权 header。
+
+    `backend/main.py:41` 挂载了 `infra.auth.AuthMiddleware`，它对所有 /api/*
+    强制校验 `Authorization: Bearer HMAC-SHA256(AUTH_SECRET, userId)[:32]`
+    （见 `infra/auth.py:20-56`；白名单只有 /api/auth、/api/health、/api/wxwork、静态资源）。
+    所以 TestClient 直接打 /api/todos 之类必然 401 —— 这不是接口坏了，是测试没带凭证。
+
+    这里直接调用生产同款 `generate_token()` 现算 token（不手搓哈希、不关鉴权、
+    不改 AUTH_ENABLED），保证与被测中间件用的是**同一个** HMAC 实现与同一个
+    `config.AUTH_SECRET`。
+    """
+    from infra.auth import generate_token
+    return {"Authorization": f"Bearer {generate_token(user_id)}"}
+
+
 @pytest.fixture(scope="function", autouse=True)
 def setup_test_env(monkeypatch):
     """设置测试环境"""
@@ -140,7 +156,29 @@ class TestPhase3EndToEnd:
         )
         
         # Mock get_unified_networth
-        with patch("backend.services.portfolio_overview.get_unified_networth") as mock_nw:
+        #
+        # FIX 2026-09-13（patch 目标根本不存在）：
+        #   原写法 `patch("backend.services.portfolio_overview.get_unified_networth")`
+        #   必然抛 AttributeError —— `backend/services/portfolio_overview.py` 里
+        #   只有 `get_portfolio_overview`，从来没有 `get_unified_networth`
+        #   （`git log -S get_unified_networth -- backend/services/portfolio_overview.py`
+        #   为空，即该符号从未在此文件存在过）。
+        #
+        #   两处必须同时改对：
+        #   1) 命名空间。本仓库 `backend/services/*.py` 会被 `sys.path` 里的
+        #      `.` 和 `backend` 两条路径各加载一次，`backend.services.X` 与
+        #      `services.X` 是**两个不同的 module 对象**。被测对象
+        #      `backend.services.monthly_snapshot.save_monthly_snapshot` 内部写的是
+        #      `from services.portfolio_overview import get_unified_networth`，
+        #      所以 mock 必须打在 `services.portfolio_overview` 上（打在
+        #      `backend.services.*` 上永远不会被 SUT 查到）。
+        #   2) 符号本身在生产里不存在 → 用 create=True 注入到 SUT 的查找点。
+        #
+        #   注意：`monthly_snapshot.py:57` 至今仍在从 portfolio_overview 导入这个
+        #   不存在的名字（真实现是 services/unified_networth.py 的
+        #   `calc_unified_networth`，cfo_dashboard 早在 bf01e97 修过同类错位）。
+        #   这是**生产 bug**，按本次任务约束不在测试里顺手改，已写入保留意见。
+        with patch("services.portfolio_overview.get_unified_networth", create=True) as mock_nw:
             mock_nw.return_value = {
                 "netWorth": 1000000,
                 "breakdown": {
@@ -226,7 +264,8 @@ class TestPhase3EndToEnd:
         client = TestClient(app)
         
         # GET /api/todos
-        response = client.get(f"/api/todos?userId={TEST_USER_ID}")
+        response = client.get(f"/api/todos?userId={TEST_USER_ID}",
+                              headers=_auth_headers())
         assert response.status_code == 200
         data = response.json()
         assert "todos" in data
@@ -240,7 +279,8 @@ class TestPhase3EndToEnd:
         client = TestClient(app)
         
         # GET /api/behavior/events
-        response = client.get(f"/api/behavior/events?userId={TEST_USER_ID}")
+        response = client.get(f"/api/behavior/events?userId={TEST_USER_ID}",
+                              headers=_auth_headers())
         assert response.status_code == 200
         data = response.json()
         assert "events" in data
@@ -249,6 +289,7 @@ class TestPhase3EndToEnd:
         # POST /api/behavior/record
         response = client.post(
             f"/api/behavior/record?userId={TEST_USER_ID}",
+            headers=_auth_headers(),
             json={
                 "trade_details": {
                     "code": "000001",
@@ -272,13 +313,15 @@ class TestPhase3EndToEnd:
         client = TestClient(app)
         
         # GET /api/monthly/snapshots
-        response = client.get(f"/api/monthly/snapshots?userId={TEST_USER_ID}")
+        response = client.get(f"/api/monthly/snapshots?userId={TEST_USER_ID}",
+                              headers=_auth_headers())
         assert response.status_code == 200
         data = response.json()
         assert "snapshots" in data
         
         # GET /api/monthly/latest
-        response = client.get(f"/api/monthly/latest?userId={TEST_USER_ID}")
+        response = client.get(f"/api/monthly/latest?userId={TEST_USER_ID}",
+                              headers=_auth_headers())
         assert response.status_code == 200
         data = response.json()
         # snapshot 可能为空
