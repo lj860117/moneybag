@@ -160,12 +160,14 @@ def cfo_summary(userId: str = "", force: bool = False):
     v9.5.122: per-user 文件缓存（10h + stale 24h），cache_warmer 预热
     v9.9.1: `force=1` 时跳过文件缓存，确保定时预热真的刷新磁盘时间戳
     """
-    import json as _json, time as _time, os as _os
-    from pathlib import Path
+    import json as _json, time as _time
+    from services.cfo_dashboard import cfo_cache_path, write_cfo_cache
     uid = userId or "default"
-    cache_dir = Path(config.DATA_DIR) / "_cache"
-    cache_dir.mkdir(parents=True, exist_ok=True)
-    cache_fp = cache_dir / f"cfo_summary_{uid}.json"
+    # FIX 2026-09-13: 文件名与写入统一走 services.cfo_dashboard，消除
+    #   "两处各拼一次文件名" + "两种写入形状"（读侧按 created_at 判新旧，
+    #   而 /api/health 按 mtime 判新鲜 —— 两边必须由同一个写入口保证一致）。
+    cache_fp = cfo_cache_path(uid)
+    cache_fp.parent.mkdir(parents=True, exist_ok=True)
     # 读缓存（force 模式跳过，确保预热一定回写文件）
     if not force:
         try:
@@ -177,7 +179,7 @@ def cfo_summary(userId: str = "", force: bool = False):
                 # stale 24h
                 if age < 86400 and payload.get("data"):
                     import threading
-                    threading.Thread(target=_bg_refresh_cfo, args=(uid, str(cache_fp)), daemon=True).start()
+                    threading.Thread(target=_bg_refresh_cfo, args=(uid,), daemon=True).start()
                     return payload.get("data", {})
         except Exception:
             pass
@@ -186,21 +188,16 @@ def cfo_summary(userId: str = "", force: bool = False):
     # 机器读不应写用户 JSON —— 否则每次预热都往 todos 追加一条（曾堆到 153k 条 / 33.9MB）。
     # 真人请求（force 缺省 False）保持原有落库行为。
     result = generate_cfo_summary(uid, generate_todos=not force)
-    # 写缓存
-    try:
-        cache_fp.write_text(_json.dumps({"data": result, "created_at": _time.time()}, ensure_ascii=False, default=str), encoding="utf-8")
-    except Exception:
-        pass
+    # 写缓存（原子写：预热提到 55s 一轮后，不能再容忍读到半截 JSON）
+    write_cfo_cache(uid, result)
     return result
 
 
-def _bg_refresh_cfo(uid: str, cache_fp_str: str):
+def _bg_refresh_cfo(uid: str):
     try:
-        import json as _json, time as _time
-        from services.cfo_dashboard import generate_cfo_summary
+        from services.cfo_dashboard import generate_cfo_summary, write_cfo_cache
         # FIX 2026-08-30: 后台 stale 刷新是机器读，不落库待办（避免读路径写副作用）
         result = generate_cfo_summary(uid, generate_todos=False)
-        with open(cache_fp_str, "w", encoding="utf-8") as f:
-            _json.dump({"data": result, "created_at": _time.time()}, f, ensure_ascii=False, default=str)
+        write_cfo_cache(uid, result)
     except Exception:
         pass

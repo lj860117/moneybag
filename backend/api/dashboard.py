@@ -81,6 +81,28 @@ def get_market_status():
     }
 
 
+def _cfo_family_members() -> list:
+    """需要检测 CFO 缓存新鲜度的成员名单。
+
+    FIX 2026-09-13：此前 /api/health 把文件名硬编码成 cfo_summary_LeiJiang.json，
+    于是 BuLuoGeLi 的缓存过期时**结构上看不见**（以他的身份看还会显示
+    LeiJiang 的时间戳）。而首页「家庭净资产」是两人合计 —— 任一成员的数据
+    过期，这个数字就可能不是最新的。
+
+    名单刻意取自与预热线程同一个来源（api.shared_helpers.FAMILY_MEMBERS，
+    由 services.cfo_dashboard._get_active_users 透出）：**检测范围必须
+    等于维护范围**，否则会出现"检测没人维护的用户"这类永久误报。
+    """
+    try:
+        from api.shared_helpers import FAMILY_MEMBERS
+        return list(FAMILY_MEMBERS)
+    except Exception as e:  # pragma: no cover - 正常环境不应触发
+        # 读不到名单就跳过这项检测，但必须出声：否则检测会静默消失，
+        # 又变成"守卫没了、却没人知道"
+        print(f"[HEALTH] 跳过 CFO 新鲜度检测（读不到成员名单）: {e}")
+        return []
+
+
 @router.get("/api/health")
 def health():
     from config import APP_VERSION
@@ -98,24 +120,47 @@ def health():
         from pathlib import Path
         import time as _t
         cache_dir = Path(config.DATA_DIR) / "_cache"
-        # 检查关键缓存文件的新鲜度
-        _checks = [
-            ("市场行情", "market_context.txt", 86400),   # 24h (周末可能不更新)
-            ("CFO摘要", "cfo_summary_LeiJiang.json", 43200),  # 12h
-            # 基金筛选不检测(按需生成,不影响首页展示)
-        ]
-        for name, fn, max_age in _checks:
-            fp = cache_dir / fn
-            if fp.exists():
-                age = _t.time() - fp.stat().st_mtime
-                data_health["last_success"][name] = {
-                    "age_hours": round(age / 3600, 1),
-                    "fresh": age < max_age,
-                }
-                if age > max_age * 2:  # 超过2倍最大年龄 = 降级
-                    data_health["degraded"].append(f"{name}(已{round(age/3600)}h未更新)")
-            elif name != "CFO摘要":
-                data_health["degraded"].append(f"{name}(无缓存)")
+
+        # 1) 市场行情：全站共用一份，24h（周末可能不更新）
+        _mkt = cache_dir / "market_context.txt"
+        if _mkt.exists():
+            _age_h = (_t.time() - _mkt.stat().st_mtime) / 3600
+            data_health["last_success"]["市场行情"] = {
+                "age_hours": round(_age_h, 1),
+                "fresh": _age_h < 24,
+            }
+            if _age_h > 48:  # 超过2倍最大年龄 = 降级
+                data_health["degraded"].append(f"市场行情(已{round(_age_h)}h未更新)")
+        else:
+            data_health["degraded"].append("市场行情(无缓存)")
+
+        # 2) CFO摘要：**逐成员**检测（详见 _cfo_family_members 的说明）
+        #    阈值 12h 新鲜 / 24h 降级，与原先一致
+        _cfo_rows = []  # [(uid, 是否过期, 已过小时数)]
+        for _uid in _cfo_family_members():
+            _fp = cache_dir / f"cfo_summary_{_uid}.json"
+            if not _fp.exists():
+                # 缺失 ≠ 降级：文件不存在只说明「还没打开过 App」，
+                # 属正常冷启动，不该在首页弹黄条
+                continue
+            _age_h = (_t.time() - _fp.stat().st_mtime) / 3600
+            data_health["last_success"][f"CFO摘要({_uid})"] = {
+                "age_hours": round(_age_h, 1),
+                "fresh": _age_h < 12,
+            }
+            _cfo_rows.append((_uid, _age_h > 24, _age_h))
+
+        _stale = [r for r in _cfo_rows if r[1]]
+        if len(_stale) > 1 and len(_stale) == len(_cfo_rows):
+            # 全体成员一起过期（典型原因：预热线程挂了）→ 合并成一条，
+            # 免得手机顶部黄条被同义内容刷成好几行
+            _h = round(max(r[2] for r in _stale))
+            data_health["degraded"].append(f"CFO摘要(家庭{len(_stale)}人)(已{_h}h未更新)")
+        else:
+            # 只有个别成员过期 → 指名道姓，否则不知道是谁的数据旧了
+            for _uid, _, _h in _stale:
+                data_health["degraded"].append(f"CFO摘要({_uid})(已{round(_h)}h未更新)")
+
         if data_health["degraded"]:
             data_health["overall"] = "degraded"
     except Exception:

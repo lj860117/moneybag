@@ -141,13 +141,16 @@ def test_cfo_summary_force_refresh_rewrites_fresh_file(tmp_path, monkeypatch):
         encoding="utf-8",
     )
 
-    fake_cfo = types.ModuleType("services.cfo_dashboard")
+    # FIX 2026-09-13: 不再整体替换 services.cfo_dashboard —— 那会把
+    #   write_cfo_cache 一起假掉，于是"缓存文件被真的重写"这件事根本没被测到。
+    #   只替换真去算数据的那一个函数，让真实的 write_cfo_cache 跑起来。
+    import services.cfo_dashboard as cfo_mod
     # generate_todos kwarg: FIX 2026-08-30 起 steward.cfo_summary 会显式传该参数
     # （force=1 的机器预热路径传 False，避免读操作写用户 JSON），fake 需同步签名
-    fake_cfo.generate_cfo_summary = (
-        lambda user_id, generate_todos=True: {"timestamp": "new", "user": user_id}
+    monkeypatch.setattr(
+        cfo_mod, "generate_cfo_summary",
+        lambda user_id, generate_todos=True: {"timestamp": "new", "user": user_id},
     )
-    monkeypatch.setitem(sys.modules, "services.cfo_dashboard", fake_cfo)
 
     result = steward.cfo_summary(userId="LeiJiang", force=True)
     payload = json.loads(cache_fp.read_text(encoding="utf-8"))
@@ -167,6 +170,12 @@ def test_health_does_not_flag_missing_cfo_cache_as_degraded(tmp_path, monkeypatc
 
     fake_cfg = types.ModuleType("config")
     fake_cfg.APP_VERSION = "test"
+    # ★ FIX 2026-09-13（死测试修复）：原来这里漏了 DATA_DIR，于是 health() 的
+    #   检测块在 Path(config.DATA_DIR) 处抛 AttributeError，被外层
+    #   `except Exception: pass` 静默吞掉 —— 整个检测从未执行过，
+    #   下面两条断言**永真**。实测证据：data_health.last_success == {}。
+    #   补上 DATA_DIR 后检测真的会跑，断言才有意义（并用反空转断言锁住）。
+    fake_cfg.DATA_DIR = str(tmp_path)
     monkeypatch.setitem(sys.modules, "config", fake_cfg)
 
     fake_data_layer = types.ModuleType("services.data_layer")
@@ -194,13 +203,202 @@ def test_health_does_not_flag_missing_cfo_cache_as_degraded(tmp_path, monkeypatc
 
     sys.modules.pop("api.dashboard", None)
     dashboard = importlib.import_module("api.dashboard")
+    monkeypatch.setattr(dashboard, "_cfo_family_members", lambda: ["LeiJiang", "BuLuoGeLi"])
 
     result = dashboard.health()
 
+    # ★ 反空转断言：证明检测块**真的执行了**（market_context.txt 已被登记）。
+    #   没有这一条，下面的断言又可能退化成永真式。
+    assert "市场行情" in result["data_health"]["last_success"]
     assert result["keys_status"]["deepseek"] == "missing"
     assert result["keys_status"]["doubao"] == "missing"
-    assert "CFO摘要(无缓存)" not in result["data_health"]["degraded"]
+    # 缺 CFO 缓存 = 「还没打开过 App」，属正常冷启动，不该报降级
+    assert not any("CFO摘要" in d for d in result["data_health"]["degraded"])
     assert result["data_health"]["overall"] == "ok"
+
+
+def test_health_flags_stale_cfo_cache_per_member(tmp_path, monkeypatch):
+    """CFO 缓存过期时，/api/health 必须**指名道姓**报出是哪个成员的数据旧了。
+
+    回归的是：原实现把文件名硬编码成 cfo_summary_LeiJiang.json，BuLuoGeLi
+    的过期结构上看不见；而首页「家庭净资产」是两人合计，这等于让一个人
+    的过期数据静默污染全家数字。
+    """
+    import importlib
+    import os as _os
+
+    monkeypatch.setenv("DATA_DIR", str(tmp_path))
+    cache_dir = tmp_path / "_cache"
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    (cache_dir / "market_context.txt").write_text("fresh", encoding="utf-8")
+
+    # LeiJiang：刚写过（新鲜）；BuLuoGeLi：停在 31h 前（23h 前还在预算里，24h 后降级）
+    (cache_dir / "cfo_summary_LeiJiang.json").write_text(
+        json.dumps({"data": {"u": "LeiJiang"}, "created_at": time.time()}, ensure_ascii=False),
+        encoding="utf-8",
+    )
+    _stale_fp = cache_dir / "cfo_summary_BuLuoGeLi.json"
+    _stale_fp.write_text(
+        json.dumps({"data": {"u": "BuLuoGeLi"}, "created_at": time.time()}, ensure_ascii=False),
+        encoding="utf-8",
+    )
+    _old = time.time() - 31 * 3600
+    _os.utime(_stale_fp, (_old, _old))
+
+    # 用**真实** config 模块、只改 DATA_DIR：整块替换 config 会连
+    # NAV_CACHE_TTL 之类的常量一起抹掉，导致 services.* 的真实导入链炸掉，
+    # 于是用例只能靠"前面某个用例先把模块导进 sys.modules"才绿 —— 单独跑就红。
+    import config as _cfg
+    monkeypatch.setattr(_cfg, "DATA_DIR", tmp_path)
+
+    fake_llm_gateway = types.ModuleType("infra.llm.gateway")
+
+    class _FakeGateway:
+        @staticmethod
+        def instance():
+            return _FakeGateway()
+
+        def check_budget(self):
+            return {}
+
+    fake_llm_gateway.LLMGateway = _FakeGateway
+    monkeypatch.setitem(sys.modules, "infra.llm.gateway", fake_llm_gateway)
+
+    sys.modules.pop("api.dashboard", None)
+    dashboard = importlib.import_module("api.dashboard")
+    monkeypatch.setattr(dashboard, "_cfo_family_members", lambda: ["LeiJiang", "BuLuoGeLi"])
+
+    result = dashboard.health()
+    dh = result["data_health"]
+
+    assert dh["overall"] == "degraded"
+    # 过期的那位要点名，且带上成员 id
+    assert any("BuLuoGeLi" in d for d in dh["degraded"]), dh["degraded"]
+    # 新鲜的那位不该被误报
+    assert not any("LeiJiang" in d for d in dh["degraded"]), dh["degraded"]
+    # 逐成员登记：新鲜的那位也要出现在 last_success 里，且标 fresh
+    assert dh["last_success"]["CFO摘要(LeiJiang)"]["fresh"] is True
+    assert dh["last_success"]["CFO摘要(BuLuoGeLi)"]["fresh"] is False
+    # 市场行情是新鲜的，不该被牵连
+    assert not any("市场行情" in d for d in dh["degraded"]), dh["degraded"]
+
+
+def test_health_merges_when_all_cfo_members_stale(tmp_path, monkeypatch):
+    """全体成员同时过期（典型：预热线程挂了）→ 合并成一条，避免手机黄条刷成多行。"""
+    import importlib
+    import os as _os
+
+    monkeypatch.setenv("DATA_DIR", str(tmp_path))
+    cache_dir = tmp_path / "_cache"
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    (cache_dir / "market_context.txt").write_text("fresh", encoding="utf-8")
+    for _u in ("LeiJiang", "BuLuoGeLi"):
+        _fp = cache_dir / f"cfo_summary_{_u}.json"
+        _fp.write_text(json.dumps({"data": {}}, ensure_ascii=False), encoding="utf-8")
+        _old = time.time() - 30 * 3600
+        _os.utime(_fp, (_old, _old))
+
+    # 用**真实** config 模块、只改 DATA_DIR：整块替换 config 会连
+    # NAV_CACHE_TTL 之类的常量一起抹掉，导致 services.* 的真实导入链炸掉，
+    # 于是用例只能靠"前面某个用例先把模块导进 sys.modules"才绿 —— 单独跑就红。
+    import config as _cfg
+    monkeypatch.setattr(_cfg, "DATA_DIR", tmp_path)
+
+    fake_llm_gateway = types.ModuleType("infra.llm.gateway")
+
+    class _FakeGateway:
+        @staticmethod
+        def instance():
+            return _FakeGateway()
+
+        def check_budget(self):
+            return {}
+
+    fake_llm_gateway.LLMGateway = _FakeGateway
+    monkeypatch.setitem(sys.modules, "infra.llm.gateway", fake_llm_gateway)
+
+    sys.modules.pop("api.dashboard", None)
+    dashboard = importlib.import_module("api.dashboard")
+    monkeypatch.setattr(dashboard, "_cfo_family_members", lambda: ["LeiJiang", "BuLuoGeLi"])
+
+    dh = dashboard.health()["data_health"]
+
+    assert dh["overall"] == "degraded"
+    _cfo_entries = [d for d in dh["degraded"] if d.startswith("CFO摘要")]
+    assert len(_cfo_entries) == 1, dh["degraded"]
+    assert "家庭2人" in _cfo_entries[0], _cfo_entries
+
+
+def test_cfo_write_cache_writes_expected_path_and_fails_soft(tmp_path, monkeypatch):
+    """落盘契约：写到 /api/health 检测的那个路径；失败"返回 False"而不是抛异常。"""
+    import config
+    import services.cfo_dashboard as cfo
+
+    monkeypatch.setattr(config, "DATA_DIR", Path(tmp_path))
+    assert cfo.write_cfo_cache("LeiJiang", {"a": 1}) is True
+
+    # 路径必须与 /api/health 里拼的 cfo_summary_{uid}.json 完全一致，
+    # 否则"写进去了"和"检测读到了"会是两个文件，mtime 白写
+    assert cfo.cfo_cache_path("LeiJiang") == (
+        Path(tmp_path) / "_cache" / "cfo_summary_LeiJiang.json"
+    )
+    # 原子写不得留下临时文件
+    assert list((Path(tmp_path) / "_cache").glob("*.tmp")) == []
+    payload = json.loads(cfo.cfo_cache_path("LeiJiang").read_text(encoding="utf-8"))
+    assert payload["data"] == {"a": 1}
+    assert "created_at" in payload  # /api/cfo-summary 读缓存的判据
+
+    # 落盘失败必须"返回 False"，不能抛异常炸掉调用方
+    # （调用方是预热线程与 HTTP 请求路径，一个用户的磁盘问题不该影响别人）
+    _blocker = tmp_path / "not_a_dir"
+    _blocker.write_text("x", encoding="utf-8")
+    monkeypatch.setattr(config, "DATA_DIR", _blocker)
+    assert cfo.write_cfo_cache("LeiJiang", {"a": 2}) is False
+
+
+def test_cfo_prewarm_persists_cache_file_to_disk(tmp_path, monkeypatch):
+    """预热线程每 55s 重算一次，**必须把结果落盘**。
+
+    回归的是 2026-09-13 定位到的真实故障：预热只写内存 _cfo_cache，
+    只有真人打开 App（走 /api/cfo-summary）才会写这个文件，而 /api/health
+    读的正是该文件的 mtime —— 于是"CFO摘要新鲜度"实际测的是
+    「你上次打开 App 是什么时候」：>24h 没打开就弹黄条「数据源异常」，
+    而数据其实每 55s 就是新的。
+    """
+    import config
+    import services.cfo_dashboard as cfo
+
+    monkeypatch.setattr(config, "DATA_DIR", Path(tmp_path))
+    monkeypatch.setattr(cfo, "_get_active_users", lambda: ["LeiJiang"])
+    monkeypatch.setattr(
+        cfo, "generate_cfo_summary",
+        lambda uid, generate_todos=True: {"timestamp": "t", "user": uid},
+    )
+
+    class _StopPrewarm(Exception):
+        pass
+
+    class _TimeStub:
+        """让 while True 循环跑完一轮就退出；不动真实 time.sleep。"""
+
+        @staticmethod
+        def sleep(_seconds):
+            raise _StopPrewarm
+
+        @staticmethod
+        def time():
+            return 0.0
+
+    monkeypatch.setattr(cfo, "time", _TimeStub)
+    try:
+        cfo._prewarm_loop()
+    except _StopPrewarm:
+        pass
+
+    fp = Path(tmp_path) / "_cache" / "cfo_summary_LeiJiang.json"
+    assert fp.exists(), "预热没把 CFO 缓存落盘 → 首页会误报「数据源异常」"
+    payload = json.loads(fp.read_text(encoding="utf-8"))
+    assert payload["data"]["user"] == "LeiJiang"
 
 
 def test_warm_evening_refreshes_cfo_summary_for_active_users(tmp_path, monkeypatch):

@@ -653,6 +653,54 @@ _PREWARM_INTERVAL = 55  # 每 55 秒刷新一次（< 60s 缓存 TTL，保证用�
 _prewarm_started = False
 
 
+# ============================================================
+# CFO 摘要落盘 —— 唯一写入口
+# ============================================================
+# ⚠️ 为什么「预热」必须落盘（2026-09-13 实测定位）：
+#   `/api/health` 的 data_health 用 `cfo_summary_{uid}.json` 的 **mtime**
+#   判断「CFO摘要」是否新鲜；而原先只有 HTTP 路径（api/steward.py）会写
+#   这个文件 —— 预热线程每 55s 重算了数据却**只写内存**。
+#   于是文件 mtime 实际停在「你上次打开 App 的时刻」：只要 >24h 没打开
+#   App，首页就弹黄条「数据源异常：CFO摘要(已Nh未更新)」，而数据其实
+#   每 55s 就是新的。
+#   → **指标测的是「上次打开 App 的时间」，不是数据新鲜度。**
+#   现在所有重算路径都必须经这里回写，mtime 才等于真实新鲜度。
+def cfo_cache_path(user_id: str):
+    """CFO 摘要缓存文件路径（读/写共用，避免两处各拼一次、日后拼歪）。"""
+    from pathlib import Path
+    import config
+    return Path(config.DATA_DIR) / "_cache" / f"cfo_summary_{user_id}.json"
+
+
+def write_cfo_cache(user_id: str, data: dict) -> bool:
+    """把 CFO 摘要**原子**落盘，返回是否成功。
+
+    原子写（临时文件 + os.replace）是必需的：预热每 55s 写一次，
+    而 `write_text` 会「先截断再写」，读侧（/api/health、/api/cfo-summary）
+    有概率读到半截 JSON。写频率提高后这个窗口不能再忽略。
+    """
+    import json as _json
+    import os as _os
+    import time as _time
+    fp = cfo_cache_path(user_id)
+    tmp = fp.parent / (fp.name + ".tmp")
+    try:
+        fp.parent.mkdir(parents=True, exist_ok=True)
+        with open(tmp, "w", encoding="utf-8") as f:
+            _json.dump({"data": data, "created_at": _time.time()}, f,
+                       ensure_ascii=False, default=str)
+        _os.replace(tmp, fp)
+        return True
+    except Exception as e:
+        print(f"[CFO-CACHE] 落盘失败 {user_id}: {e}")
+        try:
+            if _os.path.exists(tmp):
+                _os.remove(tmp)
+        except Exception:
+            pass
+        return False
+
+
 def _get_active_users() -> list:
     """获取需要预热的用户列表（家庭成员）"""
     from api.shared_helpers import FAMILY_MEMBERS
@@ -668,6 +716,10 @@ def _prewarm_loop():
     而原来每次都会调 create_todo() 落库 —— 这就是 1444 条/天的来源。
     预热是纯粹的"机器读"，绝不应该产生写副作用，故传 generate_todos=False。
     真人访问路径（api/steward.py → generate_cfo_summary）仍保持落库能力。
+
+    注意「不写用户数据」≠「不落盘」：这里**必须**回写 CFO 缓存文件
+    （write_cfo_cache），否则文件 mtime 会冻在"上次打开 App"的时刻，
+    导致首页误报「数据源异常」。缓存文件是派生数据，与用户 JSON 无关。
     """
     import threading
     while True:
@@ -681,7 +733,10 @@ def _prewarm_loop():
                     # 清除旧缓存强制重算
                     _cfo_cache.delete(cache_key)
                     # generate_todos=False：预热只读，不写用户 JSON
-                    generate_cfo_summary(uid, generate_todos=False)
+                    result = generate_cfo_summary(uid, generate_todos=False)
+                    # ★ 落盘：让 cfo_summary_{uid}.json 的 mtime == 数据新鲜度
+                    #   （/api/health 的 data_health 读的就是这个 mtime）
+                    write_cfo_cache(uid, result)
                 except Exception as e:
                     print(f"[CFO-PREWARM] {uid} failed: {e}")
         except Exception as e:
