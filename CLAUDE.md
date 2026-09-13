@@ -57,8 +57,11 @@ MB_TEST_HOST=http://150.158.47.189:8000 python3 -m pytest tests/ -q
 
 | 目录 | 文件数 | 测什么 |
 |---|---|---|
-| `backend/tests/` | 33 | `services/*` 老架构层：fund_signal、tushare、signal_scout、watchdog、steward、chat 模型路由 |
-| `tests/`（仓库根） | 29 | `domain/`、`use_cases/`、`infra.store`、`infra.knowledge` 新架构层 + HTTP 端到端 |
+| `backend/tests/` | 72 | `services/*` 老架构层：fund_signal、tushare、signal_scout、watchdog、steward、chat 模型路由 |
+| `tests/`（仓库根） | 22 | `domain/`、`use_cases/`、`infra.store`、`infra.knowledge` 新架构层 + HTTP 端到端 |
+
+（文件数随迭代增长，**不要把它当基线**；唯一不变式是跑出来 `0 failed`。
+2026-09-13 实测 `backend/tests/` 全量：**1585 passed / 1 skipped / 1 xfailed / 0 failed**。）
 
 ⚠️ 命令行里的相对路径 `tests/` 在仓库根和 `backend/` 下指向**两个不同目录**，
 阅读本节命令时务必先看有没有 `cd backend` 前缀。
@@ -71,16 +74,27 @@ MB_TEST_HOST=http://150.158.47.189:8000 python3 -m pytest tests/ -q
 里 **32 个在 `backend/tests/` 零命中**；两边覆盖的 HTTP 端点**交集为空**。
 判定结果：COVERED 0 / PARTIAL 1 / MISSING 21。
 
-#### CI 只跑 1 个文件（重要）
+#### CI 已接入 `backend/tests/` 全量（2026-09-13 修复，此前是 P0）
 
-- `.github/workflows/ci.yml:73` 是全仓库 CI 里**唯一**一条 pytest 命令：
-  `cd backend && python -m pytest ../tests/test_skeleton_m1.py -v`
-- 也就是说 `backend/tests/` 的 31 个文件在 CI 上**一次都没跑过**，它的回归
-  只能靠人在服务器上手动跑
+**修复前的状态（留档，别再回到那个状态）**：`.github/workflows/ci.yml` 里全仓库
+**唯一**一条 pytest 是 `cd backend && python -m pytest ../tests/test_skeleton_m1.py -v`
+—— 跑的是**根目录** `tests/` 的**一个文件**。也就是 `backend/tests/` 的
+**72 个文件、1585 个用例在 CI 上从未跑过**（之前文档里写的 31 个也已过时）。
+所有这些测试只能靠人工跑，等于**建了一堆守卫却没挂在门上**。
+
+**现在的状态**：`ci.yml` 新增第 7 个 job `Backend Test Suite (backend/tests 全量)`：
+```yaml
+cd backend && python -m pytest tests/ -q -p no:cacheprovider
+```
+装 `requirements.txt` + `requirements-dev.txt`，Python 3.11。
+**无 `|| true`、无 `continue-on-error`、无 `--ignore`、无 `-k`** —— 不允许任何把红灯涂绿的手段。
+
+- 首次真跑即抓到一条真缺陷（我自己的版本守卫误伤 `--backend-only`，见 commit `181aa35`）
+- 实测：`c1e24d6` 7/7 绿 → `f099518` 该 job 红 → `181aa35` 7/7 绿
+- ⚠️ **每次 push 会产生 2 个 workflow run**（`ci.yml` + `deploy.yml` 的 GitHub Pages）。
+  看 `conclusion` 前**必须先确认 `run.name`**，否则会把 Pages 的成功当成 CI 的成功。
 - `test_skeleton_m1.py`（219 用例，含架构不变量 Invariant #6「api 层禁直连
-  akshare/tushare」）是 CI 里**唯一**的 pytest 守门员
-- 因此：**任何删改 `tests/test_skeleton_m1.py` 的动作都必须先确认 CI 有替代
-  守门，否则架构护栏直接失效**
+  akshare/tushare」）仍是根 `tests/` 那条 job 的守门员，**照旧不可删改**
 
 #### 数据隔离（机制强制，不是人肉纪律）
 
@@ -345,7 +359,25 @@ api/ → use_cases/ → domain/ → infra/
 3. `git push origin main`（推到 GitHub，这是"权威版本"落脚点）
 4. 部署到服务器：先给要改的文件在服务器上打时间戳备份（`cp -p file file.bak_$(date +%Y%m%d_%H%M%S)`）→ `rsync` 覆盖 → 服务器端语法/import 检查 → `sudo systemctl restart moneybag` → 功能验证（`curl /api/models` 等）
 5. **在服务器自己的 git 仓库里也 `git add -A && git commit`**——这一步最容易被遗漏。忘了的话，服务器 `git status` 会一直显示一堆 `M`，看起来像"又漂移了"，其实只是"部署了但没在服务器本地落地 commit"
-6. 定期（大改动后，或每周）跑一次巡检：`cd ~/WorkBuddy/moneybag-for-claudecode && git fetch server && bash scripts/check-drift.sh`，几秒钟就能看出本地/服务器是否一致
+
+   > ⚠️ **2026-09-13 起这一步不再是漂移检测的前提**：新版 `check-drift.sh` 比的是
+   > **磁盘实际内容哈希**，不读服务器 git。但仍建议保留这个习惯 ——
+   > 服务器 git 是唯一能回答"线上某天是什么代码"的本地档案。
+   > （现状：服务器 HEAD 停在 `6943a76` = v9.9.23，工作树有 43 个未提交改动，
+   > 即 v9.9.24~9.9.27 的部署内容**全部**没有落地成 commit。
+   > 若要根治，应该让 `deploy_to_server.sh` 在重启后自动在服务器端 commit —— 目前**没有**做。）
+6. 定期（大改动后，或每周）跑一次巡检：`cd ~/WorkBuddy/moneybag-for-claudecode && bash scripts/check-drift.sh`，几秒钟就能看出本地/服务器是否一致
+
+> ⚠️ **2026-09-13：`check-drift.sh` 已重写，上面的命令不再需要 `git fetch server`。**
+> 旧版拿 `server/main` 当基线，但部署走 `scp`/`rsync`、**从不在服务器 commit**
+> （实测服务器 HEAD 停在 `v9.9.23` + 43 个未提交改动），于是**任何一次正确部署都会被误报成漂移**；
+> 且它的扫描清单不含 `backend/prompts/` —— 对出问题的那一类文件**结构性失明**。
+> 新版改为「两侧各自 `find` 清单 + 逐文件 `sha256` 比对」，不依赖服务器 git 状态；
+> 启动时会打印扫描范围并断言 `backend/prompts/`、`manifest.json`、`styles/`、`icons/`
+> 等 11 条关键路径都在范围内，任一缺失就拒绝出结论（防"闸门空转仍显绿"）。
+> 结果按 ①内容不一致 / ②本地有服务器没有 / ③服务器有本地没有 三类分开列，
+> 每类再分 a（需关注）/ b（dev-only 信息性，如 `backend/tests/`）——
+> **只有 a 类触发 `--strict` 的 exit 2**。可用 `--strict` 当 CI/pre-commit 闸门。
 
 **绝对禁止**：
 - ❌ SSH 到服务器直接改代码"救急"，改完不同步回本地仓库——这是过去漂移的唯一根因
