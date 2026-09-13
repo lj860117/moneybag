@@ -307,20 +307,32 @@ def _clear_secret_env_pollution(monkeypatch):
 # config 模块基线恢复（FIX 2026-09-13：importlib.reload(config) 的顺序依赖污染）
 # ============================================================
 # 症状：tests/test_llm_quota_alert_dedupe.py::test_state_file_lives_under_data_dir
-#   断言 `qa.ALERT_STATE_FILE.parent == config.DATA_DIR`，在**全量套件里按跑到
-#   它前面的是哪些文件**随机红绿 —— 单独跑必绿，混在全量里红。
+#   断言 `qa.ALERT_STATE_FILE.parent == config.DATA_DIR`，表现是「单独跑必绿、
+#   混在全量里红」。注意这不是随机：当前没装会打乱顺序的插件（pytest-randomly
+#   等），执行顺序按文件名字母序是**确定性**的，所以红绿固定，不是抽风。
 #
 # 根因：一批用例为了测 import 期行为，用 monkeypatch.setenv("DATA_DIR", tmp_path)
-#   + importlib.reload(config) 把 config 整个重载（已知 3 处：
-#   test_fund_detail_ak_timeout.py:40 / test_user_optimistic_lock.py:43 /
-#   test_broker_research_quota_degradation.py:226）。
+#   + importlib.reload(config) 把 config 整个重载（全仓**只有 2 处**：
+#   test_fund_detail_ak_timeout.py:44 / test_user_optimistic_lock.py:48）。
 #   monkeypatch 只负责还原 **os.environ**，而 reload 是**原地重跑模块代码**：
 #   config 模块对象被永久改写，DATA_DIR 连同它派生出来的 USERS_DIR /
 #   RECEIPTS_DIR / PUSH_ARCHIVE_DIR 全部停在上一个用例的 tmp_path 上。
 #   monkeypatch 压根不知道有这么回事，所以无从还原。
 #
-# 为什么不去改那 3 个污染源：它们**必须** reload 才能测到 import 期行为，
+# ⚠️ 别把 test_broker_research_quota_degradation.py 算成污染源：它的
+#   _reload_broker_research() reload 的是 services.broker_research，而
+#   services/broker_research.py 全文既没有 DATA_DIR 也没 import config，
+#   **不污染 config**。（这段注释早期写成"3 处"，是错的，已更正。）
+#
+# 为什么不去改那 2 个污染源：它们**必须** reload 才能测到 import 期行为，
 # 改成 monkeypatch.setattr 会让它们测不到真实路径、变成空转的绿。
+#
+# ⚠️ 谁污染谁，完全由文件名字母序决定（`pytest tests/ --collect-only -q` 实测：
+#   broker(b) → config_module_state_restored(c) → fund_detail(f) →
+#   dedupe(l) → user_optimistic_lock(u)）。例如 user_optimistic_lock 确实是
+#   污染源，但 u > l，它排在 dedupe **后面**，喂不到那条断言 —— 别按"所有污染源
+#   都在它前面"推理。也就是说：**没有本守卫时，这套"安全"是文件名给的，不是
+#   测试自己挣的**；守卫在，顺序才真的不重要。这是本守卫不能被删的理由。
 #
 # 实测污染方向（安全确认）：污染后 config.DATA_DIR 指向 pytest 的 tmp 目录
 #   （/private/var/.../pytest-of-root/pytest-N/test_xxx0），**不是**生产路径
@@ -328,7 +340,10 @@ def _clear_secret_env_pollution(monkeypatch):
 #   问题。下面这条守卫会顺手把这个结论钉成可执行断言。
 #
 # 恢复手法：**直接把属性改回基线值，绝不 reload** —— reload 会重跑模块代码
-#   （读 env、建目录），1991 个用例各来一次会显著拖慢全量。属性赋值是常数级。
+#   （读 env、建目录），全量约 2074 条用例各来一次会显著拖慢套件。属性赋值是
+#   常数级。（条数会随用例增删漂移，截至 2026-09-14；以
+#   `cd backend && env -u PYTHONPATH python3 -m pytest tests/ -q --collect-only`
+#   的 collected 总数为准，别拿 `-q` 尾行的 passed 数当总数。）
 _RESTORABLE_TYPES = (str, int, float, bool, bytes, tuple, Path, type(None))
 
 # 会话级基线。**在 conftest 模块顶层就地采集**（见下方 _capture 调用点），
