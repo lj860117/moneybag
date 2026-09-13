@@ -119,7 +119,10 @@ const ANALYSIS_TRANSLATE = {
         'bullish': '看多',
         'bearish': '看空',
         'neutral': '中性',
-        'unknown': '未知',
+        // v9.9.26 P1-9: unknown 是「没有判断」，不是「判断为未知/中性」。
+        // 文案与后端 config.INSUFFICIENT_DATA_LABEL 对齐，避免同一状态
+        // 在前后端出现两套说法（历史记录里的旧 unknown 也一并走这条）。
+        'unknown': '❓ 数据不足',
         'auto': '自动分析'
     },
     type: {

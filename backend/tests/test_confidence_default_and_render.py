@@ -141,12 +141,54 @@ def test_call_sites_use_the_shared_normalizer(rel):
 # ------------------------------------------------------------- 前端渲染
 
 def test_frontend_does_not_render_unknown_as_sideways():
-    """前端不得把 unknown 渲染成「震荡」（= 把没判断说成判断为横盘）。"""
+    """前端不得把 unknown 渲染成「震荡」（= 把没判断说成判断为横盘）。
+
+    取值收敛到「只有显式 flat 才叫震荡」：up/down/flat 之外的任何值
+    （unknown、undefined、后端新增枚举）都走「数据不足」，这样后端将来
+    多一个状态也不会被前端悄悄显示成横盘。
+    """
     src = (_REPO / "pages" / "_components.js").read_text(encoding="utf-8")
-    assert "f.trend_direction==='unknown'?'数据不足'" in src
+    assert "f.trend_direction==='flat'?'震荡':'数据不足'" in src
     # 走势预估面板必须读闸门标记，而不是只靠三元兜底
     assert "trend_confidence_sufficient === false" in src
     assert "d.trend_direction==='up'?'偏多':d.trend_direction==='down'?'偏空':'震荡'" not in src
+
+
+def test_frontend_translate_map_matches_backend_label():
+    """方向翻译表里 unknown 的文案必须与后端常量一致，不许自造第二套。"""
+    cfg = (_BACKEND / "config.py").read_text(encoding="utf-8")
+    m = re.search(r"INSUFFICIENT_DATA_LABEL\s*=\s*[\"']([^\"']+)[\"']", cfg)
+    assert m, "config.py 里找不到 INSUFFICIENT_DATA_LABEL"
+    label = m.group(1)
+    src = (_REPO / "app.js").read_text(encoding="utf-8")
+    assert f"'unknown': '{label}'" in src, (
+        f"app.js 的 unknown 文案与后端 {label!r} 不一致")
+
+
+def test_landing_does_not_fabricate_confidence_50():
+    """landing.js 不得在置信度缺失时兜底成 50%（那正是闸门阈值，等于谎报达标）。"""
+    src = (_REPO / "pages" / "landing.js").read_text(encoding="utf-8")
+    assert "d.confidence||50" not in src
+    assert "d.confidence || 50" not in src
+
+
+def test_quiz_does_not_hardcode_factor_weights():
+    """quiz.js 的因子说明不得再硬编码权重副本。
+
+    原实现写死「技术面(25%)：RSI(8%) + MACD(10%) …」，后端权重一调这段
+    说明就开始说谎，而下方同一段文案里已经用 d.details 列了真实权重——
+    同一件事两份数据。改法是从 details 现算，删掉硬编码副本。
+    """
+    src = (_REPO / "pages" / "quiz.js").read_text(encoding="utf-8")
+    for stale in ("技术面(25%)", "基本面(30%)", "资金面(20%)", "情绪面(15%)"):
+        assert stale not in src, f"quiz.js 仍硬编码权重: {stale}"
+    assert "_sigCatLines" in src, "quiz.js 未改为从 d.details 现算权重构成"
+
+
+def test_quiz_does_not_coerce_missing_confidence_to_zero_percent():
+    """展示置信度时缺失必须说「未知」，不能渲染成 0%（0% 是一个具体判断）。"""
+    src = (_REPO / "pages" / "quiz.js").read_text(encoding="utf-8")
+    assert "Math.round(d.confidence||0)+'%'" not in src
 
 
 def test_frontend_suppresses_directional_score_when_insufficient():

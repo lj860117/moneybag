@@ -521,7 +521,7 @@ window.showFundDetailModal = async function(code, name) {
         if(dca.factors) {
           const f = dca.factors;
           advHtml += `<div style="display:flex;flex-wrap:wrap;gap:4px;font-size:10px">
-            <span style="padding:2px 6px;border-radius:4px;background:rgba(148,163,184,.08);color:var(--text-tertiary)">走势:${f.trend_direction==='up'?'偏多':f.trend_direction==='down'?'偏空':f.trend_direction==='unknown'?'数据不足':'震荡'}</span>
+            <span style="padding:2px 6px;border-radius:4px;background:rgba(148,163,184,.08);color:var(--text-tertiary)">走势:${f.trend_direction==='up'?'偏多':f.trend_direction==='down'?'偏空':f.trend_direction==='flat'?'震荡':'数据不足'}</span>
             <span style="padding:2px 6px;border-radius:4px;background:rgba(148,163,184,.08);color:var(--text-tertiary)">估值:${f.valuation_tier}</span>
             <span style="padding:2px 6px;border-radius:4px;background:rgba(148,163,184,.08);color:var(--text-tertiary)">置信:${f.trend_confidence}%</span>
             <span style="padding:2px 6px;border-radius:4px;background:rgba(148,163,184,.08);color:var(--text-tertiary)">基准:${f.base_multiplier}x</span>

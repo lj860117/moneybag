@@ -69,10 +69,23 @@ const borderMap={STRONG_BUY:'rgba(16,185,129,.3)',BUY:'rgba(16,185,129,.2)',HOLD
 const labelMap={STRONG_BUY:'强烈买入 🟢',BUY:'建议买入 🟢',HOLD:'持有观望 🟡',SELL:'建议减仓 🟠',STRONG_SELL:'强烈减仓 🔴'};
 
 let html=`<div class="section-title">🤖 今日量化信号 <span style="font-size:11px;color:var(--accent);font-weight:400">V${d.version||'5.0'} · ${(d.details||[]).length}维多因子</span></div>`;
-setExplain('signal','量化信号解读','钱袋子 V5.0 多因子信号系统融合了13个维度的数据（借鉴幻方量化）：\n\n📊 技术面(25%)：RSI(8%) + MACD(10%) + 布林带(7%)\n📈 基本面(30%)：估值(18%) + 股息率(5%) + 股债性价比(7%)\n💰 资金面(20%)：北向资金(10%) + 融资融券(5%) + SHIBOR(5%)\n😊 情绪面(15%)：恐惧贪婪(8%) + LLM新闻情绪(7%)\n🏛️ 宏观面(5%)：PMI+M2\n🌍 地缘面(5%)：地缘风险评估\n\n每个维度打分(-100~+100)，加权平均后得出综合信号。\n\n当前综合得分：'+(d.score||0)+'\n置信度：'+Math.round(d.confidence||0)+'%'+(d.confidence_note?'\n（'+d.confidence_note+'）':'')+'\n\n'+((d.details||[]).map(x=>(x.category||'')+' | '+x.name+'('+x.weight+')：'+x.detail).join('\n'))+'\n\n⚠️ 量化信号仅供参考，不构成投资建议。');
+// v9.9.26 P1-9: 原先这里硬编码了 13 个维度的权重（技术面25% / RSI 8% …）。
+// 后端权重一改，这段说明就开始对用户说谎，而且下面本来就用 d.details 列了
+// 真实权重——同一件事两份数据，迟早不一致。改为从 details 现算。
+{
+  const _sigCats={};
+  for(const x of (d.details||[])){const c=x.category||'其他';(_sigCats[c]=_sigCats[c]||[]).push(x);}
+  const _catKeys=Object.keys(_sigCats);
+  const _sigCatLines=_catKeys.length
+    ? _catKeys.map(c=>c+'（'+_sigCats[c].length+'项）：'+_sigCats[c].map(i=>i.name+'('+i.weight+')').join(' + ')).join('\n')
+    : '（本次未返回维度明细，无法列出权重构成）';
+  const _scoreTxt=(typeof d.score==='number'&&isFinite(d.score))?d.score:'未知';
+  const _confTxt=(typeof d.confidence==='number'&&isFinite(d.confidence))?Math.round(d.confidence)+'%':'未知';
+  setExplain('signal','量化信号解读','钱袋子多因子信号系统融合了技术面/基本面/资金面/情绪面/宏观面/地缘面多维度数据：\n\n'+_sigCatLines+'\n\n每个维度打分(-100~+100)，加权平均后得出综合信号。\n\n当前综合得分：'+_scoreTxt+'\n置信度：'+_confTxt+(d.confidence_note?'\n（'+d.confidence_note+'）':'')+'\n\n'+((d.details||[]).map(x=>(x.category||'')+' | '+x.name+'('+x.weight+')：'+x.detail).join('\n'))+'\n\n⚠️ 量化信号仅供参考，不构成投资建议。');
+}
 html+=`<div style="background:${bgMap[d.overall]||bgMap.HOLD};border:1px solid ${borderMap[d.overall]||borderMap.HOLD};border-radius:16px;padding:16px;margin-bottom:12px;cursor:pointer" onclick="showExplain('signal')">
 <div style="display:flex;justify-content:space-between;align-items:center">
-<div><div style="font-size:20px;font-weight:900">${labelMap[d.overall]||'持有观望'}</div><div style="font-size:12px;color:var(--text2);margin-top:4px">${d.date||''} · 综合得分 ${d.score||0} · 置信度 ${Math.round(d.confidence||0)}%</div></div>
+<div><div style="font-size:20px;font-weight:900">${labelMap[d.overall]||'持有观望'}</div><div style="font-size:12px;color:var(--text2);margin-top:4px">${d.date||''} · 综合得分 ${(typeof d.score==='number'&&isFinite(d.score))?d.score:'未知'} · 置信度 ${(typeof d.confidence==='number'&&isFinite(d.confidence))?Math.round(d.confidence)+'%':'未知'}</div></div>
 <div style="font-size:11px;color:var(--accent)">点击看详情 ›</div></div>
 <div style="font-size:13px;margin-top:8px;line-height:1.6">${d.summary||''}</div>${d.confidence_note?`<div style="font-size:11px;margin-top:6px;color:var(--text2);line-height:1.5">💡 ${d.confidence_note}</div>`:''}</div>`;
 
