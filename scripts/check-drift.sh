@@ -66,8 +66,9 @@ SSH_OPTS=(-o StrictHostKeyChecking=no -o BatchMode=yes -o ConnectTimeout=15)
 # - pages/     前端页面
 # - styles/    index.html 引用的样式目录（旧脚本只有 styles.css，漏了 styles/）
 # - icons/     PWA 图标
-# - tests/     根目录的 dev-only E2E 套件（TestClient 进程内跑；纳入扫描是为了
-#              "看得见"而不是"假装它不存在"，它属白名单不计漂移，详见 NONDEPLOY 说明）。
+# - tests/     根目录的 dev-only E2E 套件（混合套件：纯本地 / TestClient / 依赖活服务，
+#              详见下方 NONDEPLOY 说明）。纳入扫描是为了"看得见"而不是"假装它不存在"；
+#              它属白名单不计漂移。
 SCAN_ROOTS="backend pages styles icons tests"
 SCAN_ROOT_FILES="app.js index.html styles.css sw.js manifest.json"
 
@@ -122,20 +123,40 @@ RUNTIME_CACHE_RE='/\.cache/'
 #   3. 不在 deploy_to_server.sh 的 BACKEND_FILES/BACKEND_DIRS 清单里；服务器上现存的
 #      tests 副本来自【已废弃的根 deploy.sh（全库 rsync）】留下的快照，会一直冻在最后
 #      一次全量部署 —— 本地继续改它就会被（旧脚本的）漂移检测误判为漂移，故必须豁免。
-#   4. 根 tests/ 用 FastAPI/starlette TestClient 进程内跑，不是活服务依赖。
-#      ⚠️ tests/README.md 里"需要 127.0.0.1:8000 / MB_TEST_HOST、跑真实 DeepSeek 耗
-#      token"那段是【陈旧文档】，与代码实际行为不符，勿据此下结论。
-#      ⚠️ 勿据此断言"根 tests/ 永远进不了 CI"——那是被实测证伪的旧结论。
+#   4. 根 tests/ 是【混合套件】，不是纯进程内（23 个 .py，team-lead 实测分类）：
+#        17 个纯本地逻辑 / 2 个只用 TestClient 进程内（test_deprecated_routes.py、
+#        test_phase3_e2e.py）/ 4 个【依赖活 HTTP 服务】：conftest.py、test_ai_chat_regression.py、
+#        test_broker_import.py、test_chat_fast_path.py。
+#      ⚠️ 高危：这 4 个的默认 host 指向真实服务，且 MB_TEST_HOST 未设时会落到默认值：
+#        conftest.py:146                默认 http://127.0.0.1:8000
+#        test_ai_chat_regression.py:22  默认 http://150.158.47.189:8000  ← 默认【生产】！
+#        test_broker_import.py:387      默认 http://127.0.0.1:8000
+#        test_chat_fast_path.py:15      默认 http://localhost:8000
+#        （本机无本地服务时，前三个"探活失败"会 skip/失败，但 ai_chat_regression 不同：
+#         test_ai_chat_regression.py:29 是 module 级 autouse fixture，:33/:36 会 POST
+#         /api/stock-holdings 与 /api/fund-holdings【写数据】、:43/:44 teardown 才 DELETE，
+#         :48 还会 POST /api/chat 打真实 LLM。team-lead 实测不带 MB_TEST_HOST 跑全量时，
+#         生产服务器日志出现对应 [CHAT] 记录 —— 确实打到生产并写了数据。）
+#      ⚠️ tests/README.md 第 36/37 行确实写了 127.0.0.1:8000 / MB_TEST_HOST / "会跑真实的
+#        DeepSeek 调用，消耗 token"——【README 与代码一致，不是陈旧文档】，勿当过期内容删掉。
+#      ⚠️ 但勿据此断言"根 tests/ 永远不能接 CI"——它的正确读法是"当前默认值不安全"：
+#        把默认 host 改掉 / 在 CI 里起本地服务并显式隔离后即可接，只是绝不能带着
+#        "默认指向生产"的状态接进去。
 #
 # 【CI 现状 · 会变，正本不在本文件，勿在此固化快照数字】
-#   根 tests/ 目前未接 CI 的原因是一次【既有 import 缺陷】（可修）：
+#   根 tests/ 现在【不能接 CI 的硬理由是安全】：GitHub runner 上没有本地服务，
+#     而那 4 个文件的默认 host 会把 CI 指向生产并（经 autouse fixture）写生产数据。
+#     次要原因才是一次【既有 import 缺陷】（可修）：
 #     tests/test_phase3_e2e.py:50 写 `from backend.services.persistence import ...`
 #       （需 repo root 在 sys.path），
 #     backend/services/persistence.py:33 写 `from config import USERS_DIR`
 #       （需 backend/ 在 sys.path），无任一 cwd 能同时满足 → 若干 setup 失败。
-#   该缺陷的修复进度、以及各套件当前是否已接 CI，以 .github/workflows/ci.yml 与
-#   team-lead 的排期为准；此处刻意不复述通过/skip 数字，避免本文件变成第二份
-#   "陈旧文档"（tests/README.md 就是这么过期的）。
+#   ⚠️ 任何地方若提到通过/skip 数字，须注明其【不稳定】：例如
+#     test_ai_chat_regression.py::test_03_main_deny_not_held 会在生产 chat 被突发限流时
+#     失败 —— backend/infra/llm/gateway.py:272 BURST_LIMIT=10 / BURST_WINDOW=300s，
+#     且窗口是【进程级全局】、不分用户，所以通过数是 4↔5 之间摆动，不是回归。
+#   该缺陷修复进度与各套件 CI 接线情况，以 .github/workflows/ci.yml 与 team-lead 排期为准；
+#   此处刻意不复述具体数字，避免本文件变成第二份"会过期的快照文档"。
 #
 # 语义是「不纳入【自动】部署，允许手工临时拷入」——所以这里既豁免"本地有服务器没有"
 # 的漏部署误报，也豁免 tests 文件两侧内容不同（可能是历史上手工拷过去的旧副本：
