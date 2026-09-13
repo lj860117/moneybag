@@ -17,11 +17,17 @@ Sprint 1: 用历史数据验证8维引擎的准确率
 
 使用: python3 scripts/backtest_trend.py
 """
-import config
 import sys
 import os
-sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 
+# 必须在 `import config` 之前：以 `python3 scripts/backtest_trend.py` 方式调用时
+# sys.path[0] 是 scripts/ 而不是 backend/，先 import config 会抛
+# ModuleNotFoundError: No module named 'config'（cron 走的就是这条路径）。
+_BACKEND_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if _BACKEND_DIR not in sys.path:
+    sys.path.insert(0, _BACKEND_DIR)
+
+import config
 import json
 import time
 from datetime import datetime, timedelta

@@ -37,7 +37,17 @@ from pathlib import Path
 from datetime import datetime, timedelta
 
 ROOT = Path(__file__).resolve().parents[2]
-sys.path.insert(0, str(ROOT))
+# backend/ 必须单独进 sys.path：本脚本 import 的 backend.services.tushare_data 内部
+# 用的是以 backend/ 为根的绝对导入（`from infra.cache import MemoryCache`），只插
+# 仓库根会在这里抛 ModuleNotFoundError: No module named 'infra'。
+# cron 用 `python scripts/fund_rank_build.py` 调用时 sys.path[0] 是 scripts/ 而不是
+# cwd（uvicorn 从 backend/ 启动才碰巧能 import，所以 API 侧一直正常、只有 cron 崩），
+# 这条路径必须显式补齐，不能依赖 cwd。
+_BACKEND_DIR = str(Path(__file__).resolve().parents[1])
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+if _BACKEND_DIR not in sys.path:
+    sys.path.insert(0, _BACKEND_DIR)
 
 # 加载 .env
 env = ROOT / "backend" / ".env"

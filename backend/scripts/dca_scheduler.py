@@ -11,15 +11,21 @@
   python3 scripts/dca_scheduler.py --weekly      # 周复盘
   python3 scripts/dca_scheduler.py --all         # 全部执行
 """
-import config
 import sys
 import os
+
+# 必须在 `import config` 之前：以 `python3 scripts/dca_scheduler.py` 方式调用时
+# sys.path[0] 是 scripts/ 而不是 backend/，先 import config 会抛
+# ModuleNotFoundError: No module named 'config'（cron 走的就是这条路径）。
+_BACKEND_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if _BACKEND_DIR not in sys.path:
+    sys.path.insert(0, _BACKEND_DIR)
+
+import config
 import json
 import time
 from datetime import datetime, date, timedelta
 from pathlib import Path
-
-sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 
 DATA_DIR = Path(config.DATA_DIR)
 USERS = ["LeiJiang", "BuLuoGeLi"]

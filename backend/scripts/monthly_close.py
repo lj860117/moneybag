@@ -12,13 +12,22 @@
 """
 
 import sys
+import os
 import json
 from datetime import datetime
 from pathlib import Path
 
 # 添加项目根目录到 Python 路径
 project_root = Path(__file__).parent.parent.parent
-sys.path.insert(0, str(project_root))
+if str(project_root) not in sys.path:
+    sys.path.insert(0, str(project_root))
+
+# 仅插仓库根不够：`from config import DATA_DIR` 和 backend.services.* 内部的
+# `from infra...` 都以 backend/ 为根解析。以 `python scripts/monthly_close.py`
+# 方式调用时 sys.path[0] 是 scripts/，不补这条会 ModuleNotFoundError: No module named 'config'。
+_BACKEND_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if _BACKEND_DIR not in sys.path:
+    sys.path.insert(0, _BACKEND_DIR)
 
 from config import DATA_DIR
 from backend.services.monthly_snapshot import save_all_users_snapshots
