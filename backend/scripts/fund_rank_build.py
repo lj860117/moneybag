@@ -117,6 +117,52 @@ _PROBE_MAX_PAGES = 1
 # （按 "ETF" in name）兜住。
 INDEX_INVEST_TYPES = ("被动指数型", "增强指数型")
 
+# ---- QDII 基金的识别口径：看法定名称里的 "(QDII)" 标记 ----
+#
+# 修前这里写的是 filter_type(["QDII"])，同样是拿 fund_type 去匹配 ——
+# fund_type 全量取值只有 6 个（混合型 6417 / 股票型 6280 / 债券型 4758 /
+# 货币型 335 / REITs 104 / 其他 55），**没有 QDII** → ranks.qdii 也恒为空。
+# 与 index 完全同一个病。已核对归档 data/fund_rank_ts_20260910.json：
+# index=0、qdii=0，属长期静默为空，不是新回归。
+#
+# ⚠️ 为什么这里**没有**可替代的结构化字段（与 index 的关键差异）：
+#   * invest_type 全量 36 个取值里**没有任何一个含 QDII**（实测命中 0 只）；
+#   * fund_type 也没有（实测命中 0 只）。
+#   所以 index 那套"改用 invest_type"的办法，在 QDII 上**不存在**。
+#
+# 剩下唯一可用的口径是名称。三种口径实测（全量 17949 只）：
+#   ① 名称含 "QDII"            → 481 只，抽样 0 误判          ← 采用
+#   ② fund_screen.py 的 _QDII_KW 关键词并集 → 1180 只，但其中
+#      699 只名称不含 QDII，抽查**全是误判**：
+#        - 港股通 ETF 561 只（走互联互通额度，**不是** QDII）
+#        - 恒生A股 / 恒生港股通 208 只
+#        - "兴证全球…" —— 基金**公司名**里带"全球"
+#        - "沈阳国际软件园REIT" / "深国际仓储物流REIT" —— 名字带"国际"
+#   ③ 海外敞口关键词但名称不含 QDII → 24 只，抽查同样全**不是** QDII
+#        （"标普中国A股…""标普港股通低波红利" 投的是 A 股 / 港股通）
+#
+# 为什么名称匹配在 index 上不可靠、在 QDII 上却可靠：
+#   "QDII" 是法规要求的**法定名称后缀**（如"华夏野村日经225ETF(QDII)"），
+#   是资格标记而不是描述性词汇，所以精度接近 100%；而 index 那批漏判的
+#   ETF 只能靠"名字里有没有指数味儿"去猜，那才是不可靠的。
+QDII_NAME_MARKER = "QDII"
+
+
+def is_qdii_fund(item: dict) -> bool:
+    """QDII 基金判定：看法定名称里的 (QDII) 后缀
+
+    QDII 在 fund_basic 里**没有**对应的结构化字段（invest_type / fund_type
+    实测均无 QDII 取值，详见 QDII_NAME_MARKER 的实测注释），法定名称后缀是
+    唯一可靠信号。
+
+    Args:
+        item: ranks_all 里的一条（必须带 name 字段）。
+
+    Returns:
+        True 表示这是一只 QDII 基金。
+    """
+    return QDII_NAME_MARKER in (item.get("name") or "")
+
 
 def is_index_fund(item: dict) -> bool:
     """指数基金判定：只看 invest_type，不看 fund_type
@@ -261,17 +307,25 @@ def build_rank():
         # ⚠️ 指数基金不能走 filter_type（fund_type 里没有"指数"这个类别，
         # 走它就恒为空数组）；改按 invest_type 判定，见 INDEX_INVEST_TYPES。
         "index": [r for r in ranks_all if is_index_fund(r)][:500],
-        "qdii": filter_type(["QDII"]),
+        # ⚠️ QDII 也不能走 filter_type（fund_type 里没有 QDII 这个类别，
+        # 走它就恒为空数组）；改按法定名称后缀判定，见 QDII_NAME_MARKER。
+        "qdii": [r for r in ranks_all if is_qdii_fund(r)][:500],
         "etf": [r for r in ranks_all if "ETF" in (r["name"] or "")][:200],
     }
 
-    # ⚠️ 空分类必须留痕：这个分类曾经**静默空了很久**没人发现（fund_type 里
-    # 根本没有"指数"这个类别）。若 Tushare 哪天把 invest_type 的取值改名，
-    # index 会再次静默归零 —— 所有测试断言的都只是我们写死的常量，抓不到
-    # 上游改名，只有这条日志能在排障时被 grep 到。
-    if not ranks_by_type["index"]:
-        print(f"  ⚠️ index 分类为空：fund_basic 的 invest_type 取值可能已变化，"
-              f"当前口径 {INDEX_INVEST_TYPES}，请重新核对 invest_type 分布")
+    # ⚠️ 空分类必须留痕：这两个分类曾经**静默空了很久**没人发现（fund_type 里
+    # 既没有"指数"也没有"QDII"这个类别）。若 Tushare 哪天把 invest_type 的
+    # 取值改名、或 QDII 不再要求在名称里标注，它们会再次静默归零 —— 所有测试
+    # 断言的都只是我们写死的常量，抓不到上游变化，只有这条日志能被 grep 到。
+    _EMPTY_CATEGORY_HINTS = {
+        "index": f"fund_basic 的 invest_type 取值可能已变化，"
+                 f"当前口径 {INDEX_INVEST_TYPES}，请重新核对 invest_type 分布",
+        "qdii": f"fund_basic 的名称里可能已不再标注 {QDII_NAME_MARKER!r}，"
+                f"请重新核对 QDII 基金命名规则",
+    }
+    for _cat, _hint in _EMPTY_CATEGORY_HINTS.items():
+        if not ranks_by_type[_cat]:
+            print(f"  ⚠️ {_cat} 分类为空：{_hint}")
 
     # 落盘
     OUTPUT_FILE.parent.mkdir(parents=True, exist_ok=True)
