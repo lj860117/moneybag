@@ -72,6 +72,41 @@ jobs:
         run: |
           cd backend && python -m pytest ../tests/test_skeleton_m1.py -v
 
+  backend-test-suite:
+    # 2026-09-13 新增。此前**全仓库 CI 里唯一一条 pytest 命令就是上面的 smoke-tests**
+    # （`pytest ../tests/test_skeleton_m1.py`），跑的是根目录 tests/ 下的 1 个文件；
+    # 而 backend/tests/ 下的 71 个 test_*.py、1582 条用例从未在 CI 上执行过一次。
+    #
+    # 后果：一批已经写好的回归守卫等于"上锁没挂门"——test_prompt_governance、
+    # test_no_hardcoded_stats、test_deploy_asset_coverage、test_single_source_of_truth、
+    # test_prompt_ab_verdict_gate、test_confidence_default_and_render、
+    # test_factor_ic_no_lookahead、test_fund_industry_unified_taxonomy 等，
+    # 写完即不会自动红，回归可以静默发生。
+    #
+    # 独立成 job（不塞进 smoke-tests）的理由：失败归因清楚（一眼看出是后端全量套件红了），
+    # 且与其它 job 并行，不拖慢总时长。
+    #
+    # 依赖只装 requirements.txt + pytest，**刻意不装 requirements-dev.txt**：
+    # 实测（Python 3.11.16 干净 venv + ubuntu 同源的 pip 解析结果）该组合即可跑满
+    # 1582 passed / 0 failed，而 requirements-dev.txt 会额外拉入
+    # sentence-transformers→torch（GB 级）而套件根本不 import 它们。
+    # 装生产依赖而非测试依赖，也更贴近线上真实环境。
+    name: Backend Test Suite (backend/tests 全量)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install dependencies
+        run: |
+          pip install -r requirements.txt
+          pip install "pytest>=7.4.0"
+      - name: Run backend test suite
+        run: |
+          cd backend && python -m pytest tests/ -q -p no:cacheprovider
+
   red-team-audit:
     name: Red Team Audit (AI Boundary Enforcement)
     runs-on: ubuntu-latest
