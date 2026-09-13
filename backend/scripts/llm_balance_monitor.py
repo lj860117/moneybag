@@ -207,8 +207,37 @@ def _push_alert(title: str, content: str) -> bool:
 
     返回 True 表示企微已配置并已尝试推送（应计入当日去重）；
     返回 False 表示未配置/模块加载失败（不应消费当日额度）。
+
+    FIX 2026-09-13 测试环境短路（与 services/llm_quota_alert.py 同款）：
+        本函数是**第二条**真实推送出口，而且它不走 maybe_alert_quota ——
+        maybe_alert_quota 那道短路管不到这里。当天日志里 19:28/19:30/19:35
+        的 `[doubao_rate_limited|m]` / `[doubao_model_not_open|m]`（`m` 正是
+        test_llm_quota_alert_classify.py 里传的 model 值）就是这条链路被测试
+        触发的痕迹。判据与 maybe_alert_quota 完全一致：测试环境 + 发送函数
+        仍是生产实现 ⇒ 只记日志，返回 False（**不消费当日去重额度**）。
     """
     try:
+        try:
+            from services.llm_quota_alert import (
+                _in_test_mode,
+                _is_production_sender,
+                _resolve_wxwork_module,
+            )
+
+            if _in_test_mode() and _is_production_sender(
+                getattr(_resolve_wxwork_module(), "send_daily_report_to", None)
+            ):
+                LOG.warning(
+                    "[TEST_MODE_BLOCKED] 测试环境：告警未推送（已拦截真实企微发送）"
+                    " | title=%s",
+                    title,
+                )
+                return False
+        except Exception as e:  # noqa: BLE001
+            # 判定不出来就退回原路径（此时下面 from services.wxwork_push 多半
+            # 也会失败并落到外层 except，不会静默放行）
+            LOG.warning("测试环境判定失败，按生产路径继续：%s", e)
+
         from services.wxwork_push import is_configured, send_daily_report_to
 
         if not is_configured():

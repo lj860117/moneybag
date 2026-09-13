@@ -35,6 +35,18 @@ FIX 2026-09-12：豆包「账户余额已用尽」误报
 现在改成：**只有硬信号（HTTP 402 / ARK 明确的欠费错误码 / 明确的欠费字样）
 才判 P0 现金欠费**；"insufficient balance" 这种模糊英文降级为 P2 额度告警，
 文案里明确写「未确认为现金欠费，别急着充值」。
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+FIX 2026-09-13：裸 HTTP 402 不再判 P0（测试 mock 造出的假欠费告警）
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+上面这条「402 = 硬信号」**写松了**：402 是谁都能返回的状态码（测试 mock、
+反代、网关自造错误），真实厂商的 402 一定**同时**带明确错误码或欠费字样。
+事故：backend/tests 里 `_FakeResponse(402, {"error": "doubao quota exceeded"})`
+（`error` 是字符串不是 dict ⇒ 取不到 code）被一路判成 P0，用户收到
+「💳 豆包余额告警（确证欠费信号）」并被引导去充值 —— **豆包实际没欠费**。
+
+现在：402 / 欠费错误码命中后，**还要**有 code 或欠费字样才判 P0；
+两者皆无 → 降 P2 额度告警。详见 classify_llm_error_detail 第 4 步。
 """
 from __future__ import annotations
 
@@ -42,6 +54,7 @@ import config
 import json
 import os
 import re
+import sys
 import time
 from datetime import date
 from pathlib import Path
@@ -173,6 +186,12 @@ _ARREARS_CODES = frozenset({
 _ARREARS_HINTS = (
     "arrearage", "arrears", "overdue",
     "欠费", "账户余额不足", "余额不足", "已欠费",
+    # FIX 2026-09-13：原来只在 `provider == "deepseek"` 的专属兜底分支里认
+    # "payment required"，豆包方向遇到「HTTP 402 + 正文 Payment Required」
+    # 会一路漏到 P2/不告警。HTTP 402 的语义名就是 Payment Required，两家厂商
+    # 通用，提到公共 hints 里，deepseek 那条专属分支保持不动（多一层兜底）。
+    # err_lower 已小写，故这里也写小写。
+    "payment required",
 )
 
 # 推理点 / 免费额度 / 资源包用完：非现金，处置动作不是「充值」
@@ -346,8 +365,28 @@ def classify_llm_error_detail(
         return f"{provider}_auth_failed", code, _snippet(raw)
 
     # 4) 现金欠费 —— 必须有硬信号才判 P0
+    #    FIX 2026-09-13：**裸 402 不再无条件直落 P0**。
+    #    旧写法 `if status == 402: return balance_exhausted` 把「状态码」当成了
+    #    「确证欠费」。但 402 是**谁都能返回**的：测试 mock、反代、网关自造错误、
+    #    甚至某些框架把鉴权失败也报成 402。真实厂商的 402 一定**同时**带明确的
+    #    错误码（PaymentRequired / InsufficientBalance）或明确的欠费字样 ——
+    #    裸 402 恰恰是"来源可疑"的信号，不是"确证欠费"的信号。
+    #
+    #    事故指纹（2026-09-13 19:35 那条假告警）：HTTP 402 + **错误码为空** ——
+    #    来自 backend/tests 的 `_FakeResponse(402, {"error": "doubao quota
+    #    exceeded"})`，`error` 是字符串不是 dict，_extract_error_code() 取不到
+    #    code。豆包实际没欠费（生产 Key 直连 ARK 实测 HTTP 200），但告警文案写着
+    #    「确证欠费信号」并让用户去充值。
+    #
+    #    修法：402 / 欠费错误码 命中后，**还要**有 code 或欠费字样才判 P0；
+    #    两者皆无 → 降级为 P2 额度告警（文案明确"未确认为现金欠费，先别急着
+    #    充值"）。宁可少一条 P0，不可再骗用户去充钱。
     if status == 402 or code in _ARREARS_CODES:
-        return f"{provider}_balance_exhausted", code, _snippet(raw)
+        if code or any(h in err_lower for h in _ARREARS_HINTS):
+            return f"{provider}_balance_exhausted", code, _snippet(raw)
+        # 402 但既无错误码、也无任何欠费字样 —— 来源可疑（mock / 代理 / 网关
+        # 自造），不能再当「确证欠费」推 P0。
+        return f"{provider}_quota_exhausted", code, _snippet(raw)
     if any(h in err_lower for h in _ARREARS_HINTS):
         return f"{provider}_balance_exhausted", code, _snippet(raw)
     # DeepSeek 官方 402 的正文是 "Insufficient balance" / "Payment Required"
@@ -415,7 +454,8 @@ def build_alert_message(
             f"💳 {label} 余额告警（确证欠费信号）",
             f"**❗ {label} 返回「现金余额/欠费」确证信号**\n\n"
             f"判定依据：HTTP {status_code} · 错误码 {error_code or '-'}\n"
-            f"（硬信号之一：402 / 欠费错误码 / 明确欠费字样）\n\n"
+            f"（硬信号：402 或欠费错误码，且必须同时带厂商错误码 / 明确欠费字样；"
+            f"裸 402 已于 2026-09-13 起不再判 P0）\n\n"
             f"影响：主路径失败时降级目标也会失败，AI 功能可能整体不可用\n\n"
             f"原始错误片段：\n{snippet}\n\n"
             f"{foot}\n\n"
@@ -468,6 +508,101 @@ def build_alert_message(
 
 
 # ============================================================
+# 测试环境短路（FIX 2026-09-13：测试 mock 造出的假告警被真推到了企微）
+# ============================================================
+# 事故（真实发生，2026-09-13 19:35）：
+#   backend/tests/test_chat_model_routing.py 用 fake httpx 造了一个 HTTP 402
+#   响应（_FakeResponse(402, {"error": "doubao quota exceeded"})），gateway 的
+#   回退分支把它当成真实调用失败，一路走到本文件的 maybe_alert_quota；而
+#   classify_llm_error 对 `status == 402` 是**硬判定**直落 P0 现金欠费
+#   （不看错误码 —— 那条 mock 的 error 是字符串不是 dict，解析出的错误码是空）。
+#   于是「💳 豆包余额告警（确证欠费信号）」被推送到用户企微。
+#   **豆包实际没欠费**：生产 Key 直连 ARK 实测 doubao-seed-2-1-turbo-260628
+#   返回 HTTP 200。这是一条由测试造出来的假告警。
+#
+# 为什么不能只靠 backend/tests/conftest.py 拦：
+#   conftest 只保护 backend/tests/ 这一个入口。maybe_alert_quota 的调用方还
+#   包括网关回退分支、6 个 cron 脚本、以及任何手工排查脚本 —— 谁 import 了
+#   本模块谁就能触发真实推送。所以必须在**本入口**再上一道，做到"任何调用方
+#   在测试进程里都发不出去"。
+#
+# 为什么不干脆在测试环境一律 return：
+#   那样会连「用假 sender 演练推送路径」的合法用例一起废掉（这类用例正是
+#   验证"真欠费半夜也要推"的唯一手段）。折中判据是：只有解析出来的发送函数
+#   仍是**生产实现**（定义在 services.wxwork_push 里）才拦；测试 monkeypatch
+#   进来的 lambda / MagicMock / 假模块物理上发不出网络请求，照常放行。
+_WXWORK_MODULE = "services.wxwork_push"
+
+
+def _env_truthy(name: str) -> bool:
+    """环境变量是否为「真」；未设置 / 空串 / 0 / false / no / off 都算假。"""
+    raw = str(os.environ.get(name, "")).strip().lower()
+    return raw not in ("", "0", "false", "no", "off")
+
+
+# ⚠️ import 期就固化一次，之后**不再重新探测**：
+#   PYTEST_CURRENT_TEST 由 pytest 逐用例设置，任何测试只要 monkeypatch.delenv
+#   就能把它抹掉；"pytest" in sys.modules 才是"本进程确实跑在 pytest 下"的硬
+#   证据。固化成常量后，单个测试再怎么改环境变量也撤不掉这道闸门 ——
+#   与 conftest 里 DATA_DIR 那个 `if not os.environ.get("DATA_DIR")` 逃逸口
+#   是同一类教训：**防护不能靠"调用方不会去动它"来保证**。
+_TEST_MODE_AT_IMPORT: bool = (
+    bool(os.environ.get("PYTEST_CURRENT_TEST"))
+    or _env_truthy("MONEYBAG_TEST_MODE")
+    or ("pytest" in sys.modules)
+)
+
+
+def _in_test_mode() -> bool:
+    """当前是否处于「测试环境」—— 命中则 maybe_alert_quota 不得真实推送。
+
+    显式设置 MONEYBAG_TEST_MODE 可覆盖自动探测（例如确需在 pytest 里演练真实
+    推送链路），但关闭时会打印醒目警告 —— 静默放行会让这道闸门自己骗自己。
+    """
+    explicit = str(os.environ.get("MONEYBAG_TEST_MODE", "")).strip()
+    if explicit:
+        forced = _env_truthy("MONEYBAG_TEST_MODE")
+        if not forced and _TEST_MODE_AT_IMPORT:
+            print("[QUOTA_ALERT][CONFIG] ⚠️ MONEYBAG_TEST_MODE 显式关闭了测试模式，"
+                  "但本进程仍检测到 pytest —— 告警**会**被真实推送，"
+                  "确认这是你想要的")
+        return forced
+    return _TEST_MODE_AT_IMPORT or bool(os.environ.get("PYTEST_CURRENT_TEST"))
+
+
+def _resolve_wxwork_module():
+    """拿到 services.wxwork_push 模块对象（优先 sys.modules，兼容测试假模块）。"""
+    mod = sys.modules.get(_WXWORK_MODULE)
+    if mod is not None:
+        return mod
+    try:
+        import importlib
+
+        return importlib.import_module(_WXWORK_MODULE)
+    except Exception:  # noqa: BLE001 - 拿不到就交给调用方按"保守拦截"处理
+        return None
+
+
+def _is_production_sender(fn: object) -> bool:
+    """判断解析到的发送函数是不是「会真发网络请求」的生产实现。
+
+    判据：函数定义在 services.wxwork_push 里。解析不到、或拿不到 __module__
+    时一律**保守当真**（宁可误拦，不可误发 —— 误拦只是一条日志，误发是一条
+    打扰真实用户的假告警）。
+
+    测试里 monkeypatch 进来的 lambda / MagicMock / SimpleNamespace 假模块都
+    不定义在这个模块里，因此**故意放行**：它们物理上发不出真实请求，这正是
+    既有用例（test_p0_pushes_even_at_night 等）需要的合法路径。
+    """
+    if fn is None:
+        return True
+    module = getattr(fn, "__module__", "")
+    if not module:
+        return True
+    return module == _WXWORK_MODULE
+
+
+# ============================================================
 # 主入口
 # ============================================================
 def maybe_alert_quota(
@@ -513,6 +648,26 @@ def maybe_alert_quota(
                 f"不在 {PUSH_WINDOW_START_HOUR}:00-{PUSH_WINDOW_END_HOUR}:00 推送窗口内，仅记录 | {tag}"
             )
             return
+
+        # ── 测试环境短路（FIX 2026-09-13，详见本文件上方专章）──────────
+        # 位置有讲究：放在「当日去重」**之前**。
+        #   ALERT_STATE_FILE = DATA_DIR / "llm_alert_state.json"，而测试进程里
+        #   DATA_DIR 被 conftest 隔离到临时目录 —— 状态永远写不进生产
+        #   /opt/moneybag/data，等于去重彻底失效（每跑一次测试就重推一条假
+        #   告警）。短路时干脆不读也不写状态文件，生产路径不受任何影响。
+        if _in_test_mode():
+            _wxwork = _resolve_wxwork_module()
+            _send_fn = getattr(_wxwork, "send_daily_report_to", None) \
+                if _wxwork is not None else None
+            if _is_production_sender(_send_fn):
+                print(
+                    f"[QUOTA_ALERT][TEST_MODE_BLOCKED] 测试环境：告警未推送（已拦截真实"
+                    f"企微发送） | alert_type={alert_type} priority={priority} "
+                    f"provider={provider} model={model or '-'} "
+                    f"module={module or '-'} status={status_code} "
+                    f"code={err_code or '-'}"
+                )
+                return
 
         # 当日去重（按 alert_type + 模型，turbo/pro 各自独立）
         dedupe_key = f"{alert_type}|{model or '-'}"

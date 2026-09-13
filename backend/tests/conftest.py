@@ -175,6 +175,110 @@ _SECRET_ENV_KEYS = (
 )
 
 
+# ============================================================
+# 企微推送拦截（FIX 2026-09-13：测试 mock 造的假告警被真推到了用户企微）
+# ============================================================
+# 事故：backend/tests/conftest.py 只隔离了 DATA_DIR，**完全没有拦截企微推送**。
+#   test_chat_model_routing.py 用 fake httpx 造出 HTTP 402 后，
+#   gateway（infra/llm/gateway.py:110 回退分支）→ services.llm_quota_alert.
+#   maybe_alert_quota → services.wxwork_push.send_daily_report_to 走的是
+#   **真实**发送函数；而 wxwork_push 的 _CORP_ID/_SECRET/_AGENT_ID 是模块级
+#   常量（import 时从 os.environ 抓一次就定死），conftest 那个"每个用例清空
+#   密钥环境变量"的 autouse fixture 根本管不到它 —— 只要模块在任何一次密钥
+#   还在的环境里被 import 过，is_configured() 就恒为 True，假告警真发出去。
+#
+# 拦截点选在 wxwork_push **唯一的网络出口** —— 模块级 httpx.Client 单例
+# `_http_client`（get = 取 access_token，post = 发消息），而不是替换 send_*：
+#   • 替换 send_* 会砸掉 test_wxwork_push_bytes.py 这类合法用例 —— 它们
+#     monkeypatch 的是 _send_raw，需要真实走到分片/拼装逻辑去验证字节行为；
+#   • 卡在 HTTP 出口对所有调用方一视同仁（不止 maybe_alert_quota），且
+#     **不改变任何函数的返回值契约**：_get_token 取不到 token 后 _send_raw
+#     照常返回 not-ok，行为与"企微未配置"完全一致，不会有意外异常。
+#
+# 被拦下的请求必须**打印日志 + 记进 wecom_push_sink**，绝不静默丢弃 ——
+# 静默丢弃就是本项目最忌讳的「闸门空转仍显绿」。
+_WXWORK_BLOCKED_CALLS: list = []
+
+
+@pytest.fixture(autouse=True)
+def _block_real_wecom_push(monkeypatch):
+    """禁止测试进程发起任何真实企微网络请求（autouse，逐个用例生效）。"""
+    try:
+        from services import wxwork_push as wp
+    except Exception as e:  # noqa: BLE001 - 依赖缺失时本就没有网络出口可拦
+        print(f"[conftest] ⚠️ 无法导入 services.wxwork_push，跳过企微拦截：{e}")
+        yield
+        return
+
+    def _record_blocked(method: str, url: str, payload) -> None:
+        # ⚠️ url 里带 corpid / corpsecret / access_token —— 只记 path，绝不回显
+        path = str(url).split("?", 1)[0]
+        preview = ""
+        if isinstance(payload, dict):
+            body = payload.get("text") or payload.get("markdown") or {}
+            if isinstance(body, dict):
+                preview = str(body.get("content", ""))[:200]
+        _WXWORK_BLOCKED_CALLS.append(
+            {"method": method, "path": path, "preview": preview}
+        )
+        print(f"[WXWORK][TEST_BLOCKED] 已拦截真实企微请求 {method} {path}"
+              f"（测试进程禁止外发）｜内容片段：{preview}")
+
+    def _no_get(url, *args, **kwargs):
+        _record_blocked("GET", url, None)
+        raise RuntimeError("[conftest] 测试环境禁止真实企微 HTTP 请求（GET）")
+
+    def _no_post(url, *args, **kwargs):
+        payload = kwargs.get("json")
+        if payload is None and args:
+            payload = args[0]
+        _record_blocked("POST", url, payload)
+        raise RuntimeError("[conftest] 测试环境禁止真实企微 HTTP 请求（POST）")
+
+    # raising=True：万一 httpx 改了 API 导致装不上，宁可整片测试红，
+    # 也不能"静默没装上" —— 静默失败 = 闸门空转仍显绿（M14）。
+    monkeypatch.setattr(wp._http_client, "get", _no_get, raising=True)
+    monkeypatch.setattr(wp._http_client, "post", _no_post, raising=True)
+    yield
+
+
+@pytest.fixture
+def wecom_push_sink() -> list:
+    """本用例期间被 conftest 拦下的真实企微请求（供守卫用例断言）。"""
+    _WXWORK_BLOCKED_CALLS.clear()
+    return _WXWORK_BLOCKED_CALLS
+
+
+@pytest.fixture(autouse=True)
+def _isolate_alert_state_file(monkeypatch):
+    """每个用例用一份干净的去重状态文件，杜绝用例间互相屏蔽。
+
+    背景（与本次假告警同一处设计缺陷）：`ALERT_STATE_FILE = DATA_DIR /
+    "llm_alert_state.json"` 是**进程级共享**的，而 DATA_DIR 只是按 pytest
+    **会话**隔离 —— 于是任何"真的推了一把"的用例会把 `alert_type|model` 写进
+    共享文件，后面的用例再报同类告警就被去重静默吞掉，表现成"推送数 0"。
+
+    这不是理论风险：本次加守卫时就踩到了 —— 守卫用例（按文件名排在前面）
+    用 model="m" 推了一次 P0，后面 test_p0_pushes_even_at_night 同键命中去重，
+    断言 0 == 2 变红，而代码完全正确。**顺序依赖的假红比真 bug 更费时间**。
+    """
+    try:
+        from services import llm_quota_alert as qa
+    except Exception as e:  # noqa: BLE001 - 模块不可用时无事可做
+        print(f"[conftest] ⚠️ 无法导入 services.llm_quota_alert，跳过状态隔离：{e}")
+        yield
+        return
+
+    state_file = Path(_PYTEST_DATA_DIR) / "llm_alert_state.json"
+    try:
+        if state_file.exists():
+            state_file.unlink()
+    except OSError as e:  # noqa: BLE001 - 清理失败不该让整片测试红
+        print(f"[conftest] ⚠️ 清理去重状态文件失败：{e}")
+    monkeypatch.setattr(qa, "ALERT_STATE_FILE", state_file, raising=True)
+    yield
+
+
 @pytest.fixture(autouse=True)
 def _clear_secret_env_pollution(monkeypatch):
     """每个测试运行前清空密钥类环境变量，防止 cache_warmer 等模块的

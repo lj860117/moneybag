@@ -66,6 +66,64 @@ def test_doubao_http_402_is_arrears():
         "doubao_balance_exhausted"
 
 
+# 事故原物（2026-09-13 19:35 那条假告警的错误体）：
+# backend/tests 里 _FakeResponse(402, {"error": "doubao quota exceeded"})，
+# error 是**字符串**不是 dict ⇒ _extract_error_code() 取不到 code。
+BARE_402_MOCK_BODY = '{"error": "doubao quota exceeded"}'
+
+
+def test_bare_402_without_code_or_arrears_word_is_not_p0():
+    """核心回归点：裸 402（无错误码 + 无欠费字样）**不得**判 P0。
+
+    旧逻辑 `if status == 402: return balance_exhausted` 把状态码当成确证欠费，
+    于是这条测试 mock 造出来的 402 被推成「💳 豆包余额告警（确证欠费信号）」
+    并让用户去充值 —— 而豆包实际没欠费（生产 Key 直连 ARK 实测 HTTP 200）。
+    现在降级为 P2 额度告警：文案明确"未确认为现金欠费，先别急着充值"。
+    """
+    got = qa.classify_llm_error("doubao", 402, BARE_402_MOCK_BODY)
+    assert got == "doubao_quota_exhausted", f"裸 402 不该判 P0，实际 {got}"
+    assert qa.ALERT_PRIORITY[got] == "P2"
+
+
+def test_bare_402_copy_never_claims_confirmed_arrears():
+    """裸 402 的告警文案必须否认欠费，绝不能再出现「确证欠费信号」。"""
+    alert_type, code, snip = qa.classify_llm_error_detail(
+        "doubao", 402, BARE_402_MOCK_BODY
+    )
+    title, content = qa.build_alert_message(
+        alert_type, "doubao", 402, code, snip, model="m", module="chat",
+    )
+    assert "确证欠费" not in title
+    assert "未确认为现金欠费" in content
+    assert "这不是欠费告警，先别急着充值" in content
+
+
+def test_bare_402_pushes_p2_copy_not_p0(monkeypatch):
+    """端到端：裸 402 白天会推，但推的是 P2 额度告警，不是 P0 欠费告警。"""
+    pushed = []
+    monkeypatch.setattr(qa, "_in_push_window", lambda: True, raising=False)
+    _install_fake_wxwork(monkeypatch, pushed)
+
+    qa.maybe_alert_quota("doubao", 402, BARE_402_MOCK_BODY, model="m", module="chat")
+
+    assert len(pushed) == 2  # LeiJiang + BuLuoGeLi
+    assert "确证欠费" not in pushed[0][1], f"文案仍在声称确证欠费：{pushed[0][1]}"
+    assert "额度告警" in pushed[0][1]
+    assert "未确认为现金欠费" in pushed[0][2]
+
+
+def test_402_with_payment_required_is_still_p0_for_doubao():
+    """对照组：402 带上明确欠费字样，仍然必须判 P0（别把根因修过头）。
+
+    "payment required" 原本只在 deepseek 专属兜底分支里认，豆包方向会漏判；
+    FIX 2026-09-13 把它提进公共 _ARREARS_HINTS，两家都覆盖。
+    """
+    assert qa.classify_llm_error("doubao", 402, "Payment Required") == \
+        "doubao_balance_exhausted"
+    assert qa.classify_llm_error("doubao", 402, "payment required") == \
+        "doubao_balance_exhausted"
+
+
 def test_doubao_chinese_arrears_word():
     """中文「欠费」字样 → 现金欠费。"""
     assert qa.classify_llm_error("doubao", 400, "账户已欠费，请充值") == \
