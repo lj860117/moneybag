@@ -19,7 +19,10 @@
 ## 本文件当前覆盖的三组契约
 
 1. **版本号**：`backend/config.py` `APP_VERSION` 是权威；
-   `sw.js` 的 `CACHE_NAME`、`index.html` 全部 `?v=` 必须与它一致。
+   **前端两个标记必须彼此一致**（`index.html` 内部所有 `?v=` 相同，
+   且 `sw.js` 的 `CACHE_NAME` 等于它），**且前端不得领先后端**。
+   注意：**后端领先前端是合法的**（`--backend-only`），详见
+   `find_version_drift()` 的 docstring —— 不要把契约写成"三处必须相等"。
    （此前无任何断言，所以 bump 脚本读 `head -1`、遇到混版会静默只替换一种。）
 2. **close_review 字数**：`backend/prompts/close_review.md` 是权威；
    调用方 `backend/scripts/stock_monitor_cron.py` **不得**再复述数字
@@ -132,39 +135,89 @@ def _app_version() -> str:
 # ==========================================================================
 # 判据 1：版本号（config.py 为权威）
 # ==========================================================================
+def _ver_tuple(v: str) -> tuple[int, ...] | None:
+    """把 ``9.9.27`` 解析成 ``(9, 9, 27)``；含非数字段时返回 None。"""
+    try:
+        return tuple(int(p) for p in v.split("."))
+    except (ValueError, AttributeError):
+        return None
+
+
 def find_version_drift(app_version: str, sw_cache_name: str, index_versions: list[str]) -> list[str]:
-    """返回版本不一致的问题列表；空列表 = 三处一致。纯函数，便于故障注入。"""
+    """返回版本标记的问题列表；空列表 = 合法。
+
+    契约（2026-09-13 修订）—— **刻意不要求三处相等**：
+
+    * ``config.py APP_VERSION`` 是唯一权威。
+    * **前端两个标记之间必须相等**：``index.html`` 里所有 ``?v=`` 必须彼此一致，
+      且 ``sw.js`` 的 ``CACHE_NAME`` 必须等于它。这是唯一真正会伤到用户的漂移
+      —— 两者不一致时 Service Worker 不会整体失效，用户会拿到
+      「新 index.html + 旧 app.js」这种半新半旧的组合（本仓曾线上冻在
+      ``v9923-cache`` 而 index.html 已到 9.9.26，正是此例）。
+    * **前端不得领先后端**：``fe > backend`` 意味着只 bump 了前端标记、
+      忘了 bump ``config.py``，API 报出的版本会落后于实际资产。
+    * **后端领先前端是合法的，不报错**：``bump_and_deploy.sh --backend-only``
+      的设计就是"纯后端改动不动前端缓存标记"（CLAUDE.md:293；该脚本 dry-run
+      分支里也明确打印这是允许的）。此时没有任何前端文件变更，
+      旧 ``?v=`` 不会让用户白下资源，Service Worker 也不需要整体失效。
+
+    为什么这里特意写清楚"不要求相等"：早期版本把契约写成"三处必须一致"，
+    于是每次 ``--backend-only`` 都误报。2026-09-13 实测，用 ``--backend-only``
+    把 config.py 从 9.9.26 bump 到 9.9.27 后，本文件 2 条断言立刻变红，
+    而代码完全正确 —— 守卫惩罚了项目自己的合法流程。
+    这和「结论明确度指标惩罚诚实拒答」是同一类错误：**度量本身在误导人**。
+    """
     problems: list[str] = []
     if not app_version:
         return ["无法从 config.py 解析出 APP_VERSION（解析器失效，守卫已空转）"]
 
-    expected_dotted = app_version
+    # ---- 前端标记 1：index.html 必须自洽（所有 ?v= 同一个版本）----
+    fe_version = ""
+    if not index_versions:
+        problems.append(
+            "index.html 里没有解析到任何 ?v= 查询串（解析器失效或版本标记被移除，守卫已空转）"
+        )
+    else:
+        uniq = sorted(set(index_versions))
+        if len(uniq) != 1:
+            problems.append(
+                f"index.html 内部混版：出现 {uniq}（共 {len(index_versions)} 处 ?v=）。"
+                "bump 脚本只替换一种写法时会静默漏改，用户会部分拿到旧资源。"
+            )
+        fe_version = uniq[0]
+
+    # ---- 前端标记 2：sw.js 必须与 index.html 一致 ----
     m = re.search(r"moneybag-v(\d+)-cache", sw_cache_name or "")
     if not m:
         problems.append(
             f"sw.js 的 CACHE_NAME 无法解析出版本号（实际 {sw_cache_name!r}）；"
             "格式应为 moneybag-v<无点号4位>-cache"
         )
-    else:
-        expected_compact = app_version.replace(".", "")
-        if m.group(1) != expected_compact:
+    elif fe_version:
+        sw_compact = m.group(1)
+        fe_compact = fe_version.replace(".", "")
+        if sw_compact != fe_compact:
             problems.append(
-                f"sw.js CACHE_NAME 版本 v{m.group(1)} != config.py APP_VERSION "
-                f"{expected_dotted}（期望 v{expected_compact}）；"
-                "两处不一致时 Service Worker 缓存不会失效"
+                f"sw.js CACHE_NAME 版本 v{sw_compact} != index.html 的 ?v={fe_version}"
+                f"（期望 v{fe_compact}）；两者不一致时 Service Worker 不会整体失效，"
+                "用户会拿到「新 index.html + 旧 app.js」的半新半旧组合"
             )
 
-    if not index_versions:
-        problems.append(
-            "index.html 里没有解析到任何 ?v= 查询串（解析器失效或版本标记被移除，守卫已空转）"
-        )
-    else:
-        bad = sorted({v for v in index_versions if v != expected_dotted})
-        if bad:
+    # ---- 前端不得领先 config.py（反向：后端领先是允许的，见 docstring）----
+    if fe_version:
+        fe_t = _ver_tuple(fe_version)
+        be_t = _ver_tuple(app_version)
+        if fe_t is None or be_t is None:
             problems.append(
-                f"index.html 存在与 APP_VERSION {expected_dotted} 不一致的 ?v=：{bad}"
-                f"（共 {len(index_versions)} 处 ?v=）"
+                f"版本号无法比较：index.html={fe_version!r} config.py={app_version!r}"
             )
+        elif fe_t > be_t:
+            problems.append(
+                f"前端版本领先后端：index.html={fe_version} > "
+                f"config.py APP_VERSION={app_version}。"
+                "说明只 bump 了前端标记而没 bump config.py，API 报出的版本落后于资产。"
+            )
+
     return problems
 
 
@@ -294,7 +347,12 @@ def test_stale_seconds_parser_really_parses_the_expr():
 # 故障注入：证明判据真的会红（防死测试）
 # ==========================================================================
 def test_injection_detects_sw_cache_version_drift():
-    """注入：sw.js 落后一个版本 → 判据必须报出。"""
+    """注入：sw.js 落后于 index.html → 判据必须报出。
+
+    这是线上真实事故的形态：index.html 已到 9.9.26，sw.js 冻在 v9923-cache。
+    注意样本里 config.py 与 index.html 是**相等**的（9.9.26）——
+    差异只在前端两个标记之间，正因如此才必须单独守住这一对。
+    """
     problems = find_version_drift("9.9.26", "moneybag-v9925-cache", ["9.9.26"])
     assert problems, "sw.js 版本落后却未被判据发现，判据是死的"
     assert any("sw.js" in p for p in problems), f"报错信息未指向 sw.js：{problems}"
@@ -305,6 +363,17 @@ def test_injection_detects_index_html_mixed_versions():
     problems = find_version_drift("9.9.26", "moneybag-v9926-cache", ["9.9.26"] * 26 + ["9.9.24"])
     assert problems, "index.html 混版却未被发现，判据是死的"
     assert any("9.9.24" in p for p in problems), f"报错信息未点出混版值：{problems}"
+
+
+def test_injection_detects_frontend_leading_backend():
+    """注入：只 bump 了前端标记、忘了 bump config.py → 判据必须报出。
+
+    与上一条互为镜像：前者是"前端落后于自己"，这条是"前端领先于权威"。
+    两者都必须红，中间那段"后端领先前端"的合法区间才不会被误伤。
+    """
+    problems = find_version_drift("9.9.26", "moneybag-v9927-cache", ["9.9.27"] * 27)
+    assert problems, "前端领先后端却未被发现，判据是死的"
+    assert any("领先" in p for p in problems), f"报错信息未点出领先关系：{problems}"
 
 
 def test_injection_detects_length_duplication_reintroduced():
@@ -330,6 +399,22 @@ def test_injection_detects_stale_seconds_drift():
     assert problems, "常量不一致却未被发现，判据是死的"
 
 
+def test_backend_only_bump_state_is_allowed():
+    """`--backend-only` 产生的「后端领先前端」是**合法状态**，判据不得报错。
+
+    这是 2026-09-13 实测踩中的假阳性：用 `--backend-only` 把 config.py 从
+    9.9.26 bump 到 9.9.27 后，早期判据（要求三处相等）让本文件 2 条断言变红，
+    而代码完全正确、前端也确实不该动（动了只会让所有用户白重下资源）。
+
+    守卫惩罚项目自己的合法流程，与「结论明确度指标惩罚诚实拒答」同类。
+    这条测试的存在本身就是契约的一部分：**别再把这里改回"三处必须相等"**。
+    """
+    problems = find_version_drift("9.9.27", "moneybag-v9926-cache", ["9.9.26"] * 27)
+    assert not problems, (
+        "--backend-only 的合法状态被误报：\n" + "\n".join(f"  - {p}" for p in problems)
+    )
+
+
 # --------------------------------------------------------------------------
 # 正向对照：判据不得误伤（防"宁可错杀"的假阳性）
 # --------------------------------------------------------------------------
@@ -340,6 +425,24 @@ def test_clean_inputs_produce_no_problems():
     assert not find_stale_seconds_drift(
         _const_value(SIGNALS_PY, "FUND_SCREEN_STALE_SECONDS"),
         _const_value(CACHE_WARMER_PY, "_FUND_SCREEN_STALE_SECONDS"),
+    )
+
+
+def test_frontend_markers_are_mutually_consistent_for_real_files():
+    """真实文件上，前端这一对（index.html ↔ sw.js）必须彼此一致。
+
+    这是不依赖 config.py 的独立断言：即使将来 `--backend-only` 反复发生、
+    后端远远领先，前端这两个标记也**永远**该是同一个版本。
+    """
+    index_versions = _index_versions()
+    assert index_versions, "index.html 解析不到 ?v="
+    assert len(set(index_versions)) == 1, f"index.html 内部混版：{sorted(set(index_versions))}"
+
+    sw_name = _sw_cache_name()
+    m = re.search(r"moneybag-v(\d+)-cache", sw_name)
+    assert m, f"sw.js CACHE_NAME 解析失败：{sw_name!r}"
+    assert m.group(1) == index_versions[0].replace(".", ""), (
+        f"前端标记不一致：sw.js={sw_name} vs index.html ?v={index_versions[0]}"
     )
 
 
