@@ -165,9 +165,19 @@ def pytest_sessionfinish(session, exitstatus):
 
 # 与 backend/.env 里出现的 key 名保持一致（脱敏后的清单，不含真实值）。
 # 新增密钥类环境变量时记得同步补充这里。
+#
+# FIX 2026-09-13：这份清单此前对企微**是失效的** —— wxwork_push 的
+# _CORP_ID/_SECRET/_AGENT_ID 是 import 期冻结的模块级常量，下面那个
+# monkeypatch.delenv 改的是 os.environ，冻住的常量读不到。
+# 现在 wxwork_push 已改成调用时实时 os.getenv（见 services/wxwork_push.py 的
+# _read_config），这个 fixture 才真正成为「配置层」防护：清掉这三个变量，
+# is_configured() 就会返回 False，推送分支连入口都进不去。
+# 同时补上 WXWORK_USER_ID：它决定默认 touser（缺省 "@all"），生产机上若配了
+# 真实 userId，不清掉的话测试进程会拿真实账号当默认收件人。
 _SECRET_ENV_KEYS = (
     "LLM_API_KEY", "LLM_API_BASE", "LLM_MODEL",
     "WXWORK_CORP_ID", "WXWORK_AGENT_ID", "WXWORK_SECRET",
+    "WXWORK_USER_ID",
     "WXWORK_TOUSER", "WXWORK_CALLBACK_TOKEN", "WXWORK_CALLBACK_AES_KEY",
     "TUSHARE_TOKEN",
     "DOUBAO_API_KEY", "DASHSCOPE_API_KEY",

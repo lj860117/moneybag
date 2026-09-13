@@ -40,10 +40,87 @@ from pathlib import Path
 from infra.cache import MemoryCache
 
 # 配置从环境变量读取
-_CORP_ID = os.getenv("WXWORK_CORP_ID", "")
-_SECRET = os.getenv("WXWORK_SECRET", "")
-_AGENT_ID = os.getenv("WXWORK_AGENT_ID", "")
-_USER_ID = os.getenv("WXWORK_USER_ID", "@all")
+#
+# ⚠️ FIX 2026-09-13：配置必须**延迟读取**（调用时才 os.getenv），不能在
+#    import 期抓死。旧实现是四行 `_X = os.getenv(...)`，在 import 时求值一次
+#    就永久固定 —— conftest 的 autouse fixture `monkeypatch.delenv(
+#    "WXWORK_CORP_ID")` 对它们**完全无效**。只要模块曾在密钥还在的环境里被
+#    import 过一次，is_configured() 就恒为 True：2026-09-13 test_chat_model_
+#    routing.py 用 fake httpx 造的 HTTP 402，就是顺着这条恒 True 的通道真推
+#    到了用户企微（事故 519045b）。
+#
+# 但这四个**模块级名字必须保留**，不能改成纯函数或删掉：
+#   • backend/tests/test_qa_egress_independent.py::prod_like_wecom
+#       monkeypatch.setattr(wp, "_CORP_ID", "QA-FAKE-CORP", raising=False)
+#   • backend/tests/qa_egress_probe.py（QA_FORCE_WECOM_CREDS=1）
+#       wp._CORP_ID = "QA-FAKE-CORP"
+#   两者都靠**覆盖模块级常量**来伪造「生产已配置」状态。删掉或改成同名函数
+#   会让这些用例**静默退化** —— raising=False 的 setattr 不报错，但
+#   is_configured() 恒 False → 根本走不到推送分支 → 那是一道空转的绿，
+#   比红更危险。所以：名字保留、语义升级为「外部覆盖优先，否则实时读」
+#   （见 _read_config）。
+_DEFAULT_USER_ID = "@all"
+
+# import 期快照：**唯一用途**是识别「模块级名字是否被外部覆盖过」，
+# 不直接当作配置值使用（配置值一律走 _read_config 实时解析）。
+_IMPORT_TIME_ENV: dict = {
+    "WXWORK_CORP_ID": os.getenv("WXWORK_CORP_ID", ""),
+    "WXWORK_SECRET": os.getenv("WXWORK_SECRET", ""),
+    "WXWORK_AGENT_ID": os.getenv("WXWORK_AGENT_ID", ""),
+    "WXWORK_USER_ID": os.getenv("WXWORK_USER_ID", _DEFAULT_USER_ID),
+}
+
+_CORP_ID = _IMPORT_TIME_ENV["WXWORK_CORP_ID"]
+_SECRET = _IMPORT_TIME_ENV["WXWORK_SECRET"]
+_AGENT_ID = _IMPORT_TIME_ENV["WXWORK_AGENT_ID"]
+_USER_ID = _IMPORT_TIME_ENV["WXWORK_USER_ID"]
+
+
+def _read_config(attr_name: str, env_key: str, default: str = "") -> str:
+    """延迟读取单项企微配置。
+
+    解析顺序（**不可调换**）：
+      1. 模块级同名属性被外部显式覆盖（值与 import 期快照不同）→ 用覆盖值。
+         这是给上面两个 QA 场景留的兼容通道，必须继续有效。
+      2. 否则**调用时**实时 os.getenv → 这样 conftest 的 delenv / setenv
+         才真正能控制住 is_configured()（本次修复的核心）。
+
+    生产行为零变化：环境变量没被改动时，os.getenv 返回值与 import 期快照
+    完全一致，生产进程观察到的行为与旧实现一字不差。
+
+    Args:
+        attr_name: 模块级兼容属性名，如 "_CORP_ID"
+        env_key: 对应的环境变量名，如 "WXWORK_CORP_ID"
+        default: 环境变量缺失时使用的默认值
+
+    Returns:
+        str: 当前生效的配置值（可能为空串，表示未配置）
+    """
+    current = globals().get(attr_name)
+    if isinstance(current, str) and current != _IMPORT_TIME_ENV[env_key]:
+        return current
+    return os.getenv(env_key, default)
+
+
+def _corp_id() -> str:
+    """当前生效的企业 ID（延迟读取）。"""
+    return _read_config("_CORP_ID", "WXWORK_CORP_ID", "")
+
+
+def _secret() -> str:
+    """当前生效的应用 Secret（延迟读取）。"""
+    return _read_config("_SECRET", "WXWORK_SECRET", "")
+
+
+def _agent_id() -> str:
+    """当前生效的应用 AgentID（延迟读取）。"""
+    return _read_config("_AGENT_ID", "WXWORK_AGENT_ID", "")
+
+
+def _default_user_id() -> str:
+    """当前生效的默认接收人（延迟读取）。"""
+    return _read_config("_USER_ID", "WXWORK_USER_ID", _DEFAULT_USER_ID)
+
 
 # access_token 有效期 2 小时（企微规范），提前 5 分钟刷新
 _TOKEN_CACHE_TTL = 7200
@@ -115,8 +192,8 @@ def byte_len(text: str) -> int:
 
 
 def is_configured() -> bool:
-    """检查企业微信是否已配置"""
-    return bool(_CORP_ID and _SECRET and _AGENT_ID)
+    """检查企业微信是否已配置（**延迟读取**，受环境变量/monkeypatch 控制）"""
+    return bool(_corp_id() and _secret() and _agent_id())
 
 
 def _get_token() -> str:
@@ -129,7 +206,7 @@ def _get_token() -> str:
         return ""
 
     try:
-        url = f"https://qyapi.weixin.qq.com/cgi-bin/gettoken?corpid={_CORP_ID}&corpsecret={_SECRET}"
+        url = f"https://qyapi.weixin.qq.com/cgi-bin/gettoken?corpid={_corp_id()}&corpsecret={_secret()}"
         resp = _http_client.get(url)
         data = resp.json()
         if data.get("errcode") == 0:
@@ -170,19 +247,19 @@ def _send_raw(content: str, user_id: str = "", markdown: bool = False) -> dict:
     if not token:
         return {"ok": False, "error": "未配置或获取 token 失败"}
 
-    target = user_id or _USER_ID
+    target = user_id or _default_user_id()
     if markdown:
         payload = {
             "touser": target,
             "msgtype": "markdown",
-            "agentid": int(_AGENT_ID),
+            "agentid": int(_agent_id()),
             "markdown": {"content": content},
         }
     else:
         payload = {
             "touser": target,
             "msgtype": "text",
-            "agentid": int(_AGENT_ID),
+            "agentid": int(_agent_id()),
             "text": {"content": content},
         }
 
@@ -208,7 +285,7 @@ def _send_raw(content: str, user_id: str = "", markdown: bool = False) -> dict:
                 _token_cache.delete("token")
                 token = _get_token()
                 if token and attempt == 0:
-                    payload["agentid"] = int(_AGENT_ID)  # refresh payload
+                    payload["agentid"] = int(_agent_id())  # refresh payload
                     continue
                 return {"ok": False, "error": "token_expired", "data": data}
 
@@ -681,7 +758,7 @@ def encrypt_reply(reply_text: str, to_user: str, nonce: str) -> str:
         return ""
     try:
         aes_key = _decode_aes_key(_CALLBACK_AES_KEY)
-        corp_id = _CORP_ID or ""
+        corp_id = _corp_id() or ""
 
         # 构造明文: 16字节随机 + 4字节长度 + 内容 + corpid
         reply_bytes = reply_text.encode("utf-8")
