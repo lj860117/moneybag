@@ -6,6 +6,12 @@
 #   bash scripts/check-drift.sh <文件路径>    # 只看单个文件的详细 diff
 #   bash scripts/check-drift.sh --strict      # 对账；发现真漂移时以非零码退出（可做闸门）
 #
+# 结果分四类输出（前三类是"需要看的差异"，第四类是"预期不部署"的白名单）：
+#   ① 内容不一致（真漂移 / 运行时缓存）
+#   ② 本地有、服务器没有（疑似漏部署）
+#   ③ 服务器有、本地没有（垃圾 / 服务器本地文件）
+#   ④ 白名单：backend/tests/ 等 dev-only 路径，预期不进自动部署，不计漂移
+#
 # 设计原则：以「文件清单 + 内容哈希」为准，不依赖服务器上的任何 git 状态。
 # -----------------------------------------------------------------------------
 # 为什么不能再用 server/main（git）当基线 —— 后人请勿"优化"回去
@@ -88,6 +94,22 @@ FIND_PRED='-not -path */__pycache__/* -not -name *.pyc
 # 命中这些路径的差异归入"缓存差异（预期）"，不计为真漂移，--strict 也不据此退出。
 # backend/infra/.cache/industry_board_cache.json 即属此类。
 RUNTIME_CACHE_RE='/\.cache/'
+
+# 白名单：预期【不纳入自动部署】的 dev-only 路径，两侧数量/内容不一致不算漂移。
+# 目前只有 backend/tests/。理由（勿凭"大家都知道"删掉本条，这正是本轮 P0 的教训形态）：
+#   1. 纯 dev 产物，生产运行不依赖：干净 venv 只装 requirements.txt + pytest，
+#      backend/tests/ 全量 1582 passed（ci-wire-tests 实测），模块级不 import
+#      chromadb/sentence-transformers/scipy/tushare/baostock。
+#   2. backend/tests/conftest.py:129-151 顶层把 DATA_DIR 强制指向会话临时目录、
+#      并【无视外部传入的 DATA_DIR】（注释记录了真实事故：带 DATA_DIR=/opt/moneybag/data
+#      跑测试会直写生产 data/users，攒出 13 个脏用户文件）；:168-189 autouse 清空 14 个
+#      密钥环境变量。把它同步进生产目录 = 把一个"会写盘、会读 .env"的东西放上线。
+#   3. 覆盖已由 CI 承担：.github/workflows/ci.yml 的 backend-test-suite job 每次 push
+#      跑全量，守卫在 CI，不靠"服务器磁盘上有没有这些文件"。
+# 语义是「不纳入【自动】部署，允许手工临时拷入」——所以这里既豁免"本地有服务器没有"
+# 的漏部署误报，也豁免 tests 文件两侧内容不同（可能是历史上手工拷过去的旧副本）。
+# 一旦出现非白名单的"本地有服务器没有"条目，那才是真问题。
+NONDEPLOY_RE='^backend/tests/'
 
 STRICT=0
 [ "${1:-}" = "--strict" ] && STRICT=1
@@ -280,7 +302,9 @@ END {
     for (p in sh) if (!(p in lh)) printf "SONLY\t%s\n", p;
 }' "$LOCAL_HASH" "$SERVER_HASH" | LC_ALL=C sort > "$CLASSIFIED"
 
-DIFF_REAL=0; DIFF_CACHE=0; LONLY_N=0; SONLY_N=0
+DIFF_REAL=0; DIFF_CACHE=0; DIFF_WHITE=0
+LONLY_REAL=0; LONLY_WHITE=0; SONLY_N=0
+WHITE_LIST="$TMP_DIR/whitelist.txt"; : > "$WHITE_LIST"
 
 print_header() { echo ""; echo "──────── $1 ────────"; }
 
@@ -291,21 +315,29 @@ while IFS=$'\t' read -r cat path lh rh; do
     if printf '%s' "$path" | grep -qE "$RUNTIME_CACHE_RE"; then
         DIFF_CACHE=$((DIFF_CACHE+1))
         printf "  [缓存·预期] %-58s %s → %s\n" "$path" "$lh" "$rh"
+    elif printf '%s' "$path" | grep -qE "$NONDEPLOY_RE"; then
+        DIFF_WHITE=$((DIFF_WHITE+1))
+        printf '%s\t%s\n' "DIFF" "$path" >> "$WHITE_LIST"
     else
         DIFF_REAL=$((DIFF_REAL+1))
         printf "  ⚠️  %-58s %s → %s\n" "$path" "$lh" "$rh"
     fi
 done < "$CLASSIFIED"
-[ "$DIFF_REAL" -eq 0 ] && [ "$DIFF_CACHE" -eq 0 ] && echo "  ✅ 无"
+[ "$DIFF_REAL" -eq 0 ] && [ "$DIFF_CACHE" -eq 0 ] && [ "$DIFF_WHITE" -eq 0 ] && echo "  ✅ 无"
 
 # --- 本地有、服务器没有 ---
 print_header "② 本地有、服务器没有（疑似漏部署）"
 while IFS=$'\t' read -r cat path; do
     [ "$cat" = "LONLY" ] || continue
-    LONLY_N=$((LONLY_N+1))
-    printf "  L  %s\n" "$path"
+    if printf '%s' "$path" | grep -qE "$NONDEPLOY_RE"; then
+        LONLY_WHITE=$((LONLY_WHITE+1))
+        printf '%s\t%s\n' "LONLY" "$path" >> "$WHITE_LIST"
+    else
+        LONLY_REAL=$((LONLY_REAL+1))
+        printf "  L  %s\n" "$path"
+    fi
 done < "$CLASSIFIED"
-[ "$LONLY_N" -eq 0 ] && echo "  ✅ 无"
+[ "$LONLY_REAL" -eq 0 ] && echo "  ✅ 无"
 
 # --- 服务器有、本地没有 ---
 print_header "③ 服务器有、本地没有（垃圾/服务器本地文件）"
@@ -316,18 +348,34 @@ while IFS=$'\t' read -r cat path; do
 done < "$CLASSIFIED"
 [ "$SONLY_N" -eq 0 ] && echo "  ✅ 无"
 
+# --- 白名单（预期不部署/允许不一致）---
+print_header "④ 白名单：预期不部署，不计漂移（dev-only）"
+echo "  匹配规则：$NONDEPLOY_RE"
+if [ "$((DIFF_WHITE+LONLY_WHITE))" -eq 0 ]; then
+    echo "  ✅ 无"
+else
+    printf "  内容不同 %s 项 / 本地独有 %s 项（明细见下，仅信息提示）\n" "$DIFF_WHITE" "$LONLY_WHITE"
+    while IFS=$'\t' read -r kind path; do
+        case "$kind" in
+            DIFF)  printf "  [内容不同] %s\n" "$path" ;;
+            LONLY) printf "  [未部署]   %s\n" "$path" ;;
+        esac
+    done < "$WHITE_LIST"
+fi
+
 # ----------------------------- 汇总 ------------------------------------------
 echo ""
 echo "════════════════════════════════════════════════════════════════"
 printf "汇总：本地 %s 个 / 服务器 %s 个\n" "$LOCAL_N" "$SERVER_N"
-printf "      内容不一致：%s 个（其中运行时缓存 %s 个，真漂移 %s 个）\n" \
-       "$((DIFF_REAL+DIFF_CACHE))" "$DIFF_CACHE" "$DIFF_REAL"
-printf "      本地有服务器没有：%s 个\n" "$LONLY_N"
+printf "      内容不一致：%s 个（真漂移 %s，运行时缓存 %s，白名单 %s）\n" \
+       "$((DIFF_REAL+DIFF_CACHE+DIFF_WHITE))" "$DIFF_REAL" "$DIFF_CACHE" "$DIFF_WHITE"
+printf "      本地有服务器没有：%s 个（疑似漏部署 %s，白名单未部署 %s）\n" \
+       "$((LONLY_REAL+LONLY_WHITE))" "$LONLY_REAL" "$LONLY_WHITE"
 printf "      服务器有本地没有：%s 个\n" "$SONLY_N"
-if [ "$DIFF_REAL" -eq 0 ]; then
-    echo "结论：✅ 未发现真漂移（除运行时缓存外，两侧内容一致）"
+if [ "$DIFF_REAL" -eq 0 ] && [ "$LONLY_REAL" -eq 0 ]; then
+    echo "结论：✅ 未发现真漂移（白名单/运行时缓存之外的差异为零）"
 else
-    echo "结论：⚠️  发现 $DIFF_REAL 个真漂移，请逐个确认后重新部署"
+    echo "结论：⚠️  发现 $DIFF_REAL 个真漂移、$LONLY_REAL 个疑似漏部署，请逐个确认后重新部署"
 fi
 echo "════════════════════════════════════════════════════════════════"
 
@@ -349,8 +397,9 @@ echo "  bash scripts/check-drift.sh <文件路径>"
 echo "（对照服务器最新状态不再需要 git fetch server —— 本脚本直连服务器磁盘）"
 
 # ----------------------------- 退出码（可做闸门）-----------------------------
+# 白名单（backend/tests 等 dev-only）与运行时缓存不计入闸门，保证"闸门一响即真问题"。
 if [ "$STRICT" = "1" ]; then
-    if [ "$DIFF_REAL" -gt 0 ] || [ "$LONLY_N" -gt 0 ] || [ "$SONLY_N" -gt 0 ]; then
+    if [ "$DIFF_REAL" -gt 0 ] || [ "$LONLY_REAL" -gt 0 ] || [ "$SONLY_N" -gt 0 ]; then
         exit 2
     fi
 fi
