@@ -517,36 +517,81 @@ if(calibBtn){
 // / sample_adequate；存在时优先展示新口径（命中率必须与「永远看多」基线并排对照），
 // 不存在时退回常驻诚实横幅。全部用 typeof/undefined 判断，不假设后端一定返回。
 const hasDirectional = (typeof card.directional_accuracy === 'number');
-const hasBaseline = (typeof card.baseline_always_bullish === 'number');
+// 口径诚实性（勿删）：必须同时读**两条**基线。
+// 只跟「永远看多」比是一次选择性对照 —— 线上实测 68.8% 高于看多基线 15.8%，
+// 但**低于**「永远看空」基线 84.2%（同期 84.2% 的窗口本来就在跌，永远喊空天然 84.2%）。
+// 只挑对自己有利的那条基线比，就会打出「具备增量信息」的假绿。这是本项目最忌讳的形态。
+// 口径原则：跑不赢最笨的策略，就没有增量信息；判定必须跟**最强**基线比。
+const bBull = (typeof card.baseline_always_bullish === 'number') ? card.baseline_always_bullish : null;
+const bBear = (typeof card.baseline_always_bearish === 'number') ? card.baseline_always_bearish : null;
+const hasBaseline = (bBull != null) || (bBear != null);
 const hasNewCaliber = hasDirectional || hasBaseline;
 const verifyDays=card.verify_days||15;
 let html='';
 if(hasNewCaliber){
   const da = hasDirectional ? card.directional_accuracy : null;
-  const bl = hasBaseline ? card.baseline_always_bullish : null;
   const nv = (typeof card.no_view_rate === 'number') ? card.no_view_rate : null;
-  const delta = (da!=null && bl!=null) ? (da-bl) : null;
-  html+=`<div style="display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin-bottom:8px">
+  const dTotal = (typeof card.directional_total === 'number') ? card.directional_total : null;
+  const reqN = (typeof card.required_samples === 'number') ? card.required_samples : null;
+  const ci = (Array.isArray(card.accuracy_ci95) && typeof card.accuracy_ci95[0]==='number' && typeof card.accuracy_ci95[1]==='number') ? card.accuracy_ci95 : null;
+  // 最强基线：判定基准
+  const baselines=[];
+  if(bBull!=null) baselines.push({label:'永远看多基线',v:bBull});
+  if(bBear!=null) baselines.push({label:'永远看空基线',v:bBear});
+  let blMax=null,blMaxLabel='';
+  baselines.forEach(b=>{ if(blMax==null||b.v>blMax){blMax=b.v;blMaxLabel=b.label;} });
+  // 四格并排：命中率 / 无观点率 / 看多基线 / 看空基线（排两行，手机端不挤）
+  html+=`<div style="display:grid;grid-template-columns:repeat(2,1fr);gap:8px;margin-bottom:8px">
   <div style="background:var(--bg2);border-radius:12px;padding:12px;text-align:center">
-  <div style="font-size:26px;font-weight:900;color:var(--accent)">${da==null?'—':da+'%'}</div>
-  <div style="font-size:11px;color:var(--text2)">有观点时命中率</div></div>
+  <div style="font-size:24px;font-weight:900;color:var(--accent)">${da==null?'—':da+'%'}</div>
+  <div style="font-size:11px;color:var(--text2)">有观点时命中率${dTotal!=null?`<br>（${dTotal}条有观点）`:''}</div></div>
   <div style="background:var(--bg2);border-radius:12px;padding:12px;text-align:center">
-  <div style="font-size:26px;font-weight:900;color:var(--text2)">${bl==null?'—':bl+'%'}</div>
-  <div style="font-size:11px;color:var(--text2)">永远看多的基线</div></div>
+  <div style="font-size:24px;font-weight:900;color:var(--text2)">${nv==null?'—':nv+'%'}</div>
+  <div style="font-size:11px;color:var(--text2)">无观点率</div></div>
   <div style="background:var(--bg2);border-radius:12px;padding:12px;text-align:center">
-  <div style="font-size:26px;font-weight:900;color:var(--text2)">${nv==null?'—':nv+'%'}</div>
-  <div style="font-size:11px;color:var(--text2)">无观点率</div></div></div>`;
-  if(delta!=null){
-    const beat=delta>0;
-    html+=`<div style="background:${beat?'rgba(16,185,129,.08)':'rgba(239,68,68,.08)'};border:1px solid ${beat?'rgba(16,185,129,.25)':'rgba(239,68,68,.25)'};border-radius:8px;padding:8px 12px;margin-bottom:12px;font-size:11px;color:${beat?'var(--green)':'#F87171'};line-height:1.6">
-    ${beat?'✅':'⚠️'} 有观点命中率相对基线 ${delta>0?'+':''}${delta.toFixed(1)} 个百分点 —— ${beat?'高于「永远看多」基线，方向判断具备增量信息。':'未跑赢「永远看多」基线，方向判断目前不构成优势。'}</div>`;
+  <div style="font-size:24px;font-weight:900;color:var(--text2)">${bBull==null?'—':bBull+'%'}</div>
+  <div style="font-size:11px;color:var(--text2)">永远看多基线</div></div>
+  <div style="background:var(--bg2);border-radius:12px;padding:12px;text-align:center">
+  <div style="font-size:24px;font-weight:900;color:var(--text2)">${bBear==null?'—':bBear+'%'}</div>
+  <div style="font-size:11px;color:var(--text2)">永远看空基线</div></div></div>`;
+  if(da!=null && blMax!=null){
+    const delta = da - blMax;
+    const beatBull = (bBull!=null) ? (da>bBull) : null;
+    const beatBear = (bBear!=null) ? (da>bBear) : null;
+    // 两条基线结论不一致：跑赢看多、跑不赢看空 → 必须明说，不能只报对自己有利的那半句
+    const conflict = (beatBull===true && beatBear===false);
+    // 统计可区分性：最强基线落在 95% 置信区间内 → 样本量不足，不可区分
+    const ciCovers = (ci!=null) ? (blMax>=ci[0] && blMax<=ci[1]) : null;
+    let tone,icon,body;
+    if(conflict){
+      tone='rgba(245,158,11,.08)';icon='⚠️';
+      body=`仅跑赢「永远看多」(${bBull}%)，跑不赢「永远看空」(${bBear}%) —— 方向判断不构成优势。`;
+    }else if(delta>0){
+      tone= ciCovers ? 'rgba(245,158,11,.08)' : 'rgba(16,185,129,.08)';
+      icon= ciCovers ? '⚠️' : '✅';
+      body=`高于最强基线「${blMaxLabel}」(${blMax}%) +${delta.toFixed(1)} 个百分点 —— ${ciCovers?'样本量不足且与最强基线统计上不可区分，尚不能判定具备增量信息。':'方向判断具备增量信息。'}`;
+    }else{
+      tone='rgba(239,68,68,.08)';icon='⚠️';
+      body=`未跑赢最强基线「${blMaxLabel}」(${blMax}%)，相对最强基线 ${delta.toFixed(1)} 个百分点 —— 方向判断目前不构成优势。`;
+    }
+    if(ciCovers && !(delta>0)){
+      body+=`（最强基线 ${blMax}% 落在 95% 置信区间 [${ci[0]}, ${ci[1]}] 内，样本量不足，与最强基线在统计上不可区分。）`;
+    }
+    const border = tone.replace('.08)','.25)');
+    const fg = (delta>0 && !ciCovers && !conflict) ? 'var(--green)' : (delta>0 ? 'var(--accent)' : '#F87171');
+    html+=`<div style="background:${tone};border:1px solid ${border};border-radius:8px;padding:8px 12px;margin-bottom:8px;font-size:11px;color:${fg};line-height:1.6">
+    ${icon} ${body}</div>`;
+  }else if(da==null){
+    html+=`<div style="background:rgba(245,158,11,.06);border:1px solid rgba(245,158,11,.2);border-radius:8px;padding:8px 12px;margin-bottom:8px;font-size:11px;color:var(--accent)">
+    ⚠️ 尚无可判定的方向命中率（有观点样本 ${dTotal==null?'—':dTotal} 条），无法与基线对照。</div>`;
   }else{
-    html+=`<div style="background:rgba(245,158,11,.06);border:1px solid rgba(245,158,11,.2);border-radius:8px;padding:8px 12px;margin-bottom:12px;font-size:11px;color:var(--accent)">
-    ⚠️ 缺少「永远看多」基线，命中率无法解释 —— 单看命中率说明不了判断力。</div>`;
+    html+=`<div style="background:rgba(245,158,11,.06);border:1px solid rgba(245,158,11,.2);border-radius:8px;padding:8px 12px;margin-bottom:8px;font-size:11px;color:var(--accent)">
+    ⚠️ 缺少基线（永远看多/永远看空），命中率无法解释 —— 单看命中率说明不了判断力。</div>`;
   }
+  // 样本充足性：必须量化（当前样本 / 显著性门槛），不能只说「不足」
   if(card.sample_adequate===false){
     html+=`<div style="background:rgba(245,158,11,.06);border:1px solid rgba(245,158,11,.2);border-radius:8px;padding:8px 12px;margin-bottom:12px;font-size:11px;color:var(--accent)">
-    ⚠️ 样本量不足，上述命中率尚不稳定，仅供参考。</div>`;
+    ⚠️ 样本量不足：有观点样本 ${dTotal==null?'—':dTotal} 条 / 显著性门槛 ${reqN==null?'—':reqN} 条 —— 上述命中率尚不稳定，不能作为判断力的证据。</div>`;
   }
   html+=`<div style="display:grid;grid-template-columns:repeat(2,1fr);gap:8px;margin-bottom:12px">
   <div style="background:var(--bg2);border-radius:12px;padding:12px;text-align:center">
@@ -575,6 +620,15 @@ if(hasNewCaliber){
   <div style="font-size:11px;color:var(--text2)">✅正确 / ❌${card.wrong} / 🟡${card.partial}</div></div></div>`;
 }
 
+// 坏数据可见化（勿删）：2026-09-13 之前落库的历史判断里 confidence 曾被算成 >100
+// （线上实测最高 1039，均值 226.9）。后端已不再用它们参与评分，但坏数据客观存在，
+// 必须让用户知道有这么一批、以及它们已不参与评分 —— 而不是悄悄藏起来。
+if(typeof card.confidence_out_of_range === 'number' && card.confidence_out_of_range > 0){
+  html+=`<div style="background:rgba(148,163,184,.08);border:1px solid rgba(148,163,184,.2);border-radius:8px;padding:8px 12px;margin-bottom:12px;font-size:11px;color:var(--text2);line-height:1.6">
+  ℹ️ 另有 <b>${card.confidence_out_of_range}</b> 条历史记录的置信度不在 0–100 区间（历史单位错配的遗留数据），
+  已<b>排除出评分</b>，不参与任何统计。下方这类记录的置信度会显示为「—（数据异常）」，不会被当成正常值展示。</div>`;
+}
+
 // 待验证说明（有大量待验证时给解释）
 if(card.pending>0){
   html+=`<div style="background:rgba(245,158,11,.06);border:1px solid rgba(245,158,11,.15);border-radius:8px;padding:8px 12px;margin-bottom:12px;font-size:11px;color:var(--accent)">
@@ -589,13 +643,29 @@ if(card.verified===0&&card.total>0){
 const modAcc=card.module_accuracy||{};
 if(Object.keys(modAcc).length){
 html+=`<div style="font-size:13px;font-weight:700;margin-bottom:8px">📊 各模块准确率</div>`;
-Object.entries(modAcc).sort((a,b)=>b[1].accuracy-a[1].accuracy).forEach(([mod,s])=>{
-const mc=s.accuracy>=70?'var(--green)':s.accuracy>=50?'var(--accent)':'var(--red)';
+// 排序：无样本(null)不参与比较，统一排到最后（否则 null 会被当 0 排到末尾或被当 NaN 打乱）
+const _accVal=v=>(typeof v==='number'&&isFinite(v))?v:null;
+Object.entries(modAcc).sort((a,b)=>{
+  const av=_accVal(a[1].accuracy),bv=_accVal(b[1].accuracy);
+  if(av==null&&bv==null)return 0;
+  if(av==null)return 1;
+  if(bv==null)return -1;
+  return bv-av;
+}).forEach(([mod,s])=>{
+const hasAcc=_accVal(s.accuracy)!=null;
+// 口径诚实性（勿删）：后端在「该模块 0 条记录」时故意返回 accuracy:null。
+// 旧代码把 null 直接塞进模板 → 渲染成「null%」，且 null>=70/50 均为 false → 落到红色。
+// 红色含义是「差」，空样本是「没有数据」，两件事不能混。空样本一律中性色 + 「无样本」。
+const mc=!hasAcc?'var(--text2)':s.accuracy>=70?'var(--green)':s.accuracy>=50?'var(--accent)':'var(--red)';
+const accTxt=hasAcc?`${s.accuracy}%`:'—';
+const noSampleTag=hasAcc?'':'<span style="font-size:10px;color:var(--text2);margin-left:4px">无样本</span>';
+// width:null% 是无效 CSS：无样本时宽度给 0，不让浏览器拿到非法值
+const barW=hasAcc?Math.max(0,Math.min(100,s.accuracy)):0;
 html+=`<div style="display:flex;align-items:center;gap:8px;padding:6px 0;border-bottom:1px solid rgba(148,163,184,.06)">
-<span style="flex:1;font-size:12px">${mod}</span>
+<span style="flex:1;font-size:12px">${mod}${noSampleTag}</span>
 <span style="font-size:11px;color:var(--text2)">${s.correct}/${s.total}</span>
-<div style="width:80px;height:6px;background:var(--bg3);border-radius:3px;overflow:hidden"><div style="height:100%;width:${s.accuracy}%;background:${mc};border-radius:3px"></div></div>
-<span style="font-size:12px;font-weight:700;color:${mc};min-width:40px;text-align:right">${s.accuracy}%</span></div>`})}
+<div style="width:80px;height:6px;background:var(--bg3);border-radius:3px;overflow:hidden"><div style="height:100%;width:${barW}%;background:${mc};border-radius:3px"></div></div>
+<span style="font-size:12px;font-weight:700;color:${mc};min-width:40px;text-align:right">${accTxt}</span></div>`})}
 
 // 最近判断
 if(card.recent&&card.recent.length){
@@ -608,7 +678,9 @@ const verdictIcon=r.verdict==='correct'?'✅':r.verdict==='wrong'?'❌':r.verdic
 const verdictLabel=r.verdict==='correct'?'正确':r.verdict==='wrong'?'错误':r.verdict==='partial'?'部分':'待验证';
 const dt=r.recorded_at?.slice(0,16).replace('T',' ')||'';
 const regimeLabel=r.regime||'';
-const conf=r.confidence||0;
+// 置信度越界（历史遗留 >100）不显示数字，也不 clamp 成 100 假装正常；
+// 共用格式化函数见 pages/_components.js 的 MB.confidenceHtml。
+const confTxt=MB.confidenceHtml(r.confidence);
 // 计算还差几天可以验证
 let daysLeft='';
 if(!r.verified&&r.verify_at){
@@ -618,7 +690,7 @@ if(!r.verified&&r.verify_at){
 html+=`<div style="display:flex;align-items:center;gap:6px;padding:7px 0;border-bottom:1px solid rgba(148,163,184,.04);font-size:12px">
 <span style="font-size:14px">${dirIcon}</span>
 <div style="flex:1;min-width:0">
-  <div style="color:${dirColor};font-weight:600;font-size:11px">${regimeLabel} · ${dir==='bullish'?'看多':dir==='bearish'?'看空':'中性'} · 置信${conf}%</div>
+  <div style="color:${dirColor};font-weight:600;font-size:11px">${regimeLabel} · ${dir==='bullish'?'看多':dir==='bearish'?'看空':'中性'} · 置信${confTxt}</div>
   <div style="font-size:10px;color:var(--text2)">${dt.slice(5)}</div>
 </div>
 <div style="text-align:right;min-width:80px">
@@ -748,7 +820,7 @@ const colorMap={'trending_bull':'var(--green)','oscillating':'var(--accent)','hi
 el.innerHTML=`<div style="display:flex;align-items:center;gap:12px;padding:12px;background:var(--bg2);border-radius:12px;border-left:3px solid ${colorMap[d.regime]||'var(--accent)'}">
 <div style="font-size:32px">${iconMap[d.regime]||'📊'}</div>
 <div><div style="font-size:16px;font-weight:800;color:${colorMap[d.regime]||'var(--text)'}">${d.description||d.regime}</div>
-<div style="font-size:12px;color:var(--text2);margin-top:4px">置信度 ${d.confidence}% · 管线→${d.regime==='high_vol_bear'?'cautious':d.regime==='rotation'?'fast':'default'}</div></div></div>`
+<div style="font-size:12px;color:var(--text2);margin-top:4px">置信度 ${MB.confidenceHtml(d.confidence)} · 管线→${d.regime==='high_vol_bear'?'cautious':d.regime==='rotation'?'fast':'default'}</div></div></div>`
 }catch(e){el.innerHTML=`<div style="font-size:12px;color:var(--text2)">Regime 加载失败</div>`}}
 
 async function runStewardAsk(){
@@ -766,7 +838,7 @@ const dirLabel={'bullish':'看多','bearish':'看空','neutral':'中性','blocke
 const pipeLabel={'default':'日常','fast':'快速','cautious':'谨慎'}[d.pipeline]||d.pipeline||'日常';
 let html=`<div style="display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin-bottom:16px">
 <div style="background:var(--bg2);border-radius:12px;padding:12px;text-align:center"><div style="font-size:11px;color:var(--text2)">方向</div><div style="font-size:22px;font-weight:900;color:${dirColor}">${dirIcon}<br>${dirLabel}</div></div>
-<div style="background:var(--bg2);border-radius:12px;padding:12px;text-align:center"><div style="font-size:11px;color:var(--text2)">置信度</div><div style="font-size:22px;font-weight:900">${d.confidence||0}%</div></div>
+<div style="background:var(--bg2);border-radius:12px;padding:12px;text-align:center"><div style="font-size:11px;color:var(--text2)">置信度</div><div style="font-size:22px;font-weight:900">${MB.confidenceHtml(d.confidence)}</div></div>
 <div style="background:var(--bg2);border-radius:12px;padding:12px;text-align:center"><div style="font-size:11px;color:var(--text2)">管线</div><div style="font-size:14px;font-weight:700">${pipeLabel}</div></div></div>`;
 if(d.conclusion)html+=`<div style="padding:12px;background:rgba(99,102,241,.06);border-radius:10px;border-left:3px solid ${dirColor};margin-bottom:12px;font-size:13px;line-height:1.8">${d.conclusion}</div>`;
 if(d.regime_description)html+=`<div style="font-size:12px;color:var(--text2);margin-bottom:8px">📊 ${d.regime_description}</div>`;
@@ -844,7 +916,7 @@ let html=`<div style="font-size:14px;font-weight:700;margin-bottom:12px">📊 ${
 <div style="background:var(--bg2);border-radius:10px;padding:10px;text-align:center"><div style="font-size:11px;color:var(--text2)">分析次数</div><div style="font-size:20px;font-weight:800">${j.total_judgments||0}</div></div>
 <div style="background:var(--bg2);border-radius:10px;padding:10px;text-align:center"><div style="font-size:11px;color:var(--text2)">准确率</div><div style="font-size:20px;font-weight:800;color:${(j.accuracy||0)>=60?'var(--green)':'var(--red)'}">${j.accuracy||0}%</div></div>
 <div style="background:var(--bg2);border-radius:10px;padding:10px;text-align:center"><div style="font-size:11px;color:var(--text2)">交易笔数</div><div style="font-size:20px;font-weight:800">${p.total_transactions||0}</div></div></div>`;
-if(m.regime)html+=`<div style="font-size:12px;color:var(--text2);margin-bottom:12px">📊 市场状态: <b>${m.regime_description||m.regime}</b> (${m.confidence||0}%)</div>`;
+if(m.regime)html+=`<div style="font-size:12px;color:var(--text2);margin-bottom:12px">📊 市场状态: <b>${m.regime_description||m.regime}</b> (${MB.confidenceHtml(m.confidence)})</div>`;
 if(recs.length)html+=`<div style="padding:10px;background:rgba(59,130,246,.06);border-radius:10px;margin-bottom:12px">${recs.map(r2=>`<div style="font-size:12px;line-height:1.8">${r2}</div>`).join('')}</div>`;
 el.innerHTML=html;
 }catch(e){el.innerHTML=`<div style="color:var(--text2);padding:12px">生成失败: ${e.message}</div>`}}

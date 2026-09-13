@@ -14,6 +14,32 @@
 window.MB = window.MB || {};
 window.MB.components = {};
 
+/* ──────────────────────────────────────────────────────────
+ * 置信度格式化 —— 全站单一来源
+ * 背景（勿删）：2026-09-13 之前落库的历史判断里，confidence 曾被算成 >100
+ *   （线上实测最高 1039，avg 226.9）。后端已不再用它们参与评分，但前端一度把
+ *   「置信1039%」原样印在页面上 —— 把异常值当正常值展示，等于隐式造假。
+ * 口径原则：
+ *   · 越界值**不显示数字**（显示 —），并标注「数据异常」；
+ *   · **不静默 clamp 成 100**（那是改写事实，会让人以为只是一个偏高的正常值）；
+ *   · 只有 [0,100] 内的数才作为置信度渲染。
+ * ────────────────────────────────────────────────────────── */
+window.MB.fmtConfidence = function(v){
+  // 只接受真数字（字符串数字也容忍，因为 JSON 里偶发）
+  let n = null;
+  if (typeof v === 'number') n = v;
+  else if (typeof v === 'string' && v.trim() !== '') { const p = Number(v); if (isFinite(p)) n = p; }
+  if (n == null || !isFinite(n) || n < 0 || n > 100) {
+    return { ok: false, text: '—', suffix: '（数据异常）' };
+  }
+  return { ok: true, text: n + '%', suffix: '' };
+};
+// 便捷：直接得到可插入 HTML 的字符串（异常 → 「—（数据异常）」）
+window.MB.confidenceHtml = function(v){
+  const r = window.MB.fmtConfidence(v);
+  return r.ok ? r.text : (r.text + r.suffix);
+};
+
 // v9.9.x T04: 性价比阈值单一来源（列表标签 + 详情 chip 统一引用）
 window.RA_THRESHOLDS = { sharpe_excellent: 1.5, sharpe_good: 1.0 };
 
@@ -468,7 +494,8 @@ window.showFundDetailModal = async function(code, name) {
         const tDir = d.trend_direction;
         const tInsufficient = d.trend_confidence_sufficient === false || tDir === 'unknown';
         const tScore = d.trend_score || 0;
-        const tConf = d.trend_confidence || 0;
+        // 置信度越界（历史遗留 >100）不显示数字，也不 clamp 成 100 假装正常
+        const tConfTxt = window.MB.confidenceHtml(d.trend_confidence);
         const tReason = d.trend_reason || '';
         const tConflict = d.trend_conflict || '';
         const tDims = d.trend_dimensions || {};
@@ -482,7 +509,7 @@ window.showFundDetailModal = async function(code, name) {
         advHtml += `<div style="margin-bottom:14px;padding:10px 12px;background:${tBg};border:1px solid ${tDir==='up'?'rgba(134,239,172,.2)':tDir==='down'?'rgba(252,165,165,.2)':'rgba(154,161,172,.15)'};border-radius:8px">`;
         advHtml += `<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px">
           <span style="font-size:13px;font-weight:700;color:${tColor}">${tLabel} ${tScoreHtml}</span>
-          <span style="font-size:10px;color:var(--text-tertiary)">置信度 ${tConf}%</span>
+          <span style="font-size:10px;color:var(--text-tertiary)">置信度 ${tConfTxt}</span>
         </div>`;
         advHtml += `<div style="font-size:11px;color:var(--text-secondary);margin-bottom:6px">核心驱动: ${tReason}</div>`;
         
@@ -523,7 +550,7 @@ window.showFundDetailModal = async function(code, name) {
           advHtml += `<div style="display:flex;flex-wrap:wrap;gap:4px;font-size:10px">
             <span style="padding:2px 6px;border-radius:4px;background:rgba(148,163,184,.08);color:var(--text-tertiary)">走势:${f.trend_direction==='up'?'偏多':f.trend_direction==='down'?'偏空':f.trend_direction==='flat'?'震荡':'数据不足'}</span>
             <span style="padding:2px 6px;border-radius:4px;background:rgba(148,163,184,.08);color:var(--text-tertiary)">估值:${f.valuation_tier}</span>
-            <span style="padding:2px 6px;border-radius:4px;background:rgba(148,163,184,.08);color:var(--text-tertiary)">置信:${f.trend_confidence}%</span>
+            <span style="padding:2px 6px;border-radius:4px;background:rgba(148,163,184,.08);color:var(--text-tertiary)">置信:${window.MB.confidenceHtml(f.trend_confidence)}</span>
             <span style="padding:2px 6px;border-radius:4px;background:rgba(148,163,184,.08);color:var(--text-tertiary)">基准:${f.base_multiplier}x</span>
           </div>`;
         }

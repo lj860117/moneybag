@@ -46,11 +46,13 @@ function _fundTagsHTML(f){
     const tColor = _dirUnknown?'#9AA1AC':f.trend_direction==='up'?'#86EFAC':f.trend_direction==='down'?'#FCA5A5':'#9AA1AC';
     const tBg = _dirUnknown?'rgba(148,163,184,.10)':f.trend_direction==='up'?'rgba(134,239,172,.08)':f.trend_direction==='down'?'rgba(252,165,165,.08)':'rgba(148,163,184,.06)';
     const tScore = f.trend_score||0;
-    const tConf = f.trend_confidence||0;
-    // 置信度数值永远展示（用户可自行判断），只是不翻译成方向
+    const tConf = (typeof f.trend_confidence==='number'&&isFinite(f.trend_confidence))?f.trend_confidence:null;
+    // 置信度数值永远展示（用户可自行判断），只是不翻译成方向。
+    // 越界值（历史遗留 >100）不显示数字，共用格式化见 pages/_components.js 的 MB.confidenceHtml。
+    const confTxt = tConf!=null ? window.MB.confidenceHtml(tConf) : '未知';
     const confTag = _dirUnknown
-      ? `<span style="opacity:0.85;font-size:9px;margin-left:2px;color:#9AA1AC">置信${(f.trend_confidence==null?'未知':f.trend_confidence)}%</span>`
-      : (tConf>=70?`<span style="opacity:0.6;font-size:9px;margin-left:2px">置信${tConf}%</span>`:tConf<MIN_CONFIDENCE_FOR_DIRECTION?`<span style="opacity:0.7;font-size:9px;margin-left:2px;color:#F59E0B">⚠置信${tConf}%</span>`:'');
+      ? `<span style="opacity:0.85;font-size:9px;margin-left:2px;color:#9AA1AC">置信${confTxt}</span>`
+      : (tConf!=null&&tConf>=70?`<span style="opacity:0.6;font-size:9px;margin-left:2px">置信${confTxt}</span>`:(tConf!=null&&tConf<MIN_CONFIDENCE_FOR_DIRECTION?`<span style="opacity:0.7;font-size:9px;margin-left:2px;color:#F59E0B">⚠置信${confTxt}</span>`:''));
     const tLabel = _dirUnknown ? '❓ 数据不足' : f.trend_label;
     const tScoreHtml = _dirUnknown ? '' : ` ${tScore>0?'+':''}${tScore}分`;
     const tReason = _dirUnknown ? '方向判断需置信度≥'+MIN_CONFIDENCE_FOR_DIRECTION+'%' : (f.trend_reason||'');
@@ -386,7 +388,7 @@ function _showMyHoldings(listEl){
       const trendLabel = ef.trend_label || '';
       const trendReason = ef.trend_reason || '';
       const trendScore = ef.trend_score || 0;
-      const trendConf = ef.trend_confidence || 0;
+      const trendConf = ef.trend_confidence;
 
       // 标签行（和选基榜单同级别信息密度）
       let tagsHtml = '';
@@ -402,7 +404,9 @@ function _showMyHoldings(listEl){
         const tBg = tUnknown?'rgba(154,161,172,.14)':trendDir==='up'?'rgba(134,239,172,.12)':trendDir==='down'?'rgba(252,165,165,.12)':'rgba(154,161,172,.08)';
         const tLabel2 = tUnknown?'❓ 数据不足':trendLabel;
         const tScore2 = tUnknown?'':` ${trendScore>0?'+':''}${trendScore}分`;
-        tags.push(`<span style="background:${tBg};color:${tColor};padding:1px 6px;border-radius:8px;font-weight:600">${tLabel2}${tScore2}${tUnknown?' 置信'+(trendConf==null?'未知':trendConf)+'%':''}</span>`);
+        // 越界置信度不显示数字（历史遗留 >100），共用格式化见 pages/_components.js
+        const _confTxt2 = (trendConf==null) ? '未知' : window.MB.confidenceHtml(trendConf);
+        tags.push(`<span style="background:${tBg};color:${tColor};padding:1px 6px;border-radius:8px;font-weight:600">${tLabel2}${tScore2}${tUnknown?' 置信'+_confTxt2:''}</span>`);
         if(tUnknown){
           tags.push(`<span style="color:${tColor};opacity:.85">方向判断需置信度≥${MIN_CONFIDENCE_FOR_DIRECTION}%</span>`);
         } else if(trendReason){

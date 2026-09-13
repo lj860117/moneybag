@@ -503,8 +503,9 @@ if(d.direction){const gateMap={'llm_arbitration':'AI综合研判','rule_based':'
 // v9.9.26 P1-9: 旧写法把缺失的置信度兜底成 50% 再拼接 —— 而 50 正是
 // 「方向判断需置信度≥50%」的闸门阈值，等于把一个没有置信度的结果谎报成
 // 「刚好达标」。缺失就如实显示未知，不许填数。
-const _confNum=(typeof d.confidence==='number'&&isFinite(d.confidence))?Math.round(d.confidence):null;
-const _confTxt=_confNum===null?'未知':'<b>'+_confNum+'%</b>';
+// 越界置信度（历史遗留 >100）不显示数字，也不 clamp 成 100 假装正常；
+// 共用格式化见 pages/_components.js 的 MB.confidenceHtml。
+const _confTxt=(d.confidence==null)?'未知':('<b>'+MB.confidenceHtml(d.confidence)+'</b>');
 html+=`<div style="font-size:13px;margin-bottom:8px;padding:8px;background:var(--bg2);border-radius:8px">方向: <b>${translateDirection(d.direction)||d.direction}</b> | 置信度: ${_confTxt} | 决策依据: ${gateMap[d.gate_decision]||d.gate_decision||'综合判断'}</div>`}
 const diagFile=d.diagnosis||'';
 if(diagFile)html+=`<div style="margin-bottom:8px;padding:10px;background:rgba(99,102,241,.06);border-radius:10px;font-size:13px;line-height:1.8;border-left:3px solid #6366F1"><div style="font-weight:700;margin-bottom:4px">🤖 R1 深度诊断</div>${diagFile}</div>`;
@@ -711,7 +712,7 @@ ${advArr.length?advArr.map(a=>{const bg=a.direction==='reduce'?'rgba(239,68,68,.
       html += `<div class="dashboard-card" style="background:${bgMap[signal.overall]||''};margin-top:8px">
         <div class="dashboard-card-title">🌡️ 市场温度 <span style="font-size:11px;color:var(--accent);font-weight:400">V${signal.version||'5.0'} · ${(signal.details||[]).length}维</span></div>
         <div style="font-size:16px;font-weight:800;margin-top:4px">${labelMap[signal.overall]||signal.overall}</div>
-        <div style="font-size:12px;color:var(--text2);margin-top:4px">综合得分 ${signal.score||0} · 置信度 ${Math.round(signal.confidence||0)}%</div>
+        <div style="font-size:12px;color:var(--text2);margin-top:4px">综合得分 ${signal.score||0} · 置信度 ${MB.confidenceHtml(signal.confidence)}</div>
         <div style="font-size:13px;margin-top:8px;line-height:1.6">${signal.summary||''}</div>
       </div>`;
     }

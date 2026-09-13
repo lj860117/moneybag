@@ -16,7 +16,7 @@ html+=`<div class="card" style="margin-bottom:8px;padding:12px;cursor:pointer" o
 <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px">
 <div style="font-size:14px;font-weight:600">${srcIcon} ${rec.source_label||rec.source} <span style="font-size:11px;font-weight:400;color:var(--text2)">${typeDisplay}</span></div>
 <div style="font-size:11px;color:var(--text2)">${rec.created_at?.slice(11,16)||''}</div></div>
-<div style="display:flex;gap:8px;margin-bottom:6px"><span style="font-size:12px;color:${dirColor};font-weight:600">${dirDisplay}</span>${rec.confidence?'<span style="font-size:11px;color:var(--text2)">置信度:'+rec.confidence+'%</span>':''}</div>
+<div style="display:flex;gap:8px;margin-bottom:6px"><span style="font-size:12px;color:${dirColor};font-weight:600">${dirDisplay}</span>${(rec.confidence!=null)?'<span style="font-size:11px;color:var(--text2)">置信度:'+MB.confidenceHtml(rec.confidence)+'</span>':''}</div>
 <div style="font-size:12px;color:var(--text2);line-height:1.5">${rec.preview||''}</div>
 </div>`});
 el.innerHTML=html+'<div style="text-align:center;padding:16px"><button class="action-btn secondary" onclick="showCompareView()" style="font-size:13px">📊 多源对比</button></div>'}catch(e){el.innerHTML='<div style="text-align:center;padding:20px;color:#ef4444">加载失败: '+e.message+'</div>'}}
@@ -41,7 +41,7 @@ const snapHtml=snapParts.length?`<div style="margin-top:12px;padding:8px;backgro
 const modal=document.createElement('div');modal.className='modal-overlay';modal.onclick=e=>{if(e.target===modal)modal.remove()};
 modal.innerHTML=`<div class="modal-content" style="max-height:80vh;overflow-y:auto">
 <div class="modal-title">${d.source_label||d.source} · ${d.type_display||translateAnalysisType(d.type)||d.type||'分析'} <span style="font-size:12px;font-weight:400;color:var(--text2)">${d.created_at?.slice(0,16)||''}</span></div>
-<div style="margin:8px 0;font-size:13px;color:var(--accent)">${d.direction_display||translateDirection(d.direction)||d.direction||''} ${d.confidence?'置信度'+d.confidence+'%':''}</div>
+<div style="margin:8px 0;font-size:13px;color:var(--accent)">${d.direction_display||translateDirection(d.direction)||d.direction||''} ${(d.confidence!=null)?'置信度'+MB.confidenceHtml(d.confidence):''}</div>
 <div style="font-size:13px;line-height:1.8;white-space:pre-wrap">${d.analysis||'无内容'}</div>
 ${snapHtml}
 <button class="form-submit" style="margin-top:16px" onclick="this.closest('.modal-overlay').remove()">关闭</button>
@@ -183,7 +183,7 @@ if(a.transmission_chain)html+='<div style="font-size:13px;line-height:1.7;margin
 if(a.sector_winners?.length)html+='<div style="font-size:12px;margin-bottom:4px">📈 受益行业：<span style="color:var(--bull)">'+a.sector_winners.join('、')+'</span></div>';
 if(a.sector_losers?.length)html+='<div style="font-size:12px;margin-bottom:4px">📉 受损行业：<span style="color:var(--bear)">'+a.sector_losers.join('、')+'</span></div>';
 if(a.portfolio_advice)html+='<div style="font-size:13px;margin-top:8px;padding:8px;background:rgba(59,130,246,.06);border-radius:8px">💡 '+a.portfolio_advice+'</div>';
-html+='<div style="font-size:11px;color:var(--text2);margin-top:8px">模型: '+d.model+' | 置信度: '+(a.confidence||0)+'%</div>';
+html+='<div style="font-size:11px;color:var(--text2);margin-top:8px">模型: '+d.model+' | 置信度: '+MB.confidenceHtml(a.confidence)+'</div>';
 html+='</div><button class="action-btn secondary" onclick="renderScenarioView(document.getElementById(\'insightContent\'))" style="margin-top:12px;width:100%">← 返回情景列表</button>';
 el.innerHTML=html}catch(e){el.innerHTML='<div style="padding:20px;color:var(--bear)">请求失败: '+e.message+'</div>'}}
 

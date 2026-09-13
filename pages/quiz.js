@@ -80,12 +80,13 @@ let html=`<div class="section-title">🤖 今日量化信号 <span style="font-s
     ? _catKeys.map(c=>c+'（'+_sigCats[c].length+'项）：'+_sigCats[c].map(i=>i.name+'('+i.weight+')').join(' + ')).join('\n')
     : '（本次未返回维度明细，无法列出权重构成）';
   const _scoreTxt=(typeof d.score==='number'&&isFinite(d.score))?d.score:'未知';
-  const _confTxt=(typeof d.confidence==='number'&&isFinite(d.confidence))?Math.round(d.confidence)+'%':'未知';
+  // 越界置信度（历史遗留 >100）不显示数字，共用格式化见 pages/_components.js
+  const _confTxt=(d.confidence==null)?'未知':MB.confidenceHtml(d.confidence);
   setExplain('signal','量化信号解读','钱袋子多因子信号系统融合了技术面/基本面/资金面/情绪面/宏观面/地缘面多维度数据：\n\n'+_sigCatLines+'\n\n每个维度打分(-100~+100)，加权平均后得出综合信号。\n\n当前综合得分：'+_scoreTxt+'\n置信度：'+_confTxt+(d.confidence_note?'\n（'+d.confidence_note+'）':'')+'\n\n'+((d.details||[]).map(x=>(x.category||'')+' | '+x.name+'('+x.weight+')：'+x.detail).join('\n'))+'\n\n⚠️ 量化信号仅供参考，不构成投资建议。');
 }
 html+=`<div style="background:${bgMap[d.overall]||bgMap.HOLD};border:1px solid ${borderMap[d.overall]||borderMap.HOLD};border-radius:16px;padding:16px;margin-bottom:12px;cursor:pointer" onclick="showExplain('signal')">
 <div style="display:flex;justify-content:space-between;align-items:center">
-<div><div style="font-size:20px;font-weight:900">${labelMap[d.overall]||'持有观望'}</div><div style="font-size:12px;color:var(--text2);margin-top:4px">${d.date||''} · 综合得分 ${(typeof d.score==='number'&&isFinite(d.score))?d.score:'未知'} · 置信度 ${(typeof d.confidence==='number'&&isFinite(d.confidence))?Math.round(d.confidence)+'%':'未知'}</div></div>
+<div><div style="font-size:20px;font-weight:900">${labelMap[d.overall]||'持有观望'}</div><div style="font-size:12px;color:var(--text2);margin-top:4px">${d.date||''} · 综合得分 ${(typeof d.score==='number'&&isFinite(d.score))?d.score:'未知'} · 置信度 ${(d.confidence==null)?'未知':MB.confidenceHtml(d.confidence)}</div></div>
 <div style="font-size:11px;color:var(--accent)">点击看详情 ›</div></div>
 <div style="font-size:13px;margin-top:8px;line-height:1.6">${d.summary||''}</div>${d.confidence_note?`<div style="font-size:11px;margin-top:6px;color:var(--text2);line-height:1.5">💡 ${d.confidence_note}</div>`:''}</div>`;
 

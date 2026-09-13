@@ -984,12 +984,13 @@ el.innerHTML=html;}
         (fgi !== undefined) ? `恐惧贪婪${Math.round(fgi)}` : '',
         (typeof score === 'number') ? `时机分${Math.round(score)}` : ''
       ].filter(Boolean).join(' · ');
+      // 归一化到 0~100 后仍越界的（历史遗留 >100），交由共用格式化显示为「—（数据异常）」
       const confPct = Math.round((timing.confidence || 0) * (timing.confidence > 1 ? 1 : 100));
 
       html += _v6Card('⏰ 入场时机判断', `
         <div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap">
           <div style="font-size:18px;font-weight:900;color:${c}">${label}</div>
-          <div style="font-size:11px;color:var(--text2)">置信度 ${confPct}%</div>
+          <div style="font-size:11px;color:var(--text2)">置信度 ${MB.confidenceHtml(confPct)}</div>
         </div>
         ${action ? `<div style="font-size:13px;font-weight:600;margin-top:8px;color:${c}">${action}</div>` : ''}
         ${basis ? `<div style="font-size:11px;color:var(--text2);margin-top:6px">依据：${basis}</div>` : ''}
