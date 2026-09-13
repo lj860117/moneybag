@@ -387,20 +387,38 @@ def _probe_env(cwd: Path) -> dict[str, str]:
     return env
 
 
-def _run_probe(script: Path, cwd: Path, extra_syspath: tuple[Path, ...] = ()) -> tuple[int, str]:
+# 两种调用形态都要守住：
+#   "abs"           —— 绝对路径 `python /…/backend/scripts/x.py`
+#   "cron_relative" —— 生产 crontab 的原样形态：cwd=backend/ + `python scripts/x.py`
+# 后者更真实，也更能暴露「__file__ 没 resolve 导致 parents[N] 算错」这类缺陷。
+INVOCATION_MODES = ("abs", "cron_relative")
+
+
+def _run_probe(script: Path, cwd: Path, mode: str = "abs",
+               extra_syspath: tuple[Path, ...] = ()) -> tuple[int, str]:
     """以**真子进程 + 脚本模式**执行脚本的模块级代码。
 
     刻意不用 `python -c`：`-c` 的 sys.path[0] 是 cwd，会得到假阴性。
-    探针文件放在 cwd（通常是 tmp_path），于是 sys.path[0] 也是 cwd，
-    与 cron 的 `python scripts/x.py` 一样**不会**自动带入 backend/。
+    探针文件放在 cwd，于是 sys.path[0] 也是 cwd，与 cron 的 `python scripts/x.py`
+    一样**不会**自动带入 backend/。
 
     :param script: 被检查脚本的绝对路径
     :param cwd: 子进程工作目录
+    :param mode: "abs" 用绝对路径喂给 runpy；"cron_relative" 则切到 backend/
+        作为 cwd、用 `scripts/x.py` 这种相对路径喂给它，与生产 crontab 完全一致
     :param extra_syspath: 额外插入 sys.path 的目录（用于还原 cron 的 scripts/ 在 path[0]）
     :return: (returncode, stdout+stderr)
     """
     cwd.mkdir(parents=True, exist_ok=True)
-    probe = cwd / f"_probe_{script.stem}.py"
+    probe = cwd / f"_probe_{script.stem}_{mode}.py"
+    if mode == "cron_relative":
+        run_cwd = BACKEND_DIR
+        script_arg = f"{SCRIPTS_DIR.name}/{script.name}"
+        assert script.parent == SCRIPTS_DIR, "cron_relative 只适用于 scripts/ 下的脚本"
+    else:
+        run_cwd = cwd
+        script_arg = str(script)
+
     lines = ["import sys"]
     for entry in extra_syspath:
         lines.append(f"sys.path.insert(0, {str(entry)!r})")
@@ -408,14 +426,14 @@ def _run_probe(script: Path, cwd: Path, extra_syspath: tuple[Path, ...] = ()) ->
         "import runpy",
         f"print({_PROBE_SENTINEL!r})",
         # run_name != '__main__' → 不触发 main()，只跑模块级代码
-        f"runpy.run_path({str(script)!r}, run_name='__not_main__')",
+        f"runpy.run_path({script_arg!r}, run_name='__not_main__')",
     ]
     probe.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
-    _RUNTIME_PROBE_CALLS.append(str(script))
+    _RUNTIME_PROBE_CALLS.append(f"{script.name}:{mode}")
     proc = subprocess.run(
         [sys.executable, str(probe)],
-        cwd=str(cwd),
+        cwd=str(run_cwd),
         env=_probe_env(cwd),
         capture_output=True,
         text=True,
@@ -562,23 +580,26 @@ def test_static_bootstrap_is_complete(script: Path) -> None:
     )
 
 
+@pytest.mark.parametrize("mode", INVOCATION_MODES)
 @pytest.mark.parametrize("script", DISCOVERED_SCRIPTS, ids=SCRIPT_IDS)
-def test_script_imports_cleanly_in_cron_mode(script: Path, tmp_path: Path) -> None:
-    """运行层：真子进程、脚本模式、cwd 在 backend/ 之外，不得出现 backend-local 的 ImportError。
+def test_script_imports_cleanly_in_cron_mode(script: Path, mode: str, tmp_path: Path) -> None:
+    """运行层：真子进程、脚本模式，不得出现 backend-local 的 ModuleNotFoundError。
 
     extra_syspath 只补 scripts/ —— 这正是 cron 里 `python scripts/x.py` 的 sys.path[0]，
     既不额外开后门（不给仓库根），也忠实还原了「脚本之间可以互相 import」这一事实。
+
+    mode="cron_relative" 是与生产 crontab 逐字一致的形态（cwd=backend/ + 相对路径），
+    它能额外抓到「`Path(__file__)` 没 resolve 导致 parents[N] 算成 `.`」这类缺陷。
     """
-    workdir = tmp_path / f"run_{script.stem}"
-    _rc, output = _run_probe(script, workdir, extra_syspath=(SCRIPTS_DIR,))
+    workdir = tmp_path / f"run_{script.stem}_{mode}"
+    _rc, output = _run_probe(script, workdir, mode=mode, extra_syspath=(SCRIPTS_DIR,))
 
     assert _PROBE_SENTINEL in output, (
         f"探针子进程没有真正执行（看不到哨兵输出），用例会假通过。raw output:\n{output[:2000]}"
     )
     missing = _missing_backend_modules(output)
     assert not missing, (
-        f"{script.name} 以 cron 方式（`python scripts/{script.name}`、cwd 不在 backend/）"
-        f"执行时找不到 backend-local 包: {missing}\n"
+        f"{script.name} 以 cron 方式（mode={mode}）执行时找不到 backend-local 包: {missing}\n"
         f"—— 这就是 2026-09-14 生产事故的原样复现。\n"
         f"子进程输出尾部:\n{output[-2000:]}"
     )

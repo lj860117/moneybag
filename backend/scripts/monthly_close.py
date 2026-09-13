@@ -17,8 +17,11 @@ import json
 from datetime import datetime
 from pathlib import Path
 
-# 添加项目根目录到 Python 路径
-project_root = Path(__file__).parent.parent.parent
+# 添加项目根目录到 Python 路径。
+# 必须 .resolve()：cron 是 `cd /opt/moneybag/backend && python scripts/monthly_close.py`，
+# 此时 __file__ 是相对路径 `scripts/monthly_close.py`，不 resolve 的话
+# parent.parent.parent 会得到 `.`（=backend/），于是 `import backend.services...` 炸。
+project_root = Path(__file__).resolve().parent.parent.parent
 if str(project_root) not in sys.path:
     sys.path.insert(0, str(project_root))
 
