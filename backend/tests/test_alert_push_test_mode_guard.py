@@ -19,10 +19,19 @@
   L2 网络出口 —— backend/tests/conftest.py 的 autouse fixture：
      卡死 wxwork_push._http_client 的 get/post，任何调用方都发不出去。
 
+⚠️ L1 的位置也是本文件的守卫对象（2026-09-13 QA 复核提出）：
+  短路必须排在「P1/P2 免打扰窗口判断」**之前**。排在之后的话，23:00–08:00
+  之间跑测试时 P1/P2 会先被窗口 `return` 掉，守卫压根不执行 —— 用例变绿只是
+  因为「没走到推送」，典型**空转的绿**。对应用例
+  `test_guard_runs_before_quiet_hours_window_check`（把窗口钉死为 False，
+  不靠挂钟时间，任何时刻跑都必须有 `[QUOTA_ALERT][TEST_MODE_BLOCKED]`）。
+  生产语义零变化：短路唯一触发条件是 `_in_test_mode()`，生产进程恒 False。
+
 ⚠️ 全程离线：本文件任何用例都不得触达真实企微。需要"生产发送函数"时一律用
    `_install_production_like_sender()` 伪装，**绝不换回真实函数**。
 """
 import os
+import subprocess
 import sys
 
 import pytest
@@ -34,6 +43,9 @@ from services import wxwork_push as wp  # noqa: E402
 
 # 事故原样的输入：mock 造出来的 402，error 是字符串 → 错误码解析为空
 MOCK_402_BODY = '{"error": "doubao quota exceeded"}'
+# 对照组：带硬信号的真欠费（P0）。P0 不受免打扰窗口限制，用来证明守卫在
+# 「任何优先级、任何时刻」都执行，而不只是碰巧走到的那条分支。
+P0_ARREARS_BODY = '{"error": {"code": "PaymentRequired", "message": "Payment Required"}}'
 
 
 def _load_monitor_module():
@@ -80,8 +92,13 @@ def _install_production_like_sender(monkeypatch, calls: list):
 # ============================================================
 # L1：入口短路
 # ============================================================
-def test_maybe_alert_quota_never_calls_production_sender_in_test_mode(monkeypatch):
-    """测试环境调用 maybe_alert_quota(doubao, 402, ...) 不得触碰生产发送函数。"""
+def test_maybe_alert_quota_never_calls_production_sender_in_test_mode(monkeypatch, capsys):
+    """测试环境调用 maybe_alert_quota(doubao, 402, ...) 不得触碰生产发送函数。
+
+    反空转：`calls == []` 只说明"没推"，也可能是"压根没走到推送那一步"（比如
+    被免打扰窗口提前 return）。所以额外断言拦截日志真的打出来了 —— 守卫确实
+    执行过，绿得有凭据。
+    """
     calls = []
     _install_production_like_sender(monkeypatch, calls)
 
@@ -91,6 +108,9 @@ def test_maybe_alert_quota_never_calls_production_sender_in_test_mode(monkeypatc
     )
 
     assert calls == [], f"测试环境发出了真实推送：{calls}"
+    out = capsys.readouterr().out
+    assert "[QUOTA_ALERT][TEST_MODE_BLOCKED]" in out, \
+        f"没推不等于被拦：守卫没执行（看日志才知道它走的是哪条 return）：{out}"
 
 
 def test_blocked_alert_is_observable_in_logs(monkeypatch, capsys):
@@ -120,7 +140,7 @@ def test_blocked_alert_is_observable_in_logs(monkeypatch, capsys):
     assert calls == []
 
 
-def test_blocked_alert_writes_no_dedupe_state(monkeypatch, tmp_path):
+def test_blocked_alert_writes_no_dedupe_state(monkeypatch, tmp_path, capsys):
     """短路时不写去重状态文件。
 
     ALERT_STATE_FILE 依赖 DATA_DIR，测试下被 conftest 隔离到临时目录 —— 写进去
@@ -136,6 +156,10 @@ def test_blocked_alert_writes_no_dedupe_state(monkeypatch, tmp_path):
 
     assert not state_file.exists(), "测试环境不应写出去重状态文件"
     assert calls == []
+    # 反空转：状态文件没被写，也可能是"提前 return 了"而不是"被短路了"
+    out = capsys.readouterr().out
+    assert "[QUOTA_ALERT][TEST_MODE_BLOCKED]" in out, \
+        f"守卫未执行，这条用例会变成空转的绿：{out}"
 
 
 def test_test_mode_survives_env_removal(monkeypatch):
@@ -191,6 +215,32 @@ def test_legitimate_fake_sender_still_reaches_push_path(monkeypatch, tmp_path):
     assert len(pushed) == 2, f"合法假 sender 应照常被调到：{pushed}"
 
 
+# ============================================================
+# L1 的位置：守卫不能只在白天生效（时间炸弹回归，QA 2026-09-13 提出）
+# ============================================================
+def test_guard_fires_for_p0_when_window_is_closed(monkeypatch, capsys):
+    """P0 这条支路也要盖：窗口钉死为「关」，守卫照样执行。
+
+    下面「顺序契约」那组用例用 `_assert_alert_is_p1_or_p2()` 把输入限死在
+    P1/P2（因为只有它们受窗口判断约束，注入才有意义）。这里补对照组 P0：
+    P0 本身不受窗口限制，但守卫同样必须在推送之前拦下它 —— 证明守卫不是"只在
+    某条分支上碰巧生效"。
+    """
+    alert_type, _, _ = qa.classify_llm_error_detail("doubao", 402, P0_ARREARS_BODY)
+    assert qa.alert_priority(alert_type) == "P0", \
+        f"注入前提失效：{alert_type} 不是 P0，这条用例会空转"
+
+    calls = []
+    _install_production_like_sender(monkeypatch, calls)
+    monkeypatch.setattr(qa, "_in_push_window", lambda: False, raising=True)
+
+    qa.maybe_alert_quota("doubao", 402, P0_ARREARS_BODY, model="m", module="chat")
+
+    out = capsys.readouterr().out
+    assert "[QUOTA_ALERT][TEST_MODE_BLOCKED]" in out, f"P0 未被守卫拦下：{out}"
+    assert calls == [], f"P0 在测试环境发出了真实推送：{calls}"
+
+
 def test_monitor_push_alert_also_blocked_in_test_mode(monkeypatch):
     """第二条出口：scripts/llm_balance_monitor.py::_push_alert 同样不得真推。
 
@@ -207,6 +257,203 @@ def test_monitor_push_alert_also_blocked_in_test_mode(monkeypatch):
 
     assert monitor._push_alert("测试告警标题", "正文") is False, \
         "测试环境应返回 False（未发送，不消费当日去重额度）"
+    assert calls == []
+
+
+# ============================================================
+# L1 的**顺序契约**（FIX 2026-09-13 补位：守卫不能依赖"恰好在白天跑测试"）
+# ============================================================
+# maybe_alert_quota 里的判定顺序被锁死为：
+#     P3 return → 测试环境短路 → P1/P2 推送窗口判断 → 当日去重 → 推送
+#
+# 短路原本排在「P1/P2 窗口判断」**之后**，缺陷是：凌晨 23:00–08:00 跑测试时，
+# P1/P2 告警先被窗口判断 `return` 掉，短路**根本没机会执行** —— 用例显绿只是
+# 因为压根没走到推送（空转的绿），守卫在凌晨整个失效。HTTP 出网为空是窗口挡
+# 的，不是守卫拦的（QA 实测指纹：输出 QUIET_HOURS_DEFERRED 而非
+# TEST_MODE_BLOCKED）。
+#
+# 下面用故障注入把这个顺序钉死，并成对锁住「生产语义必须零变化」。
+P3_BODY = '{"error":{"code":"RateLimitReached","message":"rate limit"}}'
+
+
+def _assert_alert_is_p1_or_p2(body: str = MOCK_402_BODY) -> str:
+    """反空转前置断言：本组用例只在告警确为 P1/P2 时才有意义。
+
+    P0 不走窗口判断、P3 直接 return —— 这两类输入下"窗口外"这个注入条件根本
+    不生效，用例会变成"没异常就算过"的空转绿。
+    """
+    alert_type, _, _ = qa.classify_llm_error_detail("doubao", 402, body)
+    priority = qa.alert_priority(alert_type)
+    assert priority in ("P1", "P2"), (
+        f"注入前提失效：{alert_type} 是 {priority}，窗口判断对它不适用 —— "
+        f"这条用例已经空转，请换一个 P1/P2 的输入"
+    )
+    return priority
+
+
+def test_guard_runs_before_quiet_hours_window_check(monkeypatch, capsys, tmp_path):
+    """注入 A：P1/P2 + 强制窗口外 + 测试模式 ⇒ 必须 TEST_MODE_BLOCKED。
+
+    短路若退回窗口判断之后，这里会输出 QUIET_HOURS_DEFERRED —— 那正是本次要
+    修的缺陷（凌晨跑测试时守卫空转）。所以两条标记都断言：一条必须出现，另一
+    条必须**不**出现，缺一个断言这条用例就能在缺陷版本上显绿。
+    """
+    priority = _assert_alert_is_p1_or_p2()
+
+    calls = []
+    monkeypatch.setattr(qa, "ALERT_STATE_FILE", tmp_path / "state.json", raising=True)
+    monkeypatch.setattr(qa, "_in_push_window", lambda: False, raising=True)
+    monkeypatch.delenv("MONEYBAG_TEST_MODE", raising=False)
+    _install_production_like_sender(monkeypatch, calls)
+
+    qa.maybe_alert_quota("doubao", 402, MOCK_402_BODY, model="m", module="t")
+
+    out = capsys.readouterr().out
+    assert "[QUOTA_ALERT][TEST_MODE_BLOCKED]" in out, (
+        f"窗口外（模拟凌晨）测试环境未走守卫，守卫已空转（{priority}）：{out}"
+    )
+    assert "[QUOTA_ALERT][QUIET_HOURS_DEFERRED]" not in out, (
+        f"P1/P2 被窗口判断先 return 了 —— 短路没排在窗口判断之前：{out}"
+    )
+    assert calls == [], f"测试环境发出了真实推送：{calls}"
+    assert not (tmp_path / "state.json").exists(), "短路时不应写出去重状态文件"
+
+
+def test_guard_does_not_reach_push_path_outside_window(monkeypatch, capsys, tmp_path):
+    """注入 A 的补强：窗口外被拦时，日志里不得出现"已推送"痕迹。
+
+    与上一条是同一场景的两个面：上一条证明"守卫执行了"，这一条证明"守卫执行
+    完就停了"（没有继续落到推送分支）。
+    """
+    _assert_alert_is_p1_or_p2()
+
+    calls = []
+    monkeypatch.setattr(qa, "ALERT_STATE_FILE", tmp_path / "state.json", raising=True)
+    monkeypatch.setattr(qa, "_in_push_window", lambda: False, raising=True)
+    monkeypatch.delenv("MONEYBAG_TEST_MODE", raising=False)
+    _install_production_like_sender(monkeypatch, calls)
+
+    qa.maybe_alert_quota("doubao", 402, MOCK_402_BODY, model="m", module="t")
+
+    out = capsys.readouterr().out
+    assert "✅ 已推送告警" not in out, f"测试环境竟然走到了推送分支：{out}"
+    assert calls == []
+
+
+def test_production_quiet_hours_semantics_unchanged(monkeypatch, capsys, tmp_path):
+    """注入 B（进程内）：非测试环境 + 窗口外 ⇒ 仍必须是 QUIET_HOURS_DEFERRED。
+
+    这是 QA 与主理人的分歧点：挪动短路会不会顺手改掉"P1/P2 夜里不推"的生产
+    语义？答案是不会 —— 短路的唯一触发条件 `_in_test_mode()` 在生产进程
+    （uvicorn）恒为 False。本用例用显式 `MONEYBAG_TEST_MODE=0` 把当前 pytest
+    进程切成"生产等价物"，断言窗口判断照旧 return。
+    """
+    _assert_alert_is_p1_or_p2()
+
+    calls = []
+    monkeypatch.setattr(qa, "ALERT_STATE_FILE", tmp_path / "state.json", raising=True)
+    monkeypatch.setattr(qa, "_in_push_window", lambda: False, raising=True)
+    _install_production_like_sender(monkeypatch, calls)
+    monkeypatch.setenv("MONEYBAG_TEST_MODE", "0")
+    # 反空转：注入前提必须是"确实不在测试模式"，否则这条用例等于没注入
+    assert qa._in_test_mode() is False, "注入失效：仍在测试模式，这条用例会空转"
+
+    qa.maybe_alert_quota("doubao", 402, MOCK_402_BODY, model="m", module="t")
+
+    out = capsys.readouterr().out
+    assert "[QUOTA_ALERT][QUIET_HOURS_DEFERRED]" in out, (
+        f"生产语义被改坏了：夜里本该由窗口判断拦下，实际输出 {out}"
+    )
+    assert "[QUOTA_ALERT][TEST_MODE_BLOCKED]" not in out, (
+        f"生产路径被短路误伤了（P1/P2 夜里不推的语义已被替换）：{out}"
+    )
+    assert calls == []
+
+
+# 真正"非 pytest 进程"的注入 B：另起一个干净解释器，不设 MONEYBAG_TEST_MODE，
+# sys.modules 里也没有 pytest —— 这是生产进程（uvicorn）最贴近的复现。
+_PROD_SIM_SCRIPT = """
+import os, sys
+
+sys.path.insert(0, __BACKEND_DIR__)
+from services import llm_quota_alert as qa
+
+print("PROBE_TEST_MODE=" + str(qa._in_test_mode()))
+print("PROBE_PYTEST_IN_SYS_MODULES=" + str("pytest" in sys.modules))
+
+alert_type, _, _ = qa.classify_llm_error_detail("doubao", 402, MOCK_BODY)
+print("PROBE_PRIORITY=" + str(qa.alert_priority(alert_type)))
+
+qa._in_push_window = lambda: False
+qa.maybe_alert_quota("doubao", 402, MOCK_BODY, model="m", module="t")
+"""
+
+
+def test_production_process_outside_window_still_defers(tmp_path):
+    """注入 B（真子进程）：非 pytest 进程 + 窗口外 ⇒ 仍 QUIET_HOURS_DEFERRED。
+
+    进程内那条用 `MONEYBAG_TEST_MODE=0` 模拟生产，终究还是"同一个 pytest 进程
+    里改开关"。这条再补一层：另起一个干净解释器，环境变量里既没有
+    PYTEST_CURRENT_TEST 也没有 MONEYBAG_TEST_MODE，sys.modules 里也没有
+    pytest —— 与 uvicorn 下的生产进程同构。它必须仍然输出
+    QUIET_HOURS_DEFERRED，证明短路前移对生产路径**零影响**。
+    """
+    backend_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+    script = _PROD_SIM_SCRIPT.replace("__BACKEND_DIR__", repr(backend_dir)).replace(
+        "MOCK_BODY", repr(MOCK_402_BODY)
+    )
+
+    env = {
+        k: v
+        for k, v in os.environ.items()
+        if k not in ("PYTHONPATH", "PYTEST_CURRENT_TEST", "MONEYBAG_TEST_MODE")
+    }
+    # 状态文件隔离：绝不让子进程碰到生产 /opt/moneybag/data
+    env["DATA_DIR"] = str(tmp_path / "data")
+    env["PYTHONDONTWRITEBYTECODE"] = "1"
+
+    proc = subprocess.run(
+        [sys.executable, "-c", script],
+        cwd=backend_dir,
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=120,
+    )
+    out = proc.stdout + proc.stderr
+
+    assert proc.returncode == 0, f"子进程异常退出：{out}"
+    # 反空转：子进程必须真的是"生产同构"，否则这条用例就是换皮的空转
+    assert "PROBE_TEST_MODE=False" in out, f"子进程仍在测试模式，注入失效：{out}"
+    assert "PROBE_PYTEST_IN_SYS_MODULES=False" in out, f"子进程里有 pytest：{out}"
+    assert "PROBE_PRIORITY=P" in out and "PROBE_PRIORITY=P3" not in out, (
+        f"注入前提失效：告警不是 P1/P2，窗口判断对它不适用：{out}"
+    )
+    assert "[QUOTA_ALERT][QUIET_HOURS_DEFERRED]" in out, (
+        f"生产语义被改坏了：非 pytest 进程夜里本该由窗口判断拦下，实际输出 {out}"
+    )
+    assert "[QUOTA_ALERT][TEST_MODE_BLOCKED]" not in out, (
+        f"生产路径被短路误伤了：{out}"
+    )
+
+
+def test_p3_still_short_circuits_before_guard(monkeypatch, capsys, tmp_path):
+    """顺序契约的第一环：P3 永远优先于守卫（限流只落日志，连守卫都不惊动）。
+
+    新顺序是「P3 return → 守卫 → 窗口 → 去重」，第一环也要钉死：否则哪天有人
+    把守卫再往上挪一格，P3 就会变成"测试环境被守卫拦下"，日志语义失真。
+    """
+    calls = []
+    monkeypatch.setattr(qa, "ALERT_STATE_FILE", tmp_path / "state.json", raising=True)
+    _install_production_like_sender(monkeypatch, calls)
+
+    qa.maybe_alert_quota("doubao", 429, P3_BODY, model="m", module="t")
+
+    out = capsys.readouterr().out
+    assert "[QUOTA_ALERT][NO_PUSH:P3]" in out, f"P3 未走只落日志分支：{out}"
+    assert "[QUOTA_ALERT][TEST_MODE_BLOCKED]" not in out, (
+        f"P3 不该惊动测试环境守卫（顺序被挪错了）：{out}"
+    )
     assert calls == []
 
 

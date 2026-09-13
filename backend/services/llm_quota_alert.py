@@ -641,20 +641,26 @@ def maybe_alert_quota(
             print(f"[QUOTA_ALERT][NO_PUSH:P3] {alert_type} | {tag} | {snippet[:120]}")
             return
 
-        # P1/P2：非白天不推（凌晨误报的典型来源）
-        if priority in ("P1", "P2") and not _in_push_window():
-            print(
-                f"[QUOTA_ALERT][QUIET_HOURS_DEFERRED] {alert_type}({priority}) "
-                f"不在 {PUSH_WINDOW_START_HOUR}:00-{PUSH_WINDOW_END_HOUR}:00 推送窗口内，仅记录 | {tag}"
-            )
-            return
-
         # ── 测试环境短路（FIX 2026-09-13，详见本文件上方专章）──────────
-        # 位置有讲究：放在「当日去重」**之前**。
-        #   ALERT_STATE_FILE = DATA_DIR / "llm_alert_state.json"，而测试进程里
-        #   DATA_DIR 被 conftest 隔离到临时目录 —— 状态永远写不进生产
-        #   /opt/moneybag/data，等于去重彻底失效（每跑一次测试就重推一条假
-        #   告警）。短路时干脆不读也不写状态文件，生产路径不受任何影响。
+        # 位置有讲究 —— 两个「之前」都必须守住，缺一个守卫就空转：
+        #
+        # 1) 必须在「当日去重」**之前**：
+        #    ALERT_STATE_FILE = DATA_DIR / "llm_alert_state.json"，而测试进程里
+        #    DATA_DIR 被 conftest 隔离到临时目录 —— 状态永远写不进生产
+        #    /opt/moneybag/data，等于去重彻底失效（每跑一次测试就重推一条假
+        #    告警）。短路时干脆不读也不写状态文件，生产路径不受任何影响。
+        #
+        # 2) 必须在「P1/P2 推送窗口判断」**之前**（2026-09-13 补位）：
+        #    短路若排在窗口判断之后，那么凌晨 23:00–08:00 之间跑测试时，P1/P2
+        #    告警会先被窗口判断 `return` 掉，**守卫根本没机会执行** —— 用例变
+        #    绿只是因为压根没走到推送（空转的绿），守卫在凌晨完全失效。QA 实测
+        #    确认过：`_in_push_window=False` 时输出的是 QUIET_HOURS_DEFERRED
+        #    而不是 TEST_MODE_BLOCKED，HTTP 出网为空是窗口挡的，不是守卫拦的。
+        #    **守卫不能依赖「恰好在白天跑测试」这种巧合。**
+        #
+        # 生产语义零变化：短路的唯一触发条件是 `_in_test_mode()`，判据为
+        # PYTEST_CURRENT_TEST / MONEYBAG_TEST_MODE / "pytest" in sys.modules；
+        # 生产进程（uvicorn）恒为 False，因此 P1/P2 夜里不推的逻辑照常生效。
         if _in_test_mode():
             _wxwork = _resolve_wxwork_module()
             _send_fn = getattr(_wxwork, "send_daily_report_to", None) \
@@ -668,6 +674,17 @@ def maybe_alert_quota(
                     f"code={err_code or '-'}"
                 )
                 return
+
+        # P1/P2：非白天不推（凌晨误报的典型来源）
+        # ⚠️ 这一段必须排在「测试环境短路」**之后** —— 原因见上方注释第 2 条：
+        # 顺序颠倒时，凌晨跑测试的 P1/P2 会被这里先 return 掉，守卫永远轮不到
+        # 执行（空转的绿）。生产进程不受影响：_in_test_mode() 恒 False。
+        if priority in ("P1", "P2") and not _in_push_window():
+            print(
+                f"[QUOTA_ALERT][QUIET_HOURS_DEFERRED] {alert_type}({priority}) "
+                f"不在 {PUSH_WINDOW_START_HOUR}:00-{PUSH_WINDOW_END_HOUR}:00 推送窗口内，仅记录 | {tag}"
+            )
+            return
 
         # 当日去重（按 alert_type + 模型，turbo/pro 各自独立）
         dedupe_key = f"{alert_type}|{model or '-'}"
