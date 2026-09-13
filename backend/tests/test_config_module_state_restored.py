@@ -3,14 +3,28 @@
 背景
 ----
 一批用例靠 `monkeypatch.setenv("DATA_DIR", tmp_path)` + `importlib.reload(config)`
-来测 import 期行为（已知 3 处：test_fund_detail_ak_timeout.py:40、
-test_user_optimistic_lock.py:43、test_broker_research_quota_degradation.py:226）。
+来测 import 期行为。全仓**只有 2 处**真正的 config 污染源：
+
+  · test_fund_detail_ak_timeout.py:44
+  · test_user_optimistic_lock.py:48
+
+⚠️ 别把 `test_broker_research_quota_degradation.py` 算进来 —— 它的
+`_reload_broker_research()` reload 的是 `services.broker_research`，
+而 `services/broker_research.py` 全文既没有 `DATA_DIR` 也没 import config，
+**不污染 config**。（早期版本这里写成"3 处"，是错的，已更正。）
+
 monkeypatch 只还原 **os.environ**；而 reload 是**原地重跑模块代码**，config 模块
 对象被永久改写，DATA_DIR 及其派生的 USERS_DIR / RECEIPTS_DIR / PUSH_ARCHIVE_DIR
 会一直停在上一个用例的 tmp_path 上。
 
-后果：任何断言 `== config.DATA_DIR` 的用例都变成**按执行顺序随机红绿**
+后果：任何断言 `== config.DATA_DIR` 的用例都变成**按执行顺序红绿不定**
 （已知受害者 test_llm_quota_alert_dedupe.py::test_state_file_lives_under_data_dir）。
+
+注：当前**没有**装 pytest-randomly 之类会打乱顺序的插件，也**没有** pytest.ini
+/ setup.cfg / pyproject，执行顺序按文件名字母序是**确定性**的 —— 所以表现是
+"单跑必绿、全量必红"的固定模式，不是每次随机。但一旦将来引入随机排序插件，
+本文件 test_1→test_2、test_5→test_6 的先后依赖会失效；失效时它们是**红**
+（`_POLLUTED_* is None` 会断言失败）而不是假绿，这点是可接受的失败模式。
 这种用例绿的时候不知道是真绿还是顺序碰巧，红的时候又会被当成噪音忽略 ——
 比稳定的红更消耗信任。
 
