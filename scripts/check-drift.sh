@@ -1,117 +1,341 @@
-#!/bin/bash
-# MoneyBag 三方漂移检测脚本（本地工作区 vs git main vs 服务器 server/main）
-#
-# 背景：2026-08-09 排查中发现本地/git/服务器三方长期不同步（服务器上
-# 从未有过git版本控制，靠SSH直接热改+手动cp备份维护），曾因想当然
-# 覆盖导致157行未提交代码丢失。当天已给服务器 /opt/moneybag 建立了
-# git仓库基线快照，并在本地添加了 `server` remote，可以直接
-# `git fetch server`拉取服务器当前状态做对比，不再需要逐个SSH。
-#
+#!/usr/bin/env bash
+# MoneyBag 漂移检测脚本 —— 本地工作区 vs 服务器实际磁盘内容
+# =============================================================================
 # 用法：
-#   bash scripts/check-drift.sh              # 全量扫描 backend/ + pages/
-#   bash scripts/check-drift.sh <文件路径>    # 只看单个文件的详细diff
+#   bash scripts/check-drift.sh              # 全量对账（清单 + 内容哈希）
+#   bash scripts/check-drift.sh <文件路径>    # 只看单个文件的详细 diff
+#   bash scripts/check-drift.sh --strict      # 对账；发现真漂移时以非零码退出（可做闸门）
 #
-# 首次使用/怀疑服务器有新热改时，先跑：
-#   git fetch server
-# 再执行本脚本，才能拿到服务器最新状态。
+# 设计原则：以「文件清单 + 内容哈希」为准，不依赖服务器上的任何 git 状态。
+# -----------------------------------------------------------------------------
+# 为什么不能再用 server/main（git）当基线 —— 后人请勿"优化"回去
+# -----------------------------------------------------------------------------
+# 旧版脚本 `git fetch server` 后拿 server/main 当基准比。但
+# backend/scripts/deploy_to_server.sh 里【一个 git 命令都没有】：部署走
+# scp/rsync 直传，从不在服务器上 commit。实测 2026-09-13：服务器
+# /opt/moneybag 的 HEAD 停在 6943a76（v9.9.23），而工作树有 43 个未提交改动
+# —— v9.9.24~v9.9.27 的部署内容全在里面。
+# 后果：任何一次【正确】部署之后，server/main 都还是旧的，脚本会把刚部署的
+# 文件全部误报成"漂移"。它区分不了"漂移=部署漏了"和"漂移=我部署了但没在
+# 服务器 commit"。所以 git 基线在钱袋子的部署模型下是结构性错误的，必须废弃。
 #
-# FIX 2026-08-09: 本地"工作区"里包含大量 untracked（??）文件（如
-# backend/api/auth.py、pages/insight-fund.js 等历史上一直没有 git add
-# 过的正常开发文件）。`git diff server/main -- <file>` 对 untracked
-# 文件会把工作区当成"文件不存在"，导致服务器上的内容被错误报告为
-# "整份被删除"（如 +0 -391 这种假阳性）。第一版脚本曾把76个文件全部
-# 标记为漂移，实测发现其中约60+个是这个bug造成的假阳性——文件内容
-# 本地和服务器实际完全一致。
-# 修复：用GIT_INDEX_FILE 构造一个临时 index/tree，把工作区当前状态
-# （含untracked 文件）打包成一个 git tree 对象，再用这个 tree 去跟
-# server/main 比较，就能正确反映"文件真实内容"而不受 git跟踪状态影响。
+# 本脚本改为：两边各自 `find` 枚举同一口径的文件清单，逐文件比 sha256 内容哈希。
+# 服务器磁盘上的实际内容才是唯一真相。
+#
+# -----------------------------------------------------------------------------
+# ⚠️ 排序必须用 LC_ALL=C（踩过的坑，勿删）
+# -----------------------------------------------------------------------------
+# macOS(BSD) 与 Linux(GNU) 的 LC_COLLATE 不同，`sort`/`comm` 的排序结果会不一致，
+# 导致同一路径在两侧排到不同位置，`comm`/`join` 会输出错位的"幽灵条目"——
+# 同一个文件同时出现在"本地有服务器没有"和"服务器有本地没有"两个列表里。
+# 因此本脚本所有跨机比较前的排序一律 `LC_ALL=C sort`。
+#
+# -----------------------------------------------------------------------------
+# 历史沿革（为什么以前用 git tree 快照）
+# -----------------------------------------------------------------------------
+# 2026-08-09：本地工作区含大量 untracked 文件（backend/api/auth.py 等），
+# `git diff server/main -- <file>` 会把它们当成"文件不存在"，服务器内容被误报
+# 为"整份删除"（+0 -391 之类假阳性），第一版脚本曾把 76 个文件全标为漂移。
+# 当时用 GIT_INDEX_FILE 构造工作区 tree 规避。现在改用清单+哈希，这个坑自然消失。
+# =============================================================================
 
 set -uo pipefail
+# 注意：刻意不加 set -e。本脚本是"对账报告"工具，某一侧的个别文件缺失/读取失败
+# 不应导致整轮中止、丢失其余结论。关键失败点（SSH 不可达）已显式判空退出。
 
+# ----------------------------- 配置 -----------------------------------------
 PROJECT_DIR="/Users/leijiang/WorkBuddy/moneybag-for-claudecode"
-cd "$PROJECT_DIR" || exit 1
-export GIT_PAGER=cat
-export PAGER=cat
+SERVER="${MONEYBAG_SERVER:-150.158.47.189}"
+REMOTE_USER="ubuntu"
+REMOTE_PATH="/opt/moneybag"
+SSH_KEY="${MONEYBAG_SSH_KEY:-$HOME/.ssh/id_ed25519}"
 
-if ! git remote get-url server >/dev/null 2>&1; then
-    echo "❌ 未配置 server remote，请先执行："
-    echo "   git remote add server ssh://ubuntu@150.158.47.189/opt/moneybag"
-    exit 1
-fi
+SSH_OPTS=(-o StrictHostKeyChecking=no -o BatchMode=yes -o ConnectTimeout=15)
+[ -f "$SSH_KEY" ] && SSH_OPTS+=(-i "$SSH_KEY")
 
-SCAN_PATHS="backend/api backend/services backend/use_cases backend/routers backend/scripts backend/models backend/main.py backend/config.py pages app.js index.html styles.css sw.js"
+# 扫描范围：与 deploy_to_server.sh 的同步范围对齐，并覆盖全部后端源码树。
+# - backend/   整棵后端树（含 prompts/ tests/ domain/ infra/ —— 旧脚本漏掉它们，
+#              本轮线上 close_review.md 停旧版、holding_diagnose.md 整个缺失
+#              就是"漂移检测器对出问题的那类文件结构性失明"）
+# - pages/     前端页面
+# - styles/    index.html 引用的样式目录（旧脚本只有 styles.css，漏了 styles/）
+# - icons/     PWA 图标
+SCAN_ROOTS="backend pages styles icons"
+SCAN_ROOT_FILES="app.js index.html styles.css sw.js manifest.json"
 
-# 构造一个临时 tree，把工作区当前实际内容（含未 git add 过的 untracked
-# 文件）打包成git 对象，避免 untracked 文件被 git diff 误判为"不存在"
-build_worktree_snapshot() {
-    local tmp_index
-    tmp_index=$(mktemp -u)
-    rm -f "$tmp_index"
-    GIT_INDEX_FILE="$tmp_index" git add -- $SCAN_PATHS >/dev/null 2>&1
-    local tree
-    tree=$(GIT_INDEX_FILE="$tmp_index" git write-tree 2>/dev/null)
-    rm -f "$tmp_index"
-    echo "$tree"
+# 必须能被扫到的关键路径（自检用）：少任何一个都说明脚本有盲区，直接报错。
+REQUIRED_SCOPE="backend/prompts backend/tests backend/domain backend/infra backend/services pages styles icons manifest.json styles.css sw.js"
+
+# 统一排除项（本地/服务器两侧必须完全一致，否则口径不一致会制造假漂移）
+# 理由：
+#   __pycache__/ *.pyc          —— Python 字节码，机器生成
+#   .mypy_cache/ .pytest_cache/ —— 本地工具缓存
+#   .git/                       —— 版本库内部
+#   node_modules/ venv/ .venv/  —— 依赖目录
+#   data-backup* backend/data/  —— 生产数据/备份，绝不能动、也绝不能比
+#   backend/logs/ *.log         —— 运行日志，天然不同
+#   *.bak* *.orig *.rej         —— 手工备份/补丁残留
+#   .DS_Store                   —— macOS 垃圾
+#   .env                        —— 服务器本地密钥文件（.env.example 不排除）
+FIND_PRED='-not -path */__pycache__/* -not -name *.pyc
+ -not -path */.mypy_cache/* -not -path */.pytest_cache/* -not -path */.git/*
+ -not -path */node_modules/* -not -path */venv/* -not -path */.venv/*
+ -not -path */data-backup* -not -path backend/data/* -not -path backend/logs/*
+ -not -name *.bak* -not -name *.orig -not -name *.rej -not -name *.log
+ -not -name .DS_Store -not -name .env'
+
+# 运行时缓存路径：两侧内容本就可能不同（服务在跑，缓存会自己刷新）。
+# 命中这些路径的差异归入"缓存差异（预期）"，不计为真漂移，--strict 也不据此退出。
+# backend/infra/.cache/industry_board_cache.json 即属此类。
+RUNTIME_CACHE_RE='/\.cache/'
+
+STRICT=0
+[ "${1:-}" = "--strict" ] && STRICT=1
+
+# ----------------------------- 基础准备 --------------------------------------
+cd "$PROJECT_DIR" || { echo "❌ 项目目录不存在：$PROJECT_DIR"; exit 1; }
+
+TMP_DIR="$(mktemp -d 2>/dev/null || mktemp -d -t checkdrift)"
+LOCAL_HASH="$TMP_DIR/local.tsv"
+SERVER_HASH="$TMP_DIR/server.tsv"
+CLASSIFIED="$TMP_DIR/classified.tsv"
+trap 'rm -rf "$TMP_DIR"' EXIT
+
+# 本机哈希命令（macOS 默认没有 sha256sum，有 shasum）
+pick_local_hasher() {
+    if command -v shasum >/dev/null 2>&1; then echo "shasum -a 256"
+    elif command -v sha256sum >/dev/null 2>&1; then echo "sha256sum"
+    else return 1; fi
 }
 
-# 单文件模式：直接展示 diff，方便判断谁更新
-if [ $# -eq 1 ]; then
+echo "════════════════════════════════════════════════════════════════"
+echo " MoneyBag 漂移对账（文件清单 + sha256 内容哈希，不依赖服务器 git）"
+echo " 本地  ：$PROJECT_DIR"
+echo " 服务器：$REMOTE_USER@$SERVER:$REMOTE_PATH"
+echo " 开始  ：$(date '+%Y-%m-%d %H:%M:%S')"
+echo "════════════════════════════════════════════════════════════════"
+
+# ----------------------------- 单文件模式 ------------------------------------
+# 保留原有能力：给一个文件路径，直接展示两侧详细 diff。
+if [ $# -eq 1 ] && [ "$1" != "--strict" ]; then
     f="$1"
-    echo "=== $f ==="
-    echo "--- 本地工作区 vs git main（是否有未提交改动）---"
-    git --no-pager diff --stat main -- "$f" 2>/dev/null
     echo ""
-    echo "--- 本地工作区(含未跟踪文件真实内容) vs server/main（最准确的真实差异）---"
-    SNAP=$(build_worktree_snapshot)
-    git --no-pager diff "server/main" "$SNAP" -- "$f" 2>/dev/null
+    echo "=== 单文件对账：$f ==="
+    echo ""
+    echo "--- [1] 本地工作区 vs git main（是否有未提交改动）---"
+    git --no-pager diff --stat main -- "$f" 2>/dev/null || echo "（无 git main 或无差异）"
+    echo ""
+    echo "--- [2] 本地磁盘实际内容 vs 服务器磁盘实际内容（最真实）---"
+    if [ ! -f "$f" ]; then
+        echo "⚠️  本地不存在该文件：$f"
+    fi
+    # 先探测服务器：区分「ssh 不可达」与「文件确实不存在」——
+    # 不可达时绝不能误报成"未部署"（那是另一种闸门空转）。
+    probe=$(ssh "${SSH_OPTS[@]}" "$REMOTE_USER@$SERVER" \
+        "if [ -f '$REMOTE_PATH/$f' ]; then echo EXISTS; else echo ABSENT; fi" 2>/dev/null)
+    case "$probe" in
+        EXISTS)
+            if [ -f "$f" ]; then
+                lh=$(shasum -a 256 "$f" 2>/dev/null | cut -c1-16)
+                rh=$(ssh "${SSH_OPTS[@]}" "$REMOTE_USER@$SERVER" "sha256sum '$REMOTE_PATH/$f' 2>/dev/null | cut -c1-16 || shasum -a 256 '$REMOTE_PATH/$f' | cut -c1-16")
+                echo "本地 sha256(前16): $lh"
+                echo "服务器 sha256(前16): $rh"
+                if [ "$lh" = "$rh" ]; then
+                    echo "✅ 内容一致"
+                else
+                    echo "⚠️  内容不一致，逐行 diff 如下（- 本地 / + 服务器）："
+                    ssh "${SSH_OPTS[@]}" "$REMOTE_USER@$SERVER" "cat '$REMOTE_PATH/$f'" 2>/dev/null \
+                        | diff -u "$f" - || true
+                fi
+            fi
+            ;;
+        ABSENT)
+            echo "服务器上不存在该文件（可能是漏部署、或本就不该部署）：$REMOTE_PATH/$f"
+            ;;
+        *)
+            echo "❌ 无法连接服务器判断该文件（ssh 失败），不给出结论。"
+            exit 3
+            ;;
+    esac
+    echo ""
     exit 0
 fi
 
-echo "=== 拉取服务器最新git状态 ==="
-git fetch server 2>&1 | grep -v "^$" || true
-
+# ----------------------------- SSH 可达性（硬门槛）----------------------------
+# 服务器侧不可达时【明确报错退出】，绝不静默跳过然后报"一致"——
+# 那又是"闸门空转仍显绿"。这是本脚本被坑的第二类教训。
 echo ""
-echo "=== 构造工作区快照(含未跟踪文件真实内容,避免误判为'已删除') ==="
-SNAP=$(build_worktree_snapshot)
-if [ -z "$SNAP" ]; then
-    echo "❌ 构造工作区快照失败"
+echo "[0/4] 检查 SSH 可达性 ..."
+if ! ssh "${SSH_OPTS[@]}" "$REMOTE_USER@$SERVER" 'echo ok' >/dev/null 2>&1; then
+    echo "❌ 无法连接服务器 ${REMOTE_USER}@${SERVER}（ssh 失败）"
+    echo "   SSH 选项：${SSH_OPTS[*]}"
+    echo "   请确认网络/密钥/服务器状态后重试。为避免「闸门空转仍显绿」，此处直接退出。"
+    exit 3
+fi
+echo "      ✅ 服务器可达"
+
+# ----------------------------- 扫描范围自检 ----------------------------------
+# 证明脚本没有盲区：打印实际扫描范围，并断言关键路径在范围内。
+echo ""
+echo "[1/4] 扫描范围自检"
+echo "      扫描根      ：$SCAN_ROOTS"
+echo "      扫描根文件  ：$SCAN_ROOT_FILES"
+echo "      排除项      ：__pycache__/ *.pyc .mypy_cache/ .pytest_cache/ .git/"
+echo "                    node_modules/ venv/ data-backup* backend/data/ backend/logs/"
+echo "                    *.bak* *.orig *.rej *.log .DS_Store .env"
+
+list_local_paths() {
+    set -f   # 关闭 glob，让 FIND_PRED 里的通配符保持字面量
+    for r in $SCAN_ROOTS; do
+        [ -d "$r" ] && find "$r" -type f $FIND_PRED 2>/dev/null
+    done
+    for f in $SCAN_ROOT_FILES; do
+        [ -f "$f" ] && echo "$f"
+    done
+    set +f
+}
+
+list_local_paths | LC_ALL=C sort -u > "$TMP_DIR/local.list"
+
+SELF_CHECK_FAIL=0
+for req in $REQUIRED_SCOPE; do
+    if grep -q -e "^${req}/" -e "^${req}$" "$TMP_DIR/local.list"; then
+        n=$(grep -c -e "^${req}/" -e "^${req}$" "$TMP_DIR/local.list")
+        echo "      ✅ 在范围内：$req （本地 $n 项）"
+    else
+        echo "      ❌ 不在范围内（盲区！）：$req"
+        SELF_CHECK_FAIL=1
+    fi
+done
+if [ "$SELF_CHECK_FAIL" -ne 0 ]; then
+    echo ""
+    echo "❌ 自检失败：扫描范围存在盲区，拒绝继续对账（先修脚本，别信结论）。"
     exit 1
 fi
+echo "      ✅ 自检通过：关键路径全部在扫描范围内，无结构性盲区"
 
+# ----------------------------- 本地侧：清单 + 哈希 ----------------------------
 echo ""
-echo "=== 本地工作区 vs server/main 差异清单（最准确，直接反映当前真实漂移；一次git diff完成，不逐文件循环）==="
-echo "（限定在本地实际tracked/存在的 backend 与 pages 路径，排除服务器上的历史死代码目录）"
-git ls-files $SCAN_PATHS 2>/dev/null > /tmp/.check_drift_tracked.txt
-find backend/api backend/services backend/use_cases backend/routers backend/scripts backend/models pages -type f \( -name "*.py" -o -name "*.js" \) -not -path "*/__pycache__/*" 2>/dev/null >> /tmp/.check_drift_tracked.txt
-sort -u /tmp/.check_drift_tracked.txt -o /tmp/.check_drift_tracked.txt
-
-# 一次性调用 git diff --numstat，输出格式：added\tdeleted\tpath，比逐文件diff快得多
-git --no-pager diff --numstat "server/main" "$SNAP" -- $SCAN_PATHS 2>/dev/null > /tmp/.check_drift_numstat.txt
-
-DIFF_COUNT=0
-OK_COUNT=0
+echo "[2/4] 枚举本地文件并计算内容哈希 ..."
+LOCAL_HASHER="$(pick_local_hasher)" || { echo "❌ 本机没有 shasum/sha256sum，无法计算哈希"; exit 1; }
 while IFS= read -r f; do
-    [ -f "$f" ] || continue
-    # 用行尾锚点精确匹配，避免 wxwork.py 被 wxwork.py.bak_xxx 这类历史遗留
-    # 备份文件前缀误匹配（曾导致 wxwork.py 被错误标记为漂移292行）
-    line=$(grep -F "	$f" /tmp/.check_drift_numstat.txt | awk -v p="$f" '$0 ~ "\t"p"$"' | head -1)
-    if [ -z "$line" ]; then
-        OK_COUNT=$((OK_COUNT+1))
-    else
-        DIFF_COUNT=$((DIFF_COUNT+1))
-        added=$(echo "$line" | awk '{print $1}')
-        deleted=$(echo "$line" | awk '{print $2}')
-        printf "DRIFT  %-50s  +%s -%s\n" "$f" "$added" "$deleted"
-    fi
-done < /tmp/.check_drift_tracked.txt
-rm -f /tmp/.check_drift_tracked.txt /tmp/.check_drift_numstat.txt
-echo ""
-echo "汇总：一致 ${OK_COUNT} 个，漂移 ${DIFF_COUNT} 个"
+    [ -n "$f" ] || continue
+    h=$($LOCAL_HASHER "$f" 2>/dev/null | cut -c1-16)
+    printf '%s\t%s\n' "$f" "$h"
+done < "$TMP_DIR/local.list" | LC_ALL=C sort -t "$(printf '\t')" -k1,1 > "$LOCAL_HASH"
+LOCAL_N=$(wc -l < "$LOCAL_HASH" | tr -d ' ')
+echo "      ✅ 本地 ${LOCAL_N} 个文件（哈希器：${LOCAL_HASHER}）"
 
+# ----------------------------- 服务器侧：清单 + 哈希 --------------------------
+# 用【同一套】FIND_PRED 枚举，避免两边口径不一致制造假漂移。
 echo ""
-echo "=== 本地工作区 vs git main 差异文件清单（尚未commit的改动，仅供参考——不代表和服务器不一致）==="
-LOCAL_DIFF=$(git --no-pager diff --name-only main -- backend pages app.js index.html styles.css sw.js 2>/dev/null)
-UNTRACKED=$(git status --porcelain -- backend pages 2>/dev/null | grep '^??' | awk '{print $2}')
+echo "[3/4] 枚举服务器文件并计算内容哈希（ssh 一次往返）..."
+ssh "${SSH_OPTS[@]}" "$REMOTE_USER@$SERVER" "bash -s" <<REMOTE > "$SERVER_HASH"
+cd "$REMOTE_PATH" || exit 9
+set -f
+FIND_PRED='$FIND_PRED'
+SCAN_ROOTS='$SCAN_ROOTS'
+SCAN_ROOT_FILES='$SCAN_ROOT_FILES'
+if command -v sha256sum >/dev/null 2>&1; then HASH_CMD='sha256sum';
+elif command -v shasum >/dev/null 2>&1; then HASH_CMD='shasum -a 256';
+else echo 'NO_HASHER' >&2; exit 8; fi
+{
+  for r in \$SCAN_ROOTS; do
+      [ -d "\$r" ] && find "\$r" -type f \$FIND_PRED 2>/dev/null
+  done
+  for f in \$SCAN_ROOT_FILES; do
+      [ -f "\$f" ] && echo "\$f"
+  done
+} | LC_ALL=C sort -u | while IFS= read -r f; do
+      [ -n "\$f" ] || continue
+      h=\$(\$HASH_CMD "\$f" 2>/dev/null | cut -c1-16)
+      printf '%s\t%s\n' "\$f" "\$h"
+  done
+REMOTE
+
+if [ ! -s "$SERVER_HASH" ]; then
+    echo "❌ 服务器侧未返回任何文件（清单为空）。可能远程路径不对或 ssh 中途失败。"
+    echo "   为避免「空转显绿」，此处直接退出，不报「一致」。"
+    exit 3
+fi
+LC_ALL=C sort -t "$(printf '\t')" -k1,1 -o "$SERVER_HASH" "$SERVER_HASH"
+SERVER_N=$(wc -l < "$SERVER_HASH" | tr -d ' ')
+echo "      ✅ 服务器 $SERVER_N 个文件"
+
+# ----------------------------- 分类对账 --------------------------------------
+# 三类结果分开列，绝不混在一起：
+#   DIFF  = 内容不一致（真漂移，最需要关注）
+#   LONLY = 本地有、服务器没有（可能漏部署，也可能本就不该部署）
+#   SONLY = 服务器有、本地没有（垃圾 .bak、服务器本地 .env、运行日志等）
+echo ""
+echo "[4/4] 逐文件比对内容哈希 ..."
+awk -F'\t' '
+FNR==NR { lh[$1]=$2; next }
+{ sh[$1]=$2 }
+END {
+    for (p in lh) {
+        if (!(p in sh)) printf "LONLY\t%s\n", p;
+        else if (lh[p] != sh[p]) printf "DIFF\t%s\t%s\t%s\n", p, lh[p], sh[p];
+    }
+    for (p in sh) if (!(p in lh)) printf "SONLY\t%s\n", p;
+}' "$LOCAL_HASH" "$SERVER_HASH" | LC_ALL=C sort > "$CLASSIFIED"
+
+DIFF_REAL=0; DIFF_CACHE=0; LONLY_N=0; SONLY_N=0
+
+print_header() { echo ""; echo "──────── $1 ────────"; }
+
+# --- 内容不一致 ---
+print_header "① 内容不一致（真漂移）"
+while IFS=$'\t' read -r cat path lh rh; do
+    [ "$cat" = "DIFF" ] || continue
+    if printf '%s' "$path" | grep -qE "$RUNTIME_CACHE_RE"; then
+        DIFF_CACHE=$((DIFF_CACHE+1))
+        printf "  [缓存·预期] %-58s %s → %s\n" "$path" "$lh" "$rh"
+    else
+        DIFF_REAL=$((DIFF_REAL+1))
+        printf "  ⚠️  %-58s %s → %s\n" "$path" "$lh" "$rh"
+    fi
+done < "$CLASSIFIED"
+[ "$DIFF_REAL" -eq 0 ] && [ "$DIFF_CACHE" -eq 0 ] && echo "  ✅ 无"
+
+# --- 本地有、服务器没有 ---
+print_header "② 本地有、服务器没有（疑似漏部署）"
+while IFS=$'\t' read -r cat path; do
+    [ "$cat" = "LONLY" ] || continue
+    LONLY_N=$((LONLY_N+1))
+    printf "  L  %s\n" "$path"
+done < "$CLASSIFIED"
+[ "$LONLY_N" -eq 0 ] && echo "  ✅ 无"
+
+# --- 服务器有、本地没有 ---
+print_header "③ 服务器有、本地没有（垃圾/服务器本地文件）"
+while IFS=$'\t' read -r cat path; do
+    [ "$cat" = "SONLY" ] || continue
+    SONLY_N=$((SONLY_N+1))
+    printf "  S  %s\n" "$path"
+done < "$CLASSIFIED"
+[ "$SONLY_N" -eq 0 ] && echo "  ✅ 无"
+
+# ----------------------------- 汇总 ------------------------------------------
+echo ""
+echo "════════════════════════════════════════════════════════════════"
+printf "汇总：本地 %s 个 / 服务器 %s 个\n" "$LOCAL_N" "$SERVER_N"
+printf "      内容不一致：%s 个（其中运行时缓存 %s 个，真漂移 %s 个）\n" \
+       "$((DIFF_REAL+DIFF_CACHE))" "$DIFF_CACHE" "$DIFF_REAL"
+printf "      本地有服务器没有：%s 个\n" "$LONLY_N"
+printf "      服务器有本地没有：%s 个\n" "$SONLY_N"
+if [ "$DIFF_REAL" -eq 0 ]; then
+    echo "结论：✅ 未发现真漂移（除运行时缓存外，两侧内容一致）"
+else
+    echo "结论：⚠️  发现 $DIFF_REAL 个真漂移，请逐个确认后重新部署"
+fi
+echo "════════════════════════════════════════════════════════════════"
+
+# ----------------------------- 本地未提交改动（参考）-------------------------
+echo ""
+echo "=== 本地工作区 vs git main（尚未 commit 的改动，仅供参考——不代表和服务器不一致）==="
+LOCAL_DIFF=$(git --no-pager diff --name-only main -- backend pages app.js index.html styles.css sw.js manifest.json styles icons 2>/dev/null)
+UNTRACKED=$(git status --porcelain -- backend pages app.js index.html styles.css sw.js manifest.json styles icons 2>/dev/null | grep '^??' | awk '{print $2}')
 if [ -z "$LOCAL_DIFF" ] && [ -z "$UNTRACKED" ]; then
     echo "✅ 无未提交改动"
 else
@@ -120,5 +344,14 @@ else
 fi
 
 echo ""
-echo "提示：对某个具体文件想看详细diff，运行："
+echo "提示：对某个具体文件想看详细 diff，运行："
 echo "  bash scripts/check-drift.sh <文件路径>"
+echo "（对照服务器最新状态不再需要 git fetch server —— 本脚本直连服务器磁盘）"
+
+# ----------------------------- 退出码（可做闸门）-----------------------------
+if [ "$STRICT" = "1" ]; then
+    if [ "$DIFF_REAL" -gt 0 ] || [ "$LONLY_N" -gt 0 ] || [ "$SONLY_N" -gt 0 ]; then
+        exit 2
+    fi
+fi
+exit 0
