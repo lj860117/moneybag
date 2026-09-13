@@ -55,6 +55,7 @@ import pytest
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
+import config  # noqa: E402  - 只用于 test_state_file_lives_under_data_dir
 from services import llm_quota_alert as qa  # noqa: E402
 from services import wxwork_push as wp  # noqa: E402
 
@@ -432,14 +433,40 @@ def test_p2_dedupe_works_in_daytime(dedupe_env, monkeypatch):
 def test_state_file_name_is_stable():
     """状态文件名必须是 llm_alert_state.json（生产上核对的就是这个名字）。
 
-    ⚠️ 这里**故意不**断言 `ALERT_STATE_FILE.parent == config.DATA_DIR`：
-    全量套件里有用例会 `importlib.reload(config)`（改 DATA_DIR 后重载），
-    一旦它排在前面，本进程里 `config.DATA_DIR` 与 `qa.ALERT_STATE_FILE` 就不是
-    同一次解析的产物 —— 断言会变成**顺序依赖的假红**（单跑绿、全量红）。
-    「路径确实由 DATA_DIR 派生」这条改由下面的子进程用例证明：那里是全新
-    解释器，没有重载污染。
+    只断言文件名，不碰父目录 —— 父目录那条见下面的
+    `test_state_file_lives_under_data_dir`（它依赖 conftest 的 config 基线
+    恢复守卫，两者分开是为了让"名字"这条永远不依赖任何全局状态）。
     """
     assert qa.ALERT_STATE_FILE.name == "llm_alert_state.json"
+
+
+def test_state_file_lives_under_data_dir():
+    """★ 状态文件必须真的落在 `config.DATA_DIR` 下（2026-09-14 恢复）。
+
+    这条断言的历史：它最初就在，后来被**逼删**过一次（退化成上面的
+    `test_state_file_name_is_stable`，只敢断言文件名），因为全量套件里有
+    用例 `monkeypatch.setenv("DATA_DIR", tmp_path)` + `importlib.reload(config)`
+    —— monkeypatch 只还原环境变量，**不还原被 reload 改写的 config 模块对象**，
+    于是 `config.DATA_DIR` 会一直停在上一个用例的 tmp_path 上，本断言变成
+    「跑到它前面的是哪些文件」决定的随机红绿（单跑绿、全量红）。
+
+    现在敢加回来，是因为 conftest 落地了 `autouse` fixture
+    `_restore_config_module_state`（commit ec41999）：每个用例 teardown 把
+    config 的不可变快照改回会话基线。本文件按字母序排在污染源
+    （test_broker_research_quota_degradation / test_config_module_state_restored /
+    test_fund_detail_ak_timeout）**之后**，所以这条断言是真的站在污染下游的。
+
+    ⚠️ 反空转（已实测，不是推测）：把 conftest 里那段恢复循环整体注释掉后跑
+    全量，本条**必须转红**（实测红，见提交信息）。哪天它"守卫没了还绿"，
+    说明执行顺序变了、它已经碰不到污染 —— 那就是一条死断言，比不加更糟，
+    应当删掉而不是留着冒充覆盖。
+    """
+    assert qa.ALERT_STATE_FILE.parent == config.DATA_DIR, (
+        f"去重状态文件目录 {qa.ALERT_STATE_FILE.parent} 与 config.DATA_DIR "
+        f"{config.DATA_DIR} 不同源。这通常意味着 conftest 的 "
+        f"_restore_config_module_state 没生效/被删了（reload(config) 的污染没被"
+        f"还原），而不是 llm_quota_alert 的派生逻辑写错了 —— 先查守卫。"
+    )
 
 
 # ============================================================
