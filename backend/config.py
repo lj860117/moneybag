@@ -212,7 +212,15 @@ TUSHARE_TOKEN = os.environ.get("TUSHARE_TOKEN", "")
 # 拉取加 offset 翻页（修复仅取到 43% 数据的静默截断）+ 指数基金分类改用
 # invest_type 识别（fund_type 里根本没有"指数"字样）；③ 测试侧 conftest 加
 # config 模块基线恢复守卫。前端未动，?v= 与 CACHE_NAME 继续保持不变。
-APP_VERSION = "9.9.34"
+#
+# v9.9.35：仍是**纯后端** —— 修 qdii 分类恒为 0（与 index 同病：fund_type 里
+# 根本没有 "QDII" 这个取值，filter_type(["QDII"]) 永远匹配不到）。
+# QDII 没有可用的结构化字段（invest_type 全量 36 个取值实测均无 QDII），
+# 唯一可靠信号是法定名称后缀 "(QDII)"（精度接近 100%，是资格标记不是描述词）。
+# 实测三种口径：名称含 QDII 481 只（采用）/ fund_screen 的 _QDII_KW 1180 只
+# （其中 699 只误判：港股通 ETF 561 + 恒生 208 等）/ 非 QDII 关键词 24 只全误判。
+# 前端未动，?v= 与 CACHE_NAME 继续保持不变。
+APP_VERSION = "9.9.35"
 
 # ---- v9.5.123: API 鉴权 ----
 # 每个用户一个token，格式: userId:token（环境变量或data/auth_tokens.json）
