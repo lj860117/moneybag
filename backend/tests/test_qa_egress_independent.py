@@ -134,15 +134,31 @@ def _drive_real_402_incident_path(monkeypatch):
                              model_tier="llm_light", module="chat")
 
 
+@pytest.fixture(params=[True, False], ids=["window_open", "window_closed"])
+def push_window(request, monkeypatch):
+    """推送窗口开/关两态都跑一遍（守卫必须在**两种**状态下都拦住）。
+
+    历史（519045b 时）：当时短路排在窗口判断**之后**，事故载荷又从 P0 降为 P2，
+    于是 23:00-08:00 之间用例是"因为压根没走到推送所以没出网"——空转的绿。
+    当时靠钉死窗口为 True 来规避，但那会**掩盖真实行为**：钉死之后旧代码和
+    新代码都通过，用例分辨不出短路到底有没有前移。
+
+    54f3a92 把短路前移到窗口判断之前后，正确做法是不钉死、两态都验：
+      window_closed 这一态就是**修复本身的回归网** —— 旧顺序下它会打印
+      QUIET_HOURS_DEFERRED，断言 TEST_MODE_BLOCKED 必然转红。
+    """
+    from services import llm_quota_alert as qa
+    monkeypatch.setattr(qa, "_in_push_window", lambda: request.param,
+                        raising=True)
+    return request.param
+
+
 @pytest.fixture
 def push_window_open(monkeypatch):
-    """把推送窗口强制打开，让这两条用例**不受跑测试的时刻**影响。
+    """只把窗口打开 —— 供"反向证明"用例用。
 
-    为什么必须钉死：maybe_alert_quota 的顺序是「P1/P2 非推送窗口直接 return」
-    →「测试环境短路」→「推送」。事故载荷 `{"error": "doubao quota exceeded"}`
-    在 519045b 之后从 P0 降为 **P2**，于是 23:00-08:00 之间它会在窗口判断那步
-    就返回 —— 绿的用例变成"因为根本没走到推送所以没出网"（空转的绿），
-    红的用例会直接失败。不钉死窗口，这两条就是**看时间下菜碟**的用例。
+    红用例要证明"关掉守卫就真能打出去"，而窗口关闭时本来就不推（生产语义），
+    那时零出网说明不了任何问题，所以红用例必须开窗口。
     """
     from services import llm_quota_alert as qa
     monkeypatch.setattr(qa, "_in_push_window", lambda: True, raising=True)
@@ -151,7 +167,7 @@ def push_window_open(monkeypatch):
 # ── 绿：守卫生效时，真实 402 事故路径一个字节都发不出去 ──────────────
 def test_egress_blocked_when_guard_active(monkeypatch, prod_like_wecom,
                                           conftest_net_block_removed,
-                                          push_window_open, egress_probe,
+                                          push_window, egress_probe,
                                           capsys):
     result = _drive_real_402_incident_path(monkeypatch)
     out = capsys.readouterr().out
