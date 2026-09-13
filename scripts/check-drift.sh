@@ -66,8 +66,8 @@ SSH_OPTS=(-o StrictHostKeyChecking=no -o BatchMode=yes -o ConnectTimeout=15)
 # - pages/     前端页面
 # - styles/    index.html 引用的样式目录（旧脚本只有 styles.css，漏了 styles/）
 # - icons/     PWA 图标
-# - tests/     根目录的 dev-only E2E 套件（打活服务、需真 token）。纳入扫描是为了
-#              "看得见"而不是"假装它不存在"；它属白名单，不计漂移，见 NONDEPLOY。
+# - tests/     根目录的 dev-only E2E 套件（TestClient 进程内跑；纳入扫描是为了
+#              "看得见"而不是"假装它不存在"，它属白名单不计漂移，详见 NONDEPLOY 说明）。
 SCAN_ROOTS="backend pages styles icons tests"
 SCAN_ROOT_FILES="app.js index.html styles.css sw.js manifest.json"
 
@@ -110,9 +110,19 @@ RUNTIME_CACHE_RE='/\.cache/'
 #      并【无视外部传入的 DATA_DIR】（注释记录了真实事故：带 DATA_DIR=/opt/moneybag/data
 #      跑测试会直写生产 data/users，攒出 13 个脏用户文件）；:168-189 autouse 清空 14 个
 #      密钥环境变量。把它同步进生产目录 = 把一个"会写盘、会读 .env"的东西放上线。
-#   3. 根 tests/ 是【打活服务的 E2E】（tests/README.md 要求 127.0.0.1:8000 或
-#      MB_TEST_HOST，会跑真实 DeepSeek 调用、耗 token，含 llm_heavy marker）——
-#      设计上就属于"本地/有密钥环境专用"，不可能简单接进 CI。
+#   3. 根 tests/ 是 dev-only E2E，但【不是】活服务依赖：它用 FastAPI/starlette
+#      TestClient 进程内跑（实测有文件直接 TestClient、无需外部服务器）。
+#      ci-wire-tests 实测（Python 3.11.16 干净 venv）：`pytest tests/` →
+#      633 passed, 43 skipped, 4 failed（9~27s）；43 个 skip 是套件自带守卫
+#      （llm_heavy / 无 host 时跳，设计如此），不是"跑不了"。
+#      注意 tests/README.md 里"需要 127.0.0.1:8000 / MB_TEST_HOST、跑真实 DeepSeek
+#      耗 token"那段是【陈旧文档】，与代码实际行为不符，勿据此下结论。
+#      目前未接进 CI 的唯一原因是【既有缺陷】：tests/test_phase3_e2e.py:50 写
+#      `from backend.services.persistence import ...`（需 repo root 在 sys.path），
+#      而 backend/services/persistence.py:33 写 `from config import USERS_DIR`
+#      （需 backend/ 在 sys.path），无任一 cwd 能同时满足 → 4 个 setup 失败。
+#      修掉该 import 后即可接 CI（一次性可多 633 条覆盖）。
+#      ⚠️ 勿据此断言"根 tests/ 永远进不了 CI"——那是被实测证伪的旧结论。
 #   4. 覆盖已由 CI 承担：.github/workflows/ci.yml 的 backend-test-suite job 每次 push
 #      跑 backend/tests/ 全量；根 tests/ 里 CI 只跑自包含的 test_skeleton_m1.py
 #      （venv 实测 219 passed / 2.0s，不需要服务器）。守卫在 CI，不靠"服务器磁盘上
