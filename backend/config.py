@@ -206,7 +206,13 @@ TUSHARE_TOKEN = os.environ.get("TUSHARE_TOKEN", "")
 # 对齐）。没有任何前端资源文件被修改，按上面这条规则，index.html 的 ?v= 与
 # sw.js 的 CACHE_NAME 保持 9.9.20 不动 —— 改了只会让所有用户白重下一遍资源，
 # 且 Service Worker 缓存被整体作废。下一轮只要动了前端，三处必须一起 bump。
-APP_VERSION = "9.9.33"
+#
+# v9.9.34：同样是**纯后端**改动 —— ① 主动巡检（llm_balance_monitor）推送失败
+# 不再消费当日去重额度，与 llm_quota_alert 的 W2 同源修复对齐；② Tushare 净值
+# 拉取加 offset 翻页（修复仅取到 43% 数据的静默截断）+ 指数基金分类改用
+# invest_type 识别（fund_type 里根本没有"指数"字样）；③ 测试侧 conftest 加
+# config 模块基线恢复守卫。前端未动，?v= 与 CACHE_NAME 继续保持不变。
+APP_VERSION = "9.9.34"
 
 # ---- v9.5.123: API 鉴权 ----
 # 每个用户一个token，格式: userId:token（环境变量或data/auth_tokens.json）
