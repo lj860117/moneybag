@@ -44,6 +44,7 @@ _BACKEND = Path(__file__).resolve().parent.parent
 if str(_BACKEND) not in sys.path:
     sys.path.insert(0, str(_BACKEND))
 
+_REPO = _BACKEND.parent
 _HELPERS = _BACKEND / "api" / "shared_helpers.py"
 _CHAT = _BACKEND / "api" / "chat.py"
 _WEEKEND = _BACKEND / "scripts" / "weekend_push.py"
@@ -89,13 +90,60 @@ def _docstring_spans(src: str) -> list:
     return spans
 
 
-def _code_only(path: Path) -> str:
-    """返回剥掉 `#` 注释与 docstring 后的源码（其余字节原样保留）。
+def _js_code_only(src: str) -> str:
+    """剥离 JS 的 `//` 与 `/* */` 注释（字符串/模板字面量内容原样保留）。
 
-    不生效的内容：普通字符串字面量**保留**——面向用户的文案本身就是要断言
-    的对象（例如「多赚约」「历史胜率高」正是写在字符串里的）。
+    为什么前端也要剥注释：同一轮里后端已经踩过 4 次「注释引用被禁字面量」
+    的误报，前端注释同样是给后人解释历史用的，必须能引用旧写法。
+    这是字符级扫描（不做完整 JS 解析）：字符串与模板字面量里的 `//`（如 URL）
+    不会被误当注释，代价是正则字面量里的极少数形态可能判断保守——宁可漏剥
+    也不要把真实代码剥掉。
+    """
+    out = []
+    i, n = 0, len(src)
+    quote = None
+    while i < n:
+        ch = src[i]
+        if quote:
+            out.append(ch)
+            if ch == "\\" and i + 1 < n:
+                out.append(src[i + 1])
+                i += 2
+                continue
+            if ch == quote:
+                quote = None
+            i += 1
+            continue
+        if ch in "'\"`":
+            quote = ch
+            out.append(ch)
+            i += 1
+            continue
+        if ch == "/" and i + 1 < n and src[i + 1] == "/":
+            while i < n and src[i] != "\n":
+                i += 1
+            continue
+        if ch == "/" and i + 1 < n and src[i + 1] == "*":
+            i += 2
+            while i + 1 < n and not (src[i] == "*" and src[i + 1] == "/"):
+                i += 1
+            i += 2
+            continue
+        out.append(ch)
+        i += 1
+    return "".join(out)
+
+
+def _code_only(path: Path) -> str:
+    """返回剥掉注释（与 Python 的 docstring）后的源码。
+
+    不生效的内容：字符串/模板字面量**保留**——面向用户的文案本身就是要断言
+    的对象（「多赚约」「赚钱概率」正是写在字符串里的）。
     """
     src = path.read_text(encoding="utf-8")
+    if path.suffix == ".js":
+        return _js_code_only(src)
+
     lines = src.splitlines(keepends=True)
 
     for span in _docstring_spans(src):
@@ -218,13 +266,34 @@ def test_chat_fast_path_does_not_gate_on_fabricated_confidence():
 # ============================================================
 
 @pytest.mark.parametrize("rel,forbidden", [
-    ("scripts/weekend_push.py", "历史胜率高"),
-    ("api/shared_helpers.py", "多赚约"),
-    ("api/shared_helpers.py", "长期多赚"),
-    ("api/shared_helpers.py", "买入历史胜率"),
+    # 后端
+    ("backend/scripts/weekend_push.py", "历史胜率高"),
+    ("backend/scripts/weekend_push.py", "买入历史胜率"),
+    ("backend/api/shared_helpers.py", "多赚约"),
+    ("backend/api/shared_helpers.py", "长期多赚"),
+    ("backend/api/signals.py", "多赚15-20"),
+    # 前端：同一句断言的副本（审计发现「多赚15-20%」前后端各有一份）
+    ("pages/quiz.js", "赚钱概率>85%"),
+    ("pages/quiz.js", "多赚约15-20%"),
+    ("pages/chat.js", "多赚2-3%/年"),
 ])
 def test_no_unsubstantiated_statistics_in_copy(rel, forbidden):
-    code = _code_only(_BACKEND / rel)
+    """无出处的统计断言不许出现在面向用户的文案里（前后端一起扫）。
+
+    这条断言的价值在于「副本」：同一句「长期多赚 15-20%」在本轮里先后出现在
+    `shared_helpers.py`、`signals.py`、`quiz.js` 三处——只改后端等于没改。
+    所以扫描范围必须覆盖 pages/*.js。
+    """
+    code = _code_only(_REPO / rel)
     assert forbidden not in code, (
         f"{rel} 出现无出处的统计断言 {forbidden!r}——"
         "与 34.6% / 85% 同类，必须删掉或标注来源。")
+
+
+@pytest.mark.parametrize("rel,expr", [
+    ("pages/chat.js", "c.advantage||0"),
+    ("pages/chat.js", "c.advantage || 0"),
+])
+def test_backtest_advantage_missing_is_not_rendered_as_zero(rel, expr):
+    """回测优势缺失时不得兜底成 0 —— 那会把「不知道」说成「两者收益一样」。"""
+    assert expr not in _code_only(_REPO / rel)

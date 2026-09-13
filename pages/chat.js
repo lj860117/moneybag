@@ -431,7 +431,7 @@ setExplain('safety_margin','安全边际','安全边际就是"买东西打了几
 setExplain('peg','PEG 比率','PEG 就是"股票贵不贵 vs 公司增长快不快"。\n\n📊 计算：\nPEG = PE(市盈率) ÷ 利润增长率\n\n🔍 彼得·林奇的标准：\n• PEG < 1 → 增长快但不贵（便宜货！）\n• PEG = 1 → 价格和增长匹配（合理）\n• PEG > 2 → 太贵了，增长撑不起这个价\n\n💡 林奇说：PE=30的公司如果利润每年增长30%，PEG=1，其实不贵；PE=10的公司如果不增长，PEG=无穷大，反而贵。');
 setExplain('antifragile','反脆弱','反脆弱就是"不仅不怕风险，还能从风险中获益"。\n\n📊 塔勒布的三层分类：\n• 脆弱 → 杯子掉地上就碎了（高杠杆、高集中度）\n• 坚韧 → 铁球掉地上没事（分散配置）\n• 反脆弱 → 越摔越值钱（黑天鹅中获利）\n\n🔍 投资中的反脆弱：\n• 留20%现金 → 大跌时有钱抄底（反脆弱！）\n• 杠铃策略 → 90%极保守 + 10%高风险\n• 定投 → 越跌买越多，均价越低\n\n💡 塔勒布说："风不吹灭蜡烛，却能点旺篝火"——让自己成为篝火。');
 setExplain('drawdown','回撤','回撤就是"从最高点跌了多少"。\n\n📊 怎么理解：\n• 你的账户从10万涨到12万，又跌到10.8万\n• 最高12万 → 现在10.8万 = 回撤10%\n\n🔍 风控红线：\n• 回撤 < 10% → 正常波动 ✅\n• 回撤 10-15% → 需要关注 ⚠️\n• 回撤 15-20% → 考虑降仓 🔴\n• 回撤 > 20% → 止损红线！\n\n💡 巴菲特的第一法则："永远不要亏钱"。回撤监控就是帮你守住这条线。');
-setExplain('rebalance','再平衡','再平衡就是"调鸡尾酒配方"。\n\n📊 举个例子：\n你的目标配置：股票60% + 债券30% + 现金10%\n过了半年股票涨了很多，变成：股票75% + 债券20% + 现金5%\n\n🔍 再平衡操作：\n• 卖掉一些股票（75%→60%）\n• 买入债券和现金（20%→30%，5%→10%）\n• 恢复到目标比例\n\n💡 再平衡的妙处：自动"高抛低吸"——涨多的卖一点，跌多的买一点。每年做1-2次，长期能多赚2-3%/年。');
+setExplain('rebalance','再平衡','再平衡就是"调鸡尾酒配方"。\n\n📊 举个例子：\n你的目标配置：股票60% + 债券30% + 现金10%\n过了半年股票涨了很多，变成：股票75% + 债券20% + 现金5%\n\n🔍 再平衡操作：\n• 卖掉一些股票（75%→60%）\n• 买入债券和现金（20%→30%，5%→10%）\n• 恢复到目标比例\n\n💡 再平衡的妙处：自动"高抛低吸"——涨多的卖一点，跌多的买一点。每年做1-2次，把偏离的目标比例拉回来。');
 
 // ---- 回测可视化弹窗 ----
 async function showBacktest(){
@@ -449,7 +449,9 @@ if(!r.ok)throw new Error('backtest failed');
 const d=await r.json();
 if(d.error){overlay.querySelector('div>div:last-child').innerHTML=`<div style="padding:20px;text-align:center;color:var(--red)">回测失败：${d.error}</div>`;return}
 const c=d.comparison||{};const fix=c.fixedDca||{};const smart=c.smartDca||{};
-const adv=c.advantage||0;
+// v9.9.26 P1-9: advantage 缺失时不能兜底成 0 —— 那会把「不知道」显示成
+// 「两者收益一样」，是拿一个具体结论掩盖没有数据。缺失就如实说暂无。
+const adv=(typeof c.advantage==='number'&&isFinite(c.advantage))?c.advantage:null;
 const content=overlay.querySelector('div>div:last-child');
 content.innerHTML=`
 <div style="text-align:center;margin-bottom:16px"><div style="font-size:12px;color:var(--text2)">近3年 · 每月定投¥1,000 · 沪深300</div></div>
@@ -469,7 +471,7 @@ content.innerHTML=`
 <div style="font-size:11px;color:var(--red)">最大回撤 -${smart.maxDrawdown||0}%</div>
 </div></div>
 <div style="text-align:center;padding:12px;background:rgba(16,185,129,.06);border-radius:10px;margin-bottom:12px">
-<div style="font-size:13px;font-weight:700;color:var(--green)">智能定投多赚 ${adv>0?'+':''}${adv}%</div>
+<div style="font-size:13px;font-weight:700;color:${adv===null?'var(--text2)':'var(--green)'}">${adv===null?'智能定投优势：暂无回测数据':'智能定投多赚 '+(adv>0?'+':'')+adv+'%'}</div>
 <div style="font-size:11px;color:var(--text2);margin-top:4px">低估多买 + 高估少买 = 更优收益</div></div>
 ${(()=>{const fm=fix.advancedMetrics||{};const sm=smart.advancedMetrics||{};
 if(!sm.winRate&&!sm.calmar)return '';

@@ -333,3 +333,48 @@ def test_frontend_quiz_does_not_show_amount_when_missing():
     assert "部分基金收益数据缺失，预期收益不可计算" in src
     # 有缺失时不得绘制预测曲线
     assert "if(projComplete)setTimeout(()=>drawProjChart" in src
+
+
+# ── 6. 风险等级枚举一致性（防静默回退） ───────────────────────────────
+
+def test_risk_templates_covers_authoritative_enum():
+    """RISK_TEMPLATES 必须覆盖权威枚举，否则该档位用户被静默降级。
+
+    真实缺陷（v9.9.26 修正）：模板键曾写作「积极型」，而权威枚举
+    （config.RISK_ALLOC_PCTS / 问卷 getProfile）用的是「进取型」——于是
+    进取型用户在 _allocate_picks 里查不到模板，拿到的是稳健型配置
+    （股票 50% 而非 70%），与自己的风险偏好**方向相反**，且没有任何日志。
+    """
+    import config
+
+    authoritative = set(config.RISK_ALLOC_PCTS.keys())
+    templates = set(pf.RISK_TEMPLATES.keys())
+    missing = authoritative - templates
+    assert not missing, (
+        f"RISK_TEMPLATES 缺少权威枚举档位 {sorted(missing)}——"
+        "这些档位的用户会静默回退到稳健型配置（且无日志）。"
+        "新增风险档位时请同步更新本测试与 RISK_TEMPLATES。")
+
+
+def test_positive_type_is_only_an_alias_for_aggressive():
+    """「积极型」只是「进取型」的别名，不得给出不同配置（否则同名两义）。"""
+    assert pf.RISK_TEMPLATES["积极型"] == pf.RISK_TEMPLATES["进取型"]
+
+
+def test_aggressive_profile_gets_more_stock_than_steady():
+    """进取型必须真的拿到进取型配置，不能退化成稳健型的值。"""
+    picks = [
+        {"code": "000001", "name": "甲", "category": "stock"},
+        {"code": "000002", "name": "乙", "category": "stock"},
+        {"code": "000003", "name": "丙", "category": "bond"},
+    ]
+
+    def stock_pct(profile):
+        out = pf._allocate_picks(picks, profile)
+        return sum(x.get("pct", 0) for x in out if x.get("category") == "stock")
+
+    aggressive, steady = stock_pct("进取型"), stock_pct("稳健型")
+    assert aggressive > 0, "进取型没有分到股票仓位，说明又回退到别的模板了"
+    assert aggressive > steady, (
+        f"进取型股票占比 {aggressive} 未高于稳健型 {steady}，"
+        "说明进取型仍在静默回退")

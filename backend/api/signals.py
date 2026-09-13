@@ -216,7 +216,10 @@ def get_signals(portfolio: Portfolio):
     signals.append({
         "icon": "🧠",
         "title": f"智能定投：本月建议 ¥{smart_dca['smartAmount']:,.0f}",
-        "message": f"基准定投 ¥{smart_dca['baseAmount']:,.0f}，{smart_dca['advice']}（估值{val['percentile']}%）。智能定投核心：低估多买、高估少买，长期能比固定定投多赚15-20%。",
+        # v9.9.26 P1-9: 原文尾句「长期能比固定定投多赚15-20%」是无出处的统计
+        # 断言（与刚清理的 34.6%/85% 同类，且项目里没有回测支撑它）。删除背书，
+        # 只保留机制说明。
+        "message": f"基准定投 ¥{smart_dca['baseAmount']:,.0f}，{smart_dca['advice']}（估值{val['percentile']}%）。智能定投核心：低估多买、高估少买；长期效果取决于市场路径，无法预先给出具体超额收益。",
         "type": "smart_dca", "severity": "info",
     })
 

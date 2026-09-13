@@ -49,7 +49,7 @@ ${adjHtml}
 </div><div style="font-size:13px;color:var(--text2);margin-bottom:8px">3年累计预测(中性场景)</div><div class="projection-chart-wrap"><canvas id="projChart"></canvas></div>`:`<div style="padding:16px;font-size:13px;color:var(--text2);line-height:1.7">⚠️ 部分基金收益数据缺失，预期收益不可计算。<br>本工具不对缺失数据做任何假设，缺失原因见各基金的收益来源标注。</div>`}</div>
 <div id="signalsSection"></div>
 <div class="section-title">⚠️ 三条铁律</div>
-<div class="rules-card"><div class="rule-item"><div class="rule-num">1</div><div class="rule-text"><strong>跌了别卖</strong>—越跌越该买</div></div><div class="rule-item"><div class="rule-num">2</div><div class="rule-text"><strong>别看新闻瞎操作</strong>—关掉手机</div></div><div class="rule-item"><div class="rule-num">3</div><div class="rule-text"><strong>至少拿3年</strong>—3年赚钱概率>85%</div></div></div>
+<div class="rules-card"><div class="rule-item"><div class="rule-num">1</div><div class="rule-text"><strong>跌了别卖</strong>—越跌越该买</div></div><div class="rule-item"><div class="rule-num">2</div><div class="rule-text"><strong>别看新闻瞎操作</strong>—关掉手机</div></div><div class="rule-item"><div class="rule-num">3</div><div class="rule-text"><strong>至少拿3年</strong>—短期波动不决定长期结果</div></div></div>
 <div class="bottom-actions"><button class="action-btn green" onclick="confirmPurchase()">✅ 我知道了，去录入持仓</button><button class="action-btn secondary" onclick="restart()">🔄 重新测评</button></div>
 <div class="footer-disclaimer">⚠️ 本工具仅供参考学习，不构成投资建议。投资有风险，入市需谨慎。</div></div>`;
 renderNav();setTimeout(()=>drawAllocChart(al),100);if(projComplete)setTimeout(()=>drawProjChart(amt,mR.total/amt),200);loadSignals()}
@@ -137,7 +137,7 @@ html+=`</div>`}
 // 智能定投建议
 if(d.smartDca){
 const sc=d.smartDca;
-setExplain('smartdca','智能定投策略','🧠 智能定投 vs 固定定投：\n\n固定定投：每月投相同金额。\n智能定投：根据估值动态调整——低估多买、高估少买。\n\n当前估值百分位：'+sc.valuationPct+'%\n本月倍率：'+sc.multiplier+'x\n'+sc.advice+'\n\n📊 倍率对照表：\n• 估值 <20% → 1.5x（极度低估，多买）\n• 20-30% → 1.3x（低估，适当多买）\n• 30-50% → 1.1x（偏低，略多）\n• 50-70% → 1.0x（正常）\n• 70-85% → 0.7x（偏高，少买）\n• >85% → 0.3x（高估，大幅减少）\n\n历史回测：智能定投比固定定投长期多赚约15-20%。\n\n⚠️ 仅供参考，不构成投资建议。');
+setExplain('smartdca','智能定投策略','🧠 智能定投 vs 固定定投：\n\n固定定投：每月投相同金额。\n智能定投：根据估值动态调整——低估多买、高估少买。\n\n当前估值百分位：'+sc.valuationPct+'%\n本月倍率：'+sc.multiplier+'x\n'+sc.advice+'\n\n📊 倍率对照表：\n• 估值 <20% → 1.5x（极度低估，多买）\n• 20-30% → 1.3x（低估，适当多买）\n• 30-50% → 1.1x（偏低，略多）\n• 50-70% → 1.0x（正常）\n• 70-85% → 0.7x（偏高，少买）\n• >85% → 0.3x（高估，大幅减少）\n\n智能定投在低估区间多买、高估区间少买；长期效果取决于市场路径，无法预先给出具体超额收益。\n\n⚠️ 仅供参考，不构成投资建议。');
 html+=`<div style="background:var(--card);border-radius:12px;padding:12px;margin-bottom:12px;cursor:pointer" onclick="showExplain('smartdca')">
 <div style="display:flex;justify-content:space-between;align-items:center">
 <div><div style="font-size:13px;font-weight:700">🧠 智能定投建议</div><div style="font-size:11px;color:var(--text2);margin-top:2px">${sc.advice}</div></div>
