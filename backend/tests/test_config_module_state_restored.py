@@ -61,8 +61,18 @@ env -u PYTHONPATH python3 -m pytest \
 （test_fund_detail_ak_timeout.py:40 / test_user_optimistic_lock.py:43 /
 test_broker_research_quota_degradation.py:226）。
 
-**全量跑（`pytest tests/ -q`，约 3 分钟）不是主判据**：理论值 ≥5，但**从未实测完**
-（唯一一次跑到 11 分钟被 kill）。谁真跑了，请把数字补到本段替换这句话。
+**全量跑（`pytest tests/ -q`，约 3 分钟）不是主判据**，但它**实测过两次、结果稳定**：
+```
+5 failed, 2067 passed, 1 skipped, 1 xfailed, 19 subtests passed in ~179s
+```
+红的正是上面那 5 条。两次实测分别用**不同注入锚点**（整段恢复循环换成 `return` /
+`setattr` 换成 `pass`）、**不同 HEAD**（68033f7 / 53d82ac），结论一致 ⇒ 这个 "5"
+不是从两文件结果外推的，是实测值；也说明它不依赖守卫的具体写法（哪天有人把显式
+循环"优化"成 `vars(cfg).update(...)`，指纹不会跟着变）。
+
+分工：全量用于**查污染面**（判读里的"多于 5"只有全量看得出来）；
+日常回归用上面那条 0.3s 的两文件命令。
+⚠️ 这个 5 会随用例增减变化 —— 哪天全量红了 6 条，先按判读规则查污染面，别急着改本段。
 
 判读（两个方向都会响，别只盯一个）：
   • 红**多于** 5 → 还有别的用例在吃 config 基线，污染面比已知的大；
