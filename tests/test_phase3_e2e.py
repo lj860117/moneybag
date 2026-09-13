@@ -155,30 +155,24 @@ class TestPhase3EndToEnd:
             get_monthly_trend
         )
         
-        # Mock get_unified_networth
+        # Mock 净资产来源
         #
-        # FIX 2026-09-13（patch 目标根本不存在）：
-        #   原写法 `patch("backend.services.portfolio_overview.get_unified_networth")`
-        #   必然抛 AttributeError —— `backend/services/portfolio_overview.py` 里
-        #   只有 `get_portfolio_overview`，从来没有 `get_unified_networth`
-        #   （`git log -S get_unified_networth -- backend/services/portfolio_overview.py`
-        #   为空，即该符号从未在此文件存在过）。
+        # FIX 2026-09-13：原写法 patch 的是
+        #   `backend.services.portfolio_overview.get_unified_networth`
+        # —— 该符号**在任何模块都不存在**，patch 必抛 AttributeError。
+        # 生产侧 `monthly_snapshot.py` 当时也从同一个不存在的名字 import，
+        # 于是这个"测试"其实在测一条根本不存在的路径。
         #
-        #   两处必须同时改对：
-        #   1) 命名空间。本仓库 `backend/services/*.py` 会被 `sys.path` 里的
-        #      `.` 和 `backend` 两条路径各加载一次，`backend.services.X` 与
-        #      `services.X` 是**两个不同的 module 对象**。被测对象
-        #      `backend.services.monthly_snapshot.save_monthly_snapshot` 内部写的是
-        #      `from services.portfolio_overview import get_unified_networth`，
-        #      所以 mock 必须打在 `services.portfolio_overview` 上（打在
-        #      `backend.services.*` 上永远不会被 SUT 查到）。
-        #   2) 符号本身在生产里不存在 → 用 create=True 注入到 SUT 的查找点。
+        # 现在生产已修正为从真实模块导入：
+        #   `from services.unified_networth import calc_unified_networth`
+        # 故 patch 目标改为 SUT 真实查找点 `services.unified_networth.calc_unified_networth`
+        # （不再需要 create=True）。
         #
-        #   注意：`monthly_snapshot.py:57` 至今仍在从 portfolio_overview 导入这个
-        #   不存在的名字（真实现是 services/unified_networth.py 的
-        #   `calc_unified_networth`，cfo_dashboard 早在 bf01e97 修过同类错位）。
-        #   这是**生产 bug**，按本次任务约束不在测试里顺手改，已写入保留意见。
-        with patch("services.portfolio_overview.get_unified_networth", create=True) as mock_nw:
+        # 命名空间提醒：本仓库 `backend/services/*.py` 会被 sys.path 上的 `.`
+        # 和 `backend` 两条路径各加载一次，`backend.services.X` 与 `services.X`
+        # 是**两个不同的 module 对象**。SUT 用的是 `services.*`，所以只能打在
+        # `services.unified_networth` 上。
+        with patch("services.unified_networth.calc_unified_networth") as mock_nw:
             mock_nw.return_value = {
                 "netWorth": 1000000,
                 "breakdown": {

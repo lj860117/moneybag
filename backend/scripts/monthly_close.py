@@ -40,6 +40,8 @@ def run_monthly_close():
         "message": "",
         "stats": {
             "snapshots_saved": 0,
+            "users_scanned": 0,
+            "snapshot_failures": [],
             "events_cleaned": 0,
             "todos_cleaned": 0,
             "users_processed": 0,
@@ -51,9 +53,20 @@ def run_monthly_close():
         # 步骤 1: 为所有用户保存月度快照
         print("[MONTHLY_CLOSE] Step 1: 保存月度快照...")
         try:
-            snapshots_count = save_all_users_snapshots()
-            result["stats"]["snapshots_saved"] = snapshots_count
-            print(f"[MONTHLY_CLOSE] ✓ 为 {snapshots_count} 个用户保存了快照")
+            # FIX 2026-09-13: save_all_users_snapshots 改为返回 dict
+            # （scanned/saved/failed），不再只返回一个整数成功数 ——
+            # 原来失败用户被静默 continue，上层完全看不到。
+            snapshots_report = save_all_users_snapshots()
+            result["stats"]["snapshots_saved"] = snapshots_report["saved"]
+            result["stats"]["users_scanned"] = snapshots_report["scanned"]
+            result["stats"]["snapshot_failures"] = snapshots_report["failed"]
+            print(f"[MONTHLY_CLOSE] ✓ 为 {snapshots_report['saved']} 个用户保存了快照"
+                  f"（扫描 {snapshots_report['scanned']} 个）")
+            if snapshots_report["failed"]:
+                msg = (f"月度快照失败 {len(snapshots_report['failed'])} 个用户: "
+                       f"{snapshots_report['failed']}")
+                print(f"[MONTHLY_CLOSE] ⚠️ {msg}")
+                result["stats"]["errors"].append(msg)
         except Exception as e:
             msg = f"保存快照失败: {str(e)}"
             print(f"[MONTHLY_CLOSE] ✗ {msg}")

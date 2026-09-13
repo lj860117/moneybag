@@ -11,6 +11,7 @@
 - get_monthly_trend: 获取趋势数据
 """
 import json
+import sys
 from datetime import datetime
 from pathlib import Path
 from typing import Optional, Any
@@ -53,11 +54,27 @@ def save_monthly_snapshot(user_id: str) -> Optional[dict]:
         return snapshots[month_key]
     
     # 获取当前净资产
+    #
+    # FIX 2026-09-13（假成功事故）：这里原本写的是
+    #     from services.portfolio_overview import get_unified_networth
+    # 但 `get_unified_networth` 这个符号**在任何模块都不存在**
+    # （`portfolio_overview.py` 只有 `get_portfolio_overview`；
+    #  `git log -S get_unified_networth -- backend/services/portfolio_overview.py`
+    #  为空，即它从未在该文件出现过）。真实现是
+    # `services/unified_networth.py:66 calc_unified_networth`，返回结构
+    # `{"netWorth": float, "breakdown": {...}, ...}` 与下方 :63-70 消费的键名一致。
+    #
+    # 因为 import 写在 try/except 里，ImportError 被静默吞掉 → nw=None →
+    # 本函数永远返回 None → 月度快照一个都没存下来，而 night_worker 还打绿勾
+    # "✅ 快照完成: 0 个用户"（同一错位 cfo_dashboard 早在 bf01e97 修过）。
     try:
-        from services.portfolio_overview import get_unified_networth
-        nw = get_unified_networth(user_id)
+        from services.unified_networth import calc_unified_networth
+        nw = calc_unified_networth(user_id)
     except Exception as e:
-        print(f"[SNAPSHOT] get_unified_networth failed for {user_id}: {e}")
+        # 写 stderr 并带 ERROR 前缀：原来这条是普通 stdout，跟成功日志混在一起，
+        # 是"失败被伪装成完成"的一半原因。
+        print(f"[SNAPSHOT] ❌ ERROR calc_unified_networth 失败 user={user_id}: {e}",
+              file=sys.stderr, flush=True)
         nw = None
     
     if not nw or not nw.get("netWorth"):
@@ -87,7 +104,7 @@ def save_monthly_snapshot(user_id: str) -> Optional[dict]:
     
     # ── 存储快照：RMW 临界区 ──
     # FIX 2026-08-30（并发丢更新）：
-    # 上面的 get_unified_networth / get_allocation_advice 都是**昂贵计算**
+    # 上面的 calc_unified_networth / get_allocation_advice 都是**昂贵计算**
     # （可能走网络取净值），刻意留在锁外，锁内只做 load → 写 → save。
     # 注意锁内**必须重新 load 并重做幂等判定**：锁外那次 load 到现在可能已经
     # 过了几秒，期间别的进程（如 cron）可能已经写入了本月快照，
@@ -222,32 +239,69 @@ def get_snapshot_latest(user_id: str) -> Optional[dict]:
     return snapshot
 
 
-def save_all_users_snapshots() -> int:
+def save_all_users_snapshots() -> dict:
     """
     为所有用户保存月度快照（供定时任务月初调用）。
-    
+
     Returns:
-        成功保存快照的用户数
+        {
+          "scanned": 扫描到的用户文件数,
+          "saved":   成功保存（含同月幂等命中已有快照）的用户数,
+          "failed":  [{"userId": ..., "error": ...}, ...]，
+                     # 读文件失败 / 缺 userId / 保存抛异常 / 返回 None 都算失败
+        }
+
+    FIX 2026-09-13（假成功事故）：原来只返回一个整数（成功数），并且对每个
+    失败用户静默 `continue` —— 调用方（night_worker）于是把"扫描到 N 个用户、
+    成功 0 个"打成绿勾"✅ 快照完成: 0 个用户"，看起来是正常完成。
+    现在返回结构化报告，让调用方能区分"没有用户"（scanned == 0）和
+    "用户全都在失败"（scanned > 0 且 saved == 0）。
+    调用方 `scripts/monthly_close.py` 与 `scripts/night_worker.py` 已同步改签名。
     """
     users_dir = DATA_DIR / "users"
+    report: dict = {"scanned": 0, "saved": 0, "failed": []}
     if not users_dir.exists():
-        return 0
-    
-    count = 0
+        return report
+
     for user_file in users_dir.glob("*.json"):
+        report["scanned"] += 1
+
         try:
             data = json.loads(user_file.read_text(encoding="utf-8"))
-            user_id = data.get("userId")
-            if user_id:
-                result = save_monthly_snapshot(user_id)
-                if result:
-                    count += 1
         except Exception as e:
-            print(f"[SNAPSHOT] Error processing {user_file}: {e}")
+            print(f"[SNAPSHOT] ❌ ERROR 读取用户文件失败 {user_file}: {e}",
+                  file=sys.stderr, flush=True)
+            report["failed"].append(
+                {"userId": None, "file": str(user_file), "error": f"读取失败: {e}"})
             continue
-    
-    print(f"[SNAPSHOT] ✓ 为 {count} 个用户保存了月度快照")
-    return count
+
+        user_id = data.get("userId")
+        if not user_id:
+            print(f"[SNAPSHOT] ❌ ERROR 用户文件缺少 userId: {user_file}",
+                  file=sys.stderr, flush=True)
+            report["failed"].append(
+                {"userId": None, "file": str(user_file), "error": "缺少 userId 字段"})
+            continue
+
+        try:
+            result = save_monthly_snapshot(user_id)
+        except Exception as e:
+            print(f"[SNAPSHOT] ❌ ERROR 保存快照异常 user={user_id}: {e}",
+                  file=sys.stderr, flush=True)
+            report["failed"].append({"userId": user_id, "error": f"保存异常: {e}"})
+            continue
+
+        if result:
+            report["saved"] += 1
+        else:
+            report["failed"].append({
+                "userId": user_id,
+                "error": "save_monthly_snapshot 返回 None（净资产取不到或抢锁超时）",
+            })
+
+    print(f"[SNAPSHOT] 月度快照：扫描 {report['scanned']} 个用户，"
+          f"成功 {report['saved']}，失败 {len(report['failed'])}")
+    return report
 
 
 __all__ = [

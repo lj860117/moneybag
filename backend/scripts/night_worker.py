@@ -313,15 +313,43 @@ def step_health_check():
 # ============================================================
 
 def step_monthly_snapshot():
-    """每月 1 号保存所有用户的净资产快照"""
+    """每月月初保存所有用户的净资产快照
+
+    FIX 2026-09-13，两处：
+
+    1) 补跑窗口（原 `if date.today().day != 1: return`）。
+       本 step 由 cron `0 1 * * 1-5` 拉起（**只在周一到周五**）。若某月 1 号
+       恰逢周末，这个 step 那个月永远不会被执行 —— 快照被**永久跳过且无补跑**。
+       放宽为"月初前 3 天"都尝试，靠 `save_monthly_snapshot` 的幂等保证安全：
+       它先做锁外快速预检（monthly_snapshot.py:51-53），再在 user_write_lock
+       内重新 load 并重检（:100-103），所以同一个月被 2 号、3 号重复触发
+       也只会写一次，不会覆盖、不会重复。
+
+    2) 失败不再伪装成完成。原来无条件
+       `log(f"  ✅ 快照完成: {count} 个用户")` —— 线上实测那天打印的是
+       "✅ 快照完成: 0 个用户"（步骤跑了、绿勾、实际一个都没存）。
+       现在 scanned>0 且 saved==0 打 ⚠️，只有确实没有用户时才允许 ✅。
+    """
     from datetime import date
-    if date.today().day != 1:
-        return  # 非月初不执行
+    if date.today().day > 3:
+        return  # 非月初（含 1-3 号的补跑窗口）不执行
     log("📸 01:15 月度净资产快照")
     try:
         from services.monthly_snapshot import save_all_users_snapshots  # FIX: 函数名是复数 snapshots
-        count = save_all_users_snapshots()
-        log(f"  ✅ 快照完成: {count} 个用户")
+        report = save_all_users_snapshots()  # FIX 2026-09-13: 返回 dict（scanned/saved/failed）
+        scanned = report["scanned"]
+        saved = report["saved"]
+        failed = report["failed"]
+        if scanned == 0:
+            log("  ✅ 快照完成: 无用户，无需保存")
+        elif saved == 0:
+            log(f"  ⚠️ 快照异常: 扫描 {scanned} 个用户，成功 0 个 —— 疑似全部失败；"
+                f"失败明细: {failed}")
+        elif failed:
+            log(f"  ⚠️ 快照部分完成: {saved}/{scanned} 个用户成功，"
+                f"{len(failed)} 个失败: {failed}")
+        else:
+            log(f"  ✅ 快照完成: {saved} 个用户")
     except Exception as e:
         log(f"  ❌ 快照失败: {e}")
 
