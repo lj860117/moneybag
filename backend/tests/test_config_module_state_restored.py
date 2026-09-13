@@ -58,8 +58,9 @@ cd backend && env -u PYTHONPATH python3 -m pytest \
 env -u PYTHONPATH python3 -m pytest tests/test_llm_quota_alert_dedupe.py -q
 → 25 passed, **0 red**   ← 注入了也不红！
 ```
-第 5 条的红色**完全来自排在它前面的污染源**（本文件的 test_1/test_5，或全量里
-天然排在前面的 test_fund_detail_ak_timeout.py 等）。单独跑它一个文件，注入了也
+第 5 条的红色**完全来自排在它前面的污染源**：本文件 test_1（它污染 DATA_DIR；
+test_5 只污染 NAV_CACHE_TTL，喂不到这条），或全量里排在前面的
+test_fund_detail_ak_timeout.py:44。单独跑它一个文件，注入了也
 全绿 —— 谁图省事这么验一次，会得出「这条断言是空的、删了吧」的**反向结论**。
 所以指纹必须用上面那条两文件命令，不能只跑被保护的那一半。
 
@@ -71,9 +72,19 @@ env -u PYTHONPATH python3 -m pytest \
 → 1 failed, 41 passed   ← 只有第 5 条红
 ```
 这条证明第 5 条**不是只靠本文件才红**：ak_timeout（全量里 f < l，天然排在前面）
-单独就能把它喂红。全量里它前面有 3 个独立污染源
-（test_fund_detail_ak_timeout.py:40 / test_user_optimistic_lock.py:43 /
-test_broker_research_quota_degradation.py:226）。
+单独就能把它喂红。
+
+全量里真正排在 dedupe 前面的污染源是 **2 个**（不是 3 个）：
+  · 本文件 test_config_module_state_restored.py（c < l，test_1 制造）
+  · test_fund_detail_ak_timeout.py（f < l，第 44 行）
+两个易错点：
+  · test_user_optimistic_lock.py 确实是污染源（第 48 行），但 **u > l，排在
+    dedupe 后面**，喂不到它 —— 它污染的是排在自己之后的用例。别按
+    "所有污染源都在它前面"推理。
+  · test_broker_research_quota_degradation.py 不是污染源（见文首）。
+收集顺序实测（`pytest tests/ --collect-only -q`）：
+  broker(b) → config_module_state_restored(c) → fund_detail(f) → dedupe(l)
+  → user_optimistic_lock(u)，即按文件名字母序。
 
 **全量跑（`pytest tests/ -q`，约 3 分钟）不是主判据**，但它**实测过两次、结果稳定**：
 ```
@@ -92,8 +103,9 @@ test_broker_research_quota_degradation.py:226）。
   • 红**多于** 5 → 还有别的用例在吃 config 基线，污染面比已知的大；
   • 红**少于** 5 → 更危险，分两层看：
       - 掉到 **4**：先看清是谁没红。少的是 **test_7** → 守卫丢了跨模块真实消费方；
-        少的是 **第 5 条** → 说明**三个污染源全没了**（不只是本文件被改），
-        概率低但性质更严重，先查那 3 个文件是不是被"顺手清理"了。
+        少的是 **第 5 条** → 说明**两个污染源全没了**（不只是本文件被改），
+        概率低但性质更严重，先查那 2 个文件（fund_detail_ak_timeout.py:44 /
+        user_optimistic_lock.py:48）是不是被"顺手清理"了。
       - 掉到 **3**：test_7 和第 5 条**都没红**，那才真是"守卫只剩自证自话"。
 
 历史：ec41999 的 commit message 里写的是「3 failed」，那是 test_6/test_7 补进来
@@ -131,7 +143,8 @@ def test_1_pollute_config_module_without_restoring(monkeypatch, tmp_path):
 
     monkeypatch 会在本用例结束时把 os.environ["DATA_DIR"] 还原 —— 但那正是
     事故现场：env 还原了，**reload 过的 config 模块对象不会自己还原**。
-    这条用例精确复刻那 3 个污染源文件留下的脏状态。
+    这条用例精确复刻那 2 个污染源（fund_detail_ak_timeout.py:44 /
+    user_optimistic_lock.py:48）留下的脏状态。
     """
     global _POLLUTED_DATA_DIR
 
