@@ -1685,19 +1685,157 @@ def get_fund_portfolio(code: str, period: str = "") -> dict:
     }
 
 
-def get_fund_nav_by_date(nav_date: str) -> list:
+# ---- fund_nav 分页取数的硬上限 ----
+#
+# _FUND_NAV_PAGE_SIZE：Tushare fund_nav 的单次返回行数上限。2026-09-13 在
+#   nav_date=20260911 上实测：
+#       offset=0     limit=10000 → 10000 行
+#       offset=10000 limit=10000 → 10000 行
+#       offset=20000 limit=10000 →  4338 行   ← 不满一页 = 最后一页
+#       offset=0     limit=10500 → 10500 行   ← 服务端默认上限
+#   即该日全市场共 **24338 行**，而修复前只发起一次调用 → 只拿到 10500 行
+#   （43%），后面 13838 行被静默丢掉。
+#   这里取 10000 而不是 10500：fund_nav **认** limit 参数（与 share_float
+#   不同，后者传 8000/20000 都只回 6000），取略小于服务端上限的值可以让
+#   "单页取满 ⇒ 后面可能还有"这个终态判据稳定成立。
+# _FUND_NAV_MAX_PAGES / _FUND_NAV_MAX_ROWS：防死循环双保险，含义同
+#   _SHARE_FLOAT_*（见上）。24338 行 = 3 页，12 页 / 12 万行留约 4 倍余量。
+_FUND_NAV_PAGE_SIZE = 10000
+_FUND_NAV_MAX_PAGES = 12
+_FUND_NAV_MAX_ROWS = 120000
+
+_FUND_NAV_FIELDS = "ts_code,ann_date,nav_date,unit_nav,accum_nav,adj_nav"
+
+
+def _fetch_fund_nav_rows(nav_date: str, max_pages: int = 0) -> tuple:
+    """分页拉全 fund_nav 在 nav_date 这一天的所有净值行
+
+    ⚠️ 为什么必须翻页（2026-09-13 实测，nav_date=20260911）：
+      * Tushare fund_nav 单次调用**最多返回 10500 行**（服务端默认上限）。
+      * 而该日全市场真实共 **24338 行**（全市场 17949 只基金：场内 2949 +
+        场外 15000，一只基金当天可能有多条记录）。
+      * 单次调用只拿回前 10500 行 = **43%**，其余 13838 行被静默丢掉。
+        后果：fund_rank_build.py 构建的 fund_rank_ts.json 排行榜一直基于
+        **不到一半的样本**排名（实测 total_funds 只有 628）。
+
+    为什么用 offset 而不是"按代码段/按市场切分"：fund_nav 的入参只有
+    nav_date / ts_code / market，没有可切分的日期区间；而按 ts_code 逐个
+    查会把 2 万次调用打爆 Tushare 限额。offset 翻页是这里唯一可行的方式，
+    且已实测有效（见 _FUND_NAV_PAGE_SIZE 注释里的三组数据）。
+
+    防死循环：三重硬上限，任一命中即停止并回报 complete=False
+      * 最多 page_budget 页（= _FUND_NAV_MAX_PAGES，或调用方指定的 max_pages）；
+      * 累计行数不超过 _FUND_NAV_MAX_ROWS；
+      * 单页返回行数 < page_size ⇒ 已经是最后一页，正常结束（complete=True）。
+
+    Args:
+        nav_date: 净值日期 YYYYMMDD。
+        max_pages: 最多翻几页。<=0 表示不限（用 _FUND_NAV_MAX_PAGES）。
+            传 1 = 只探测这一天有没有数据，供"往前找交易日"使用。
+
+    Returns:
+        (rows, meta)，meta = {
+            "complete": bool,          # False = 被上限截断，数据不完整
+            "pages": int,              # 实际发起的调用次数
+            "rows": int,               # 翻页拼合后的行数
+            "truncated_reason": str,   # 不完整时的原因，完整时为 ""
+        }
     """
-    按日期批量拉全市场基金净值（A++ 基金排行榜飞速版核心）
-    nav_date: YYYYMMDD
-    返回全部基金当天净值（一次调用可返回 1 万+ 条）
-    """
-    rows = _call_tushare(
-        "fund_nav",
-        {"nav_date": nav_date},
-        "ts_code,ann_date,nav_date,unit_nav,accum_nav,adj_nav",
+    rows: list = []
+    complete = False
+    truncated_reason = ""
+    pages = 0
+
+    page_budget = (
+        _FUND_NAV_MAX_PAGES
+        if max_pages <= 0
+        else max(1, min(int(max_pages), _FUND_NAV_MAX_PAGES))
     )
-    print(f"[TUSHARE-FUND-BATCH] nav_date={nav_date}: {len(rows)} 条基金净值")
+
+    for page_index in range(page_budget):
+        page = _call_tushare(
+            "fund_nav",
+            {
+                "nav_date": nav_date,
+                "offset": page_index * _FUND_NAV_PAGE_SIZE,
+                "limit": _FUND_NAV_PAGE_SIZE,
+            },
+            _FUND_NAV_FIELDS,
+        )
+        pages = page_index + 1
+        rows.extend(page or [])
+
+        # 取不满一页 ⇒ 这就是最后一页（唯一"真的取完了"的判定条件）
+        if len(page or []) < _FUND_NAV_PAGE_SIZE:
+            complete = True
+            break
+        if len(rows) >= _FUND_NAV_MAX_ROWS:
+            truncated_reason = f"累计行数达到上限 {_FUND_NAV_MAX_ROWS}"
+            break
+    else:
+        truncated_reason = f"翻页次数达到上限 {page_budget}"
+
+    meta = {
+        "complete": complete,
+        "pages": pages,
+        "rows": len(rows),
+        "truncated_reason": truncated_reason,
+    }
+    # max_pages>0 是调用方**主动**只要前几页（探测），本来就没打算取全，
+    # 不算异常，不打告警 —— 否则"往前找交易日"会刷一屏假告警。
+    if not complete and max_pages <= 0:
+        print(
+            f"[TUSHARE] fund_nav 未取全：{truncated_reason}"
+            f"（nav_date={nav_date}，已取 {len(rows)} 行 / {pages} 页）"
+            f" → 排行榜样本不完整，勿当作全市场快照使用"
+        )
+    return rows, meta
+
+
+def get_fund_nav_by_date(nav_date: str, max_pages: int = 0) -> list:
+    """按日期批量拉全市场基金净值（A++ 基金排行榜飞速版核心）
+
+    ⚠️ 取数修正（单次调用被截断到 43%，2026-09-13 实测，详见
+    _fetch_fund_nav_rows()）：本函数此前只发起**一次** Tushare 调用，而
+    fund_nav 单次最多返回 10500 行、该日真实共 24338 行 → 只拿到 43%，
+    排行榜长期基于残缺样本排名。现在改为 offset 翻页取全
+    （10000 + 10000 + 4338 = 24338 行 / 3 页）。
+
+    签名与返回类型与修复前**完全一致**（(nav_date) -> list[dict]），老调用
+    方无需改动；新增的 max_pages 是可选参数，默认 0 = 取全。
+
+    Args:
+        nav_date: 净值日期 YYYYMMDD。
+        max_pages: 最多翻几页，默认 0 = 不限。传 1 表示只探测这一天有没有
+            数据（fund_rank_build 往前找交易日时使用，避免调用次数爆炸，
+            详见那里的注释）。
+
+    Returns:
+        list[dict]，全部基金当天净值。
+    """
+    rows, meta = _fetch_fund_nav_rows(nav_date, max_pages=max_pages)
+    if meta["complete"]:
+        suffix = ""
+    elif max_pages > 0:
+        # 探测模式：本来就没打算取全，写成"未取全"会让排障的人误以为出事了
+        suffix = f"，探测模式（只取前 {max_pages} 页）"
+    else:
+        suffix = f"，未取全：{meta['truncated_reason']}"
+    print(
+        f"[TUSHARE-FUND-BATCH] nav_date={nav_date}: {len(rows)} 条基金净值"
+        f"（{meta['pages']} 页{suffix}）"
+    )
     return rows
+
+
+def get_fund_nav_by_date_with_meta(nav_date: str, max_pages: int = 0) -> tuple:
+    """get_fund_nav_by_date() 的带元信息版本：额外回报取数是否完整
+
+    返回 (rows, meta)。rows 与 get_fund_nav_by_date() 的返回值完全一致；
+    meta 见 _fetch_fund_nav_rows()。complete=False 表示被页/行上限截断，
+    此时排行榜的"全市场"口径不成立，不要当作全市场快照使用。
+    """
+    return _fetch_fund_nav_rows(nav_date, max_pages=max_pages)
 
 
 def get_fund_basic_all() -> list:

@@ -11,6 +11,12 @@
   - fund_nav(nav_date=3 年前)
   - 本地计算收益率 → 排序
 
+⚠️ 上面说的"4 次调用"是**逻辑上**的 4 个日期，不是 4 次 HTTP 请求：
+  fund_nav 单次调用最多返回 10500 行，而全市场一天有 24338 行净值记录，
+  因此每个日期实际要 offset 翻页 3 次才取得全（详见 tushare_data.
+  _fetch_fund_nav_rows 的实测注释）。控制调用次数的手段见
+  _PROBE_MAX_PAGES 的说明。
+
 产出：
   <DATA_DIR>/fund_rank_ts.json（DATA_DIR 来自 config，单一数据源）
   结构：{
@@ -69,25 +75,85 @@ from backend.config import DATA_DIR  # noqa: E402
 
 OUTPUT_FILE = Path(DATA_DIR) / "fund_rank_ts.json"
 
+# ---- 找交易日时用"单页探测"，避免 Tushare 调用次数爆炸 ----
+#
+# get_fund_nav_by_date 改成 offset 翻页取全之后，一次调用最多要打 3 次
+# Tushare（24338 行 / 每页 10000）。而 find_latest_trade_date 最多往前试
+# 10 天、find_nav_date_before 各最多试 15 天 —— 若每次都取全，最坏情况是
+#   (10 + 15 + 15) × 3 = 120 次 Tushare 请求，足以触发限流。
+#
+# 但这两个函数在**判定阶段**只需要知道"这一天有没有数据"（阈值 1000 条），
+# 根本不需要全量 —— 第一页（10000 条）就绰绰有余。所以判定阶段统一用
+# max_pages=1 只翻一页；确认命中后再取全一次。
+#
+# 命中后那次"取全"并不会重复消耗第一页的额度：_call_tushare 按
+# (api_name, params, fields) 做进程内缓存，探测与取全的第一页 params 完全
+# 相同（offset=0, limit=10000），直接命中缓存。于是：
+#     现实情况（1~2 次命中）：探测 1~3 次 + 取全 3×3 页（其中 3 页命中缓存）
+#                          ≈ 3 + 6 = 9 次请求
+#     最坏情况（回退满）  ：探测 40 次 + 取全 6 次 ≈ 46 次请求（而非 120）
+_PROBE_MAX_PAGES = 1
+
+# ---- 指数基金的识别口径：看 invest_type，不看 fund_type ----
+#
+# 修前这里写的是 filter_type(["指数"])，即拿 fund_type 去匹配"指数"二字 ——
+# **从建成那天起就永远匹配不到任何东西**，ranks.index 恒为空数组。
+# 实测（2026-09-13，fund_basic 全量 17949 只）fund_type 的取值分布：
+#     混合型 6417 / 股票型 6280 / 债券型 4758 / 货币型 335 / REITs 104 / 其他 55
+# 里面**根本没有**含"指数"的类别。
+#
+# 真正区分指数基金的是 **invest_type**（投资风格），实测分布：
+#     被动指数型 4757 + 增强指数型 837 = 5594 只（占全市场 31%）
+# 这两个取值是 Tushare 自己的分类标签，不是我们从名称里猜的。抽样核对
+# （各 12 只）100% 是 genuine 指数基金，如"大成中证畜牧养殖产业ETF"、
+# "华宝沪深300增强策略ETF"。
+#
+# 为什么不顺带用名称匹配补全：另有 1337 只基金 invest_type 为 None，其中
+# 494 只名称含"指数/ETF/沪深300"等关键词（抽样看绝大多数是 ETF）。它们
+# **确实**是指数基金，但用名称猜会把"沪深300自由现金流ETF"这类边缘品种
+# 和主动基金里名字带"指数"字样的混进来，准确率无法量化。这里宁可要
+# **高准确率的部分覆盖**（5594 只），也不要一个准确率不明的"全量" ——
+# 错误的分类比空分类更有害。漏掉的那部分 ETF 由下面已有的 `etf` 分类
+# （按 "ETF" in name）兜住。
+INDEX_INVEST_TYPES = ("被动指数型", "增强指数型")
+
+
+def is_index_fund(item: dict) -> bool:
+    """指数基金判定：只看 invest_type，不看 fund_type
+
+    fund_type 里没有"指数"这个类别（见 INDEX_INVEST_TYPES 的实测注释），
+    按 fund_type 匹配必然恒为空。
+
+    Args:
+        item: ranks_all 里的一条（必须带 invest_type 字段）。
+
+    Returns:
+        True 表示这是一只被动指数型 / 增强指数型基金。
+    """
+    return (item.get("invest_type") or "") in INDEX_INVEST_TYPES
+
 
 def find_latest_trade_date() -> str:
-    """往前找最多 10 天，找到有净值数据的日期"""
+    """往前找最多 10 天，找到有净值数据的日期
+
+    判定阶段只翻一页（_PROBE_MAX_PAGES），命中后再取全 —— 详见该常量注释。
+    """
     for i in range(1, 11):
         td = (datetime.now() - timedelta(days=i)).strftime("%Y%m%d")
-        navs = get_fund_nav_by_date(td)
+        navs = get_fund_nav_by_date(td, max_pages=_PROBE_MAX_PAGES)
         if navs and len(navs) > 1000:
-            return td, navs
+            return td, get_fund_nav_by_date(td)
     raise RuntimeError("10 天内都找不到有净值数据的日期")
 
 
 def find_nav_date_before(days_before: int, latest_td: str) -> tuple:
-    """找 N 天前有数据的日期"""
+    """找 N 天前有数据的日期（同样先单页探测，命中后再取全）"""
     base = datetime.strptime(latest_td, "%Y%m%d")
     for offset in range(days_before, days_before + 15):
         td = (base - timedelta(days=offset)).strftime("%Y%m%d")
-        navs = get_fund_nav_by_date(td)
+        navs = get_fund_nav_by_date(td, max_pages=_PROBE_MAX_PAGES)
         if navs and len(navs) > 1000:
-            return td, navs
+            return td, get_fund_nav_by_date(td)
     return "", []
 
 
@@ -192,10 +258,20 @@ def build_rank():
         "stock": filter_type(["股票"]),
         "hybrid": filter_type(["混合"]),
         "bond": filter_type(["债券", "定开债"]),
-        "index": filter_type(["指数"]),
+        # ⚠️ 指数基金不能走 filter_type（fund_type 里没有"指数"这个类别，
+        # 走它就恒为空数组）；改按 invest_type 判定，见 INDEX_INVEST_TYPES。
+        "index": [r for r in ranks_all if is_index_fund(r)][:500],
         "qdii": filter_type(["QDII"]),
         "etf": [r for r in ranks_all if "ETF" in (r["name"] or "")][:200],
     }
+
+    # ⚠️ 空分类必须留痕：这个分类曾经**静默空了很久**没人发现（fund_type 里
+    # 根本没有"指数"这个类别）。若 Tushare 哪天把 invest_type 的取值改名，
+    # index 会再次静默归零 —— 所有测试断言的都只是我们写死的常量，抓不到
+    # 上游改名，只有这条日志能在排障时被 grep 到。
+    if not ranks_by_type["index"]:
+        print(f"  ⚠️ index 分类为空：fund_basic 的 invest_type 取值可能已变化，"
+              f"当前口径 {INDEX_INVEST_TYPES}，请重新核对 invest_type 分布")
 
     # 落盘
     OUTPUT_FILE.parent.mkdir(parents=True, exist_ok=True)
