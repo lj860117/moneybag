@@ -624,11 +624,14 @@ def _compute_holding_detail(code: str, userId: str, cache_fp_str: str) -> dict:
     
     # ====== 3.6 双因子智能定投建议 ======
     try:
-        from services.signal import calc_smart_dca_v2
+        from services.signal import calc_smart_dca_v2, normalize_trend_confidence
+        # v9.9.26 P1-9: 置信度缺失/脏值一律按「不足」处理，旧默认 55 违反
+        # 「缺失 ≠ 高置信度」——没数据的持仓不该拿到"充足"待遇（详见
+        # services/signal.py:normalize_trend_confidence）。
         dca = calc_smart_dca_v2(
-            trend_direction=result.get("trend_direction", "flat"),
-            trend_score=result.get("trend_score", 0),
-            trend_confidence=result.get("trend_confidence", 55),
+            trend_direction=result.get("trend_direction") or "flat",
+            trend_score=result.get("trend_score") or 0,
+            trend_confidence=normalize_trend_confidence(result.get("trend_confidence")),
             nav_percentile=result.get("nav_percentile"),
             trend_conflict=result.get("trend_conflict", ""),
         )
@@ -1152,13 +1155,14 @@ def _compute_holdings_enrich(userId: str) -> dict:
     
     # v9.5.123: 双因子智能定投建议
     try:
-        from services.signal import calc_smart_dca_v2
+        from services.signal import calc_smart_dca_v2, normalize_trend_confidence
         for f in enriched:
             if f.get("trend_direction"):
                 dca = calc_smart_dca_v2(
-                    trend_direction=f.get("trend_direction", "flat"),
-                    trend_score=f.get("trend_score", 0),
-                    trend_confidence=f.get("trend_confidence", 55),
+                    trend_direction=f.get("trend_direction") or "flat",
+                    trend_score=f.get("trend_score") or 0,
+                    # v9.9.26 P1-9: 旧写法 f.get(..., 55) 会把「缺失」当「充足」
+                    trend_confidence=normalize_trend_confidence(f.get("trend_confidence")),
                     nav_percentile=f.get("nav_percentile"),
                     trend_conflict=f.get("trend_conflict", ""),
                 )

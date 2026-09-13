@@ -460,20 +460,28 @@ window.showFundDetailModal = async function(code, name) {
       advHtml += '</div>';
       
       // v9.5.123: 走势预估 Layer 2 摘要面板（8维度+置信度）
+      // v9.9.26 P1-9: 置信度不足 / 方向未知时禁止显示方向与带符号分数。
+      // 后端把「模型自己承认没看懂」标成 trend_direction='unknown' +
+      // trend_confidence_sufficient=false；这里若沿用旧的三元兜底就会渲染成
+      // '→ 震荡'，等于把「数据不足」伪装成「判断为横盘」——正是要消灭的形态。
       if(d.trend_direction) {
         const tDir = d.trend_direction;
+        const tInsufficient = d.trend_confidence_sufficient === false || tDir === 'unknown';
         const tScore = d.trend_score || 0;
         const tConf = d.trend_confidence || 0;
         const tReason = d.trend_reason || '';
         const tConflict = d.trend_conflict || '';
         const tDims = d.trend_dimensions || {};
-        const tColor = tDir==='up'?'#86EFAC':tDir==='down'?'#FCA5A5':'#9AA1AC';
-        const tBg = tDir==='up'?'rgba(134,239,172,.06)':tDir==='down'?'rgba(252,165,165,.06)':'rgba(154,161,172,.04)';
-        const tLabel = d.trend_label || '→ 震荡';
+        const tColor = tInsufficient?'#9AA1AC':(tDir==='up'?'#86EFAC':tDir==='down'?'#FCA5A5':'#9AA1AC');
+        const tBg = tInsufficient?'rgba(154,161,172,.04)':(tDir==='up'?'rgba(134,239,172,.06)':tDir==='down'?'rgba(252,165,165,.06)':'rgba(154,161,172,.04)');
+        const tLabel = d.trend_label || (tInsufficient ? '❓ 数据不足' : '→ 震荡');
+        const tScoreHtml = tInsufficient
+          ? '<span style="font-size:10px;color:var(--text-tertiary)">方向判断需置信度≥50%</span>'
+          : `${tScore>0?'+':''}${tScore}分`;
         
         advHtml += `<div style="margin-bottom:14px;padding:10px 12px;background:${tBg};border:1px solid ${tDir==='up'?'rgba(134,239,172,.2)':tDir==='down'?'rgba(252,165,165,.2)':'rgba(154,161,172,.15)'};border-radius:8px">`;
         advHtml += `<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px">
-          <span style="font-size:13px;font-weight:700;color:${tColor}">${tLabel} ${tScore>0?'+':''}${tScore}分</span>
+          <span style="font-size:13px;font-weight:700;color:${tColor}">${tLabel} ${tScoreHtml}</span>
           <span style="font-size:10px;color:var(--text-tertiary)">置信度 ${tConf}%</span>
         </div>`;
         advHtml += `<div style="font-size:11px;color:var(--text-secondary);margin-bottom:6px">核心驱动: ${tReason}</div>`;
@@ -513,7 +521,7 @@ window.showFundDetailModal = async function(code, name) {
         if(dca.factors) {
           const f = dca.factors;
           advHtml += `<div style="display:flex;flex-wrap:wrap;gap:4px;font-size:10px">
-            <span style="padding:2px 6px;border-radius:4px;background:rgba(148,163,184,.08);color:var(--text-tertiary)">走势:${f.trend_direction==='up'?'偏多':f.trend_direction==='down'?'偏空':'震荡'}</span>
+            <span style="padding:2px 6px;border-radius:4px;background:rgba(148,163,184,.08);color:var(--text-tertiary)">走势:${f.trend_direction==='up'?'偏多':f.trend_direction==='down'?'偏空':f.trend_direction==='unknown'?'数据不足':'震荡'}</span>
             <span style="padding:2px 6px;border-radius:4px;background:rgba(148,163,184,.08);color:var(--text-tertiary)">估值:${f.valuation_tier}</span>
             <span style="padding:2px 6px;border-radius:4px;background:rgba(148,163,184,.08);color:var(--text-tertiary)">置信:${f.trend_confidence}%</span>
             <span style="padding:2px 6px;border-radius:4px;background:rgba(148,163,184,.08);color:var(--text-tertiary)">基准:${f.base_multiplier}x</span>

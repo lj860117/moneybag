@@ -111,6 +111,32 @@ def _valuation_tier(nav_pct) -> str:
     return "极高"
 
 
+def normalize_trend_confidence(raw) -> int:
+    """v9.9.26 P1-9: 把任意来源的 trend_confidence 归一成 0-100 的 int。
+
+    存在的理由：「缺失 ≠ 高置信度」。此前三个调用点各自写
+    ``f.get("trend_confidence", 55)`` —— 默认 55 等于把「没有置信度」当成
+    「置信度充足」，而这正是 P1-9 要消灭的形态；更糟的是当键存在但值为
+    None 时 ``.get`` 返回 None，传进 calc_smart_dca_v2 会在
+    ``trend_confidence < 50`` 处直接抛 TypeError（None < int 在 py3 非法）。
+
+    统一在源头归一：None / 非数字 / 超范围 → 0（按「不足」处理，最保守）。
+    想改判据只改这一处，不要再在各个调用点写第二套默认值。
+    """
+    try:
+        val = int(raw)
+    except (TypeError, ValueError):
+        # None / 字符串 / 列表 / NaN（int(nan) 抛 ValueError）
+        return 0
+    except OverflowError:
+        # int(float('inf')) 抛的是 OverflowError，不是 ValueError —— 少catch
+        # 这一支就会让脏数据把整条定投链路炸掉（本文件测试实测抓到过）。
+        return 0
+    if val < 0 or val > 100:
+        return 0
+    return val
+
+
 def calc_smart_dca_v2(
     trend_direction: str,
     trend_score: int,

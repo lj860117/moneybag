@@ -44,7 +44,7 @@ def push_dca_reminder():
         log(f"  今天{today.day}号, 定投日为{dca_day}号, 跳过")
         return {"pushed": False, "reason": f"非定投日(今天{today.day}号)"}
     
-    from services.signal import calc_smart_dca_v2
+    from services.signal import calc_smart_dca_v2, normalize_trend_confidence
     from services.fund_monitor import load_fund_holdings, get_fund_realtime
     from api.signals import _enrich_trend_forecast
     from services.wxwork_push import is_configured, send_markdown
@@ -83,9 +83,11 @@ def push_dca_reminder():
         
         for fl in fund_list:
             dca = calc_smart_dca_v2(
-                trend_direction=fl.get("trend_direction", "flat"),
-                trend_score=fl.get("trend_score", 0),
-                trend_confidence=fl.get("trend_confidence", 55),
+                trend_direction=fl.get("trend_direction") or "flat",
+                trend_score=fl.get("trend_score") or 0,
+                # v9.9.26 P1-9: 旧写法 fl.get(..., 55) 把「缺失」当「充足」，
+                # 且值为 None 时会在 calc_smart_dca_v2 内抛 TypeError。
+                trend_confidence=normalize_trend_confidence(fl.get("trend_confidence")),
                 nav_percentile=fl.get("nav_percentile"),
                 trend_conflict=fl.get("trend_conflict", ""),
                 base_amount=base_per_fund,
