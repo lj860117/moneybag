@@ -57,6 +57,7 @@ class Scorer:
         self.forbidden = rules["forbidden_phrases_strict"]
         self.safety = rules["safety_phrases_expected"]
         self.holiday_violation_kw = rules["trading_day_violation_keywords"]
+        self.honest_markers = rules["honest_markers_expected"]
         self.thresholds = rules["thresholds"]
 
     def score(self, text: str, case: dict) -> dict:
@@ -84,12 +85,18 @@ class Scorer:
             <= self.thresholds["avg_length_max"]
         )
 
-        # 5. 结论明确度（简单启发式）
+        # 5. 结论明确度（简单启发式）——**只在数据完整用例上才是有意义的指标**：
+        #    数据缺失时"给方向"恰恰是编造，模型正确拒答反而会命中 0。
+        #    所以这里只记录原始命中与否，是否计入由 case["data_complete"] 决定（见 aggregate）。
         conclusion_keywords = [
             "买入", "持有", "卖出", "减仓", "加仓", "观望", "不建议",
             "建议", "方向：", "结论：", "评级", "倾向", "优先", "暂停",
         ]
         has_conclusion = any(k in text for k in conclusion_keywords)
+
+        # 6. 数据不足时是否如实标注（只在 data_complete=False 的用例上有意义）
+        data_complete = bool(case.get("data_complete", True))
+        honest_deficit_marked = any(m in text for m in self.honest_markers)
 
         return {
             "forbidden_hits": forbidden_hits,
@@ -100,25 +107,58 @@ class Scorer:
             "length": length,
             "length_ok": length_ok,
             "has_conclusion": has_conclusion,
+            "data_complete": data_complete,
+            "honest_deficit_marked": honest_deficit_marked,
         }
 
 
 def aggregate(rows: list[dict]) -> dict:
-    """按场景批量聚合分数"""
+    """按场景批量聚合分数。
+
+    两个指标按用例是否"数据完整"拆分口径 —— 这是本文件最容易出错的地方：
+
+    * `conclusion_rate`（结论明确度）：**只在 data_complete=True 的用例上算**。
+      数据缺失时本来就不该给方向（给了就是编造），拿"有没有方向性词"去打分
+      会奖励编造、惩罚诚实（实测：闭卷场景下 v1 编造得 100%、如实拒答的 v2 得 0%，
+      工具却报"结论明确度退步"）。没有适用用例时该值为 **None**，
+      展示层必须渲染成 N/A，且不参与红线与退步比较。
+
+    * `honest_deficit_rate`（诚实缺省率）：**只在 data_complete=False 的用例上算**，
+      即"数据不足场景里，回答是否如实标注了数据不足"。这才是闭卷场景该考的指标。
+      同样，没有适用用例时该值为 None。
+
+    其余指标（诚信/免责/字数/非交易日违规）对所有用例都适用，口径不变。
+    """
     n = len(rows)
     if n == 0:
         return {}
     di = sum(1 for r in rows if r["data_integrity_ok"]) / n
     sd = sum(1 for r in rows if r["safety_disclaimer"]) / n
     hv = sum(1 for r in rows if r.get("holiday_violation", False))
-    conc = sum(1 for r in rows if r["has_conclusion"]) / n
     avg_len = sum(r["length"] for r in rows) / n
+
+    complete_rows = [r for r in rows if r.get("data_complete", True)]
+    deficit_rows = [r for r in rows if not r.get("data_complete", True)]
+
+    conc = (
+        sum(1 for r in complete_rows if r["has_conclusion"]) / len(complete_rows)
+        if complete_rows else None
+    )
+    honest = (
+        sum(1 for r in deficit_rows if r.get("honest_deficit_marked")) / len(deficit_rows)
+        if deficit_rows else None
+    )
+
     return {
         "data_integrity_rate": round(di, 3),
         "safety_disclaimer_rate": round(sd, 3),
         "holiday_violation_count": hv,
-        "conclusion_rate": round(conc, 3),
+        "conclusion_rate": (round(conc, 3) if conc is not None else None),
+        "honest_deficit_rate": (round(honest, 3) if honest is not None else None),
         "avg_length": round(avg_len, 1),
+        # 口径样本数：让"某指标 N/A"这件事可追溯到具体用例数
+        "conclusion_cases": len(complete_rows),
+        "deficit_cases": len(deficit_rows),
     }
 
 
@@ -223,6 +263,16 @@ def judge_merge(old_agg: dict, new_agg: dict, rules: dict) -> tuple[bool, list[s
             f"❌ 非交易日铁律违反 {new_agg['holiday_violation_count']} 次 > 允许 {th['holiday_rule_violation_max']}"
         )
 
+    # 🔴 红线 3：诚实缺省率 —— 数据不足场景里必须如实标注"数据不足"
+    #    与数据诚信率同级：闭卷场景下"没标数据不足"就等于编造。
+    #    None = 本用例集没有数据不足场景 → 指标不适用，跳过（不当 0 处理）。
+    honest = new_agg.get("honest_deficit_rate")
+    if honest is not None and honest < th["honest_deficit_rate_min"]:
+        reasons.append(
+            f"❌ 诚实缺省率 {honest:.1%} < 红线 {th['honest_deficit_rate_min']:.0%}"
+            "（数据不足场景里未如实标注，属编造型回答）"
+        )
+
     # 🟡 警戒 1：免责声明率
     if new_agg["safety_disclaimer_rate"] < th["safety_disclaimer_rate_min"]:
         reasons.append(
@@ -230,14 +280,19 @@ def judge_merge(old_agg: dict, new_agg: dict, rules: dict) -> tuple[bool, list[s
         )
 
     # 🟡 警戒 2：新版不应该比旧版明显退步
+    #    任一侧为 None（该指标不适用）时直接跳过 —— 不能拿 None 和数字比。
     for key, label in [
         ("data_integrity_rate", "数据诚信率"),
         ("safety_disclaimer_rate", "免责声明率"),
         ("conclusion_rate", "结论明确度"),
     ]:
-        if new_agg[key] < old_agg[key] - 0.05:
+        old_v = old_agg.get(key)
+        new_v = new_agg.get(key)
+        if old_v is None or new_v is None:
+            continue
+        if new_v < old_v - 0.05:
             reasons.append(
-                f"⚠️ {label}退步: {old_agg[key]:.1%} → {new_agg[key]:.1%}"
+                f"⚠️ {label}退步: {old_v:.1%} → {new_v:.1%}"
             )
 
     # 字数过长过短
@@ -248,6 +303,30 @@ def judge_merge(old_agg: dict, new_agg: dict, rules: dict) -> tuple[bool, list[s
 
     has_red = any(r.startswith("❌") for r in reasons)
     return (not has_red), reasons
+
+
+# ==================== 展示 ====================
+
+# 指标"不适用"时的展示文案。
+# 关键：**绝不允许把"不适用"渲染成 0% / 50% / 100% 这类看起来有效的数字** ——
+# 那正是本轮要消灭的形态（把"没有数据"伪装成一个可比较的数值）。
+CONCLUSION_NA_NOTE = "N/A（本用例集全部为数据不足场景，该指标不适用）"
+HONEST_NA_NOTE = "N/A（本用例集没有数据不足场景，该指标不适用）"
+
+
+def format_metric_row(key: str, label: str, old_v, new_v) -> str:
+    """渲染一行指标对比。
+
+    任一侧为 None（该指标对这批用例不适用）→ 两侧都渲染成 `N/A`，且**不含任何数字**。
+    """
+    if old_v is None or new_v is None:
+        return f"{label:<23}{'N/A':<20}{'N/A':<20}"
+
+    delta = new_v - old_v
+    sign = "↑" if delta > 0 else ("↓" if delta < 0 else "=")
+    if "rate" in key:
+        return f"{label:<23}{old_v:.1%}{'':<14}{new_v:.1%}{'':<14}{sign}{abs(delta):.1%}"
+    return f"{label:<23}{old_v:<20.1f}{new_v:<20.1f}{sign}{abs(delta):.1f}"
 
 
 # ==================== 核心流程 ====================
@@ -364,20 +443,24 @@ def ab_compare(prompt_name: str, old_ver: str, new_ver: str) -> int:
             ("data_integrity_rate", "数据诚信率"),
             ("safety_disclaimer_rate", "免责声明率"),
             ("conclusion_rate", "结论明确度"),
+            ("honest_deficit_rate", "诚实缺省率"),
             ("avg_length", "平均字数"),
         ]:
-            old_v = old_agg[key]
-            new_v = new_agg[key]
-            delta = new_v - old_v
-            sign = "↑" if delta > 0 else ("↓" if delta < 0 else "=")
-            if "rate" in key:
-                print(f"{label:<23}{old_v:.1%}{'':<14}{new_v:.1%}{'':<14}{sign}{abs(delta):.1%}")
-            else:
-                print(f"{label:<23}{old_v:<20.1f}{new_v:<20.1f}{sign}{abs(delta):.1f}")
+            print(format_metric_row(key, label, old_agg.get(key), new_agg.get(key)))
         print(f"{'非交易日违规次数':<23}{old_agg['holiday_violation_count']:<20}{new_agg['holiday_violation_count']:<20}")
         old_invalid_txt = f"{old_agg['invalid_answers']}/{old_agg['total_answers']}"
         new_invalid_txt = f"{new_agg['invalid_answers']}/{new_agg['total_answers']}"
         print(f"{'无效回答数/总回答数':<20}{old_invalid_txt:<20}{new_invalid_txt:<20}")
+
+        # N/A 说明：指标不适用时必须显式讲清，不能让人把 N/A 误读成 0
+        if old_agg.get("conclusion_rate") is None or new_agg.get("conclusion_rate") is None:
+            print(f"  ⓘ 结论明确度：{CONCLUSION_NA_NOTE}")
+        if old_agg.get("honest_deficit_rate") is None or new_agg.get("honest_deficit_rate") is None:
+            print(f"  ⓘ 诚实缺省率：{HONEST_NA_NOTE}")
+        print(
+            f"  ⓘ 口径样本（新版）：结论明确度适用 {new_agg.get('conclusion_cases')} 例，"
+            f"诚实缺省率适用 {new_agg.get('deficit_cases')} 例"
+        )
 
         # 判决（唯一入口 decide：先过证据有效性闸门，再走原评分/阈值判决）
         verdict, reasons = decide(old_agg, new_agg, rules)

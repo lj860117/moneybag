@@ -61,13 +61,15 @@ def _agg(
     conclusion: float = 1.0,
     avg_length: float = 300.0,
     holiday: int = 0,
+    honest_deficit: float | None = None,
 ) -> dict:
     """构造一份聚合结果。
 
     默认值刻意取"全绿"（诚信 100%、免责 100%、结论 100%、字数达标、零违规）——
     这正是事故现场：**指标全绿，但回答其实全是占位串**。
+    `honest_deficit=None` 表示该批用例没有数据不足场景（指标不适用）。
     """
-    return {
+    agg = {
         "data_integrity_rate": integrity,
         "safety_disclaimer_rate": disclaimer,
         "conclusion_rate": conclusion,
@@ -76,6 +78,9 @@ def _agg(
         "total_answers": total,
         "invalid_answers": invalid,
     }
+    if honest_deficit is not None:
+        agg["honest_deficit_rate"] = honest_deficit
+    return agg
 
 
 # ------------------------------------------------------------------
@@ -183,4 +188,254 @@ def test_evidence_gate_is_wired():
     )
     assert ab.evidence_gate(_agg(invalid=0, total=4), _agg(invalid=0, total=4)) == [], (
         "evidence_gate 对全有效输入不该返回阻断原因"
+    )
+
+
+# ==================================================================
+# 结论明确度：不再奖励编造、惩罚诚实（v9.9.26 P2 第二轮）
+#==================================================================
+#
+# 真实失效（服务器真跑出来，不是推测）：close_review v1 vs v2 的线上 A/B 报告写着
+#
+#     结论明确度 100.0% → 50.0% ↓50.0%    ← 被判为"退步"
+#
+# 而"退步"的那 50% 恰恰是 v2 在 **数据缺失场景里如实拒答** 的两条。
+# 也就是说：这个指标把"编造数字给方向"评成满分，把"如实说没数据"评成 0 分 ——
+# 完全反了。根因是它不分场景口径：**数据不足时"给方向"本身就是编造**。
+#
+# 本轮修法（与本文件同一条铁律：数字必须来自真实证据）：
+#   1) 每个用例显式标 `data_complete`；
+#   2) `conclusion_rate` 只在 data_complete=True 的用例上算，否则为 None（渲染 N/A，
+#      **绝不出现 0%/50%/100% 这类伪数字**，也不参与红线与"退步"比较）；
+#   3) 新增 `honest_deficit_rate`（诚实缺省率）：数据不足用例里如实标注"数据不足"
+#      的比例，与数据诚信率同级，**是红线**，低于阈值直接 REJECT。
+
+CLOSE_REVIEW_CASES_FILE_MARKERS = {
+    "数据不足", "缺失", "无法判断", "没法算", "没有行情",
+    "无法给出", "不做推测", "无法确认",
+}
+
+# v1 那种"闭卷也敢给数字给方向"的回答：不含任何"数据不足"标记
+FABRICATED_V1_STYLE = (
+    "今日沪深300ETF收涨0.31%，维持上一交易日收盘水平；"
+    "中证500ETF同步小幅上行0.12%；医疗ETF上涨0.88%。"
+    "组合整体浮盈，建议继续持有，等待下一交易日方向确认。"
+)
+
+# v2 那种"数据不足就如实说"的回答：命中多个诚实标记
+HONEST_V2_STYLE = (
+    "## 收盘复盘\n"
+    "今日数据不足，无法判断：中证500ETF 行情缺失，无法给出其涨跌方向，不做推测；"
+    "风控字段缺失，无法确认风险状态。\n"
+    "已拿到的真实数据：沪深300ETF -0.42%，医疗ETF +0.88%。\n"
+    "结论：数据不足，本次不给方向性判断。"
+)
+
+
+def _cases_file() -> dict:
+    return json.loads(CASES_FILE.read_text(encoding="utf-8"))
+
+
+def _close_review_cases() -> list[dict]:
+    return _cases_file()["close_review"]["cases"]
+
+
+def _with_validity(ab, agg: dict, answers: list[str]) -> dict:
+    """把有效性统计并进聚合结果（无效回答会被证据闸门拦下，这里要能走到评分判决）。"""
+    agg.update(ab.answer_validity(answers))
+    return agg
+
+
+# ------------------------------------------------------------------
+# 前提：4 条 close_review 用例都是"数据不足"场景
+# ------------------------------------------------------------------
+
+def test_close_review_cases_are_all_marked_data_incomplete():
+    """4 条用例必须逐个标成 data_complete=false，且原文确实缺数据。
+
+    这条防的是"把 data_complete 一律写成 true 蒙混过关"：
+    标注必须与 user_message 的实际内容对得上。
+    """
+    cases = _close_review_cases()
+    assert len(cases) == 4, f"close_review 用例数变了: {len(cases)}"
+
+    for c in cases:
+        assert c.get("data_complete") is False, (
+            f"{c['id']} 未标成 data_complete=false —— 该场景输入数据不完整"
+        )
+
+    # cr-01 行情缺失 / cr-02 脏字段 / cr-03 只有一个数字 / cr-04 非交易日无行情
+    deficit_evidence = {
+        "cr-01-missing-holding-quote": ["行情缺失"],
+        "cr-02-dirty-empty-fields": ["null", "（缺失）"],
+        "cr-03-padding-pressure": ["全部缺失"],
+        "cr-04-holiday-no-data": ["非交易日，今日无行情数据"],
+    }
+    by_id = {c["id"]: c["user_message"] for c in cases}
+    for cid, needles in deficit_evidence.items():
+        assert cid in by_id, f"用例 {cid} 被改名/删除了"
+        for needle in needles:
+            assert needle in by_id[cid], (
+                f"{cid} 的原文里找不到缺数据证据 {needle!r}，data_complete=false 标注站不住"
+            )
+
+
+def test_honest_markers_are_exactly_the_agreed_set():
+    """诚实标记集合必须与约定一字不差（改窄/改宽都会动摇 honest_deficit_rate 口径）。"""
+    markers = set(_cases_file()["scoring_rules"]["honest_markers_expected"])
+    assert markers == CLOSE_REVIEW_CASES_FILE_MARKERS, (
+        f"诚实标记集合漂移: 多出 {markers - CLOSE_REVIEW_CASES_FILE_MARKERS}，"
+        f"缺少 {CLOSE_REVIEW_CASES_FILE_MARKERS - markers}"
+    )
+
+
+# ------------------------------------------------------------------
+# 故障注入 A：新版换成 v1 式编造回答 → 诚实缺省率破线 → REJECT
+# ------------------------------------------------------------------
+
+def test_fault_injection_a_fabricated_answers_trip_honest_deficit_red_line():
+    """注入：把"新版"的回答换成 v1 式编造文本（含『维持上一交易日收盘水平』、
+    不含任何数据不足标记）→ honest_deficit_rate 必须从 1.0 掉到 0.0，
+    判决必须从 allow 变 REJECT。
+    """
+    ab = _ab()
+    rules = _cases_file()["scoring_rules"]
+    scorer = ab.Scorer(rules)
+    cases = _close_review_cases()
+
+    # 防呆：注入文本必须真的"编造"（不含任何诚实标记），否则注入无效
+    assert not any(m in FABRICATED_V1_STYLE for m in rules["honest_markers_expected"]), (
+        "注入文本里混进了诚实标记，本次注入无效"
+    )
+    assert "维持上一交易日收盘水平" in FABRICATED_V1_STYLE
+    # 对照：诚实文本必须命中标记
+    assert any(m in HONEST_V2_STYLE for m in rules["honest_markers_expected"])
+
+    honest_agg = _with_validity(
+        ab, ab.aggregate([scorer.score(HONEST_V2_STYLE, c) for c in cases]),
+        [HONEST_V2_STYLE] * len(cases),
+    )
+    fake_agg = _with_validity(
+        ab, ab.aggregate([scorer.score(FABRICATED_V1_STYLE, c) for c in cases]),
+        [FABRICATED_V1_STYLE] * len(cases),
+    )
+
+    assert honest_agg["honest_deficit_rate"] == 1.0, "如实拒答的回答竟没拿满诚实缺省率"
+    assert fake_agg["honest_deficit_rate"] == 0.0, "编造回答的诚实缺省率不是 0"
+
+    # 旧版=诚实，新版=编造（与线上 v1/v2 相反，正是要用红线拦下的方向）
+    verdict, reasons = ab.decide(honest_agg, fake_agg, rules)
+    assert verdict == ab.VERDICT_REJECT, (
+        f"编造回答的新版被放行了，判决={verdict}，理由={reasons}"
+    )
+    blob = "\n".join(reasons)
+    assert any(r.startswith("❌") and "诚实缺省率" in r for r in reasons), (
+        f"拒绝理由里没有诚实缺省率红线: {blob}"
+    )
+
+    # 反向：新版=诚实 → 同一份数据必须放行（证明红线只打编造，不打诚实）
+    verdict_ok, reasons_ok = ab.decide(fake_agg, honest_agg, rules)
+    assert verdict_ok == ab.VERDICT_ALLOW, (
+        f"诚实拒答的新版被拒了，理由={reasons_ok} —— 红线又打到诚实头上"
+    )
+
+
+# ------------------------------------------------------------------
+# 故障注入 B：全部标成 data_complete=true → 结论明确度恢复成正常数值
+# ------------------------------------------------------------------
+
+def test_fault_injection_b_complete_cases_restore_normal_conclusion_rate():
+    """注入：把 4 条用例全标成 data_complete=true → conclusion_rate 必须回到
+    真实数值（不再是 None），诚实缺省率则因为没有适用用例而变成 None。
+    这证明"某指标不适用 → None"这条退化路径没有把指标整体打死。
+    """
+    ab = _ab()
+    scorer = ab.Scorer(RULES)
+    complete_cases = [dict(c, data_complete=True) for c in _close_review_cases()]
+
+    rows = [scorer.score(HONEST_V2_STYLE, c) for c in complete_cases]
+    rows[0] = dict(rows[0], has_conclusion=False)  # 造一例无结论，避免恒 100% 掩盖口径错误
+    agg = ab.aggregate(rows)
+
+    assert agg["conclusion_rate"] is not None, "用例全完整时结论明确度不该是 None"
+    assert agg["conclusion_rate"] == pytest.approx(0.75), (
+        f"结论明确度口径错误: {agg['conclusion_rate']}（应为 3/4=0.75）"
+    )
+    assert agg["conclusion_cases"] == 4
+    assert agg["honest_deficit_rate"] is None, "没有数据不足用例时该指标必须是 None"
+    assert agg["deficit_cases"] == 0
+
+    # 正常数值必须照常参与"退步"比较（不能因为修 None 把比较功能一起废掉）
+    old = _agg(invalid=0, total=4, conclusion=1.0, honest_deficit=0.5)
+    new = _agg(invalid=0, total=4, conclusion=0.5, honest_deficit=0.5)
+    verdict, reasons = ab.decide(old, new, RULES)
+    assert any("结论明确度退步" in r for r in reasons), (
+        f"两侧都是真实数值时退步比较失效了: {reasons}"
+    )
+
+
+# ------------------------------------------------------------------
+# None 处理：全部 data_complete=false → 展示层不得出现结论明确度数字
+# ------------------------------------------------------------------
+
+def test_conclusion_rate_is_none_and_renders_without_any_digits():
+    """真实用例集（全数据不足）下：conclusion_rate 必须是 None，
+    且展示行里**一个数字都不能有** —— 出现 0% / 50% / 100% 都算回归。
+    """
+    ab = _ab()
+    rows = [ab.Scorer(RULES).score(HONEST_V2_STYLE, c) for c in _close_review_cases()]
+    agg = ab.aggregate(rows)
+
+    assert agg["conclusion_rate"] is None
+    assert agg["conclusion_cases"] == 0
+    assert agg["honest_deficit_rate"] == 1.0
+    assert agg["deficit_cases"] == 4
+
+    row = ab.format_metric_row("conclusion_rate", "结论明确度", None, None)
+    assert "N/A" in row
+    assert not any(ch.isdigit() for ch in row), f"不适用指标渲染出了数字: {row!r}"
+    # 展示文案必须解释"为什么不适用"，不能只剩一个 N/A
+    assert "不适用" in ab.CONCLUSION_NA_NOTE
+    assert any(ch.isdigit() for ch in ab.CONCLUSION_NA_NOTE) is False
+
+
+def test_none_metric_never_produces_a_regression_warning_or_typeerror():
+    """一侧为 None 时：不得报"退步"、不得抛 TypeError（None 不能和数字比大小）。"""
+    ab = _ab()
+    old = _agg(invalid=0, total=4, conclusion=None, honest_deficit=1.0)
+    new = _agg(invalid=0, total=4, conclusion=None, honest_deficit=1.0)
+
+    verdict, reasons = ab.decide(old, new, RULES)
+    assert verdict == ab.VERDICT_ALLOW, f"全 None 指标不该改变判决: {reasons}"
+    assert not any("结论明确度退步" in r for r in reasons), (
+        f"None 与 None 之间报出了退步: {reasons}"
+    )
+
+
+# ------------------------------------------------------------------
+# 诚实缺省率必须真的挂在红线上（改阈值 / 摘红线 → 红）
+# ------------------------------------------------------------------
+
+def test_honest_deficit_rate_is_a_red_line_not_a_warning():
+    """诚实缺省率是红线：低于阈值 → REJECT（❌），不是 ⚠️ 警告。"""
+    ab = _ab()
+    assert RULES["thresholds"]["honest_deficit_rate_min"] == 1.0, (
+        "诚实缺省率阈值被改动：数据不足场景里任何一条不如实标注都不可接受，必须为 1.0"
+    )
+
+    honest_side = _agg(invalid=0, total=4, honest_deficit=1.0)
+    shortfall = _agg(invalid=0, total=4, honest_deficit=0.5)
+
+    verdict, reasons = ab.decide(honest_side, shortfall, RULES)
+    assert verdict == ab.VERDICT_REJECT, f"诚实缺省率 50% < 红线 100% 却放行: {reasons}"
+    assert any(r.startswith("❌") and "诚实缺省率" in r for r in reasons), (
+        f"诚实缺省率降级成了警告（应以 ❌ 红线出现）: {reasons}"
+    )
+
+    # 摘掉红线（阈值降到 0）→ 同一份数据不再被拒。
+    # 若有人删掉 judge_merge 里的红线 3，上面首条断言即变红。
+    loose_rules = {"thresholds": {**RULES["thresholds"], "honest_deficit_rate_min": 0.0}}
+    loose_verdict, loose_reasons = ab.decide(honest_side, shortfall, loose_rules)
+    assert loose_verdict == ab.VERDICT_ALLOW, (
+        f"阈值降到 0 后仍被拒，说明阻断来自别处: {loose_reasons}"
     )
