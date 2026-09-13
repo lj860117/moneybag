@@ -10,7 +10,7 @@
 #   ① 内容不一致（真漂移 / 运行时缓存）
 #   ② 本地有、服务器没有（疑似漏部署）
 #   ③ 服务器有、本地没有（垃圾 / 服务器本地文件）
-#   ④ 白名单：backend/tests/ 等 dev-only 路径，预期不进自动部署，不计漂移
+#   ④ 白名单：backend/tests/、tests/ 等 dev-only 路径，预期不进自动部署，不计漂移
 #
 # 设计原则：以「文件清单 + 内容哈希」为准，不依赖服务器上的任何 git 状态。
 # -----------------------------------------------------------------------------
@@ -66,11 +66,13 @@ SSH_OPTS=(-o StrictHostKeyChecking=no -o BatchMode=yes -o ConnectTimeout=15)
 # - pages/     前端页面
 # - styles/    index.html 引用的样式目录（旧脚本只有 styles.css，漏了 styles/）
 # - icons/     PWA 图标
-SCAN_ROOTS="backend pages styles icons"
+# - tests/     根目录的 dev-only E2E 套件（打活服务、需真 token）。纳入扫描是为了
+#              "看得见"而不是"假装它不存在"；它属白名单，不计漂移，见 NONDEPLOY。
+SCAN_ROOTS="backend pages styles icons tests"
 SCAN_ROOT_FILES="app.js index.html styles.css sw.js manifest.json"
 
 # 必须能被扫到的关键路径（自检用）：少任何一个都说明脚本有盲区，直接报错。
-REQUIRED_SCOPE="backend/prompts backend/tests backend/domain backend/infra backend/services pages styles icons manifest.json styles.css sw.js"
+REQUIRED_SCOPE="backend/prompts backend/tests backend/domain backend/infra backend/services pages styles icons manifest.json styles.css sw.js tests"
 
 # 统一排除项（本地/服务器两侧必须完全一致，否则口径不一致会制造假漂移）
 # 理由：
@@ -96,7 +98,11 @@ FIND_PRED='-not -path */__pycache__/* -not -name *.pyc
 RUNTIME_CACHE_RE='/\.cache/'
 
 # 白名单：预期【不纳入自动部署】的 dev-only 路径，两侧数量/内容不一致不算漂移。
-# 目前只有 backend/tests/。理由（勿凭"大家都知道"删掉本条，这正是本轮 P0 的教训形态）：
+# 两个前缀（唯一真相，NONDEPLOY_RE 由它派生，避免两处不一致）：
+#   backend/tests/  单元测试
+#   tests/          根目录 E2E 套件
+# 理由（勿凭"大家都知道这是预期的"删掉本条，这正是本轮 P0 的教训形态：
+# 一个"预期不部署"的类别若不写进脚本，将来真漏部署的文件混进同一类别就会被一句话盖过）：
 #   1. 纯 dev 产物，生产运行不依赖：干净 venv 只装 requirements.txt + pytest，
 #      backend/tests/ 全量 1582 passed（ci-wire-tests 实测），模块级不 import
 #      chromadb/sentence-transformers/scipy/tushare/baostock。
@@ -104,12 +110,19 @@ RUNTIME_CACHE_RE='/\.cache/'
 #      并【无视外部传入的 DATA_DIR】（注释记录了真实事故：带 DATA_DIR=/opt/moneybag/data
 #      跑测试会直写生产 data/users，攒出 13 个脏用户文件）；:168-189 autouse 清空 14 个
 #      密钥环境变量。把它同步进生产目录 = 把一个"会写盘、会读 .env"的东西放上线。
-#   3. 覆盖已由 CI 承担：.github/workflows/ci.yml 的 backend-test-suite job 每次 push
-#      跑全量，守卫在 CI，不靠"服务器磁盘上有没有这些文件"。
+#   3. 根 tests/ 是【打活服务的 E2E】（tests/README.md 要求 127.0.0.1:8000 或
+#      MB_TEST_HOST，会跑真实 DeepSeek 调用、耗 token，含 llm_heavy marker）——
+#      设计上就属于"本地/有密钥环境专用"，不可能简单接进 CI。
+#   4. 覆盖已由 CI 承担：.github/workflows/ci.yml 的 backend-test-suite job 每次 push
+#      跑 backend/tests/ 全量；根 tests/ 里 CI 只跑自包含的 test_skeleton_m1.py
+#      （venv 实测 219 passed / 2.0s，不需要服务器）。守卫在 CI，不靠"服务器磁盘上
+#      有没有这些文件"。
 # 语义是「不纳入【自动】部署，允许手工临时拷入」——所以这里既豁免"本地有服务器没有"
-# 的漏部署误报，也豁免 tests 文件两侧内容不同（可能是历史上手工拷过去的旧副本）。
-# 一旦出现非白名单的"本地有服务器没有"条目，那才是真问题。
-NONDEPLOY_RE='^backend/tests/'
+# 的漏部署误报，也豁免 tests 文件两侧内容不同（可能是历史上手工拷过去的旧副本：
+# 服务器上 root tests/ 与 backend/tests/ 的部分副本就来自已废弃的根 deploy.sh 全库 rsync）。
+# 一旦出现【非白名单】的"本地有服务器没有"条目，那才是真问题。
+DEV_ONLY_PREFIXES="backend/tests tests"
+NONDEPLOY_RE="^($(printf '%s' "$DEV_ONLY_PREFIXES" | tr ' ' '|'))/"
 
 STRICT=0
 [ "${1:-}" = "--strict" ] && STRICT=1
@@ -234,7 +247,27 @@ if [ "$SELF_CHECK_FAIL" -ne 0 ]; then
     echo "❌ 自检失败：扫描范围存在盲区，拒绝继续对账（先修脚本，别信结论）。"
     exit 1
 fi
+
+# 白名单"反空转"断言：每个 dev-only 前缀必须在【本地】清单里有命中。
+# 否则说明白名单指向了一个已不存在/已改名的路径 —— 它就成了永远不触发、也永远
+# 不生效的死配置（"上锁没挂门"）。注意只断言本地侧：服务器侧不要求命中，
+# 因为语义是「允许手工临时拷入」，服务器本来就可能没有全量。
+for pre in $DEV_ONLY_PREFIXES; do
+    n=$(grep -c -e "^${pre}/" "$TMP_DIR/local.list")
+    if [ "$n" -gt 0 ]; then
+        echo "      ✅ 白名单生效：$pre （本地 $n 项，计入第④类不计漂移）"
+    else
+        echo "      ❌ 白名单指向不存在的路径（死配置）：$pre"
+        SELF_CHECK_FAIL=1
+    fi
+done
+if [ "$SELF_CHECK_FAIL" -ne 0 ]; then
+    echo ""
+    echo "❌ 自检失败：白名单前缀在本地无任何命中，拒绝继续对账。"
+    exit 1
+fi
 echo "      ✅ 自检通过：关键路径全部在扫描范围内，无结构性盲区"
+echo "      ✅ 白名单规则：$NONDEPLOY_RE"
 
 # ----------------------------- 本地侧：清单 + 哈希 ----------------------------
 echo ""
