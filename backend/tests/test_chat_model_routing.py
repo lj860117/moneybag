@@ -357,7 +357,7 @@ def test_chat_stream_fc_uses_peak_aware_default_model(monkeypatch):
                 "model": "doubao-seed-2-1-turbo-260628",
             }
 
-        def pre_check(self):
+        def pre_check(self, user_id=""):
             return True
 
         call_sync = _stub_call_sync
@@ -411,7 +411,7 @@ def test_chat_stream_done_event_preserves_model_and_fallback(monkeypatch):
                 "model": "doubao-seed-2-1-turbo-260628",
             }
 
-        def pre_check(self):
+        def pre_check(self, user_id=""):
             return True
 
         def stream_sync(self, prompt, **kwargs):
@@ -462,7 +462,7 @@ def test_chat_stream_fc_hard_failure_falls_back_to_normal_chat(monkeypatch):
                 "model": "deepseek-v4-flash",
             }
 
-        def pre_check(self):
+        def pre_check(self, user_id=""):
             return True
 
         def stream_sync(self, prompt, **kwargs):

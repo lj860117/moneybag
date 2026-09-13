@@ -268,10 +268,24 @@ def resolve_default_model(model_tier: str = "llm_light", module: str = "", now: 
     return candidates[0] if candidates else MODEL_ROUTING.get(model_tier, "deepseek-v4-flash")
 
 # 限制
-DAILY_LIMIT = 100      # 每天最多 100 次（Phase 0 从 50 升级）
-BURST_LIMIT = 10       # 5 分钟内最多 10 次
+#
+# 两个闸门职责完全不同，拒绝时必须分别点名（"拒绝必须说真话"铁律）：
+#   - DAILY_LIMIT 是**成本闸门**：全局共享，防整体 LLM 支出失控（付费额度）。
+#   - BURST_LIMIT 是**用户体验闸门**：按 user_id 分桶，防单个用户在一个窗口内
+#     把自己刷爆（触发降级话术）。它不该被别的用户/脚本的调用殃及。
+DAILY_LIMIT = 100      # 每天最多 100 次（全局，成本闸门；Phase 0 从 50 升级）
+BURST_LIMIT = 10       # 5 分钟内最多 10 次（按用户，体验闸门）
 BURST_WINDOW = 300     # 5 分钟窗口
 CACHE_TTL = 3600       # 缓存 1 小时
+
+# 突发窗口桶数量上限：防止 user_id 无界增长把内存撑爆。
+# 超过上限时先清理已过期的空桶；若仍超限，把新用户归入共享哨兵桶
+# （宁可让这批人互相共享限流，也不让内存无界增长）。
+BURST_BUCKET_MAX = 500
+# 找不到 user_id 的路径（未传 uid 的旧调用点）共用的哨兵桶名。
+# 这个桶是**共享的**：里面每一次调用都会占用彼此的突发额度，可能互相误伤。
+# 之所以允许共享而不是放行，是因为不放行最多是"误限流"，放行则是"闸门失守"。
+_SHARED_BURST_BUCKET = "__shared_no_uid__"
 
 MODULE_META = {
     "name": "llm_gateway",
@@ -302,7 +316,9 @@ class LLMGateway:
         self._usage: dict[str, dict[str, dict[str, Any]]] = {}  # {user_id: {module: {calls, tokens, cost}}}
         self._daily_count = 0
         self._daily_date = date.today()
-        self._burst_window: list[float] = []  # 时间戳列表
+        # 突发窗口按 user_id 分桶：{bucket_key: [时间戳, ...]}
+        # 旧实现是单一 list，任何来源在 5 分钟内发 >10 次都会让所有用户降级。
+        self._burst_windows: dict[str, list[float]] = {}
         self._cache_dirty = 0      # 脏缓存计数，每 5 次写磁盘
         self._load_cache_from_disk()  # 启动时从磁盘恢复缓存
 
@@ -376,8 +392,11 @@ class LLMGateway:
             return {**cached, "source": "cache"}
 
         # 3. 熔断检查
-        if not self._check_limits():
-            print(f"[LLM_GATEWAY] ⚠️ 熔断！daily={self._daily_count}/{DAILY_LIMIT}")
+        #    拒绝必须报真实原因：日限与突发限是两个独立闸门，旧日志恒报 daily
+        #    会把运维引向完全不相干的排查方向（生产实测 daily=10/100 却报"日限"）。
+        refusal = self._limit_refusal_reason(user_id)
+        if refusal is not None:
+            print(f"[LLM_GATEWAY] ⚠️ 熔断！{self._describe_limit_refusal(refusal, user_id)}")
             return {
                 "content": "",
                 "source": "rate_limited",
@@ -385,6 +404,7 @@ class LLMGateway:
                 "model": "",
                 "tokens": 0,
             }
+        self._consume_limit_quota(user_id)
 
         candidate_models = resolve_model_candidates(
             model_tier,
@@ -589,11 +609,13 @@ class LLMGateway:
         # 0. 日期重置
         self._check_daily_reset()
 
-        # 1. 熔断检查
-        if not self._check_limits():
-            print(f"[LLM_GATEWAY] ⚠️ stream 熔断！daily={self._daily_count}/{DAILY_LIMIT}")
+        # 1. 熔断检查（拒绝必须报真实原因，见 call_sync 处注释）
+        refusal = self._limit_refusal_reason(user_id)
+        if refusal is not None:
+            print(f"[LLM_GATEWAY] ⚠️ stream 熔断！{self._describe_limit_refusal(refusal, user_id)}")
             yield {"delta": "", "done": True, "error": "rate_limited", "fallback": True}
             return
+        self._consume_limit_quota(user_id)
 
         # 2. 模型候选链（主模型 + 按时间窗口切换的降级顺序）
         candidate_models = resolve_model_candidates(
@@ -789,10 +811,12 @@ class LLMGateway:
         # 0. 日期重置
         self._check_daily_reset()
 
-        # 1. 熔断检查
-        if not self._check_limits():
-            print(f"[LLM_GATEWAY] ⚠️ multimodal 熔断！daily={self._daily_count}/{DAILY_LIMIT}")
+        # 1. 熔断检查（拒绝必须报真实原因，见 call_sync 处注释）
+        refusal = self._limit_refusal_reason(user_id)
+        if refusal is not None:
+            print(f"[LLM_GATEWAY] ⚠️ multimodal 熔断！{self._describe_limit_refusal(refusal, user_id)}")
             return {"content": "", "source": "rate_limited", "fallback": True, "model": "", "tokens": 0}
+        self._consume_limit_quota(user_id)
 
         # 2. 视觉模型降级链（主：DeepSeek vision，备：豆包视觉）
         if not model:
@@ -913,30 +937,105 @@ class LLMGateway:
         if self._daily_date != today:
             self._daily_count = 0
             self._daily_date = today
-            self._burst_window = []
+            self._burst_windows = {}
 
-    def _check_limits(self) -> bool:
-        # 日限
-        if self._daily_count >= DAILY_LIMIT:
-            return False
-        # 突发限
+    # ---- 突发窗口分桶 ----
+
+    def _prune_burst_buckets(self) -> None:
+        """清理已无有效时间戳的桶（含过期桶与空桶），控制 dict 规模。"""
         now = time.time()
-        self._burst_window = [t for t in self._burst_window if now - t < BURST_WINDOW]
-        if len(self._burst_window) >= BURST_LIMIT:
-            return False
-        # 通过
+        stale = [
+            key for key, stamps in list(self._burst_windows.items())
+            if all(now - t >= BURST_WINDOW for t in stamps)
+        ]
+        for key in stale:
+            del self._burst_windows[key]
+
+    def _burst_bucket(self, user_id: str) -> list[float]:
+        """取（必要时创建）某用户的突发窗口桶。
+
+        桶数量上限保护见 BURST_BUCKET_MAX / _SHARED_BURST_BUCKET 的常量注释。
+        返回的是 dict 内的**同一个 list 对象**，调用方可原地裁剪。
+        """
+        key = user_id if user_id else _SHARED_BURST_BUCKET
+        bucket = self._burst_windows.get(key)
+        if bucket is not None:
+            return bucket
+        if len(self._burst_windows) >= BURST_BUCKET_MAX:
+            self._prune_burst_buckets()
+            if len(self._burst_windows) >= BURST_BUCKET_MAX:
+                key = _SHARED_BURST_BUCKET
+        return self._burst_windows.setdefault(key, [])
+
+    def _burst_used(self, user_id: str = "") -> int:
+        """当前用户在突发窗口内已消耗的次数（只读，顺手裁剪过期时间戳）。"""
+        bucket = self._burst_bucket(user_id)
+        now = time.time()
+        bucket[:] = [t for t in bucket if now - t < BURST_WINDOW]
+        return len(bucket)
+
+    def _limit_refusal_reason(self, user_id: str = "") -> Optional[str]:
+        """判定"若现在调用会不会被拒"，返回**真实原因**。
+
+        - None    : 未熔断，可以调用
+        - "daily" : 日限（全局成本闸门）已到
+        - "burst" : 该用户的突发限流（体验闸门）已到
+
+        纯判定，**不消耗配额**；调用点据此打印诚实的熔断日志。
+        """
+        if self._daily_count >= DAILY_LIMIT:
+            return "daily"
+        if self._burst_used(user_id) >= BURST_LIMIT:
+            return "burst"
+        return None
+
+    def _describe_limit_refusal(self, reason: str, user_id: str = "") -> str:
+        """构造熔断日志正文：同时给出两个闸门的真实数字，并点名真实原因。
+
+        绝不只打印 daily=：突发限流时 daily 通常是 10/100 这种"远未到"的值，
+        只报 daily 会让人以为日限触发，把排查完全带偏。
+        """
+        burst_used = self._burst_used(user_id)
+        bucket_label = user_id or _SHARED_BURST_BUCKET
+        if reason == "daily":
+            reason_label = "日限"
+            scope = "全局成本闸门"
+        else:
+            reason_label = "突发限流"
+            scope = f"体验闸门/用户桶={bucket_label}"
+        return (
+            f"原因={reason_label}（{scope}） "
+            f"daily={self._daily_count}/{DAILY_LIMIT} "
+            f"burst={burst_used}/{BURST_LIMIT}（窗口 {BURST_WINDOW}s）"
+        )
+
+    def _consume_limit_quota(self, user_id: str = "") -> None:
+        """消耗一次配额（调用方须先用 _limit_refusal_reason 确认未熔断）。"""
         self._daily_count += 1
-        self._burst_window.append(now)
+        self._burst_bucket(user_id).append(time.time())
+
+    def _check_limits(self, user_id: str = "") -> bool:
+        """限流判定 + 消耗配额。返回 False 表示被拒（对外契约保持不变）。
+
+        需要知道"为什么被拒"的调用点，请用 `_limit_refusal_reason()`（纯判定）。
+        user_id 用于突发窗口分桶；不传则落入共享哨兵桶（见常量注释）。
+        """
+        if self._limit_refusal_reason(user_id) is not None:
+            return False
+        self._consume_limit_quota(user_id)
         return True
 
-    def pre_check(self) -> bool:
+    def pre_check(self, user_id: str = "") -> bool:
         """流式调用前的限流检查，通过返回 True 并消耗一次配额。
 
         用于 streaming 场景：调用者先 pre_check()，再自行发 httpx stream 请求。
         这样 stream 也纳入日限/突发限控制。
+
+        user_id：突发窗口按用户分桶的键。不传则落入共享哨兵桶——多个不传 uid
+        的调用方会互相占用突发额度，可能互相误伤，故新增调用点请务必传入。
         """
         self._check_daily_reset()
-        return self._check_limits()
+        return self._check_limits(user_id)
 
     # ---- 计费 ----
 

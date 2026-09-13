@@ -64,7 +64,7 @@ async def _fallback_chat_stream(user_msg: str, system_prompt: str, market_ctx: s
     gw = LLMGateway.instance()
     model = _resolve_chat_model(req.model, model_tier="llm_light", module="chat_stream")
     explicit = _normalize_explicit_model(req.model)
-    if not gw.pre_check():
+    if not gw.pre_check(user_id=uid):
         yield f"data: {json.dumps({'delta': _rule_based_reply(user_msg, market_ctx, portfolio_ctx), 'source': 'rules', 'done': True}, ensure_ascii=False)}\n\n"
         return
     _full = []
@@ -823,7 +823,7 @@ async def chat_analysis_stream(req: ChatRequest):
     api_key = req.model or api_cfg["api_key"]
     api_base = next((m["base"] for m in AVAILABLE_MODELS if m["id"] == model), api_cfg["api_base"])
 
-    if not api_key or not gw.pre_check():
+    if not api_key or not gw.pre_check(user_id=uid):
         reply = "AI 暂时不可用，请稍后再试~" if not api_key else _rule_based_reply(user_msg, market_ctx, portfolio_ctx)
         async def rules_gen():
             yield f"data: {json.dumps({'delta': reply, 'source': 'rules', 'done': True}, ensure_ascii=False)}\n\n"
