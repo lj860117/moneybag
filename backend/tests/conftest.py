@@ -301,3 +301,146 @@ def _clear_secret_env_pollution(monkeypatch):
     for key in _SECRET_ENV_KEYS:
         monkeypatch.delenv(key, raising=False)
     yield
+
+
+# ============================================================
+# config 模块基线恢复（FIX 2026-09-13：importlib.reload(config) 的顺序依赖污染）
+# ============================================================
+# 症状：tests/test_llm_quota_alert_dedupe.py::test_state_file_lives_under_data_dir
+#   断言 `qa.ALERT_STATE_FILE.parent == config.DATA_DIR`，在**全量套件里按跑到
+#   它前面的是哪些文件**随机红绿 —— 单独跑必绿，混在全量里红。
+#
+# 根因：一批用例为了测 import 期行为，用 monkeypatch.setenv("DATA_DIR", tmp_path)
+#   + importlib.reload(config) 把 config 整个重载（已知 3 处：
+#   test_fund_detail_ak_timeout.py:40 / test_user_optimistic_lock.py:43 /
+#   test_broker_research_quota_degradation.py:226）。
+#   monkeypatch 只负责还原 **os.environ**，而 reload 是**原地重跑模块代码**：
+#   config 模块对象被永久改写，DATA_DIR 连同它派生出来的 USERS_DIR /
+#   RECEIPTS_DIR / PUSH_ARCHIVE_DIR 全部停在上一个用例的 tmp_path 上。
+#   monkeypatch 压根不知道有这么回事，所以无从还原。
+#
+# 为什么不去改那 3 个污染源：它们**必须** reload 才能测到 import 期行为，
+# 改成 monkeypatch.setattr 会让它们测不到真实路径、变成空转的绿。
+#
+# 实测污染方向（安全确认）：污染后 config.DATA_DIR 指向 pytest 的 tmp 目录
+#   （/private/var/.../pytest-of-root/pytest-N/test_xxx0），**不是**生产路径
+#   /opt/moneybag/data —— 所以这是「顺序依赖假红」问题，不是「写脏生产数据」
+#   问题。下面这条守卫会顺手把这个结论钉成可执行断言。
+#
+# 恢复手法：**直接把属性改回基线值，绝不 reload** —— reload 会重跑模块代码
+#   （读 env、建目录），1991 个用例各来一次会显著拖慢全量。属性赋值是常数级。
+_RESTORABLE_TYPES = (str, int, float, bool, bytes, tuple, Path, type(None))
+
+# 会话级基线。**在 conftest 模块顶层就地采集**（见下方 _capture 调用点），
+# 不是"第一次用到时再采"。理由见 _CONFIG_BASELINE_PHASE 的注释。
+_CONFIG_BASELINE: dict = {}
+_CONFIG_BASELINE_READY: bool = False
+
+# 采集阶段标记 —— 供守卫用例断言"基线确实是早期采的"。
+# 这条标记是**防退化**用的：光看测试绿不绿分不出基线是几点采的，而采晚了
+# （比如被某个 module 级 fixture 抢先 reload 过 config）基线本身就是脏的，
+# 于是守卫会勤勤恳恳地把每个用例都"恢复"成那个脏值 —— 典型的闸门空转仍显绿。
+# 取值：
+#   "conftest-import"  — 期望值：conftest 顶层采集，早于任何 test_*.py 被 import
+#   "first-test-setup" — 退化值：conftest 顶层 import 失败，退到首个用例 setup 才采
+#   "unavailable"      — config 完全不可用，守卫空转（守卫用例会把它打成红）
+_CONFIG_BASELINE_PHASE: str = "unavailable"
+
+
+def _ensure_backend_on_syspath() -> None:
+    """把 backend/ 显式放进 sys.path，让 `import config` 与 CWD 无关。
+
+    原本这里什么都没做，靠"某个 test_*.py 已经执行过
+    `sys.path.insert(0, str(Path(__file__).parent.parent))`"这种**别人的副作用**
+    才让下面的 `import config` 成功。collection 阶段会 import 全部测试模块、
+    其中很多确实做了 insert，所以实际上一直能用 —— 但这是运气不是机制：
+    一旦 `import config` 失败，守卫会走 except 分支只打印一行警告然后
+    **静默空转**，全量照样全绿。安全闸门最忌讳这个，所以在这里补死。
+    """
+    backend_dir = str(Path(__file__).resolve().parent.parent)
+    if backend_dir not in sys.path:
+        sys.path.insert(0, backend_dir)
+
+
+def _snapshot_config_module(cfg) -> dict:
+    """浅拷贝 config 模块里所有**不可变**类型的模块级属性。
+
+    只收不可变类型（str/int/float/bool/tuple/Path/None）：
+      • reload 造成的污染全部落在这类值上（DATA_DIR 及其派生路径、以及所有
+        os.environ 读出来的配置），收它们就够；
+      • 刻意**不收** dict/list/set —— reload 会给它们换成内容相同的新对象，
+        还原反而可能踩到「某个用例就地改了共享字典」这类正当用法。
+    """
+    return {
+        name: value
+        for name, value in vars(cfg).items()
+        if not name.startswith("__") and isinstance(value, _RESTORABLE_TYPES)
+    }
+
+
+# ============================================================
+# 就在这里采集基线（conftest 顶层执行，不是 fixture 内）
+# ============================================================
+# 时机论证（上一版是"第一次用到时才采"，这里改成立即采）：
+#   pytest 保证「先 import conftest.py，再 import 同目录任何 test_*.py」。
+#   所以本行执行时：① os.environ["DATA_DIR"] 已在上面被指到会话临时目录；
+#   ② 还没有任何测试模块被 import，更没有任何一次 setenv+reload 发生过。
+#   ⇒ 此刻 config 的状态**必然**是未被污染的，是最早、最干净的采集点。
+#
+#   上一版推迟到"第一个用例 setup 时才采"，多扛了两轮风险：
+#     • 若将来出现 module/session 级 fixture 里做 setenv+reload（这类 fixture
+#       的 setup **早于** 本函数级 fixture），基线就会把污染值当成基线，
+#       之后每个用例都被"忠实地恢复"成那个脏值 —— 闸门空转仍显绿；
+#     • 若首个执行的用例本身就污染 config，同理。
+#   立即采集把这两条路径一起堵死，代价只是 config 被提前 import（本来也一定会
+#   被 import，且它只读 env + mkdir，无副作用差异）。
+_ensure_backend_on_syspath()
+try:
+    import config as _baseline_config
+except Exception as _e:  # noqa: BLE001 - 顶层 import 失败不能让整个会话崩
+    print(f"[conftest] ⚠️ 顶层无法导入 config，config 基线退化为懒采集：{_e}")
+else:
+    _CONFIG_BASELINE.update(_snapshot_config_module(_baseline_config))
+    _CONFIG_BASELINE_READY = True
+    _CONFIG_BASELINE_PHASE = "conftest-import"
+
+
+@pytest.fixture(autouse=True)
+def _restore_config_module_state():
+    """每个用例结束后把 config 模块恢复成会话基线（autouse，逐个用例生效）。
+
+    只做 teardown 恢复、**不做 setup 恢复**，是刻意的：
+      • 已确认的全部污染源（setenv + reload）都发生在用例体内或函数级
+        fixture 里，函数级 fixture 的 teardown 一定晚于本 fixture 的 setup，
+        teardown 恢复足以覆盖；
+      • 反过来若在 setup 也恢复一次，会毁掉"module 级 fixture 故意设一个
+        非常规 config 值供整文件复用"这种正当写法。宁可少做，不可误伤。
+    """
+    global _CONFIG_BASELINE_READY, _CONFIG_BASELINE_PHASE
+
+    try:
+        import config as cfg
+    except Exception as e:  # noqa: BLE001 - config 不可用时无事可做
+        # 注意：这里**不能**静默。守卫用例会读 _CONFIG_BASELINE_PHASE，
+        # 顶层采集若也失败，守卫用例会红，不会伪装成绿。
+        print(f"[conftest] ⚠️ 无法导入 config，跳过模块状态恢复：{e}")
+        yield
+        return
+
+    if not _CONFIG_BASELINE_READY:
+        # 顶层采集失败时的兜底：退到首个用例 setup 再采一次，并如实标记阶段
+        _CONFIG_BASELINE.update(_snapshot_config_module(cfg))
+        _CONFIG_BASELINE_READY = True
+        _CONFIG_BASELINE_PHASE = "first-test-setup"
+        print("[conftest] ⚠️ config 基线为懒采集（first-test-setup），"
+              "请检查顶层 import 为何失败")
+
+    yield
+
+    # teardown：只改回「和基线不一样」的属性，避免无谓的 setattr
+    for name, baseline_value in _CONFIG_BASELINE.items():
+        try:
+            if getattr(cfg, name, None) != baseline_value:
+                setattr(cfg, name, baseline_value)
+        except Exception as e:  # noqa: BLE001 - 单个属性失败不该让整片测试红
+            print(f"[conftest] ⚠️ 恢复 config.{name} 失败：{e}")
