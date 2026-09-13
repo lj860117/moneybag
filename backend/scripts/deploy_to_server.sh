@@ -85,10 +85,24 @@ done
 
 # ---- 2. 同步前端改动文件 ----
 echo "[3/7] 同步前端代码..."
+# ⚠️ 手工维护的清单 —— 加前端根文件必须同时加到这里，否则「本地改了、线上永远旧」。
+# 2026-09-13 v9.9.26 实测踩中：sw.js 的 CACHE_NAME 每轮 bump 都改、都提交、都 push，
+# 但它不在本清单里 → 线上 CACHE_NAME 冻在 moneybag-v9923-cache，版本标记与真实产物不一致，
+# 且 sw.js 自身的任何改动（缓存策略、预缓存清单）永远无法上线。
+# 防复发：backend/tests/test_deploy_asset_coverage.py 会校验本清单覆盖
+# index.html / sw.js / manifest.json 引用到的全部静态资产，漏了直接测试转红。
 FRONTEND_FILES=(
     "app.js"
     "index.html"
     "styles.css"
+    "sw.js"
+    "manifest.json"
+)
+
+# 前端目录（rsync 增量）—— 同上，index.html 引用到的目录必须在这里
+FRONTEND_DIRS=(
+    "styles/"
+    "icons/"
 )
 for f in "${FRONTEND_FILES[@]}"; do
     if [ -f "$REPO_ROOT/$f" ]; then
@@ -104,6 +118,16 @@ if [ -d "$REPO_ROOT/pages" ]; then
     echo "  → rsync pages/"
     eval "$RSYNC --exclude='__pycache__' \"$REPO_ROOT/pages/\" \"$REMOTE_USER@$SERVER:$REMOTE_PATH/pages/\""
 fi
+
+# 同步其余前端目录（styles/ icons/ —— 此前完全不在任何同步清单里，靠"恰好没改过"蒙混）
+for d in "${FRONTEND_DIRS[@]}"; do
+    if [ -d "$REPO_ROOT/$d" ]; then
+        echo "  → rsync $d"
+        eval "$RSYNC --exclude='__pycache__' \"$REPO_ROOT/$d\" \"$REMOTE_USER@$SERVER:$REMOTE_PATH/$d\""
+    else
+        echo "  ⚠️  跳过不存在: $d"
+    fi
+done
 
 # ---- 检测是否密码登录（sudo 操作需要交互式，非交互式跳过）----
 USE_PASSWORD_LOGIN=false
