@@ -262,7 +262,20 @@ echo "  ✅ 已提交: $FULL_MSG"
 
 # ---- 5. git push ----
 echo "[5/5] Git push ..."
-git push origin main
+# ⚠️ 2026-09-13 事故：这里原本是裸 `git push origin main`。本机默认 ssh 身份需要
+# 交互式认证，而本脚本常被放在**无 tty 的后台**跑（如 AI 后台任务），于是它停在
+# 认证提示上**永久挂起** —— 实测卡了 53 分钟，且因为外层用了 `| tail -NN`，
+# 中间输出全被管道缓冲，连"卡在哪一行"都看不出来。
+# 两处修正：① 显式用项目一贯的 id_ed25519；② 加 BatchMode=yes —— 需要交互时
+# **立即失败**而不是挂起（失败会因 set -e 直接退出，比静默吊死好得多）。
+# 可用 MONEYBAG_SSH_KEY 覆盖 key 路径。
+_SSH_KEY="${MONEYBAG_SSH_KEY:-$HOME/.ssh/id_ed25519}"
+if [ -f "$_SSH_KEY" ]; then
+    GIT_SSH_COMMAND="ssh -i $_SSH_KEY -o BatchMode=yes -o ConnectTimeout=15" git push origin main
+else
+    echo "  ⚠️  未找到 $_SSH_KEY，回退默认 ssh（BatchMode 下若需交互会立即失败而非挂起）"
+    GIT_SSH_COMMAND="ssh -o BatchMode=yes -o ConnectTimeout=15" git push origin main
+fi
 echo "  ✅ 已推送到 origin/main"
 
 # ---- 6. 部署 ----
