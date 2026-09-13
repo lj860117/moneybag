@@ -26,9 +26,16 @@ import time
 from datetime import datetime
 from pathlib import Path
 
-# 让脚本能直接 import backend.infra.llm.gateway
-ROOT = Path(__file__).resolve().parents[2]  # moneybag/
-sys.path.insert(0, str(ROOT))
+# 让脚本能直接 import backend.infra.llm.gateway。
+# 两个路径缺一不可：backend/infra/llm/__init__.py 内部用的是以 backend/ 为根的
+# 绝对导入（`from infra.llm.gateway import LLMClient`），只插仓库根会在那里
+# 报 ModuleNotFoundError: No module named 'infra'；只插 backend/ 又会找不到
+# `backend.…` 这个包前缀。因此凭脚本自身路径补齐，免外部 PYTHONPATH。
+ROOT = Path(__file__).resolve().parents[2]          # 仓库根 moneybag/
+BACKEND_DIR = Path(__file__).resolve().parents[1]   # backend/
+for _p in (str(ROOT), str(BACKEND_DIR)):
+    if _p not in sys.path:
+        sys.path.insert(0, _p)
 
 from backend.infra.llm.gateway import LLMGateway  # noqa: E402
 

@@ -235,19 +235,66 @@ ANTI_FABRICATION_REQUIRED_IN_SOURCE = {
 # 应当有防编造约束、但目前正文里确实没有的 prompt —— 登记为"已知缺口"。
 # 不改 prompt（改 prompt 要走版本+A/B），只做缺口登记 + 事实校验。
 #
-# 现状：**空表**。close_review.md 原登记于此，已于 v9.9.26 补齐「数据诚信（铁律）」
-# 约束句并迁入 ANTI_FABRICATION_REQUIRED（同步落 versions/close_review.v2.md 归档）。
-ANTI_FABRICATION_KNOWN_GAPS: dict[str, str] = {}
+# close_review.md 原登记于此，已于 v9.9.26 补齐「数据诚信（铁律）」约束句并迁入
+# ANTI_FABRICATION_REQUIRED（同步落 versions/close_review.v2.md 归档）。
+# 本轮的 7 条是 agent_engine 的场景 Skill：它们都由 LLM 直接据输入数据作答，且正文各自
+# 带着明确的"编造入口"（见每条理由），但正文里**一个防编造措辞都没有**（实测 grep 全空）。
+ANTI_FABRICATION_KNOWN_GAPS: dict[str, str] = {
+    "stock_monitor.md": (
+        "正文索要『主力资金流向 / 北向、机构在买还是卖』，而沪深交易所自 2024-08-19 起"
+        "已停止披露北向日频净买入（对照 night_worker 的北向铁律），是最硬的编造入口"
+    ),
+    "fund_monitor.md": (
+        "正文问『当前回撤在历史中处于什么水平』『基金经理有无风格漂移』，"
+        "历史序列与操作记录不在输入里，模型只能编"
+    ),
+    "global_market.md": (
+        "正文问『过去类似事件 A股怎么反应？持续多久』，属历史外推，输入不含该数据"
+    ),
+    "macro_analysis.md": (
+        "正文问『和前值/预期比如何』，前值与市场预期未必在输入里，缺失时会被现编"
+    ),
+    "policy_impact.md": (
+        "正文问『受益程度』『压力持续多久』，都是输入中不存在的量化推断"
+    ),
+    "risk_alert.md": (
+        "正文问『以前出现过类似情况吗？后来怎么样了』，属历史编造入口"
+    ),
+    "allocation.md": (
+        "正文索要『具体调仓清单（标的→金额→方向）』，金额不在输入里 —— "
+        "既是编造入口，也是让 LLM 现编数值（与 P1-7 同类）"
+    ),
+}
+
+# 不需要防编造约束的生产 prompt —— 必须写明"为什么不需要"。
+#
+# 现状：**空表**。这是把 14 个生产 prompt 正文逐个读完之后得到的结论，不是偷懒：
+# 这 14 个里没有一个是"纯格式 / 纯路由"类（即只对给定数据做重排、不新增任何事实），
+# 每一个都要求模型产出输入里没有的事实、历史或量化推断。因此它们要么已在
+# ANTI_FABRICATION_REQUIRED（正文已带约束句），要么在 ANTI_FABRICATION_KNOWN_GAPS
+# （该带而暂缺，登记为欠债）。留空 = 当前没有任何可被正当豁免的 prompt。
+# 新增 prompt 时若确属"纯格式/纯路由"类，请在此登记并写明理由。
+ANTI_FABRICATION_EXEMPT: dict[str, str] = {}
 
 _ANTI_FABRICATION_KEYWORDS = ("不编造", "禁止编造", "不要编造", "不得编造", "数据不足", "数据缺失")
+
+
+def _prompt_path(name: str) -> Path:
+    """按文件名定位生产 prompt。
+
+    skills/ 下的场景 prompt 与顶层 prompt 同名规则不同（前者带子目录），
+    这里统一按 basename 查，避免各断言各写一套路径拼接。
+    """
+    for path in _production_prompt_files():
+        if path.name == name:
+            return path
+    raise AssertionError(f"找不到生产 prompt 文件: {name}")
 
 
 def test_anti_fabrication_constraints_present_in_prompts():
     missing = []
     for name, phrases in ANTI_FABRICATION_REQUIRED.items():
-        path = PROMPTS_DIR / name
-        assert path.exists(), f"ANTI_FABRICATION_REQUIRED 指向不存在的 prompt: {name}"
-        text = path.read_text(encoding="utf-8")
+        text = _prompt_path(name).read_text(encoding="utf-8")
         for phrase in phrases:
             if phrase not in text:
                 missing.append(f"{name} 缺少约束句 {phrase!r}")
@@ -277,11 +324,78 @@ def test_anti_fabrication_known_gaps_are_still_real():
     if not ANTI_FABRICATION_KNOWN_GAPS:
         return
     for name, reason in ANTI_FABRICATION_KNOWN_GAPS.items():
-        text = (PROMPTS_DIR / name).read_text(encoding="utf-8")
+        text = _prompt_path(name).read_text(encoding="utf-8")
         assert not any(k in text for k in _ANTI_FABRICATION_KEYWORDS), (
             f"{name} 已含防编造约束句，请把它从 ANTI_FABRICATION_KNOWN_GAPS 移到 "
             f"ANTI_FABRICATION_REQUIRED（原登记原因：{reason}）"
         )
+
+
+def _anti_fabrication_classified() -> set[str]:
+    """三张防编造表登记的 prompt 文件名并集。"""
+    return (
+        set(ANTI_FABRICATION_REQUIRED)
+        | set(ANTI_FABRICATION_KNOWN_GAPS)
+        | set(ANTI_FABRICATION_EXEMPT)
+    )
+
+
+def test_every_production_prompt_is_classified_in_anti_fabrication_tables():
+    """防编造闸门不得"空转"：每个生产 prompt 必须落进三张表之一。
+
+    事故背景：close_review.md 曾一度既不在 REQUIRED 也不在 KNOWN_GAPS，
+    测试却仍然 19 passed 全绿 —— 即"表里什么都没登记"与"约束已达标"在测试层面
+    无法区分。这是防编造闸门真正的失效模式（不是漏登记本身，而是漏登记看起来等于通过）。
+    本断言把两类问题分别报出来，让人一眼看出是哪种：
+      - 漏登记：生产 prompt 但三张表都没登记（闸门空转）；
+      - 幽灵条目：表里登记了但已不是生产 prompt（文件被删/改名，多半是分类表没跟上）。
+    """
+    production = _production_prompt_names()
+    classified = _anti_fabrication_classified()
+
+    unclassified = production - classified
+    ghosts = classified - production
+
+    problems = []
+    if unclassified:
+        problems.append(
+            "漏登记（生产 prompt 但防编造三表均未登记 → 闸门空转）: "
+            + ", ".join(sorted(unclassified))
+        )
+    if ghosts:
+        problems.append(
+            "幽灵条目（防编造表里登记了、但已不是生产 prompt，多半文件被删/改名）: "
+            + ", ".join(sorted(ghosts))
+        )
+    assert not problems, "\n".join(problems)
+
+
+def test_anti_fabrication_tables_are_disjoint():
+    """三张表两两互斥。
+
+    既防"漏登记"（见上一条），也反方向防"两边都在"——例如同一条目同时出现在
+    REQUIRED 和 KNOWN_GAPS，就会出现"既要求它有约束、又断言它没有约束"的自相矛盾，
+    红灯会互相抵消。分类必须是真分类。
+    """
+    groups = {
+        "REQUIRED": set(ANTI_FABRICATION_REQUIRED),
+        "KNOWN_GAPS": set(ANTI_FABRICATION_KNOWN_GAPS),
+        "EXEMPT": set(ANTI_FABRICATION_EXEMPT),
+    }
+    items = list(groups.items())
+    overlaps = [
+        f"{a} ∩ {b} = {sorted(x & y)}"
+        for i, (a, x) in enumerate(items)
+        for b, y in items[i + 1:]
+        if x & y
+    ]
+    assert not overlaps, "防编造表出现重叠（同一条目不应出现在两张表里）:\n" + "\n".join(overlaps)
+
+
+def test_anti_fabrication_exempt_reasons_are_documented():
+    """豁免必须写明"为什么不需要"——空理由等于把门焊开。"""
+    for name, reason in ANTI_FABRICATION_EXEMPT.items():
+        assert len(reason.strip()) >= 10, f"{name} 的豁免必须写明理由（≥10 字）"
 
 
 # ------------------------------------------------------------------
