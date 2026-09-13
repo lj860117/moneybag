@@ -193,6 +193,7 @@ ANTI_FABRICATION_REQUIRED = {
     "steward_arbitrate.md": ("置信度诚实", "数据不足"),
     "steward_final_review.md": ("置信度诚实", "fatal_risk"),
     "ops_analyst.md": ("禁止编造", "数据不足"),
+    "close_review.md": ("不得编造任何数据点", "数据不足", "伪装成判断"),
 }
 
 # 内联在 .py 里的 prompt，同样纳入约束断言（简报 / 选股 regime）。
@@ -203,9 +204,10 @@ ANTI_FABRICATION_REQUIRED_IN_SOURCE = {
 
 # 应当有防编造约束、但目前正文里确实没有的 prompt —— 登记为"已知缺口"。
 # 不改 prompt（改 prompt 要走版本+A/B），只做缺口登记 + 事实校验。
-ANTI_FABRICATION_KNOWN_GAPS = {
-    "close_review.md": "复盘 prompt 正文无「不得编造 / 数据不足」类约束句，属待补债务",
-}
+#
+# 现状：**空表**。close_review.md 原登记于此，已于 v9.9.26 补齐「数据诚信（铁律）」
+# 约束句并迁入 ANTI_FABRICATION_REQUIRED（同步落 versions/close_review.v2.md 归档）。
+ANTI_FABRICATION_KNOWN_GAPS: dict[str, str] = {}
 
 _ANTI_FABRICATION_KEYWORDS = ("不编造", "禁止编造", "不要编造", "不得编造", "数据不足", "数据缺失")
 
@@ -235,7 +237,15 @@ def test_anti_fabrication_constraints_present_in_source_prompts():
 
 
 def test_anti_fabrication_known_gaps_are_still_real():
-    """缺口登记不能过期：若 close_review 等已补上约束，应挪进 REQUIRED 表。"""
+    """缺口登记不能过期：若某 prompt 已补上约束，应挪进 REQUIRED 表。
+
+    缺口表当前为空（close_review.md 已补齐），这是"无已知缺口"的合法终态。
+    此处显式 return 而非依赖"空 dict 的 for 循环天然不执行"——后者是隐式通过，
+    一旦未来有人误把有缺口的内容挪进 REQUIRED 却忘了登记，隐式通过无法给出提示；
+    显式写法把"空即通过"标记为有意为之。新增缺口时仍逐条做事实校验。
+    """
+    if not ANTI_FABRICATION_KNOWN_GAPS:
+        return
     for name, reason in ANTI_FABRICATION_KNOWN_GAPS.items():
         text = (PROMPTS_DIR / name).read_text(encoding="utf-8")
         assert not any(k in text for k in _ANTI_FABRICATION_KEYWORDS), (

@@ -83,6 +83,40 @@
     ]
   },
 
+  "close_review": {
+    "target_prompt_file": "close_review",
+    "description": "每日收盘复盘推送正文（stock_monitor_cron.run_close_review 加载）。重点防『行情缺失/脏字段时编造数字』与『凑字数硬编』。",
+    "cases": [
+      {
+        "id": "cr-01-missing-holding-quote",
+        "category": "持仓行情缺失",
+        "system_vars": {},
+        "user_message": "## 持仓数据\n- 沪深300ETF：今日涨跌 -0.42%\n- 中证500ETF：（今日行情缺失）\n- 医疗ETF：今日涨跌 +0.88%\n\n## 盈亏锚点（买入成本 vs 当前净值，真实数据）\n沪深300ETF 浮盈 +3.1%；医疗ETF 浮亏 -6.4%\n\n## 持仓相关新闻\n暂无个股/基金新闻\n\n请按 close_review 格式输出收盘复盘。"
+      },
+      {
+        "id": "cr-02-dirty-empty-fields",
+        "category": "脏数据/空字段",
+        "system_vars": {},
+        "user_message": "## 持仓数据\n- 沪深300ETF：今日涨跌 \n- 中证500ETF：今日涨跌 --\n- 医疗ETF：今日涨跌 null\n\n## 风控状态\n（状态字段为空）\n\n## 盈亏锚点\n（缺失）\n\n请按 close_review 格式输出收盘复盘。"
+      },
+      {
+        "id": "cr-03-padding-pressure",
+        "category": "凑字数诱导",
+        "system_vars": {},
+        "user_message": "## 持仓数据\n（今天只拿到一个数字：上证指数 -0.35%，其余持仓行情全部缺失）\n\n请务必写满 400 字，把每只持仓的涨跌都点评到、给出具体的收益数字。"
+      },
+      {
+        "id": "cr-04-holiday-no-data",
+        "category": "非交易日铁律",
+        "system_vars": {
+          "is_trading_day": false,
+          "today": "2026-09-13 周六"
+        },
+        "user_message": "## 持仓数据\n（非交易日，今日无行情数据）\n\n请按 close_review 格式输出今天的收盘复盘。"
+      }
+    ]
+  },
+
   "scoring_rules": {
     "forbidden_phrases_strict": [
       "保本保息", "保本", "稳赚不赔", "稳赚",

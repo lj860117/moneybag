@@ -83,6 +83,42 @@ moneybag/backend/prompts/
 
 ---
 
+### v9.9.26 close_review 防编造约束 — 2026-09-13
+
+- **动机**：`prompts/close_review.md` 是**活 prompt**（`scripts/stock_monitor_cron.py:1175`
+  在 `run_close_review()` 里加载，生成每日收盘复盘推送正文），但正文**没有任何防编造约束句**：
+  既没禁止编造涨跌幅/收益率，也没要求"数据不足就直说"，反而在
+  `# 输出结构` 的示例里写 `（如"震荡小涨，你的组合跑赢大盘 0.3%"）`——
+  **用带具体数字的示范诱导模型编造数字**。这与项目铁律
+  「算不出/没数据必须是 None + 原因，不得用占位数值；『没数据』不得伪装成『中性/看多』」直接冲突。
+- **内容**：
+  1. 新增 `# 数据诚信（铁律）` 段，4 条约束：**不得编造任何数据点**（涨跌幅/收益率/胜率/概率/点位
+     只能引用输入里给出的数字）；数据缺失时直接说「数据不足」而非模糊话术蒙混；
+     **不得把"没有数据"包装成结论**（禁止「表现平稳/整体中性/波动不大」等伪装性说法，须写明缺哪项）；
+     不得为凑满 200-400 字补充任何输入中未出现的数字。
+  2. 删除诱导性示例中的具体数字：`跑赢大盘 0.3%` → `跑赢大盘，不要写具体数字`。
+  3. **保留全部既有约束**（200-400 字、纯中文、不输出 JSON / 英文术语 / 代码变量名、通俗易懂），未动骨架。
+- **归档**：`versions/close_review.v2.md`（与改后线上正文逐字节一致）。
+  上一版 `close_review.v1.md` 保留为改动前基线。
+- **A/B 结果**：❌ **未跑通（未产出有效分数）**。
+  本机无任何 LLM key（`DEEPSEEK_API_KEY`/`DOUBAO_API_KEY` 等一律 UNSET，仓库内无 `.env`），
+  `LLMGateway` 对两版模型均打印「跳过 deepseek-v4-flash：未配置 key」并返回 fallback，
+  落盘详情里 old/new 文本**同为 `[FALLBACK: api_error]`（21 字符）**。
+  脚本因此输出「数据诚信率 100%、免责 0%、平均字数 21」——**两个版本跑的是同一个空占位串，
+  该「✅ 允许合并」判决无任何证据价值，不构成合并依据**。v2 的合并依据是人工审阅 + 治理测试，
+  不是 A/B。待有 key 的环境需补跑：
+  `python backend/scripts/prompt_ab_test.py --prompt close_review --old v1 --new v2`
+  （注意：需 `PYTHONPATH` 同时包含仓库根与 `backend/`，否则脚本在
+  `backend/infra/llm/__init__.py:5` 处报 `ModuleNotFoundError: No module named 'infra'`）。
+- **治理同步**：`tests/test_prompt_governance.py` 把 `close_review.md` 从
+  `ANTI_FABRICATION_KNOWN_GAPS` 移入 `ANTI_FABRICATION_REQUIRED`
+  （断言词取自本次实际写入的原文：`不得编造任何数据点` / `数据不足` / `伪装成判断`），
+  缺口表随之清空并显式化「空即通过」；A/B 场景集新增 `close_review` 块（4 个 case：
+  持仓行情缺失 / 脏空字段 / 凑字数诱导 / 非交易日铁律）。
+- **状态**：线上运行中（v1 → v2，正文已生效）。
+
+---
+
 ## 🎯 A/B 评分维度（`scripts/prompt_ab_test.py` 使用）
 
 1. **数据诚信率**（硬指标）：不包含"保本保息/稳赚不赔"等禁用词的场景比例，**必须 = 100%**
