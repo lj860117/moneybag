@@ -1293,6 +1293,11 @@ def run_close_review():
                                 context=f"{uid}/close_review")
                             if _fa_hits:
                                 print(f"  [诊断] {name}: 事实锚点命中 {len(_fa_hits)} 处")
+                            elif not _fa_hits.verified:
+                                # v9.9.30: 空列表 ≠ 校验通过 —— 无锚点时明确说"没查"，
+                                # 免得日志里"没有命中"被读成"数字都核对过了"。
+                                print(f"  [诊断] {name}: ⚠️ 本次无事实锚点"
+                                      f"（anchor_state={_fa_hits.anchor_state}），未做数字校验")
                         safe_diag = _sanitize_push_text(diagnosis_text)
 
                         if _nw is not None:
@@ -1547,9 +1552,20 @@ def run_close_review():
     except Exception as e:
         print(f"  [地缘] 预警检查失败: {e}")
 
-    # V4: 判断追踪 — 验证到期判断 + EMA 权重校准
+    # V4: 判断追踪 — 验证到期判断（继续攒数据）
+    #
+    # ⚠️ 2026-09-13 止血：停掉这里的 calibrate() 调用，只保留 verify_pending()。
+    # 原因：
+    #   1) 旧的成绩单口径是坏的（取数窗口与预测日无关、固定 ±0.5% 让 neutral 命中 0/70），
+    #      在坏指标上做 EMA 调权等于朝错误方向调（stock_screen 被抬到 0.7701）。
+    #   2) 更根本的是：calibrate() 写出的权重**当前没有任何消费方** ——
+    #      pipeline_runner.step_confidence_gate 在 step_ema_calibration 之前执行，
+    #      ctx.module_weights 只被赋值、全仓无读取点。也就是说这份权重只影响展示。
+    # 计量口径已在同批修复（judgment_tracker 2026-09-13 修订）。等「权重该不该
+    # 真正接入门控」这个决定做完，再恢复自动调权。
+    # 最差结果只是回到 DEFAULT_WEIGHTS，而当前落盘的权重本来就是坏指标算出来的。
     try:
-        from services.judgment_tracker import verify_pending, calibrate
+        from services.judgment_tracker import verify_pending
         for p in profiles:
             uid = p.get("id", "")
             if not uid:
@@ -1557,11 +1573,8 @@ def run_close_review():
             verified = verify_pending(uid)
             if verified:
                 print(f"  [判断] {uid}: 验证 {len(verified)} 条判断")
-                cal = calibrate(uid)
-                if cal.get("status") == "calibrated":
-                    print(f"  [校准] {uid}: 准确率{cal['overall_accuracy']}%, 权重已更新")
     except Exception as e:
-        print(f"  [判断/校准] 失败: {e}")
+        print(f"  [判断] 失败: {e}")
 
 
 def cleanup_old_snapshots(max_days: int = 7):

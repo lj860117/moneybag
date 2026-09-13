@@ -494,29 +494,86 @@ const el2=document.getElementById('scorecardContent');if(!el2)return;
 
 // 校准按钮状态（数据不足时灰显）
 const canCalibrate=card.can_calibrate;
+// 门槛由后端返回（现在会从 10 提到 30）。前端不写死数字：缺字段时只说「更多」，
+// 不许用旧默认值假装知道门槛是多少。
+const calibNeed=(typeof card.calibrate_needed==='number')?card.calibrate_needed:null;
+const calibNeedText=calibNeed!=null?('至少'+calibNeed+'条'):'更多';
 const calibBtn=document.getElementById('calibBtn');
 if(calibBtn){
   if(!canCalibrate){
     calibBtn.disabled=true;
     calibBtn.style.opacity='0.4';
     calibBtn.style.cursor='not-allowed';
-    calibBtn.title=`需要至少${card.calibrate_needed||10}条已验证记录（当前${card.verified||0}条）`;
+    calibBtn.title=`需要${calibNeedText}已验证记录（当前${card.verified||0}条）`;
   }
 }
 
 // 核心指标卡
-const accColor=card.accuracy>=70?'var(--green)':card.accuracy>=50?'var(--accent)':'var(--red)';
+// 口径诚实性（勿删）：后端成绩单的 accuracy 口径存在已实测确认的缺陷 ——
+//   1) 取数窗口与预测日无关（预测第N天涨跌，对照的却是另一段窗口行情）；
+//   2) 中性类几乎不可能被判对。
+// 所以在没有基线对照前，它不是一个可解释的 KPI，绝不能当红/绿 KPI 展示。
+// 后端修好后会新增 directional_accuracy / baseline_always_bullish / no_view_rate
+// / sample_adequate；存在时优先展示新口径（命中率必须与「永远看多」基线并排对照），
+// 不存在时退回常驻诚实横幅。全部用 typeof/undefined 判断，不假设后端一定返回。
+const hasDirectional = (typeof card.directional_accuracy === 'number');
+const hasBaseline = (typeof card.baseline_always_bullish === 'number');
+const hasNewCaliber = hasDirectional || hasBaseline;
 const verifyDays=card.verify_days||15;
-let html=`<div style="display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin-bottom:12px">
-<div style="background:var(--bg2);border-radius:12px;padding:12px;text-align:center">
-<div style="font-size:28px;font-weight:900;color:${accColor}">${card.accuracy}%</div>
-<div style="font-size:11px;color:var(--text2)">准确率</div></div>
-<div style="background:var(--bg2);border-radius:12px;padding:12px;text-align:center">
-<div style="font-size:28px;font-weight:900">${card.total}</div>
-<div style="font-size:11px;color:var(--text2)">总判断</div></div>
-<div style="background:var(--bg2);border-radius:12px;padding:12px;text-align:center">
-<div style="font-size:28px;font-weight:900;color:var(--green)">${card.correct}</div>
-<div style="font-size:11px;color:var(--text2)">✅正确 / ❌${card.wrong} / 🟡${card.partial}</div></div></div>`;
+let html='';
+if(hasNewCaliber){
+  const da = hasDirectional ? card.directional_accuracy : null;
+  const bl = hasBaseline ? card.baseline_always_bullish : null;
+  const nv = (typeof card.no_view_rate === 'number') ? card.no_view_rate : null;
+  const delta = (da!=null && bl!=null) ? (da-bl) : null;
+  html+=`<div style="display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin-bottom:8px">
+  <div style="background:var(--bg2);border-radius:12px;padding:12px;text-align:center">
+  <div style="font-size:26px;font-weight:900;color:var(--accent)">${da==null?'—':da+'%'}</div>
+  <div style="font-size:11px;color:var(--text2)">有观点时命中率</div></div>
+  <div style="background:var(--bg2);border-radius:12px;padding:12px;text-align:center">
+  <div style="font-size:26px;font-weight:900;color:var(--text2)">${bl==null?'—':bl+'%'}</div>
+  <div style="font-size:11px;color:var(--text2)">永远看多的基线</div></div>
+  <div style="background:var(--bg2);border-radius:12px;padding:12px;text-align:center">
+  <div style="font-size:26px;font-weight:900;color:var(--text2)">${nv==null?'—':nv+'%'}</div>
+  <div style="font-size:11px;color:var(--text2)">无观点率</div></div></div>`;
+  if(delta!=null){
+    const beat=delta>0;
+    html+=`<div style="background:${beat?'rgba(16,185,129,.08)':'rgba(239,68,68,.08)'};border:1px solid ${beat?'rgba(16,185,129,.25)':'rgba(239,68,68,.25)'};border-radius:8px;padding:8px 12px;margin-bottom:12px;font-size:11px;color:${beat?'var(--green)':'#F87171'};line-height:1.6">
+    ${beat?'✅':'⚠️'} 有观点命中率相对基线 ${delta>0?'+':''}${delta.toFixed(1)} 个百分点 —— ${beat?'高于「永远看多」基线，方向判断具备增量信息。':'未跑赢「永远看多」基线，方向判断目前不构成优势。'}</div>`;
+  }else{
+    html+=`<div style="background:rgba(245,158,11,.06);border:1px solid rgba(245,158,11,.2);border-radius:8px;padding:8px 12px;margin-bottom:12px;font-size:11px;color:var(--accent)">
+    ⚠️ 缺少「永远看多」基线，命中率无法解释 —— 单看命中率说明不了判断力。</div>`;
+  }
+  if(card.sample_adequate===false){
+    html+=`<div style="background:rgba(245,158,11,.06);border:1px solid rgba(245,158,11,.2);border-radius:8px;padding:8px 12px;margin-bottom:12px;font-size:11px;color:var(--accent)">
+    ⚠️ 样本量不足，上述命中率尚不稳定，仅供参考。</div>`;
+  }
+  html+=`<div style="display:grid;grid-template-columns:repeat(2,1fr);gap:8px;margin-bottom:12px">
+  <div style="background:var(--bg2);border-radius:12px;padding:12px;text-align:center">
+  <div style="font-size:22px;font-weight:900">${card.total}</div>
+  <div style="font-size:11px;color:var(--text2)">总判断</div></div>
+  <div style="background:var(--bg2);border-radius:12px;padding:12px;text-align:center">
+  <div style="font-size:22px;font-weight:900;color:var(--green)">${card.correct}</div>
+  <div style="font-size:11px;color:var(--text2)">✅正确 / ❌${card.wrong} / 🟡${card.partial}</div></div></div>`;
+}else{
+  // 旧口径：数字照实保留（不隐藏），但明确标注暂不可用，且不做红/绿 KPI 渲染。
+  html+=`<div style="background:rgba(239,68,68,.08);border:1px solid rgba(239,68,68,.25);border-radius:10px;padding:10px 12px;margin-bottom:12px">
+  <div style="font-size:12px;font-weight:800;color:#F87171;margin-bottom:4px">⚠️ 当前评分口径存在已知缺陷，数字暂不可用</div>
+  <div style="font-size:11px;color:var(--text2);line-height:1.7">
+  1）取数窗口与预测日无关 —— 判断的是「第N天的方向」，对照的却是另一段窗口的行情；<br>
+  2）中性类几乎无法判对 —— 判「震荡」的记录基本不会被记为正确。<br>
+  因此本页所有准确率/命中率数字都<b>不能</b>当作判断力的证据。修复后这里会改为「有观点命中率 vs 永远看多基线」的并排对照。</div></div>`;
+  html+=`<div style="display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin-bottom:12px">
+  <div style="background:var(--bg2);border-radius:12px;padding:12px;text-align:center">
+  <div style="font-size:28px;font-weight:900;color:var(--text2)">${card.accuracy}%</div>
+  <div style="font-size:11px;color:var(--text2)">旧口径准确率<br>（口径待修，暂不可用）</div></div>
+  <div style="background:var(--bg2);border-radius:12px;padding:12px;text-align:center">
+  <div style="font-size:28px;font-weight:900">${card.total}</div>
+  <div style="font-size:11px;color:var(--text2)">总判断</div></div>
+  <div style="background:var(--bg2);border-radius:12px;padding:12px;text-align:center">
+  <div style="font-size:28px;font-weight:900;color:var(--green)">${card.correct}</div>
+  <div style="font-size:11px;color:var(--text2)">✅正确 / ❌${card.wrong} / 🟡${card.partial}</div></div></div>`;
+}
 
 // 待验证说明（有大量待验证时给解释）
 if(card.pending>0){
@@ -582,7 +639,7 @@ wh+=`<div style="display:flex;align-items:center;gap:8px;padding:4px 0;font-size
 <span style="min-width:120px">${mod}</span>
 <div style="flex:1;height:6px;background:var(--bg3);border-radius:3px;overflow:hidden"><div style="height:100%;width:${pct}%;background:var(--accent);border-radius:3px"></div></div>
 <span style="min-width:35px;text-align:right;font-weight:600">${pct}%</span></div>`});
-if(!canCalibrate){wh+=`<div style="font-size:11px;color:var(--text2);margin-top:8px">⚙️ 需 ${card.calibrate_needed||10} 条已验证记录才能EMA校准（当前 ${card.verified||0} 条）</div>`}
+if(!canCalibrate){wh+=`<div style="font-size:11px;color:var(--text2);margin-top:8px">⚙️ 需 ${calibNeedText}已验证记录才能EMA校准（当前 ${card.verified||0} 条）</div>`}
 wel.innerHTML=wh}}
 }catch(e){console.warn('Scorecard failed:',e);
 const el2=document.getElementById('scorecardContent');

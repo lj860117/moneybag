@@ -27,7 +27,7 @@ MODULE_META = {
     "output": "screened_stocks",
     "cost": "llm_light",
     "tags": ["选股", "30因子", "动态权重"],
-    "description": "30因子7维打分V3，DeepSeek判regime+固化权重表（经验值未回测）+LLM因子加分",
+    "description": "30因子7维打分V3，DeepSeek判regime+固化权重表（经验值未回测，命中时按需掺入factor_ic实测|IC|）+LLM因子加分",
     "layer": "analysis",
     "priority": 2,
 }
@@ -47,6 +47,7 @@ from config import (
     STOCK_FACTOR_WEIGHT_SOURCE_RULE,
     STOCK_FACTOR_WEIGHT_SOURCE_FALLBACK,
 )
+from config import DATA_DIR as _DATA_DIR
 
 # ---- 动态权重：LLM 判 regime，权重查固化表 ----
 _WEIGHT_CACHE_TTL = 3600  # 1 小时
@@ -79,19 +80,298 @@ def _normalize_weights(raw: dict) -> dict:
     return {k: v / total for k, v in out.items()}
 
 
-def get_weights_for_regime(regime) -> dict:
-    """regime → 7 维权重。纯查表，不含任何 LLM 现编数字。
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# factor_ic → 7 维权重（P1-8：IC 算了没人读）
+#
+# 缺陷：scripts/cache_warmer.py 每天把 compute_factor_ic() 的结果写进
+#       data/_cache/factor_ic.json（真实数据：PB |IC|=0.0626/193 样本、
+#       EPS |IC|=0.2208/198 样本），但全仓**没有任何读取方**。选股权重一直
+#       只用 config.STOCK_FACTOR_WEIGHTS_BY_REGIME 那张「经验值、未回测」的表。
+#       算出来的因子有效性一个字节都没进入打分排序 —— 度量与决策脱钩。
+#
+# 修法：把已算好的 |IC| 按维度聚合，与查表权重做线性混合（各占一半），
+#       并把「这次权重是 table 还是 ic_blended」作为标记输出，供上游/前端
+#       如实显示。绝不静默混算后看起来和原来一样。
+#
+# 诚实闸门（缺一不可，全在 _IC_FACTORS_BY_DIM 覆盖到的维度内）：
+#   1. 缓存文件存在且未过期（expires_at）；
+#   2. 因子 samples >= _IC_MIN_SAMPLES 且 n_periods >= _IC_MIN_PERIODS；
+#   3. factor_ic 自己判定的 significant 为真（|t|>=2）—— factor_ic 的
+#      recommendations 明确写了「没有因子通过检验时不要依据 IC 调整权重」，
+#      这里遵循同一条口径，不拿噪声去调权。
+#   未通过闸门的维度视为「无 IC 度量」，保持查表权重不变（而不是按 0 计权，
+#   那等于因为「没测」就把它权重抹掉，属于造数）。
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+_IC_WEIGHTS_CACHE_FILE = _DATA_DIR / "_cache" / "factor_ic.json"
 
-    regime 为 None / 空串 / 未在固化表里（如 "火星牛市"）→ 返回默认权重，
-    不抛异常。权重表是经验值、未回测，来源说明见 config.py 的表定义处。
+_IC_BLEND_LAMBDA = 0.5     # 混合比例：查表权重 50% + IC 实测 50%
+_IC_MIN_SAMPLES = 100      # 因子样本数（截面配对总数）下限
+_IC_MIN_PERIODS = 3        # 截面数下限，与 factor_ic._MIN_IC_PERIODS 同口径
+
+# 7 维 → factor_ic 的因子 ID 映射（因子 ID 见 services/factor_ic.FACTOR_NAMES，
+# 维度归属见本文件 _score_* 各函数的因子编号注释）。
+# 未列出的维度（sentiment：F29/F30 不在 factor_ic 面板里）视为「无 IC 度量」。
+_IC_FACTORS_BY_DIM = {
+    "value":     ("F01_PE", "F02_PB", "F03_EP", "F04_ROE_PB", "F05_EPS"),
+    "growth":    ("F07_REV_GROWTH", "F08_NP_GROWTH", "F09_ROE", "F20_MOM_60D"),
+    "quality":   ("F09_ROE", "F13_GROSS_MARGIN", "F14_NET_MARGIN",
+                  "F15_DEBT_RATIO", "F16_CASHFLOW", "F17_MARKET_CAP"),
+    "momentum":  ("F18_MOM_5D", "F19_MOM_20D", "F20_MOM_60D", "F21_MOM_1D"),
+    "risk":      ("F15_DEBT_RATIO", "F16_CASHFLOW", "F01_PE"),
+    "liquidity": ("F26_TURNOVER", "F27_MCAP_LIQ"),
+}
+
+
+def _load_factor_ic_cache() -> tuple:
+    """读取 cache_warmer 写的 factor_ic 缓存。
+
+    Returns:
+        (data, age_hours)：data 是不可用时为 {}；age_hours 不可知时为 None。
+        任何异常（文件缺失/半写损坏/过期）一律降级为空 dict，绝不造数。
     """
+    meta_age = None
+    try:
+        fp = _IC_WEIGHTS_CACHE_FILE
+        if not fp.exists():
+            return {}, None
+        payload = json.loads(fp.read_text(encoding="utf-8"))
+        if not isinstance(payload, dict):
+            return {}, None
+        cached_at = payload.get("cached_at")
+        if cached_at:
+            try:
+                from datetime import datetime as _dt
+                meta_age = round(
+                    (_dt.now() - _dt.fromisoformat(str(cached_at))).total_seconds() / 3600.0, 2)
+            except Exception:
+                meta_age = None
+        expires_at = payload.get("expires_at") or 0
+        if expires_at and time.time() > float(expires_at):
+            return {}, meta_age
+        data = payload.get("data")
+        return (data if isinstance(data, dict) else {}), meta_age
+    except Exception as e:
+        print(f"[IC_WEIGHTS] factor_ic 缓存不可读，权重保持查表值: {e}")
+        return {}, None
+
+
+# factor_ic 的显著性校正字段（2026-09-13 起由 services/factor_ic.compute_factor_ic 写入）：
+#   significant / significant_corrected —— 已经过 Newey-West 自相关 + BH-FDR 多重检验校正
+#   p_adjusted —— BH 调整后的 p（家族 = 本次实际检验的因子数 n_tested）
+#   n_tested   —— 家族大小
+# 历史缓存（2026-09-13 之前写出的载荷）**没有**这些键，且其 significant 是裸 t 检验
+# 结论（|t|>=2，未校正自相关与多重检验）。因此准入闸门必须同时要求这些字段存在：
+#   · 旧载荷 → 缺键 → 一律拦下（skip_reason=significance_not_corrected）
+#   · 新载荷 → 只有真正通过校正才放行
+# 这是一个**数据版本门**：不能因为"字段名叫 significant 就信它"。
+_IC_REQUIRE_CORRECTED_SIGNIFICANCE = True
+_IC_P_ADJUSTED_MAX = 0.05
+
+
+def _corrected_significance_ok(info: dict) -> bool:
+    """判断因子记录是否带有可采信的**校正后**显著性。
+
+    三道全过才算：
+      1. significant（校正后）为真；
+      2. p_adjusted 存在、可转 float 且 < 0.05；
+      3. n_tested 存在且为正整数（多重检验的家族大小必须可追溯）。
+    旧载荷缺 2/3 两项 → 直接 False。任一字段类型异常 → False（不猜）。
+    """
+    if not _IC_REQUIRE_CORRECTED_SIGNIFICANCE:
+        return bool(info.get("significant"))
+    if not info.get("significant"):
+        return False
+    p_adj = info.get("p_adjusted")
+    if not isinstance(p_adj, (int, float)) or isinstance(p_adj, bool):
+        return False
+    if not (float(p_adj) < _IC_P_ADJUSTED_MAX):
+        return False
+    n_tested = info.get("n_tested")
+    if not isinstance(n_tested, int) or isinstance(n_tested, bool) or n_tested <= 0:
+        return False
+    return True
+
+
+def _ic_strength_by_dim(ic_data: dict) -> tuple:
+    """把 factor_ic 的逐因子 |IC| 聚合成逐维度强度。
+
+    只采纳同时满足 samples/n_periods 门槛**且带校正后显著性**的因子。
+    Returns:
+        (strength, detail)：
+          strength = {dim: mean(|IC|)}，仅含有合格因子的维度
+          detail   = 审计信息（合格/显著/校正后显著 三档计数、逐因子明细）
+    """
+    factors = (ic_data or {}).get("factors") or {}
+    strength, detail = {}, {}
+    qualified = set()    # 过样本量/截面数门槛（同一因子可能归属多维度，按名去重）
+    significant = set()  # 且 significant=True（但可能来自未校正的旧载荷）
+    corrected = set()    # 且带 p_adjusted/n_tested 且通过校正 —— 真正可采信
+    for dim, fnames in _IC_FACTORS_BY_DIM.items():
+        vals, used = [], []
+        for fn in fnames:
+            info = factors.get(fn)
+            if not isinstance(info, dict):
+                continue
+            ic = info.get("ic")
+            if not isinstance(ic, (int, float)) or isinstance(ic, bool):
+                continue
+            try:
+                samples = int(info.get("samples") or 0)
+                periods = int(info.get("n_periods") or 0)
+            except (TypeError, ValueError):
+                continue
+            if samples < _IC_MIN_SAMPLES or periods < _IC_MIN_PERIODS:
+                continue
+            qualified.add(fn)
+            if not info.get("significant"):
+                continue
+            significant.add(fn)
+            if not _corrected_significance_ok(info):
+                continue          # 旧载荷 / 未过 BH 校正 → 不采信
+            corrected.add(fn)
+            vals.append(abs(float(ic)))
+            used.append({"factor": fn, "ic": round(float(ic), 4),
+                         "samples": samples, "n_periods": periods,
+                         "p_adjusted": info.get("p_adjusted"),
+                         "n_tested": info.get("n_tested")})
+        if vals:
+            strength[dim] = sum(vals) / len(vals)
+            detail[dim] = used
+    return strength, {"qualified_factors": len(qualified),
+                      "significant_factors": len(significant),
+                      "corrected_significant_factors": len(corrected),
+                      "factors_by_dim": detail}
+
+
+def _apply_ic_blend(regime_key: str, table_raw: dict) -> tuple:
+    """查表权重 + factor_ic 实测强度的线性混合。返回 (weights, meta)。
+
+    未通过闸门 → 原样返回 _normalize_weights(table_raw)，并在 meta 里写明
+    skip_reason，让「没接入成功」这件事可见而不是伪装成接入成功。
+    """
+    base = _normalize_weights(table_raw)
+    unmeasured = sorted(set(DEFAULT_DIM_WEIGHTS) - set(_IC_FACTORS_BY_DIM))
+    meta = {
+        "weights_source": "table",
+        "regime": regime_key,
+        "ic_lambda": _IC_BLEND_LAMBDA,
+        "ic_dims_used": [],
+        "ic_dims_unmeasured": unmeasured,
+        "ic_qualified_factors": 0,
+        "ic_significant_factors": 0,
+        "ic_corrected_significant_factors": 0,
+        "ic_factors_by_dim": {},
+        "ic_cache_age_hours": None,
+        "skip_reason": "",
+    }
+
+    ic_data, age = _load_factor_ic_cache()
+    meta["ic_cache_age_hours"] = age
+    if not ic_data:
+        meta["skip_reason"] = "ic_cache_unavailable"
+        return base, meta
+
+    strength, detail = _ic_strength_by_dim(ic_data)
+    n_qual = detail["qualified_factors"]
+    n_sig = detail["significant_factors"]
+    n_corr = detail["corrected_significant_factors"]
+    meta["ic_qualified_factors"] = n_qual
+    meta["ic_significant_factors"] = n_sig
+    meta["ic_corrected_significant_factors"] = n_corr
+    # 逐因子明细（含 p_adjusted / n_tested）必须随 meta 一起暴露，
+    # 否则"凭什么说这个因子通过了校正"事后无法核对。
+    meta["ic_factors_by_dim"] = detail["factors_by_dim"]
+    if not strength:
+        # 三档 skip_reason 必须能区分「压根没测到数据」与「测到了但没通过校正」：
+        #   no_qualified_factor        —— 连 samples/n_periods 门槛都没过
+        #   no_significant_factor      —— 过了门槛，但没有任何因子 significant=True
+        #   significance_not_corrected —— 有 significant=True，但缺 p_adjusted/n_tested
+        #                                （2026-09-13 前的旧载荷）或未过 BH 校正 → 不采信
+        # 第三档单独列出，是为了让「缓存里的显著性没做过多重检验/自相关校正」这件事
+        # 在 weights_basis_detail 里可见，而不是被并进 no_significant_factor 抹平。
+        if n_qual == 0:
+            meta["skip_reason"] = "no_qualified_factor"
+        elif n_sig == 0:
+            meta["skip_reason"] = "no_significant_factor"
+        else:
+            meta["skip_reason"] = "significance_not_corrected"
+        return base, meta
+
+    measured = sorted(strength)
+    total = sum(strength.values())
+    if total <= 0:
+        meta["skip_reason"] = "zero_ic_strength"
+        return base, meta
+
+    # 只重分配「有 IC 度量的维度」所占的权重预算，其余维度原样不动
+    # —— 避免因「没测过」而把某维度权重按 0 拉低（那是造数）。
+    budget = sum(base[d] for d in measured)
+    lam = _IC_BLEND_LAMBDA
+    out = dict(base)
+    for d in measured:
+        out[d] = (1 - lam) * base[d] + lam * budget * (strength[d] / total)
+
+    meta["weights_source"] = "ic_blended"
+    meta["ic_dims_used"] = measured
+    meta["skip_reason"] = ""
+    blended = _normalize_weights(out)
+
+    # 若混算后数值与查表值逐位相同（例如只有一个维度有 IC 度量、或 IC 强度
+    # 分布恰好与表权重同比例），就不该报 ic_blended —— 报了等于说"我用了 IC"，
+    # 但用户看到的数字一个都没变，这正是本项目最忌讳的「看起来有效其实是假的」。
+    if blended == base:
+        meta["weights_source"] = "table"
+        meta["ic_dims_used"] = []
+        meta["skip_reason"] = "weight_distribution_unchanged"
+    return blended, meta
+
+
+def _resolve_weights_for_regime(regime) -> tuple:
+    """(weights, meta)：regime 查表，命中固化表时再尝试接入 factor_ic。"""
     from config import STOCK_FACTOR_WEIGHTS_BY_REGIME
 
     key = str(regime).strip() if regime is not None else ""
     raw = (STOCK_FACTOR_WEIGHTS_BY_REGIME or {}).get(key)
     if not isinstance(raw, dict):
-        return _normalize_weights(DEFAULT_DIM_WEIGHTS)
-    return _normalize_weights(raw)
+        # 未命中固化表 → 回退默认权重。此路径**不做** IC 修正：既有契约要求
+        # 「未识别」严格等于基线权重（tests/test_stock_screen_weights_regime.py
+        # 的 fallback 断言），且「无 regime 信息」时不该借 IC 改变基线含义。
+        return (_normalize_weights(DEFAULT_DIM_WEIGHTS),
+                {"weights_source": "table", "regime": key,
+                 "skip_reason": "regime_not_in_table",
+                 "ic_lambda": _IC_BLEND_LAMBDA, "ic_dims_used": [],
+                 "ic_dims_unmeasured": sorted(set(DEFAULT_DIM_WEIGHTS) - set(_IC_FACTORS_BY_DIM)),
+                 "ic_qualified_factors": 0, "ic_significant_factors": 0,
+                 "ic_corrected_significant_factors": 0, "ic_factors_by_dim": {},
+                 "ic_cache_age_hours": None})
+    return _apply_ic_blend(key, raw)
+
+
+def get_weights_for_regime(regime) -> dict:
+    """regime → 7 维权重。纯查表；固化表命中且 factor_ic 通过闸门时做 IC 混合。
+
+    regime 为 None / 空串 / 未在固化表里（如 "火星牛市"）→ 返回默认权重，
+    不抛异常。返回值恒为 7 个维度、和为 1.0（附带的来源标记请用
+    get_weights_for_regime_meta 取，避免污染权重字典）。
+
+    注意：即使命中了固化表，只要 factor_ic 缓存缺失/过期/无显著因子，本函数
+    就原样返回查表值，不做任何悄悄混合。
+    """
+    weights, _meta = _resolve_weights_for_regime(regime)
+    return weights
+
+
+def get_weights_for_regime_meta(regime) -> dict:
+    """与 get_weights_for_regime 同源同口径的权重来源标记。
+
+    weights_source 取值：
+      "table"       —— 权重完全来自 config.STOCK_FACTOR_WEIGHTS_BY_REGIME
+                       （或未识别时的默认权重表），未掺入 factor_ic
+      "ic_blended"  —— 查表权重与 factor_ic 实测 |IC| 按 _IC_BLEND_LAMBDA 混合
+    其余字段说明为什么没混算（skip_reason）、用了哪些维度/因子、缓存有多旧。
+    """
+    _weights, meta = _resolve_weights_for_regime(regime)
+    return meta
 
 
 def _build_market_ctx() -> str:
@@ -185,11 +465,15 @@ def _classify_regime_by_llm(market_ctx: str) -> tuple:
 def _get_dynamic_weights() -> dict:
     """7 维权重：LLM 只负责判断 regime，权重一律由 config 固化表查得。
 
-    返回值除 7 个维度权重外，还带三个下划线前缀的元信息（调用方 pop 掉即可）：
+    返回值除 7 个维度权重外，还带下划线前缀的元信息（调用方 pop 掉即可）：
       _regime: 市场状态，空串表示未识别
       _reason: LLM 给的分类理由，可能为空
       _source: 权重来源（"llm_regime"/"rule_regime"/"fallback"）——
                降级必须可见，不允许静默返回一套"看起来合理"的权重
+      _weights_basis: 因子权重的依据（"table" 纯查表 / "ic_blended" 掺入
+               factor_ic 实测 |IC|）—— P1-8：IC 算了必须真被读进来，
+               且这次到底有没有掺进去要说清楚
+      _weights_meta: 上述判断的明细（用了哪些维度/因子、为什么没混算）
     """
     cache_key = "dynamic_weights"
     cached = _weight_cache.get(cache_key)
@@ -208,11 +492,17 @@ def _get_dynamic_weights() -> dict:
     else:
         source = STOCK_FACTOR_WEIGHT_SOURCE_FALLBACK
     weights = get_weights_for_regime(regime)
+    wmeta = get_weights_for_regime_meta(regime)
 
     weights["_regime"] = regime
     weights["_reason"] = reason
     weights["_source"] = source
-    print(f"[DYN_WEIGHT] regime={regime or '未识别'} source={source} weights={weights}")
+    weights["_weights_basis"] = wmeta.get("weights_source", "table")
+    weights["_weights_meta"] = wmeta
+    print(f"[DYN_WEIGHT] regime={regime or '未识别'} source={source} "
+          f"weights_basis={weights['_weights_basis']} "
+          f"ic_dims={wmeta.get('ic_dims_used')} skip={wmeta.get('skip_reason') or '-'} "
+          f"weights={weights}")
 
     _weight_cache.set(cache_key, weights)
     return dict(weights)
@@ -648,6 +938,9 @@ def screen_stocks(top_n: int = 50) -> dict:
         regime = weights_data.pop("_regime", "") if "_regime" in weights_data else ""
         weight_reason = weights_data.pop("_reason", "") if "_reason" in weights_data else ""
         weight_source = weights_data.pop("_source", STOCK_FACTOR_WEIGHT_SOURCE_FALLBACK)
+        # P1-8：权重依据（纯查表 table / 掺入 factor_ic 实测 ic_blended）必须可见
+        weights_basis = weights_data.pop("_weights_basis", "table")
+        weights_meta = weights_data.pop("_weights_meta", None) or {}
         # 清理非权重 key
         DIM_WEIGHTS = {k: v for k, v in weights_data.items() if not k.startswith("_")}
 
@@ -674,6 +967,9 @@ def screen_stocks(top_n: int = 50) -> dict:
                 weight_reason = "市场数据不可用，使用默认权重（经验值，未回测）"
                 print(f"[STOCK_SCREEN] regime 推断失败，使用默认: {_e}")
             DIM_WEIGHTS = get_weights_for_regime(regime)
+            # 规则推断出的 regime 重新查表，权重依据也要按同一口径刷新
+            weights_meta = get_weights_for_regime_meta(regime)
+            weights_basis = weights_meta.get("weights_source", "table")
         # 确保有所有必需的 key
         for k in DEFAULT_DIM_WEIGHTS:
             if k not in DIM_WEIGHTS:
@@ -953,11 +1249,21 @@ def screen_stocks(top_n: int = 50) -> dict:
 
         # 因子说明（含动态权重）
         w_desc = " / ".join([f"{k}({int(DIM_WEIGHTS[k]*100)}%)" for k in DIM_WEIGHTS])
+        if weights_basis == "ic_blended":
+            _basis_desc = (
+                f"table+factor_ic 实测混合（各 {int(_IC_BLEND_LAMBDA*100)}%，"
+                f"IC 维度: {'/'.join(weights_meta.get('ic_dims_used') or []) or '无'}"
+                f"，显著因子 {weights_meta.get('ic_significant_factors', 0)} 个）"
+            )
+        else:
+            _basis_desc = (f"纯查表（经验值，未回测；未采用 IC 的原因: "
+                           f"{weights_meta.get('skip_reason') or 'ic_cache_unavailable'}）")
         factor_desc = (
             f"30因子7维打分 V3 — 按市场状态取固化权重\n"
             f"市场状态: {regime} | {weight_reason}\n"
             f"权重: {w_desc}\n"
-            f"权重来源: {weight_source}（经验值，未回测）\n"
+            f"权重来源: {weight_source}（regime 判定方式）\n"
+            f"因子权重依据: {_basis_desc}\n"
             f"舆情因子已接入 LLM 新闻情绪评分"
         )
 
@@ -990,7 +1296,19 @@ def screen_stocks(top_n: int = 50) -> dict:
             # P1-7：权重怎么来的必须可见（LLM 判 regime / 规则推断 / 兜底），
             # 不允许静默降级后还伪装成"AI 动态调权"
             "weights_source": weight_source,
-            "weights_disclaimer": "经验值，未回测",
+            # P1-8：因子权重依据（table 纯查表 / ic_blended 掺入 factor_ic 实测）。
+            # 与上面的 weights_source（regime 判定方式）是两个正交维度，不可互相替代。
+            "weights_basis": weights_basis,
+            "weights_basis_detail": {
+                "ic_lambda": weights_meta.get("ic_lambda"),
+                "ic_dims_used": weights_meta.get("ic_dims_used") or [],
+                "ic_dims_unmeasured": weights_meta.get("ic_dims_unmeasured") or [],
+                "ic_qualified_factors": weights_meta.get("ic_qualified_factors", 0),
+                "ic_significant_factors": weights_meta.get("ic_significant_factors", 0),
+                "ic_cache_age_hours": weights_meta.get("ic_cache_age_hours"),
+                "skip_reason": weights_meta.get("skip_reason") or "",
+            },
+            "weights_disclaimer": "固化表为经验值，未回测",
             "note": f"数据源: {source} | 财务数据: {fin_count}/{len(codes_50)} | 市场: {regime}",
         }
         _stock_cache.set(cache_key, result)

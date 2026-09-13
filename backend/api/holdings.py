@@ -638,7 +638,11 @@ def _compute_holding_detail(code: str, userId: str, cache_fp_str: str) -> dict:
     
     # ====== 3.5 走势预估（8维完整分解） ======
     try:
-        from api.signals import _enrich_trend_forecast
+        from api.signals import _enrich_trend_forecast, _enrich_risk_adjusted
+        # v9.x 顺序修复：维度7（波动率/夏普）读 sharpe_ratio，必须在打分前注入。
+        # _enrich_risk_adjusted 只读共享缓存 + 对未命中的 code 起后台预热（不阻塞本请求），
+        # 每条持仓代码一次缓存读，成本可忽略。
+        _enrich_risk_adjusted([result])
         # 包装为列表调用, include_dimensions=True 获取完整8维分解
         _trend_input = [result]
         _enrich_trend_forecast(_trend_input, include_dimensions=True)
@@ -1148,6 +1152,12 @@ def _compute_holdings_enrich(userId: str) -> dict:
             elif nav_pct >= 80:
                 score -= 5
         info["score"] = round(score)
+        # v9.x 口径标记（勿删）：本 score 是**持仓列表路径自算的简化评分**，
+        # 量纲 0~50（25+15+10 上限），与 services/fund_screen.py 那个 0~100 的质量分
+        # 不是同一个东西。走势预估维度8「情绪面」的 85/40 阈值只对 0~100 口径成立，
+        # 若放任它消费本值，该维度会恒为 −2（≥85 不可达）= 恒定偏移冒充信号（静默错值）。
+        # api/signals.py 的维度8 见到本标记即不消费该分数。
+        info["score_caliber"] = "holdings_simplified_0_50"
         return info
     
     # 总超时15秒（周末数据源不可用时快速返回已有数据）
@@ -1172,7 +1182,10 @@ def _compute_holdings_enrich(userId: str) -> dict:
     
     # v9.5.123: 为每只持仓基金添加8维走势预估
     try:
-        from api.signals import _enrich_trend_forecast
+        from api.signals import _enrich_trend_forecast, _enrich_risk_adjusted
+        # v9.x 顺序修复：维度7 需要 sharpe_ratio，先注入再打分（详见持仓详情分支同款注释）。
+        # 持仓只数少（个位数），一次缓存读 + 冷门 code 后台预热，不阻塞本请求。
+        _enrich_risk_adjusted(enriched)
         _enrich_trend_forecast(enriched, include_dimensions=False)
     except Exception as e:
         print(f"[HOLDINGS_ENRICH] trend_forecast failed: {e}")

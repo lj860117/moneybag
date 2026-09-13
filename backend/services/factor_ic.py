@@ -31,14 +31,25 @@ V2 的做法：面板时间切片（panel time-slice）
   - IC (Information Coefficient): 因子值与未来 N 日收益的 Spearman 相关系数
   - IC_IR (IC均值 / IC标准差): IC 的稳定性
   - IC>0 占比: 方向一致性
-  - t 统计量: IC 均值是否显著不为 0（|t| >= 2 视为显著）
+  - t 统计量: IC 均值是否显著不为 0
   - IC 衰减曲线: 因子在不同预测周期(5d/10d/20d/60d)的 IC 变化
+
+显著性的三重口径（2026-09-13 起，必须一起看，不许只看第一个）：
+  - `t_stat` / `p_value` / `significant_naive`
+        —— 裸 t 检验（|t|>=2），**有偏乐观**，仅作对照保留；
+  - `t_stat_nw` / `t_stat_eff` / `t_stat_robust` / `p_value_robust`
+        —— 自相关校正（IC 由重叠前瞻窗口算出，天生强自相关 → 裸 t 被系统性放大）；
+  - `p_adjusted` / `significant` / `significant_corrected`
+        —— 再叠加 Benjamini-Hochberg FDR(q=0.05) 多重检验校正。
+        同时检验 17~70 个因子时，裸 |t|>=2 纯靠运气就能刷出一批"显著"，
+        因此**只有 `significant` 可以用于排序/加权决策**。
 
 学术标准：
   - |IC| > 0.03: 有效因子
   - |IC| > 0.05: 优秀因子
   - IC_IR > 0.5: 非常稳定
   - IC_IR > 0.3: 较稳定
+  （以上是**效应量**门槛，与统计显著性门槛相互独立，必须同时满足）
 
 ⚠️ 已知残留局限（无法在现有数据条件下消除，已在输出 limitations 中声明）：
   - 股票池用「当前」市值 TOP N 构建，存在幸存者偏差（历史上当时的小票不在池内）；
@@ -57,7 +68,7 @@ MODULE_META = {
     "output": "ic_ranking",
     "cost": "cpu",
     "tags": ['IC检验', 'Barra', '因子有效性', '时间切片'],
-    "description": "30因子面板时间切片Spearman IC检验（无未来函数）+IC衰减分析",
+    "description": "30因子面板时间切片Spearman IC检验（无未来函数）+ Newey-West自相关校正 + BH-FDR多重检验校正 + IC衰减分析",
     "layer": "analysis",
     "priority": 5,
 }
@@ -132,6 +143,158 @@ def _std(xs: list) -> float:
     m = _mean(xs)
     var = sum((x - m) ** 2 for x in xs) / (n - 1)
     return math.sqrt(var) if var > 0 else 0.0
+
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# 显著性校正（2026-09-13）
+#
+# 缺陷：原实现 `significant = abs(t_stat) >= 2.0`，t_stat = ic_mean/(ic_std/√n)
+# 是**朴素、未校正**的 t 检验，两处硬伤：
+#   1. 无多重检验校正：同时检验 17~70 个因子，|t|>=2（p≈0.05）纯靠运气就能
+#      出一批"显著"。与遗传因子模块的实测对照一致（裸 p=0.005 vs 校正 p=0.92）。
+#   2. IC 序列自相关被忽略：IC 由**重叠的前瞻窗口**算出，序列天生强自相关
+#      → 有效样本量远小于 n → t_stat 被系统性放大 → 显著性太容易通过。
+# 这会直接污染下游 `stock_screen` 的 IC 加权（拿"看起来显著"的因子调权）。
+#
+# 修法：
+#   A. 自相关校正：Newey-West(Bartlett) 稳健 t（滞后阶按重叠窗口长度
+#      forward_days-1，并受 n 约束），同时给出有效样本量
+#      effective_n = n(1-ρ1)/(1+ρ1) 口径的 t；两者取**更保守者**作为决策统计量
+#      （自相关校正宁可保守，也不许任一种低估方差）。
+#   B. 多重检验校正：对本次实际参与检验的因子家族做 Benjamini-Hochberg FDR
+#      （q=0.05），保留 Bonferroni 阈值仅供参考。
+#   C. `significant` 语义改为「校正后显著」；同时保留 `significant_naive`
+#      —— 必须让"校正前显著、校正后不显著"这件事**可见**，不许被抹平。
+#
+# 限制（写进 limitations）：IC 是**样本内**度量。校正后显著只说明"在该样本内、
+# 排除多重检验与自相关造成的虚高之后仍然稳健"，**不等于样本外有效**。
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+_FDR_Q = 0.05   # Benjamini-Hochberg FDR 目标水平
+
+
+def _normal_two_sided_p(t: float) -> float:
+    """正态近似双侧 p 值（纯 Python，math.erfc，不依赖 scipy）
+
+    p = 2·(1-Φ(|t|)) = erfc(|t|/√2)
+    """
+    if t is None or not isinstance(t, (int, float)) or not math.isfinite(t):
+        return 1.0
+    return float(math.erfc(abs(float(t)) / math.sqrt(2.0)))
+
+
+def _lag1_autocorr(xs: list) -> float:
+    """一阶自相关系数 ρ1 = Σ(x_i-m)(x_{i+1}-m) / Σ(x_i-m)²"""
+    n = len(xs)
+    if n < 3:
+        return 0.0
+    m = _mean(xs)
+    den = sum((x - m) ** 2 for x in xs)
+    if den <= 0:
+        return 0.0
+    num = sum((xs[i] - m) * (xs[i + 1] - m) for i in range(n - 1))
+    return num / den
+
+
+def _newey_west_t_stat(xs: list, lag: int) -> float:
+    """Newey-West(Bartlett) 自相关稳健 t 统计量。
+
+    Var(mean) = S/n，S = γ0 + 2·Σ_{k=1..L}(1-k/(L+1))·γ_k，γ_k = (1/n)Σ(x_i-m)(x_{i+k}-m)
+
+    滞后阶 L 由调用方传入（重叠前瞻窗口 → forward_days-1），并被 n-1 约束。
+    若 S 非正（NW 在小样本下的已知病态），退化为 γ0 —— 即**退回 iid 方差**，
+    方向上只会让 |t| 更小（更保守），绝不放大显著性。
+    """
+    n = len(xs)
+    if n < 3:
+        return 0.0
+    m = _mean(xs)
+    dev = [x - m for x in xs]
+    g0 = sum(d * d for d in dev) / n
+    if g0 <= 0:
+        return 0.0
+    L = max(0, min(int(lag), n - 1))
+    s = g0
+    for k in range(1, L + 1):
+        gk = sum(dev[i] * dev[i + k] for i in range(n - k)) / n
+        s += 2.0 * (1.0 - k / (L + 1.0)) * gk
+    if s <= 0:
+        s = g0
+    return m / math.sqrt(s / n)
+
+
+def _effective_n_t_stat(xs: list) -> tuple:
+    """用有效样本量重算 t：effective_n = n·(1-ρ1)/(1+ρ1)
+
+    Returns:
+        (t_eff, effective_n, rho1)；effective_n 夹在 [2, n]（<2 时方差无意义，
+        上夹到 2 表示"自相关校正到此为止"，属于小样本已知局限，会在载荷中
+        与 t_stat_nw 取更保守者，因此不会因此放松判据）。
+    """
+    n = len(xs)
+    if n < 3:
+        return 0.0, float(n), 0.0
+    rho = _lag1_autocorr(xs)
+    rho = max(-1.0 + 1e-9, min(1.0 - 1e-9, rho))
+    eff = n * (1.0 - rho) / (1.0 + rho)
+    eff = max(2.0, min(float(n), eff))
+    ic_std = _std(xs)
+    t = (_mean(xs) / (ic_std / math.sqrt(eff))) if ic_std > 0 else 0.0
+    return t, eff, rho
+
+
+def _benjamini_hochberg(pvals: list) -> list:
+    """Benjamini-Hochberg FDR 调整 p 值（step-up，返回与输入同序）。
+
+    p_(1)<=...<=p_(m) 时 p_adj_(i) = min_{j>=i} ( p_(j)·m/j )，并夹到 <=1。
+    m=0 返回空列表。
+    """
+    m = len(pvals)
+    if m == 0:
+        return []
+    order = sorted(range(m), key=lambda i: pvals[i])
+    adj = [1.0] * m
+    running = 1.0
+    for rank in range(m, 0, -1):
+        i = order[rank - 1]
+        running = min(running, pvals[i] * m / rank)
+        adj[i] = min(1.0, running)
+    return adj
+
+
+def _factor_significance_stats(series: list, forward_days: int) -> dict:
+    """单个因子的 IC 序列 → 显著性统计（含自相关校正，未做多重检验校正）。
+
+    多重检验校正需要整个因子家族，由调用方用它返回的 p_value_robust 统一做 BH。
+    """
+    n = len(series)
+    ic_mean = _mean(series)
+    ic_std = _std(series)
+    icir = (ic_mean / ic_std) if ic_std > 0 else 0.0
+    pos_rate = sum(1 for v in series if v > 0) / n
+    t_stat = (ic_mean / (ic_std / math.sqrt(n))) if ic_std > 0 else 0.0
+
+    nw_lag = max(0, min(int(forward_days) - 1, n - 1))
+    t_nw = _newey_west_t_stat(series, nw_lag)
+    t_eff, effective_n, rho1 = _effective_n_t_stat(series)
+
+    # 取更保守者（|t| 更小）：自相关校正的方向只能是"降低显著性"
+    t_robust = math.copysign(min(abs(t_nw), abs(t_eff)), ic_mean if ic_mean else 1.0)
+    return {
+        "ic_mean": ic_mean,
+        "ic_std": ic_std,
+        "icir": icir,
+        "ic_positive_rate": pos_rate,
+        "n": n,
+        "t_stat": t_stat,
+        "t_stat_nw": t_nw,
+        "t_stat_eff": t_eff,
+        "t_stat_robust": t_robust,
+        "effective_n": effective_n,
+        "ic_autocorr_lag1": rho1,
+        "nw_lag": nw_lag,
+        "p_value": _normal_two_sided_p(t_stat),
+        "p_value_robust": _normal_two_sided_p(t_robust),
+    }
 
 
 def _get_stock_pool(limit: int = 300) -> list:
@@ -536,7 +699,12 @@ def compute_factor_ic(
     print(f"[IC] Cross-sections used: {len(per_date_ic)}, stocks covered: {len(covered_stocks)}")
 
     # Step 6: 汇总 IC 序列
+    #   A. 逐因子算统计量（含自相关校正）
+    #   B. 对本次真正参与检验的因子家族做 BH FDR 多重检验校正
+    #      —— 家族大小必须是"实际检验了几个因子"，所以必须两趟走。
     results = {}
+    tested: dict = {}          # fname -> _factor_significance_stats 结果
+    tested_meta: dict = {}     # fname -> (ic 序列, samples) —— 第二趟要用
     for fname in FACTOR_NAMES:
         series = [row[fname] for _, row, _ in per_date_ic if fname in row]
         samples = total_pairs.get(fname, 0)
@@ -553,6 +721,13 @@ def compute_factor_ic(
                 "ic_positive_rate": None, "t_stat": None,
                 "n_periods": len(series), "ic_series": [],
                 "significant": False,
+                # 显著性字段保持 schema 统一（未检验 → False/None，而不是缺键）
+                "significant_naive": False,
+                "significant_corrected": False,
+                "p_value": None, "p_value_robust": None, "p_adjusted": None,
+                "n_tested": 0, "bonferroni_alpha": None,
+                "t_stat_nw": None, "t_stat_eff": None, "t_stat_robust": None,
+                "effective_n": None, "ic_autocorr_lag1": None, "nw_lag": None,
                 "reason": (
                     "该因子无 point-in-time 历史序列（当前数据源只提供最新快照），"
                     "时间切片模式下无法计算，强行用当期值会引入前视偏差，故留空"
@@ -562,15 +737,30 @@ def compute_factor_ic(
             }
             continue
 
-        ic_mean = _mean(series)
-        ic_std = _std(series)
-        icir = (ic_mean / ic_std) if ic_std > 0 else 0.0
-        pos_rate = sum(1 for v in series if v > 0) / len(series)
-        n = len(series)
-        t_stat = (ic_mean / (ic_std / math.sqrt(n))) if ic_std > 0 else 0.0
+        tested[fname] = _factor_significance_stats(series, forward_days)
+        # ⚠️ 必须随因子一起存下来：第二趟（BH 之后的载荷构造）不能复用循环残留的
+        # `series`/`samples` 变量 —— 那样每个因子拿到的都会是 FACTOR_NAMES 最后一个
+        # 因子的序列（实测表现为 n_periods 正确但 ic_series 全空、samples=0）。
+        tested_meta[fname] = (series, samples)
+
+    # ── B. BH FDR：家族 = 本次实际参与检验的因子；同时给 Bonferroni 阈值参考 ──
+    fam = list(tested)
+    n_tested = len(fam)
+    p_adj_list = _benjamini_hochberg(
+        [tested[f]["p_value_robust"] for f in fam])
+    bonferroni_alpha = (_FDR_Q / n_tested) if n_tested else None
+
+    for fname, p_adj in zip(fam, p_adj_list):
+        st = tested[fname]
+        series, samples = tested_meta[fname]
+        ic_mean = st["ic_mean"]
+        ic_std = st["ic_std"]
+        icir = st["icir"]
+        pos_rate = st["ic_positive_rate"]
+        n = st["n"]
         abs_ic = abs(ic_mean)
 
-        # IC 质量评级（沿用 Barra 阈值，作用在 IC 均值上）
+        # IC 质量评级（沿用 Barra 阈值，作用在 IC 均值上 —— 不改判据）
         if abs_ic >= 0.05:
             level, effective, invalid_reason = "优秀", True, None
         elif abs_ic >= 0.03:
@@ -580,9 +770,11 @@ def compute_factor_ic(
         else:
             level, effective, invalid_reason = "无效", False, "ic_low"
 
-        # 是否统计显著：|t| >= 2。不显著说明 IC 均值很可能是噪声，
-        # 不能拿来排序或加权（V1 的循环论证正是缺少这道闸门）。
-        significant = abs(t_stat) >= 2.0
+        # 显著性：`significant` = **校正后**结论（自相关校正 + BH 多重检验校正）。
+        # `significant_naive` 保留裸 t 检验结论，让"校正前显著、校正后不显著"
+        # 这件事在载荷里可见 —— 不显著说明 IC 均值很可能是噪声，不能拿来排序或加权。
+        significant_naive = st["p_value"] < _FDR_Q
+        significant = p_adj < _FDR_Q
         if effective and not significant:
             effective = False
             invalid_reason = "not_significant"
@@ -595,13 +787,29 @@ def compute_factor_ic(
             "ic_std": round(ic_std, 4),
             "icir": round(icir, 3),
             "ic_positive_rate": round(pos_rate, 3),
-            "t_stat": round(t_stat, 2),
+            "t_stat": round(st["t_stat"], 2),
+            # 自相关校正：NW 稳健 t / 有效样本量口径 t / 两者更保守者
+            "t_stat_nw": round(st["t_stat_nw"], 2),
+            "t_stat_eff": round(st["t_stat_eff"], 2),
+            "t_stat_robust": round(st["t_stat_robust"], 2),
+            "effective_n": round(st["effective_n"], 2),
+            "ic_autocorr_lag1": round(st["ic_autocorr_lag1"], 3),
+            "nw_lag": st["nw_lag"],
+            # 显著性：p_value(裸) → p_value_robust(自相关校正) → p_adjusted(BH)
+            "p_value": round(st["p_value"], 6),
+            "p_value_robust": round(st["p_value_robust"], 6),
+            "p_adjusted": round(p_adj, 6),
+            "n_tested": n_tested,
+            "bonferroni_alpha": (round(bonferroni_alpha, 8)
+                                 if bonferroni_alpha is not None else None),
             "n_periods": n,
             "ic_series": [round(v, 4) for v in series],
             "samples": samples,
             "level": level,
             "effective": effective,
             "significant": significant,
+            "significant_corrected": significant,
+            "significant_naive": significant_naive,
             "direction": "正向" if ic_mean > 0 else "负向",
             "invalid_reason": invalid_reason,
         }
@@ -618,6 +826,9 @@ def compute_factor_ic(
                         if not v.get("effective") and v.get("invalid_reason") == "data_insufficient"]
     no_panel = [fname for fname, v in results.items()
                 if v.get("invalid_reason") == "no_historical_panel"]
+    # 校正前后显著数对比 —— 必须让"裸 t 检验刷出来的假显著"这件事可见
+    n_naive_sig = sum(1 for f in fam if results[f]["significant_naive"])
+    n_corr_sig = sum(1 for f in fam if results[f]["significant_corrected"])
 
     # 生成建议（措辞必须反映"是否显著"，避免把噪声当 alpha）
     recommendations = []
@@ -625,12 +836,18 @@ def compute_factor_ic(
     if top3:
         names = [FACTOR_NAMES.get(f, f) for f, _ in top3]
         recommendations.append(
-            f"统计显著的有效因子TOP{len(top3)}：{', '.join(names)}"
-            f"（|IC|>=0.03 且 |t|>=2），可在选股中加大权重")
+            f"通过「|IC|>=0.03 + 自相关校正 + BH-FDR 多重检验校正」的有效因子TOP{len(top3)}："
+            f"{', '.join(names)}，可在选股中加大权重")
     else:
         recommendations.append(
-            "⚠️ 本期没有因子同时通过 |IC|>=0.03 与 |t|>=2 两道检验，"
+            "⚠️ 本期没有因子同时通过 |IC|>=0.03 与**校正后**显著性检验，"
             "建议本期不要依据 IC 结果调整因子权重")
+
+    if n_tested:
+        recommendations.append(
+            f"显著性校正：校正前（裸 t 检验）{n_naive_sig}/{n_tested} 个显著，"
+            f"校正后（Newey-West 自相关 + BH-FDR q={_FDR_Q}）{n_corr_sig}/{n_tested} 个 ——"
+            "两者的差就是「多重检验与重叠窗口自相关刷出来的假显著」")
 
     if ineffective_ic:
         names = [FACTOR_NAMES.get(f, f) for f in ineffective_ic[:5]]
@@ -649,11 +866,12 @@ def compute_factor_ic(
     if scored:
         rate = effective_count / len(scored)
         recommendations.append(
-            f"可检验因子 {len(scored)} 个，其中 {effective_count} 个统计显著"
+            f"可检验因子 {len(scored)} 个，其中 {effective_count} 个通过全部检验"
             f"（{round(rate * 100, 1)}%）")
 
     elapsed = time.time() - t0
     print(f"[IC] Done in {elapsed:.1f}s: {effective_count} effective, "
+          f"significant {n_naive_sig}(naive)→{n_corr_sig}(corrected) / {n_tested} tested, "
           f"ic_low/not_sig={len(ineffective_ic)}, no_panel={len(no_panel)}, "
           f"data_insufficient={len(ineffective_data)}")
 
@@ -683,6 +901,14 @@ def compute_factor_ic(
             "cross_section_dates": [d for d, _, _ in per_date_ic],
             "panel_stocks": len(panel),
             "scorable_factors": len(scored),
+            # 显著性校正（2026-09-13 新增）：校正前后对比必须可见
+            "n_tested": n_tested,
+            "significant_naive_count": n_naive_sig,
+            "significant_corrected_count": n_corr_sig,
+            "fdr_q": _FDR_Q,
+            "bonferroni_alpha": (round(bonferroni_alpha, 8)
+                                 if bonferroni_alpha is not None else None),
+            "nw_lag_nominal": max(0, int(forward_days) - 1),
         },
         "recommendations": recommendations,
         "ineffective_factors": ineffective_ic,
@@ -694,9 +920,27 @@ def compute_factor_ic(
         "forward_return_definition": (
             f"(close[T+{forward_days}] - close[T]) / close[T]，"
             "只用 T 日收盘前已可得的信息构造因子，无未来函数"),
+        # 显著性校正口径（2026-09-13）
+        "significance_correction": {
+            "multiple_testing": "benjamini_hochberg_fdr",
+            "fdr_q": _FDR_Q,
+            "n_tested": n_tested,
+            "bonferroni_alpha": (round(bonferroni_alpha, 8)
+                                 if bonferroni_alpha is not None else None),
+            "autocorrelation": "newey_west_bartlett",
+            "nw_lag_rule": ("min(forward_days-1, n-1)：IC 由重叠的前瞻窗口算出，"
+                            "自相关正好跨 forward 天"),
+            "nw_lag_nominal": max(0, int(forward_days) - 1),
+            "decision_statistic": ("t_stat_robust = 取 min(|t_stat_nw|, |t_stat_eff|) "
+                                  "中的更保守者（宁可保守，也不许任一种低估方差）"),
+            "p_chain": ("p_value(裸) → p_value_robust(自相关校正) → "
+                        "p_adjusted(BH) → significant；significant_naive 保留裸结论"),
+        },
         "warnings": [
             "IC 由多个历史截面的 Spearman IC 汇总而来，截面数量有限（默认≤12），"
-            "单期数值波动大，请以 ICIR 与 t 统计量为准，不要只看 IC 均值。",
+            "单期数值波动大，请以 ICIR 与校正后的 p 值为准，不要只看 IC 均值。",
+            "`significant` 是**校正后**结论（Newey-West 自相关 + BH-FDR 多重检验）；"
+            "`significant_naive` 是裸 t 检验结论，两者的差额即「假显著」。",
         ],
         "limitations": [
             "股票池按「当前」市值 TOP N 构建，存在幸存者偏差（当时的小票不在池内）。",
@@ -704,6 +948,11 @@ def compute_factor_ic(
             "时间切片模式下无法回溯，标为不可用。",
             "财务因子按 ann_date <= T 取最近一期（point-in-time），"
             "若 Tushare fina_indicator 历史序列不可得，这些因子会退化为「无历史面板」。",
+            "IC 是**样本内**度量：校正后显著只说明在该样本内、排除多重检验与重叠窗口"
+            "自相关造成的虚高之后仍然稳健，**不等于样本外有效**。样本外有效性需要"
+            "另做滚动前推/样本外切分验证，本模块不提供该结论。",
+            "Newey-West/有效样本量都是渐近估计，截面数少（默认≤12）时其方差估计本身"
+            "噪声较大；本模块已取两种口径的更保守者，但仍应视作数量级参考。",
         ],
     }
 

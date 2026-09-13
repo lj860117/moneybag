@@ -320,24 +320,39 @@ def test_conftest_does_not_delete_explicitly_given_dir(tmp_path):
 
 def test_conftest_cleans_up_its_own_temp_dir_after_session():
     """conftest.py 创建的临时目录必须在测试会话结束后被清理，不能
-    每次跑测试都在 /tmp 里堆积新目录（长期运行会占满磁盘，尤其 CI
+    每次跑测试都在临时目录里堆积新目录（长期运行会占满磁盘，尤其 CI
     环境反复跑测试的场景）。
+
+    2026-09-13 修：**改为前后差集断言**。
+    旧实现统计的是「全局残留数 < 5」，有两个方向的缺陷，实测均已复现：
+      · 假红——并行跑的其它会话/队友留下的目录会把计数推过 5，
+        于是**清理逻辑完好也照样失败**（实测：往真实 tempdir 放 5 个
+        无关目录，本测试即报 `assert 7 < 5`）。
+      · 假绿——只要全局残留数偶然 < 5，即使本次运行真的没清理也照样通过。
+    它测的从来不是「本会话有没有清理自己的目录」。
+    差集写法对本会话之外的残留完全免疫，且真的能验到清理行为。
+    故障注入：把 conftest 的 pytest_sessionfinish 清理摘掉 →
+    子进程留下的目录会出现在 after - before 里 → 本测试转红。
     """
+    tmpdir = Path(tempfile.gettempdir())
+    pattern = "moneybag_pytest_data_*"
+
+    before = set(glob.glob(str(tmpdir / pattern)))
+
     result = _run_pytest_subprocess(
         "tests/test_phase3_services.py::TestPersistence::test_init_phase3_fields")
 
     assert result.returncode == 0, f"stdout:\n{result.stdout}\nstderr:\n{result.stderr}"
 
-    # 提取这次运行创建的临时目录路径（约定前缀 moneybag_pytest_data_），
-    # 验证会话结束后已被清理
-    leftover = glob.glob(str(Path(tempfile.gettempdir()) / "moneybag_pytest_data_*"))
-    # 允许存在其他并发测试运行残留的目录（不属于本次断言范围），只要
-    # 数量没有异常增长即可——这里退化为宽松检查：至少不应该有大量残留
-    # （比如同一分钟内跑10次这个测试，残留目录数应该趋近于0，不应该
-    # 每次运行都新增一个从不清理）。
-    assert len(leftover) < 5, (
-        f"发现 {len(leftover)} 个残留的 moneybag_pytest_data_* 临时目录，"
-        f"pytest_sessionfinish 清理逻辑可能失效: {leftover}")
+    after = set(glob.glob(str(tmpdir / pattern)))
+
+    # 只关心「本次运行新增、且未被清理」的目录；
+    # 其它会话的残留不属于本次断言范围（旧实现正是被它们误伤的）。
+    leaked = sorted(after - before)
+    assert not leaked, (
+        f"本次子进程运行新增了 {len(leaked)} 个未被清理的临时目录: {leaked}。"
+        f"conftest.py 的 pytest_sessionfinish 清理逻辑可能失效。"
+        f"（本次运行前已存在 {len(before)} 个其它会话的残留目录，与本断言无关）")
 
 
 @pytest.mark.skipif(

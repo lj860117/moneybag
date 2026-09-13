@@ -23,6 +23,19 @@ v9.9.24 事实锚点校验（Fact Anchor）— LLM 输出里的关键数字必�
     clean, findings = guard_fact_anchors(llm_text, data_packet, fallback="（今日研判暂缺）")
     for f in findings:
         log(f"  ⚠️ {f.rule}: {f.number}{f.unit} —— {f.sentence[:30]}")
+    if not findings.verified:
+        # 重要：findings 为空**不等于**校验通过。没有锚点时我们根本没有校验能力，
+        # 必须让调用方知道"这次没查"，而不是让它和"查过、没问题"长得一模一样。
+        log(f"  ⚠️ 本次未做数字校验（anchor_state={findings.anchor_state}）")
+
+v9.9.30（可区分状态）：
+    旧实现"拿不到锚点 → return []"，而"校验通过"也返回 []，调用方无法分辨
+    这两种完全不同的语义 —— 空列表被默认读成"没问题"，等于把"没查"伪装成"通过"。
+    现在返回 list 子类 AnchorFindings，携带 anchor_state：
+      - "verified"   : 有锚点，真查过
+      - "no_anchors" : 无锚点，本次没有校验能力
+      - "error"      : 校验器自身异常，未能校验
+    仍是 list（可迭代 / len / == [] 语义不变），故调用方向后兼容。
 """
 from __future__ import annotations
 
@@ -36,6 +49,11 @@ logger = logging.getLogger(__name__)
 SEVERITY_CRITICAL = "critical"   # 整段降级为兜底文案
 SEVERITY_MAJOR = "major"         # 删除命中句
 SEVERITY_MINOR = "minor"         # 仅记录
+
+# 校验能力状态（见模块 docstring「可区分状态」）
+ANCHOR_STATE_VERIFIED = "verified"       # 有锚点，真查过
+ANCHOR_STATE_NO_ANCHORS = "no_anchors"   # 无锚点，本次没有校验能力
+ANCHOR_STATE_ERROR = "error"             # 校验器自身异常，未能校验
 
 # 长周期限定语：命中视为合规表述（近3年 / 成立以来 / 累计…）
 LONG_PERIOD_RE = re.compile(
@@ -81,6 +99,39 @@ class FactFinding:
     def __str__(self) -> str:
         near = f"，数据包最接近 {self.nearest}" if self.nearest is not None else "，数据包无同类数字"
         return f"[{self.rule}/{self.severity}] {self.number}{self.unit}{near}"
+
+
+class AnchorFindings(list):
+    """FactFinding 列表 + 「这次到底有没有校验能力」的状态位。
+
+    为什么不是 tuple / dict：所有调用方（两个 cron + 两个测试文件）都按
+    `findings = guard_fact_anchors(...)` 后 `if findings:` / `len(findings)` /
+    `findings == []` 使用 list 语义。做成 list 子类，旧代码一行不改也照常跑，
+    同时新代码可以用 `.verified` 把「没锚点（没查）」和「查过没问题」分开。
+
+    ⚠️ 不要用 `if not findings:` 判断"通过" —— 空列表可能是 no_anchors，
+    也可能是 verified 下的无命中。必须看 `.anchor_state`。
+    """
+
+    def __init__(self, *args: Any, anchor_state: str = ANCHOR_STATE_VERIFIED,
+                 anchor_count: int = 0) -> None:
+        super().__init__(*args)
+        self.anchor_state = anchor_state
+        self.anchor_count = anchor_count
+
+    @property
+    def verified(self) -> bool:
+        """True 仅当**真的拿锚点查过**（不代表无违规，代表有校验能力）。"""
+        return self.anchor_state == ANCHOR_STATE_VERIFIED
+
+    @property
+    def unanchored(self) -> bool:
+        """True 表示本次没有校验能力（无锚点或校验器异常）。"""
+        return self.anchor_state != ANCHOR_STATE_VERIFIED
+
+    def __repr__(self) -> str:  # pragma: no cover - 调试可读性
+        return (f"AnchorFindings({list.__repr__(self)}, "
+                f"anchor_state={self.anchor_state!r}, anchor_count={self.anchor_count})")
 
 
 def _to_float(raw: str) -> Optional[float]:
@@ -168,7 +219,7 @@ def check_fact_anchors(
     text: str,
     packet: Any,
     anchors: Optional[list[float]] = None,
-) -> list[FactFinding]:
+) -> AnchorFindings:
     """扫描 LLM 输出，找出无出处 / 夸大的关键数字。
 
     Args:
@@ -177,17 +228,21 @@ def check_fact_anchors(
         anchors: 预先构建好的锚点，传了就不再解析 packet。
 
     Returns:
-        FactFinding 列表；无问题返回空列表。
+        AnchorFindings（list[FactFinding] 子类，附带 anchor_state）：
+          - 无问题 → 空列表
+          - **无锚点 → 空列表 + anchor_state="no_anchors"**（本次没有校验能力）
+          用 `findings.verified` 区分"查过没问题"与"根本没查"。
     """
     if not text:
-        return []
+        return AnchorFindings(anchor_state=ANCHOR_STATE_VERIFIED)
 
     if anchors is None:
         anchors = build_anchors(packet)
 
-    # 拿不到锚点就不该自作主张删内容 —— 没有证据时的"宁杀错"会误伤正常推送
+    # 拿不到锚点就不该自作主张删内容 —— 没有证据时的"宁杀错"会误伤正常推送。
+    # 但"放过"不等于"通过"：必须返回可区分状态，让调用方知道这次没有校验能力。
     if not anchors:
-        return []
+        return AnchorFindings(anchor_state=ANCHOR_STATE_NO_ANCHORS)
 
     findings: list[FactFinding] = []
 
@@ -248,7 +303,8 @@ def check_fact_anchors(
                 ))
 
     # 同一数字可能命中多条规则，去重时保留最严重的一条
-    return _dedupe(findings)
+    return AnchorFindings(_dedupe(findings), anchor_state=ANCHOR_STATE_VERIFIED,
+                          anchor_count=len(anchors))
 
 
 def _dedupe(findings: list[FactFinding]) -> list[FactFinding]:
@@ -270,12 +326,16 @@ def guard_fact_anchors(
     anchors: Optional[list[float]] = None,
     log: Optional[Callable[[str], None]] = None,
     context: str = "",
-) -> tuple[str, list[FactFinding]]:
+) -> tuple[str, AnchorFindings]:
     """事实锚点守卫：先检测，再按严重度拦截或降级。
 
     - 命中 critical → 整段降级为 fallback（脏内容一个字都不出）
     - 命中 major    → 删除命中句，其余正文保留
     - 无命中        → 原样返回
+
+    ⚠️ 返回的 findings 是 AnchorFindings：`findings == []` 有两种含义，
+    必须用 `findings.verified` / `findings.anchor_state` 区分
+    "查过没问题"（verified）与"没有锚点、根本没查"（no_anchors）。
 
     Args:
         text: LLM 输出正文。
@@ -286,7 +346,7 @@ def guard_fact_anchors(
         context: 日志上下文前缀（如 "LeiJiang/close_review"）。
 
     Returns:
-        (处理后的文本, findings)
+        (处理后的文本, AnchorFindings)
     """
     emit = log or (lambda msg: logger.warning(msg))
     prefix = f"[fact_anchor]{(' ' + context) if context else ''}"
@@ -295,10 +355,14 @@ def guard_fact_anchors(
         findings = check_fact_anchors(text, packet, anchors=anchors)
     except Exception as e:  # noqa: BLE001 – 校验器本身绝不能阻断推送链路
         emit(f"{prefix} 校验异常，放行原文: {e}")
-        return text, []
+        return text, AnchorFindings(anchor_state=ANCHOR_STATE_ERROR)
 
     if not findings:
-        return text, []
+        if not findings.verified:
+            # 让调用方在日志里看得见"这次没查"，而不是把空列表读成"通过"
+            emit(f"{prefix} 无事实锚点，本次未做数字校验"
+                 f"（anchor_state={findings.anchor_state}）")
+        return text, findings
 
     for f in findings:
         emit(f"{prefix} ⚠️ {f} | 句: {f.sentence.strip()[:40]}")

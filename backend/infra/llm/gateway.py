@@ -24,6 +24,7 @@ import os
 import time
 import json
 import hashlib
+from dataclasses import dataclass
 from datetime import datetime, date
 from pathlib import Path
 from typing import Any, Callable, Iterator, Optional, cast
@@ -287,6 +288,151 @@ BURST_BUCKET_MAX = 500
 # 之所以允许共享而不是放行，是因为不放行最多是"误限流"，放行则是"闸门失守"。
 _SHARED_BURST_BUCKET = "__shared_no_uid__"
 
+# ---- 月度金额预算（TOKEN_BUDGET，v9.9.30 接通）----
+#
+# 背景：config.TOKEN_BUDGET 里的 monthly_budget_rmb / on_exceed / max_input_per_call
+# 三个键此前**全仓零引用**（只在 config.py 和自己出现）—— 声明了"¥30/月硬上限"，
+# 但唯一真正生效的闸门是 DAILY_LIMIT（按**调用次数**，不按金额）。
+# 实测 data/llm_usage/ 里金额一直在正常记账，却没有任何一处拿它拦过调用。
+# 这就是"闸门空转仍显绿"：配置+记账齐活，拦截缺失，健康检查照样显示正常。
+#
+# 现在接成两级真实分支（数据源就是 data/llm_usage/ 的既有日文件，不新造计数）：
+#   ① 月度金额 ≥ monthly_budget_rmb * critical_threshold（默认 30*0.9=¥27）
+#      → **降级档 A**：强制关闭 thinking + 输出上限压到 DEGRADED_MAX_TOKENS。
+#        （仍然出内容，只是用最省的姿态出。切"更便宜的模型"这条路走不通 ——
+#          全面 Flash 化后 deepseek-v4-flash 已是底档，没有更便宜的可切。）
+#   ② 月度金额 ≥ monthly_budget_rmb（¥30 硬上限）
+#      → **降级档 B**，按 on_exceed 语义：
+#          - "degrade"（config 默认）：不调用 LLM，返回 source="budget_exceeded"
+#            的兜底态，调用方走各自的规则引擎 —— 与
+#            docs/token-budget-design.md §5.2 + config 注释"降级为规则引擎"一致。
+#          - "warn_only"：只告警，照常调用。
+#          - "hard_stop"：不调用，source="budget_hard_stop"。
+#   ③ 单次 input 估算 > max_input_per_call → 不调用，source="input_over_budget"。
+#      （设计文档写的是"截断上下文"，这里**故意不截断**：prompt 里混着 JSON 契约
+#        与格式指令，盲截会破坏契约、让模型产出半截结构，代价比拒绝大。宁可降级。）
+MONTHLY_SPEND_CACHE_TTL = 60   # 月度金额汇总缓存（避免每次调用读上百个日文件）
+DEGRADED_MAX_TOKENS = 256      # 降级档 A 的输出硬上限
+
+# 输出/输入边界守卫的 enforce 开关。**默认关**（shadow 模式）：
+# 线上所有 LLM 输出都会真实跑一遍 red_team_audit，真实产生计数与日志，
+# 但不因一条正则误杀正常回复。要真正拦截必须显式开这个环境变量。
+GUARD_ENFORCE_ENV = "LLM_OUTPUT_GUARD_ENFORCE"
+_TRUTHY = ("1", "true", "yes", "on")
+
+
+@dataclass(frozen=True)
+class _BudgetDecision:
+    """预算闸门的裁决结果（纯数据，便于故障注入测试直接断言）。"""
+    action: str    # "allow" | "degrade" | "refuse"
+    reason: str    # "ok" | "monthly_critical" | "budget_exceeded" | "budget_hard_stop"
+                   # | "monthly_warn_only" | "input_over_budget"
+    detail: str    # 人可读的真实数字（必须能溯源到 llm_usage 文件）
+
+
+# ---- 输出边界守卫（shadow，v9.9.30 接线）----
+#
+# 背景：infra/llm/red_team_audit.py（10KB，功能完整）与 infra/llm/chat_guard.py
+# 此前**零生产 import** —— 只有 CI 脚本 / tests/test_skeleton_m1.py 碰它们。
+# 文档里却写着"red_team_audit 拦截率 >99%""chat_guard 锚点强制 + 5 轮上限"，
+# 而那个 99% 是在 ~28 条自选语料上算的。一个防护模块全仓零调用、却让 CI 和
+# 健康检查显示"有防护"，就是在骗人。
+#
+# 现在接在 gateway 的**三个真实出口**（call_sync / stream_sync / call_multimodal）：
+#   - red_team_audit.audit_response(text)：对真实 LLM 输出做禁用词/口径检测，
+#     真实累加计数（get_output_guard_stats() 可见），默认只记录不拦截。
+#   - chat_guard.check_action_seeking(prompt)：对 chat 系模块的用户提问做诱导检测。
+#
+# ⚠️ 诚实边界（不要当成"已全量接入"）：
+#   1. chat_guard.validate_chat_request（锚点强制 + 5 轮上限）**仍然没有生产调用点**
+#      —— 它需要 anchor_id/round_num，而 gateway 拿不到这些上下文，
+#      models.schemas.ChatRequest 里也根本没有 anchor_id 字段。强行在 gateway
+#      接它等于编造锚点。它的真正接入点是 chat API 层，属 M4 待办，本次不假装。
+#   2. stream_sync 的 enforce 是**事后**的：文本已经流给用户了，拦不回来，
+#      只能在收尾 chunk 标 error。故默认 shadow，enforce 仅用于自测。
+_guard_stats: dict[str, int] = {
+    "outputs_audited": 0,       # 真实出口审计过的输出数
+    "output_violations": 0,     # 其中命中违规的输出数
+    "chat_prompts_checked": 0,  # 走过 chat_guard 诱导检测的提问数
+    "chat_action_seeking": 0,   # 其中判定为"索取操作建议"的
+    "enforced_blocks": 0,       # 真正被拦下的次数（enforce 开时）
+    "guard_errors": 0,          # 守卫自身异常（已放行，不影响链路）
+}
+
+
+def output_guard_enforce_enabled() -> bool:
+    """enforce 开关：默认关（shadow）。"""
+    return os.environ.get(GUARD_ENFORCE_ENV, "").strip().lower() in _TRUTHY
+
+
+def get_output_guard_stats() -> dict[str, int]:
+    """输出边界守卫的真实计数（供自测/体检证明"不是空转"）。"""
+    return dict(_guard_stats)
+
+
+def _shadow_audit_output(text: str, *, module: str = "", model: str = "") -> Optional[str]:
+    """对 LLM 输出跑 red_team_audit 真实检测。
+
+    Returns:
+        None       —— 放行（shadow 模式恒为 None）
+        "原因串"    —— 仅在 enforce 开启且命中违规时返回，调用方据此拦截
+    """
+    if not text or not text.strip():
+        return None
+    try:
+        from infra.llm.red_team_audit import audit_response
+        _guard_stats["outputs_audited"] += 1
+        passed, violations = audit_response(text)
+        if passed:
+            return None
+        _guard_stats["output_violations"] += 1
+        first = violations[0] if violations else "unknown"
+        print(f"[LLM_GATEWAY] 🛡️ red_team shadow 命中 {len(violations)} 处违规 "
+              f"(module={module or '_unknown'} model={model or '_unknown'}) | {first[:120]}")
+        if output_guard_enforce_enabled():
+            _guard_stats["enforced_blocks"] += 1
+            return f"red_team_blocked: {first[:120]}"
+        return None
+    except Exception as e:  # 守卫绝不能阻断 LLM 主链路
+        _guard_stats["guard_errors"] += 1
+        print(f"[LLM_GATEWAY] ⚠️ 输出守卫异常（已放行）: {e}")
+        return None
+
+
+def _shadow_guard_chat_input(prompt: str, *, module: str = "") -> None:
+    """对 chat 系模块的用户提问跑 chat_guard.check_action_seeking（只记录）。"""
+    if not prompt or not _is_interactive_auto_module(module):
+        return
+    try:
+        from infra.llm.chat_guard import check_action_seeking
+        _guard_stats["chat_prompts_checked"] += 1
+        seeking, _fallback_text = check_action_seeking(prompt)
+        if seeking:
+            _guard_stats["chat_action_seeking"] += 1
+            print(f"[LLM_GATEWAY] 🛡️ chat_guard shadow: 诱导式提问 "
+                  f"(module={module})，当前仅记录不拦截"
+                  f"（拦截动作属 chat API 层，M4 接入）")
+    except Exception as e:
+        _guard_stats["guard_errors"] += 1
+        print(f"[LLM_GATEWAY] ⚠️ chat_guard 检测异常（已放行）: {e}")
+
+
+def _estimate_input_tokens(text: str) -> int:
+    """输入 token 估算**代理值**，仅用于 max_input_per_call 的量级判断。
+
+    不做精确分词（无 tokenizer 依赖）：中文约 1 token/字、英文约 1 token/4 字符，
+    折中取 len//2。它**不参与计费** —— 计费一律用 API 返回的真实 usage。
+    """
+    return max(0, len(text or "") // 2)
+
+
+def _estimate_messages_input_tokens(messages: Any) -> int:
+    """多模态 messages 的输入估算（按 JSON 序列化长度折算）。"""
+    try:
+        return max(0, len(json.dumps(messages, ensure_ascii=False, default=str)) // 2)
+    except Exception:
+        return 0
+
 MODULE_META = {
     "name": "llm_gateway",
     "scope": "public",
@@ -320,6 +466,8 @@ class LLMGateway:
         # 旧实现是单一 list，任何来源在 5 分钟内发 >10 次都会让所有用户降级。
         self._burst_windows: dict[str, list[float]] = {}
         self._cache_dirty = 0      # 脏缓存计数，每 5 次写磁盘
+        # 月度金额汇总缓存：(month_prefix, 计算时刻, (金额, 有数据天数))
+        self._monthly_spend_cache: Optional[tuple[str, float, tuple[float, int]]] = None
         self._load_cache_from_disk()  # 启动时从磁盘恢复缓存
 
     # ---- 缓存持久化（Phase 0 新增）----
@@ -381,6 +529,29 @@ class LLMGateway:
             max_tokens = 3000
         # 0. 日期重置
         self._check_daily_reset()
+
+        # 0.5 预算闸门（月度金额 / 单次 input 上限）——真实拦截分支，见 _budget_decision
+        budget_degraded = False
+        decision = self._budget_decision(
+            input_tokens_est=_estimate_input_tokens(prompt), module=module,
+        )
+        if decision.action == "refuse":
+            print(f"[LLM_GATEWAY] 🛑 预算闸门拒绝：{decision.reason} —— {decision.detail} "
+                  f"module={module or '_unknown'}")
+            return {
+                "content": "", "source": decision.reason, "fallback": True,
+                "model": "", "tokens": 0, "budget_blocked": True,
+                "reason": decision.detail,
+            }
+        if decision.action == "degrade":
+            max_tokens = min(max_tokens, DEGRADED_MAX_TOKENS)
+            force_no_thinking = True  # 省掉 reasoning token
+            budget_degraded = True
+            print(f"[LLM_GATEWAY] 🔻 预算降级（强约束输出）：{decision.detail} "
+                  f"module={module or '_unknown'} max_tokens→{max_tokens}")
+
+        # 0.6 chat_guard 诱导检测（shadow，仅 chat 系模块）
+        _shadow_guard_chat_input(prompt, module=module)
 
         # 1. 先解析目标模型（显式选模优先，其次再走峰谷默认）
         model = explicit_model or resolve_default_model(model_tier, module=module)
@@ -558,8 +729,9 @@ class LLMGateway:
                 "fallback": False,
                 "fallback_used": fallback_used,
                 "finish_reason": finish_reason,
+                "budget_degraded": budget_degraded,
             }
-            self._set_cache(cache_key, result)
+            # 先记账（钱已经花了），再跑输出边界守卫；被拦的内容**不得进缓存**
             self._record_usage(user_id, module, actual_model, total_tokens)
             input_tk = usage.get("prompt_tokens", usage.get("input_tokens", 0))
             output_tk = usage.get("completion_tokens", usage.get("output_tokens", 0))
@@ -568,6 +740,15 @@ class LLMGateway:
                 cache_hit_tokens=cache_hit_tk,
                 cache_miss_tokens=cache_miss_tk,
             )
+            block_reason = _shadow_audit_output(content, module=module, model=actual_model)
+            if block_reason is not None:
+                # enforce 开且命中禁用词 → 不把脏内容交给调用方，也不写缓存
+                return {
+                    "content": "", "source": "red_team_blocked", "fallback": True,
+                    "model": actual_model, "tokens": total_tokens,
+                    "error": block_reason, "red_team_blocked": True,
+                }
+            self._set_cache(cache_key, result)
             return result
 
         except Exception as e:
@@ -608,6 +789,27 @@ class LLMGateway:
             max_tokens = 3000
         # 0. 日期重置
         self._check_daily_reset()
+
+        # 0.5 预算闸门（月度金额 / 单次 input 上限）——真实拦截分支，见 _budget_decision
+        budget_degraded = False
+        decision = self._budget_decision(
+            input_tokens_est=_estimate_input_tokens(prompt), module=module,
+        )
+        if decision.action == "refuse":
+            print(f"[LLM_GATEWAY] 🛑 stream 预算闸门拒绝：{decision.reason} —— "
+                  f"{decision.detail} module={module or '_unknown'}")
+            yield {"delta": "", "done": True, "error": decision.reason,
+                   "fallback": True, "budget_blocked": True, "reason": decision.detail}
+            return
+        if decision.action == "degrade":
+            max_tokens = min(max_tokens, DEGRADED_MAX_TOKENS)
+            force_no_thinking = True
+            budget_degraded = True
+            print(f"[LLM_GATEWAY] 🔻 stream 预算降级（强约束输出）：{decision.detail} "
+                  f"module={module or '_unknown'} max_tokens→{max_tokens}")
+
+        # 0.6 chat_guard 诱导检测（shadow，仅 chat 系模块）
+        _shadow_guard_chat_input(prompt, module=module)
 
         # 1. 熔断检查（拒绝必须报真实原因，见 call_sync 处注释）
         refusal = self._limit_refusal_reason(user_id)
@@ -781,12 +983,23 @@ class LLMGateway:
                                     cache_hit_tokens=cache_hit_tk,
                                     cache_miss_tokens=cache_miss_tk)
 
+            # 输出边界守卫（shadow）。注意：流式场景内容**已经**逐块发给用户了，
+            # enforce 只能是事后的（拦不回来），此处仅在 enforce 命中时于收尾
+            # chunk 标 error，让调用方知道这段输出不可信。
+            block_reason = _shadow_audit_output(total_content, module=module, model=actual_model)
+            if block_reason is not None:
+                yield {"delta": "", "done": True, "error": "red_team_blocked",
+                       "fallback": True, "model": actual_model,
+                       "red_team_blocked": True, "reason": block_reason}
+                return
+
             yield {
                 "delta": "", "done": True,
                 "model": actual_model,
                 "tokens": total_tokens,
                 "content_length": len(total_content),
                 "fallback_used": fallback_used,
+                "budget_degraded": budget_degraded,
             }
 
         except Exception as e:
@@ -810,6 +1023,25 @@ class LLMGateway:
         """
         # 0. 日期重置
         self._check_daily_reset()
+
+        # 0.5 预算闸门（月度金额 / 单次 input 上限）——真实拦截分支，见 _budget_decision
+        budget_degraded = False
+        decision = self._budget_decision(
+            input_tokens_est=_estimate_messages_input_tokens(messages), module=module,
+        )
+        if decision.action == "refuse":
+            print(f"[LLM_GATEWAY] 🛑 multimodal 预算闸门拒绝：{decision.reason} —— "
+                  f"{decision.detail} module={module or '_unknown'}")
+            return {
+                "content": "", "source": decision.reason, "fallback": True,
+                "model": model, "tokens": 0, "budget_blocked": True,
+                "reason": decision.detail,
+            }
+        if decision.action == "degrade":
+            max_tokens = min(max_tokens, DEGRADED_MAX_TOKENS)
+            budget_degraded = True
+            print(f"[LLM_GATEWAY] 🔻 multimodal 预算降级（强约束输出）：{decision.detail} "
+                  f"module={module or '_unknown'} max_tokens→{max_tokens}")
 
         # 1. 熔断检查（拒绝必须报真实原因，见 call_sync 处注释）
         refusal = self._limit_refusal_reason(user_id)
@@ -871,6 +1103,17 @@ class LLMGateway:
                         self._record_usage(user_id, module, cand_model, total_tokens)
                         self._record_token_cost(user_id, cand_model, input_tk, output_tk)
 
+                        # 输出边界守卫（shadow）
+                        block_reason = _shadow_audit_output(
+                            content, module=module, model=cand_model)
+                        if block_reason is not None:
+                            return {
+                                "content": "", "source": "red_team_blocked",
+                                "fallback": True, "model": cand_model,
+                                "tokens": total_tokens, "error": block_reason,
+                                "red_team_blocked": True,
+                            }
+
                         return {
                             "content": content,
                             "source": "ai",
@@ -878,6 +1121,7 @@ class LLMGateway:
                             "tokens": total_tokens,
                             "fallback": False,
                             "fallback_used": cand_model != model,
+                            "budget_degraded": budget_degraded,
                         }
                     else:
                         last_error = f"HTTP {resp.status_code}"
@@ -1173,6 +1417,90 @@ class LLMGateway:
         api_key, api_base, _provider = _resolve_provider_config(model)
         return {"api_key": api_key, "api_base": api_base, "model": model}
 
+    # ---- 月度金额预算闸门（v9.9.30 接通 TOKEN_BUDGET.monthly_budget_rmb）----
+
+    def _monthly_spend_rmb(self, now: Optional[datetime] = None) -> tuple[float, int]:
+        """汇总本月已花的金额（¥）与有数据天数。
+
+        **数据源就是既有记账产物** `data/llm_usage/YYYY-MM-DD.json` 的 cost_rmb，
+        不新造任何计数（单价与峰谷由 _record_token_cost 决定）。
+        结果缓存 MIDDAY_SPEND_CACHE_TTL 秒，避免每次调用都读上百个日文件。
+        """
+        now = _china_now(now)
+        month_prefix = now.strftime("%Y-%m")
+        cached = self._monthly_spend_cache
+        if cached is not None and cached[0] == month_prefix \
+                and (time.time() - cached[1]) < MONTHLY_SPEND_CACHE_TTL:
+            return cached[2]
+
+        total = 0.0
+        day_files = 0
+        try:
+            usage_dir = Path(config.DATA_DIR) / "llm_usage"
+            if usage_dir.exists():
+                # 只匹配日文件（YYYY-MM-DD.json）；by_user/ 子目录不参与全局汇总
+                for f in sorted(usage_dir.glob(f"{month_prefix}-*.json")):
+                    try:
+                        data = json.loads(f.read_text(encoding="utf-8"))
+                    except Exception:
+                        continue
+                    total += float(data.get("cost_rmb", 0) or 0)
+                    day_files += 1
+        except Exception as e:
+            print(f"[LLM_GATEWAY] ⚠️ 月度金额汇总失败（按 0 处理）: {e}")
+
+        result = (round(total, 6), day_files)
+        self._monthly_spend_cache = (month_prefix, time.time(), result)
+        return result
+
+    def _budget_decision(self, *, input_tokens_est: int, module: str = "") -> _BudgetDecision:
+        """调用前的金额/单次上限裁决（纯判定，不消耗配额、不发请求）。
+
+        这是 TOKEN_BUDGET 里 monthly_budget_rmb / on_exceed / max_input_per_call
+        三个键**唯一**的生产读取点。判定依据全部来自真实记账数据。
+        """
+        try:
+            from config import TOKEN_BUDGET
+        except Exception:
+            return _BudgetDecision("allow", "ok", "")
+
+        # ① 单次 input 上限（防单次上下文失控）
+        max_input = int(TOKEN_BUDGET.get("max_input_per_call", 0) or 0)
+        if max_input > 0 and input_tokens_est > max_input:
+            return _BudgetDecision(
+                "refuse", "input_over_budget",
+                f"单次估算输入 ~{input_tokens_est} token > max_input_per_call={max_input}",
+            )
+
+        # ② 月度金额上限
+        budget = float(TOKEN_BUDGET.get("monthly_budget_rmb", 0) or 0)
+        on_exceed = str(TOKEN_BUDGET.get("on_exceed", "degrade")).strip().lower()
+        if budget <= 0:
+            return _BudgetDecision("allow", "ok", "")
+
+        spend, days = self._monthly_spend_rmb()
+        if spend >= budget:
+            detail = (f"本月已花 ¥{spend:.4f}/¥{budget}（{days} 天记账数据，"
+                      f"{spend / budget * 100:.1f}%）")
+            if on_exceed == "warn_only":
+                print(f"[LLM_GATEWAY] 🟡 月度预算超限（warn_only，仅告警不拦）：{detail} "
+                      f"module={module or '_unknown'}")
+                return _BudgetDecision("allow", "monthly_warn_only", detail)
+            if on_exceed == "hard_stop":
+                return _BudgetDecision("refuse", "budget_hard_stop", detail)
+            # 默认 degrade → 不调 LLM，交回调用方的规则引擎
+            return _BudgetDecision("refuse", "budget_exceeded", detail)
+
+        critical = float(TOKEN_BUDGET.get("critical_threshold", 0.9))
+        if spend >= budget * critical:
+            return _BudgetDecision(
+                "degrade", "monthly_critical",
+                f"本月已花 ¥{spend:.4f}/¥{budget}（{spend / budget * 100:.1f}%"
+                f" ≥ critical {critical * 100:.0f}%）",
+            )
+
+        return _BudgetDecision("allow", "ok", "")
+
     def check_budget(self) -> dict[str, Any]:
         """检查预算状态（供 /api/health 调用）"""
         try:
@@ -1195,12 +1523,42 @@ class LLMGateway:
             else:
                 status = "ok"
 
+            # v9.9.30: 月度金额也是**真实闸门**了，健康检查必须一并如实报出，
+            # 否则"日度 ok"会掩盖"月度已降级"。
+            monthly_spend, monthly_days = self._monthly_spend_rmb()
+            monthly_budget = float(TOKEN_BUDGET.get("monthly_budget_rmb", 0) or 0)
+            monthly_pct = (monthly_spend / monthly_budget) if monthly_budget > 0 else 0.0
+            if monthly_budget <= 0:
+                monthly_status = "unknown"
+            elif monthly_pct >= 1.0:
+                monthly_status = "critical"
+            elif monthly_pct >= cast(float, TOKEN_BUDGET.get("critical_threshold", 0.9)):
+                monthly_status = "warning"
+            else:
+                monthly_status = "ok"
+
             return {
                 "today_cost_rmb": round(daily["cost_rmb"], 2),
                 "daily_budget_rmb": budget,
                 "usage_pct": round(pct * 100, 1),
                 "status": status,
                 "today_calls": daily.get("calls", 0),
+                "monthly": {
+                    "cost_rmb": round(monthly_spend, 4),
+                    "budget_rmb": monthly_budget,
+                    "usage_pct": round(monthly_pct * 100, 1),
+                    "status": monthly_status,
+                    "days_with_usage": monthly_days,
+                    "source": "data/llm_usage/*.json",
+                },
+                "on_exceed": str(TOKEN_BUDGET.get("on_exceed", "degrade")),
+                # v9.9.30: 把输出边界守卫的**真实计数**放进健康检查。
+                # 以前健康检查/CI 显示"有防护"，但模块零调用；现在这里给出的是
+                # 真跑过的次数（outputs_audited=0 就说明守卫没接线/没流量，骗不了人）。
+                "output_guard": {
+                    **get_output_guard_stats(),
+                    "enforce": output_guard_enforce_enabled(),
+                },
             }
         except Exception:
             return {"status": "unknown"}

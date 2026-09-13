@@ -18,6 +18,12 @@ from datetime import datetime
 from typing import Optional
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from infra.cache import MemoryCache
+from services.holdings_store import (
+    HoldingsList,
+    corrupt_write_refusal,
+    load_holdings,
+    save_holdings,
+)
 
 # ---- V4 底座：MODULE_META ----
 MODULE_META = {
@@ -131,24 +137,31 @@ def _warn_if_unknown_user(user_id: str) -> None:
 
 
 def load_fund_holdings(user_id: str = "default") -> list:
-    """加载基金持仓列表（v9.5.122: 自动从 V4 transactions 补全缺失基金）"""
+    """加载基金持仓列表（v9.5.122: 自动从 V4 transactions 补全缺失基金）
+
+    返回 `HoldingsList`（list 子类）。`.load_state` 区分：
+      - `"ok"` / `"missing"` : 正常路径，之后允许 transactions 单向补全并写回
+      - `"corrupt"`          : 文件损坏 —— 直接返回，**不补全、不写回**，
+                               损坏文件已备份为 `<原名>.corrupt-<ts>`。
+                               （若在 corrupt 时仍走补全写回，等于用一个来自
+                               transactions 的子集覆盖坏文件，可能丢掉文件里
+                               那些 transactions 没有的持仓。）
+    """
     _warn_if_unknown_user(user_id)
     f = _fund_file(user_id)
-    existing = []
-    if f.exists():
-        try:
-            data = json.loads(f.read_text(encoding="utf-8"))
-            existing = data if isinstance(data, list) else []
-        except Exception:
-            existing = []
-    
+    existing = load_holdings(f, label=f"基金持仓[{user_id}]")
+
+    if existing.corrupt:
+        return existing
+
     # v9.5.122: 以 V4 transactions 为 source of truth，补全盯盘系统缺失的基金
     try:
-        existing = _sync_from_transactions(existing, user_id)
-    except Exception:
-        pass
-    
-    return existing
+        synced = _sync_from_transactions(list(existing), user_id)
+        return HoldingsList(synced, load_state=existing.load_state)
+    except Exception as e:
+        # 补全是加法、失败不影响已读到的持仓；但错误必须可见
+        print(f"[FUND_MONITOR] transactions 补全失败（不影响已读持仓）: {e}")
+        return existing
 
 
 def _sync_from_transactions(existing: list, user_id: str) -> list:
@@ -191,26 +204,29 @@ def _sync_from_transactions(existing: list, user_id: str) -> list:
             })
             added = True
     
-    # 如果有新增，写回文件
+    # 如果有新增，写回文件（原子写：tmp+fsync+rename）
     if added:
-        f = _fund_file(user_id)
-        f.parent.mkdir(parents=True, exist_ok=True)
-        f.write_text(json.dumps(existing, ensure_ascii=False, indent=2), encoding="utf-8")
-    
+        save_holdings(_fund_file(user_id), existing)
+
     return existing
 
 
 def save_fund_holdings(holdings: list, user_id: str = "default"):
-    """保存基金持仓列表"""
-    f = _fund_file(user_id)
-    f.parent.mkdir(parents=True, exist_ok=True)
-    f.write_text(json.dumps(holdings, ensure_ascii=False, indent=2), encoding="utf-8")
+    """保存基金持仓列表（原子写：tmp + fsync + rename，禁止裸 write_text）。
+
+    旧实现是 `f.write_text(json.dumps(...))` —— 写到一半进程被杀会留下半个
+    JSON，进而被 load 静默读成「没有持仓」。
+    """
+    save_holdings(_fund_file(user_id), holdings)
 
 
 def add_fund_holding(code: str, name: str = "", cost_nav: float = 0,
                      shares: float = 0, note: str = "", user_id: str = "default") -> dict:
     """添加一只持仓基金"""
     holdings = load_fund_holdings(user_id)
+    refusal = corrupt_write_refusal(holdings, _fund_file(user_id))
+    if refusal:
+        return refusal
     if any(h["code"] == code for h in holdings):
         return {"error": f"{code} 已在持仓中"}
 
@@ -233,6 +249,9 @@ def add_fund_holding(code: str, name: str = "", cost_nav: float = 0,
 def remove_fund_holding(code: str, user_id: str = "default") -> dict:
     """删除一只持仓基金"""
     holdings = load_fund_holdings(user_id)
+    refusal = corrupt_write_refusal(holdings, _fund_file(user_id))
+    if refusal:
+        return refusal
     before = len(holdings)
     holdings = [h for h in holdings if h["code"] != code]
     if len(holdings) == before:
@@ -244,6 +263,9 @@ def remove_fund_holding(code: str, user_id: str = "default") -> dict:
 def update_fund_holding(code: str, user_id: str = "default", **kwargs) -> dict:
     """更新持仓信息"""
     holdings = load_fund_holdings(user_id)
+    refusal = corrupt_write_refusal(holdings, _fund_file(user_id))
+    if refusal:
+        return refusal
     for h in holdings:
         if h["code"] == code:
             for k, v in kwargs.items():

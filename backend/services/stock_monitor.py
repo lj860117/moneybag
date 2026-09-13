@@ -33,6 +33,11 @@ from config import (
     STOCK_STOP_LOSS, STOCK_TAKE_PROFIT, STOCK_CONCENTRATION_WARN,
 )
 from infra.cache import MemoryCache
+from services.holdings_store import (
+    corrupt_write_refusal,
+    load_holdings,
+    save_holdings,
+)
 
 # ---- 持仓数据路径 ----
 _DATA_DIR = Path(config.DATA_DIR)
@@ -54,28 +59,40 @@ def _stock_file(user_id: str = "default") -> Path:
 # ============================================================
 
 def load_stock_holdings(user_id: str = "default") -> list:
-    """加载股票持仓列表"""
-    f = _stock_file(user_id)
-    if f.exists():
-        try:
-            data = json.loads(f.read_text(encoding="utf-8"))
-            return data if isinstance(data, list) else []
-        except Exception:
-            return []
-    return []
+    """加载股票持仓列表。
+
+    返回 `HoldingsList`（list 子类，旧调用方语义不变）。`.load_state` 区分：
+
+      - `"ok"`      : 读到了合法数组（可能是空数组 = 真的没有持仓）
+      - `"missing"` : 文件不存在（全新用户）
+      - `"corrupt"` : 文件存在但内容坏掉 —— **空列表不代表没有持仓**，
+                      损坏文件已备份为 `<原名>.corrupt-<ts>`，写路径会拒绝写入。
+
+    ⚠️ 不要用 `if not load_stock_holdings(...):` 判断「没有持仓」——
+       corrupt 时空列表是「读不到」，不是「没有」。写路径请用
+       `corrupt_write_refusal()`。
+    """
+    return load_holdings(_stock_file(user_id), label=f"股票持仓[{user_id}]")
 
 
 def save_stock_holdings(holdings: list, user_id: str = "default"):
-    """保存股票持仓列表"""
-    f = _stock_file(user_id)
-    f.parent.mkdir(parents=True, exist_ok=True)
-    f.write_text(json.dumps(holdings, ensure_ascii=False, indent=2), encoding="utf-8")
+    """保存股票持仓列表（原子写：tmp + fsync + rename，禁止裸 write_text）。
+
+    旧实现是 `f.write_text(json.dumps(...))` —— 写到一半进程被杀会留下半个
+    JSON，进而被 load 静默读成「没有持仓」。
+    """
+    save_holdings(_stock_file(user_id), holdings)
 
 
 def add_stock_holding(code: str, name: str = "", cost_price: float = 0,
                       shares: int = 0, note: str = "", user_id: str = "default") -> dict:
     """添加一只持仓股票（含买入前纪律检查）"""
     holdings = load_stock_holdings(user_id)
+    # fail-closed：文件损坏时「读到的空列表」不代表没有持仓，一旦继续 append
+    # 再 save，就是用这 1 条覆盖掉原有 N 条 —— 数据永久消失。必须先挡住。
+    refusal = corrupt_write_refusal(holdings, _stock_file(user_id))
+    if refusal:
+        return refusal
     # 去重
     if any(h["code"] == code for h in holdings):
         return {"error": f"{code} 已在持仓中"}
@@ -141,6 +158,9 @@ def add_stock_holding(code: str, name: str = "", cost_price: float = 0,
 def remove_stock_holding(code: str, user_id: str = "default") -> dict:
     """删除一只持仓股票"""
     holdings = load_stock_holdings(user_id)
+    refusal = corrupt_write_refusal(holdings, _stock_file(user_id))
+    if refusal:
+        return refusal
     before = len(holdings)
     holdings = [h for h in holdings if h["code"] != code]
     if len(holdings) == before:
@@ -152,6 +172,9 @@ def remove_stock_holding(code: str, user_id: str = "default") -> dict:
 def update_stock_holding(code: str, user_id: str = "default", **kwargs) -> dict:
     """更新持仓信息（成本价/股数/备注）"""
     holdings = load_stock_holdings(user_id)
+    refusal = corrupt_write_refusal(holdings, _stock_file(user_id))
+    if refusal:
+        return refusal
     for h in holdings:
         if h["code"] == code:
             for k, v in kwargs.items():

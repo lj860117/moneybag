@@ -97,6 +97,13 @@ def screen_funds(
     candidates = []
     excluded_count = 0
 
+    # v9.9.27: 真实风险数据源 = 风险调整指标共享缓存（内存→文件，24h TTL）。
+    # 循环内只查缓存，不发网络请求：未预热时返回 None → 评分跳过回撤惩罚（不造数）。
+    try:
+        from services.fund_risk_adjusted import get_risk_adjusted_cache as _get_ra_cache
+    except Exception:
+        _get_ra_cache = None
+
     for code, row in rank_data.items():
         try:
             cols = list(row.index) if hasattr(row, "index") else []
@@ -200,20 +207,40 @@ def screen_funds(
                         current_scale = float(val7)
                 except Exception:
                     pass
-            # v9.5.94: 规模过滤 — 阈值提到 5 亿（小规模基金清盘风险高），且 None 时降级用 issue_amount 检查
+            # v9.9.27: 规模过滤只认「亿元（金额）」口径，绝不拿「亿份（份额）」顶上。
+            # 历史缺陷：issue_amount 单位是**亿份**（份额），却被拿去和 < 5.0 比较
+            # —— 5.0 这个门槛是为**亿元**（金额）设的，5 亿份 ≠ 5 亿元，属量纲错配，
+            # 会误杀份额少但净值高的基金。该兜底已删除。
+            #
+            # 降级链（两条都不发网络请求，只读真实已就绪的值）：
+            #   L1 current_scale      —— 榜单规模列 / 位置推断，单位亿元
+            #   L2 _scale_cache[code] —— 当前唯一在跑的写入方是 enrich_scale_billion，
+            #                            写的是「最新份额(亿份) × 单位净值」= 亿元，口径正确。
+            #                            注意（未修，超出本次范围）：_filter_small_scale:350
+            #                            目前无任何调用方（死代码），其 Tushare L2 分支
+            #                            (:410) 会把 issue_amount(亿份) 写进同一个槽位
+            #                            —— 若将来复活它，这里必须先修单位，否则又变成错量纲。
             scale_for_filter = current_scale
-            if scale_for_filter is None and issue_amount is not None:
-                try:
-                    scale_for_filter = float(issue_amount)  # 用发行规模兜底（亿份）
-                except (ValueError, TypeError):
-                    pass
+            if scale_for_filter is None:
+                _cached_scale = _scale_cache.get(code)
+                if _cached_scale:
+                    scale_for_filter = _cached_scale[0]
             if scale_for_filter is not None and scale_for_filter < 5.0:
                 excluded_count += 1
                 continue
-            # 如果 current_scale 和 issue_amount 都拿不到，记录但不过滤（避免误杀）
+            # 两条都取不到 → 本条不参与过滤（既不误杀，也不用错单位凑数）；
+            # 份额口径的小盘风险已由上面「过滤4」按 2.0 亿份阈值单独处理。
 
             # ========== 新评分公式（V2）==========
-            score = _compute_quality_score(r1y, r3y, r6m, r3m, fee, list_date, issue_amount)
+            # v9.9.27: 取真实风险数据（含 max_drawdown / calmar_ratio）喂给评分，
+            # 让回撤惩罚真正作用到排序上。缓存未命中 → risk=None → 跳过惩罚。
+            risk = None
+            if _get_ra_cache is not None:
+                try:
+                    risk = _get_ra_cache(code)
+                except Exception:
+                    risk = None
+            score = _compute_quality_score(r1y, r3y, r6m, r3m, fee, list_date, issue_amount, risk=risk)
 
             # 质量标签
             quality_tags = _compute_quality_tags(r1y, r3m, r6m, list_date, issue_amount)
@@ -435,13 +462,102 @@ def enrich_scale_billion(funds: list) -> None:
         _save_scale_cache()
 
 
-def _compute_quality_score(r1y, r3y, r6m, r3m, fee, list_date, issue_amount) -> float:
-    """V2.1 评分公式：收益(30%)+稳定性(30%)+费率(10%)+成熟度(20%)+回撤惩罚(10%)
-    
-    基于V2稳定版本 + 3个优化:
-    1. 新增回撤惩罚(近3月跌幅作为回撤代理,跌幅越大扣分越重)
-    2. C类费率加分从+4降为+1(长持C类更贵)
-    3. 过热惩罚阈值从20%降到15%(更早警告)
+def _drawdown_penalty(risk) -> float:
+    """由**真实**风险数据得出回撤惩罚（返回值 ≤ 0）。
+
+    与旧实现的区别（v9.9.27）：旧的 `abs(r3m)`「近3月跌幅」既不是回撤、也不是
+    窗口内最大回撤，只是被拿来冒充回撤，属造数 —— 已删除。
+
+    数据源（都是真实计算结果，不是代理）：
+      L1 `risk["max_drawdown"]`：最大回撤**百分比**（35.2 表示 35.2%）。这是
+         services.fund_risk_adjusted.compute_risk_adjusted_metrics 的**显式契约字段**
+         （2026-09-13 补入，由 compute_max_drawdown 算出后 ×100），是主路径。
+         符号上库内两种口径都存在（该契约字段为正百分比；fund_screen
+         .build_drawdown_metrics 输出负百分比），这里统一取 abs() 只看幅度。
+      L2 `risk["calmar_ratio"]`：卡玛比率 = 年化收益 / 最大回撤
+         （services.fund_risk_adjusted.compute_calmar:397，分母就是真实最大回撤）。
+         仅在 L1 缺失或非法时使用。
+
+      **L2 不是「由卡玛反推回撤」，也做不到**：卡玛 = 年化收益 / 回撤，要反推回撤
+      必须知道分子（年化收益），而年化收益不在该契约里。所以 L2 是**对卡玛本身
+      分档**、用它自己的一套阈值，绝不与 L1 的 20/10/5 阈值混用 —— 因此不存在
+      「两套阈值量纲打架」的问题，也无需关心 L2 的「输出单位」。
+
+    取不到（risk 为 None / 无上述字段 / 值非法）→ 返回 0.0，即**跳过回撤惩罚**。
+    绝不回退到 abs(r3m) 之类的假代理。
+
+    L1 档位沿用旧三档（20 / 10 / 5 → −10 / −6 / −3），只是把输入从 abs(r3m)
+    换成真实最大回撤，便于横向对比排序变化。L2 的两档（0 / 0.2）是启发式阈值，
+    非数据拟合值，已如实标注。
+    """
+    if not isinstance(risk, dict) or not risk:
+        return 0.0
+
+    mdd = _safe_float(risk.get("max_drawdown"))
+    if mdd is not None:
+        dd = abs(mdd)
+        if dd > 20:
+            return -10.0
+        if dd > 10:
+            return -6.0
+        if dd > 5:
+            return -3.0
+        return 0.0
+
+    calmar = _safe_float(risk.get("calmar_ratio"))
+    if calmar is not None:
+        if calmar < 0:
+            return -6.0
+        if calmar < 0.2:
+            return -3.0
+    return 0.0
+
+
+def _compute_quality_score(r1y, r3y, r6m, r3m, fee, list_date, issue_amount, risk=None) -> float:
+    """选基启发式打分（**加法累加 + 分档惩罚，不是加权求和**）。
+
+    重要：函数名里的 "score" 与 docstring 历史版本里的 "收益30%+稳定性30%+..." 无关
+    —— 代码里没有任何量纲归一，也没有权重归一，各项原始分直接相加。真实构成如下
+    （每个数字都能在下面的代码里指出，行号为 v9.9.27 版本）：
+
+    【收益项】上限 +19.2
+      · r1y：r1y≤50 → +r1y×0.20（上限 +10.0）；r1y>50 → +10.0+(r1y−50)×0.04。
+        上游 screen_funds 已剔除 r1y>80，故实际最大 +10.0+30×0.04 = +11.2。
+        下界**不设限**：r1y 越低扣得越多（线性，无地板）。
+      · r3y：clamp(r3y/3, −20, 40) × 0.12 → 最大 +4.8 / 最小 −2.4
+      · r6m：clamp(r6m, −20, 40) × 0.08 → 最大 +3.2 / 最小 −1.6
+
+    【固定加项】上限 +21（每项只在满足条件时命中一次）
+      · 短中长期全为正（periods 全 >0）        → +6
+      · 持续性：r1y>10 且 r6m>5 且 r3m>0      → +3，若再满足 r3m×4 > r1y×0.8 → 再 +2
+      · 费率 <0.15% → +1；<0.5% → +2           → 上限 +2
+      · 成立 ≥5 年 → +5（≥3 年 → +3）          → 上限 +5
+      · 发行规模 5≤issue_amount≤200（亿份）     → +3
+
+    【惩罚项】上限 −41（回撤与卡玛**互斥**，取幅度大的那个，不叠加）
+      · 真实最大回撤 _drawdown_penalty(risk)   → 最多 −10
+        （risk 无 max_drawdown、只有 calmar_ratio 时本项改为最多 −6）
+      · 近3月过热 r3m>15：−min((r3m−15)×0.5, 12) → 最多 −12
+      · 近1年过热 r1y>60：−min((r1y−60)×0.25, 10) → 最多 −10
+      · 周期离散 spread>60 → −6（>40 → −3）    → 上限 −6
+      · 费率 >1.5%                              → −3
+
+    各项上限之和（是**上界，不是单只基金能同时取到的分数** —— 过热/离散/回撤等
+    惩罚在实践中往往由同一批高波动基金同时触发）：
+      · 正向上界 +40.2 = 收益项 19.2（11.2 + 4.8 + 3.2）+ 固定加项 21（6+5+2+5+3）
+      · 负向下界 −45.0 = −41（上述惩罚之和） − 2.4 − 1.6（r3y / r6m 的 clamp 下限）
+      · 再叠加 r1y<0 的线性负项（−|r1y|×0.20，**无地板**）→ 负向无固定下界。
+    以上各项均已用逐项隔离的方式实测复核（见 tests/test_fund_quality_score_risk.py）。
+
+    启发式注意点（如实记录，非缺陷）：
+      1. r1y 项无下限、clamp 项也无归一 → 分数不是 0~100 的百分制，仅用于**相对排序**；
+      2. 「稳定性」「持续性」两块的 `len(periods) >= 2` / 三周期齐全门槛不同，
+         数据不全的基金天然少拿一部分加项；
+      3. risk 取不到时**跳过**回撤惩罚（不扣分、也不造假扣分），因此冷启动期
+         的分数与缓存就绪后可能不同，这是「不造数」的代价，不是 bug。
+
+    Args:
+        risk: 可选。真实风险数据 dict，见 `_drawdown_penalty`。默认 None = 无数据。
     """
     score = 0
 
@@ -466,16 +582,6 @@ def _compute_quality_score(r1y, r3y, r6m, r3m, fee, list_date, issue_amount) -> 
         if all_pos:
             score += 6
 
-        # v9.5.123优化1: 回撤惩罚(近3月跌幅作为回撤代理)
-        if r3m is not None and r1y > 0 and r3m < -5:
-            drawdown_proxy = abs(r3m)
-            if drawdown_proxy > 20:
-                score -= 10  # 重回撤: -20%以上重罚
-            elif drawdown_proxy > 10:
-                score -= 6   # 中回撤: -10%~-20%
-            else:
-                score -= 3   # 轻回撤: -5%~-10%
-
         # v9.5.123优化3: 过热惩罚阈值从20%降到15%
         if r3m is not None and r3m > 15:
             overheat_penalty = (r3m - 15) * 0.5
@@ -492,6 +598,12 @@ def _compute_quality_score(r1y, r3y, r6m, r3m, fee, list_date, issue_amount) -> 
             score -= 6
         elif spread > 40:
             score -= 3
+
+    # v9.9.27: 回撤惩罚 —— 只用**真实**风险数据（风险调整指标共享缓存），
+    # 不再用 abs(r3m)「近3月跌幅」冒充回撤（那是造数）。
+    # 取不到风险数据 → _drawdown_penalty 返回 0.0，即跳过惩罚，绝不回退代理。
+    # 放在 periods 门槛之外：真实回撤是独立于「拿到几个周期收益」的事实。
+    score += _drawdown_penalty(risk)
 
     # ---- 持续性因子(信息比率代理) 5% ----
     # 如果多个时间段都为正且递增,说明基金持续跑赢不是一波运气

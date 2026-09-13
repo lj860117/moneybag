@@ -141,17 +141,50 @@ def step_confidence_gate(ctx: DecisionContext) -> DecisionContext:
         ctx.pipeline_steps.append("confidence_gate")
         return ctx
 
-    # 计算加权一致分和分歧度
+    # 计算一致分和分歧度
+    #
+    # ⚠️ 2026-09-13 修复。旧实现是 `s = result.get("score", 0.5)`，有两个叠加缺陷：
+    #   1) 各模块写的 score 有三套互不兼容的量纲 ——
+    #        broker_research 0~1（0.6/0.4/0.5）/ market_factors、sector_rotation 0~100 /
+    #        factor_data -100~100；而 stock_screen、risk、monte_carlo、signal 等
+    #        十来个模块**根本不写 score**，于是被静默填成 0.5。
+    #   2) 结果没有 /100 归一化（本文件另两处 _apply_arbitration_result、
+    #       空头反驳复核都写了 /100.0），而下游 output 阶段做的是
+    #        `int(ctx.confidence_score * 100)` → 再乘 100。
+    # 线上实测后果：92 条判断记录里 14 条 confidence > 100，最高 1041；
+    # 一致分 p50 = 0.60 恰好压在门控阈值 0.7 下，门控走直出还是仲裁
+    # 实际取决于「这次有没有模块写了 score」，而不是取决于置信度。
+    #
+    # 现在统一以 confidence 为准：这是所有相关模块都会写入的 0~100 口径。
     directions = []
-    scores = []
+    convictions = []
+    skipped = []
     for name, result in ctx.modules_results.items():
-        d = result.get("direction", "neutral")
-        s = result.get("score", 0.5)
-        directions.append(d)
-        scores.append(s)
+        if not isinstance(result, dict):
+            continue
+        if not result.get("available", False):
+            skipped.append(name)          # 失败 / 不可用模块不参与一致分
+            continue
+        c = result.get("confidence")
+        if not isinstance(c, (int, float)):
+            skipped.append(name)
+            continue
+        c = float(c)
+        if not (0.0 <= c <= 100.0):
+            # 响亮地失败。静默截断会让「模块换了口径」这件事永远查不出来。
+            raise ValueError(
+                f"模块 {name} 的 confidence={c} 超出 0~100 量程 —— "
+                "该模块换了口径，请修模块本身，不要在这里静默截断"
+            )
+        directions.append(result.get("direction", "neutral"))
+        convictions.append(c)
 
-    if scores:
-        ctx.confidence_score = sum(scores) / len(scores)
+    if convictions:
+        ctx.confidence_score = (sum(convictions) / len(convictions)) / 100.0
+        # 门控阈值是 0.7（config.PIPELINE_GATE），越界即说明归一化被改坏
+        assert 0.0 <= ctx.confidence_score <= 1.0, (
+            f"一致分越界: {ctx.confidence_score}（量纲/归一化被改坏，门控阈值是 0.7）"
+        )
 
         # 分歧度：方向不一致的比例
         if len(directions) > 1:
@@ -161,18 +194,27 @@ def step_confidence_gate(ctx: DecisionContext) -> DecisionContext:
             ctx.divergence = 1 - (majority / len(directions))
         else:
             ctx.divergence = 0.0
+    else:
+        # 一个可用模块都没有 —— 不要伪造一个 0.5 的一致分继续往下走
+        ctx.confidence_score = 0.0
+        ctx.divergence = 0.0
 
     # 门控决策
     # FIX 2026-04-19 V7.2: 阈值从 config 读
     from config import PIPELINE_GATE
     _conf_thr = PIPELINE_GATE["confidence_threshold"]
     _div_thr  = PIPELINE_GATE["divergence_threshold"]
+    _cover = f"（{len(convictions)}个模块计入一致分，{len(skipped)}个无可用置信度）"
     if ctx.confidence_score >= _conf_thr and ctx.divergence < _div_thr:
         ctx.gate_decision = "direct_output"
-        ctx.gate_reason = f"一致分{ctx.confidence_score:.2f}≥{_conf_thr} 且 分歧{ctx.divergence:.2f}<{_div_thr}"
+        ctx.gate_reason = (
+            f"一致分{ctx.confidence_score:.2f}≥{_conf_thr} 且 分歧{ctx.divergence:.2f}<{_div_thr}{_cover}"
+        )
     else:
         ctx.gate_decision = "llm_arbitration"
-        ctx.gate_reason = f"一致分{ctx.confidence_score:.2f} 或 分歧{ctx.divergence:.2f} 未达标"
+        ctx.gate_reason = (
+            f"一致分{ctx.confidence_score:.2f} 或 分歧{ctx.divergence:.2f} 未达标{_cover}"
+        )
 
     ctx.pipeline_steps.append("confidence_gate")
     return ctx

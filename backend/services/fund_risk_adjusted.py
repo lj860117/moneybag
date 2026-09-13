@@ -575,6 +575,12 @@ def compute_risk_adjusted_metrics(code: str, name: str = "", fund_type: str = ""
         "sharpe_ratio": None,
         "sortino_ratio": None,
         "calmar_ratio": None,
+        # 2026-09-13 补入契约。compute_max_drawdown 这个函数一直存在（本文件 379 行），
+        # 但它的结果**从未进入本函数的返回体** —— 于是选基排序只能拿 fund_screen.py
+        # 里「近 3 月跌幅」当回撤代理。补进来之后排序才有真实回撤可用。
+        # 单位：百分比（如 35.2 表示 35.2%），与 weekly_report / portfolio_optimizer /
+        # monte_carlo 的 max_drawdown 口径一致。
+        "max_drawdown": None,
         "information_ratio": None,
         "treynor_ratio": None,
         "beta": None,
@@ -660,6 +666,8 @@ def compute_risk_adjusted_metrics(code: str, name: str = "", fund_type: str = ""
     sharpe = compute_sharpe(fund_returns, rf_annual, annualization_factor)
     sortino = compute_sortino(fund_returns, mar_daily, annualization_factor)
     calmar = compute_calmar(fund_returns, fund_navs, annualization_factor)
+    # 最大回撤（比例形式返回，落盘时 ×100 转百分比）。取不到返回 None，不造 0。
+    max_dd = compute_max_drawdown(fund_navs)
     # β / 信息比率必须用「按共同交易日对齐后的」基金收益，否则基金与基准
     # 日期错位会算错（特雷诺依赖 β，随之修复）。
     beta = (
@@ -677,6 +685,7 @@ def compute_risk_adjusted_metrics(code: str, name: str = "", fund_type: str = ""
     result["sharpe_ratio"] = _fmt(sharpe)
     result["sortino_ratio"] = _fmt(sortino)
     result["calmar_ratio"] = _fmt(calmar)
+    result["max_drawdown"] = _fmt(max_dd * 100) if max_dd is not None else None
     result["information_ratio"] = _fmt(information_ratio)
     result["treynor_ratio"] = _fmt(treynor)
     result["beta"] = _fmt(beta)

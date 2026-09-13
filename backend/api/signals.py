@@ -581,6 +581,8 @@ def _compute_fund_screen(fund_type, sort_by, top_n, userId):
         # v9.5.123 P3: 风格标签
         _enrich_style_tag(result["funds"])
         # v9.5.122: 走势预估标签（规则引擎，基于动量/百分位/资金/热度多维打分）
+        # 注：维度7 需要的 sharpe_ratio 由 _enrich_trend_forecast 自己在打分前注入，
+        #     不再依赖本处的调用顺序（详见该函数开头注释）。
         _enrich_trend_forecast(result["funds"])
         # v9.5.123 P3-2: 经理稳定性标注
         _enrich_manager_stability(result["funds"])
@@ -1385,6 +1387,12 @@ def _get_dynamic_hot_sectors() -> dict:
     return result
 
 
+# 维度8「情绪面」用综合评分做关注度代理，其 85/40 阈值只对 fund_screen 的
+# 0~100 质量分成立。非该口径的 score 必须在 dict 上带 score_caliber 标记，
+# 否则会被静默当成 0~100 用（量纲错配 → 恒定偏移冒充信号）。
+_FUND_SCORE_CALIBER = "fund_screen_quality_0_100"
+
+
 def _enrich_trend_forecast(funds: list, *, include_dimensions: bool = False) -> None:
     """v9.5.123: 8维度 AI 走势预估引擎（规则引擎，不调 LLM）
     
@@ -1392,17 +1400,43 @@ def _enrich_trend_forecast(funds: list, *, include_dimensions: bool = False) -> 
     1. 动量趋势 (25%) — 3M/6M/1Y 回报率多周期动量
     2. 技术面信号 (20%) — 基于净值历史计算 MACD/RSI
     3. 估值水位 (15%) — NAV 百分位逆向指标
-    4. 资金流向 (15%) — 申购赎回比/规模变化趋势
-    5. 市场环境 (10%) — 大盘β + timing_label
+    4. 资金流向 (15%) — 规模(scale_billion) + 申购状态(purchase_warning，仅 QDII 有值)
+    5. 择时位置 (10%) — 个基择时标签 timing_label（回调=买点/过热=追高），与维度1 部分对冲
     6. 赛道热度 (5%) — 板块轮动/行业拥挤度
     7. 波动率风险 (5%) — 最大回撤/夏普比
-    8. 情绪面 (5%) — 关注度/换手率代理指标
+    8. 情绪面 (5%) — 关注度/综合评分代理指标
     
     输出：trend_direction/trend_label/trend_score/trend_reason/trend_confidence
     include_dimensions=True 时输出 trend_dimensions 完整8维分解（用于弹窗 Layer2/3）
     
     注意：绝不预测具体价格，只给方向性判断+置信度。
     """
+    # v9.x 字段对齐修复：两个维度依赖**外部注入**的字段，必须在打分前写好。
+    #   1) 申购状态：旧代码把 _check_qdii_purchase_status 放在循环之后，且维度4 读的是
+    #      全链路无写入点的 f["buy_status"] → 申购状态这一半信号永远拿不到值。
+    #      真实字段是 purchase_warning（本函数写入），因此先富化再打分。
+    #   2) 夏普比率：维度7 读 f["sharpe_ratio"]，该字段由 _enrich_risk_adjusted 注入。
+    #      旧代码把注入放在调用方 _compute_fund_screen 的本函数之后，而 holdings.py 的
+    #      两条路径（持仓详情 644 / 持仓列表 1176）与 dca_scheduler 从未注入过 ——
+    #      于是维度7 的夏普分支在**所有**调用路径上都是死的。
+    #      这里改成从共享缓存**只读**补齐（get_risk_adjusted_cache：内存 → 文件，
+    #      无网络、不落盘、不触发后台预热），顺序依赖从结构上不再可能出错，
+    #      且对四条调用路径都无副作用。缓存预热仍由调用方显式
+    #      _enrich_risk_adjusted() 负责（对应两条 holdings 路径已一并接上）。
+    _check_qdii_purchase_status(funds)
+    try:
+        from services.fund_risk_adjusted import get_risk_adjusted_cache
+        for _f in funds:
+            if _f.get("sharpe_ratio") is None:
+                _code = _f.get("code")
+                if not _code:
+                    continue
+                _metrics = get_risk_adjusted_cache(_code)
+                if _metrics and _metrics.get("available") and _metrics.get("sharpe_ratio") is not None:
+                    _f["sharpe_ratio"] = _metrics["sharpe_ratio"]
+    except Exception as _e:
+        print(f"[TREND] sharpe cache read failed: {_e}")
+
     for f in funds:
         dims = {}  # {维度名: {score, max, reason}}
         reasons = []
@@ -1545,8 +1579,13 @@ def _enrich_trend_forecast(funds: list, *, include_dimensions: bool = False) -> 
         d4_score = 0
         d4_reason = ""
         # 用规模变化趋势+申购状态作为资金面代理指标
-        scale = f.get("scale")  # 亿元
-        buy_status = f.get("buy_status", "")
+        # v9.x 字段对齐修复：真实写入点是 scale_billion（services/fund_screen.py:240/392，
+        #   enrich_scale_billion 在 signals.py:577 本函数之前调用）与 purchase_warning
+        #   （_check_qdii_purchase_status，仅对前 8 只 QDII 有值；已上移到本函数开头）。
+        #   旧代码读 f["scale"] / f["buy_status"] —— 这两个键**全链路无任何写入点**，
+        #   导致本维度恒为 0（一个假维度）。
+        scale = f.get("scale_billion")  # 亿元
+        purchase_warning = f.get("purchase_warning") or ""
         if scale is not None:
             if scale > 100:
                 d4_score += 3  # 大规模=机构认可
@@ -1554,11 +1593,11 @@ def _enrich_trend_forecast(funds: list, *, include_dimensions: bool = False) -> 
             elif scale < 1:
                 d4_score -= 3
                 d4_reason = "迷你基金"
-        # 申购状态反映资金意愿
-        if "限购" in buy_status or "限额" in buy_status:
-            d4_score += 6  # 限购=太多人想买=正向
+        # 申购状态反映资金意愿（限购=资金抢筹，暂停=申购通道关闭）
+        if "限购" in purchase_warning or "限额" in purchase_warning:
+            d4_score += 6
             d4_reason = "限购(资金抢筹)"
-        elif "暂停" in buy_status:
+        elif "暂停" in purchase_warning:
             d4_score -= 3
             d4_reason = "暂停申购"
         # 结合3M收益+规模做资金判断：涨得多+规模大=资金持续流入
@@ -1575,18 +1614,46 @@ def _enrich_trend_forecast(funds: list, *, include_dimensions: bool = False) -> 
         d4_score = max(-15, min(15, d4_score))
         dims["资金流向"] = {"score": d4_score, "max": 15, "reason": d4_reason}
         
-        # ═══ 维度5: 市场环境 (满分±10) ═══
+        # ═══ 维度5: 择时位置 (满分±10) ═══
+        # v9.x 维度改名（诚实性）：本维度喂进去的是 timing_label —— 一个**个基择时标签**
+        #   （回调买点/短期过热/正常），不是大盘 β。原名「市场环境」让显示与计算两张皮，
+        #   故按它真实测量的东西改名。前端按 key 渲染标签，改 key 即同步，无需改前端。
+        #
+        # 【决策留档 · 2026-09-13 · team-lead 裁定：不改成 _get_market_timing_summary】
+        #   曾评估「本维度直接吃大盘择时汇总」，结论是**不做**。留理由供后人：
+        #   ① 语义漂移：本引擎是个基走势预估，喂大盘 β 等于把「个基择时」偷换成
+        #      「市场择时」——正是本次要消灭的「显示与计算两张皮」再犯一次；
+        #      且大盘择时对该批基金是**同一个值**，8 个维度里塞一个常数维度，
+        #      会把 neutral/pos/neg 的 dims 计数整体平移，污染置信度分档。
+        #   ② 依赖与失败面：_get_market_timing_summary 走大盘数据源（AKShare/Tushare
+        #      降级链），会让每只基金的评分多挂一次全局取数，把外部数据源的不可用
+        #      传染进评分链路。
+        #   ③ 无必要：真实存在的 timing_label 已足以让该维度复活，不必新增依赖。
+        #   遗留约定：将来若真要加「市场环境」维度，须**另设 key**，并同步
+        #      services/investor_dna.py 的 DEFAULT_WEIGHTS 与前端渲染，禁止复用本 key。
         d5_score = 0
         d5_reason = ""
-        if "偏多" in timing or "强势" in timing:
+        # timing_label 的真实取值来自 _fund_timing_label()：
+        #   "💚 回调买点" / "💚 小幅回调" / "🔴 短期过热" / "🟡 涨幅较大" /
+        #   "🔴 涨幅过大" / "🟡 注意止盈" / "⚪ 正常"。
+        #   旧代码判 "偏多"/"强势"/"偏空"/"弱势" —— 这四个词在该字段里**永不出现**，
+        #   两个分支都进不去 → 本维度恒为 0（一个假维度）。
+        # 按标签自身的语义映射（回调=买点区间为正向，过热=追高风险为负向）。
+        # ⚠️ 与维度1（动量趋势）存在**部分对冲**：维度1 对 r3m>15 给 +18（追强势），
+        #    本维度对「短期过热」给 −8。这是有意为之的均值回归约束，不是重复计分；
+        #    若将来要调本维度权重，必须同时看维度1 的净效应。
+        if "回调买点" in timing or "小幅回调" in timing:
             d5_score = 8
-            d5_reason = "市场偏多"
-        elif "偏空" in timing or "弱势" in timing:
+            d5_reason = "低位回调(买点区间)"
+        elif "短期过热" in timing or "涨幅过大" in timing:
             d5_score = -8
-            d5_reason = "市场偏空"
+            d5_reason = "短期过热(追高风险)"
+        elif "涨幅较大" in timing or "注意止盈" in timing:
+            d5_score = -4
+            d5_reason = "涨幅偏大(注意止盈)"
         else:
-            d5_reason = "市场中性"
-        dims["市场环境"] = {"score": d5_score, "max": 10, "reason": d5_reason}
+            d5_reason = "时机中性"
+        dims["择时位置"] = {"score": d5_score, "max": 10, "reason": d5_reason}
         
         # ═══ 维度6: 赛道热度 (满分±5) — v9.5.123动态热点 ═══
         d6_score = 0
@@ -1657,7 +1724,10 @@ def _enrich_trend_forecast(funds: list, *, include_dimensions: bool = False) -> 
         d7_score = 0
         d7_reason = ""
         max_drawdown = f.get("max_drawdown")  # 通常 screen_funds 有
-        sharpe = f.get("sharpe")
+        # v9.x 字段对齐修复：真实字段是 sharpe_ratio（_enrich_risk_adjusted 注入，
+        #   api/fund_detail.py:717 / fund_risk_adjusted.py:677），旧代码读 f["sharpe"]
+        #   —— 该键无写入点，夏普这一半永远是 None。见 _compute_fund_screen 里的调用顺序调整。
+        sharpe = f.get("sharpe_ratio")
         if max_drawdown is not None:
             if max_drawdown < -30:
                 d7_score -= 4
@@ -1682,19 +1752,35 @@ def _enrich_trend_forecast(funds: list, *, include_dimensions: bool = False) -> 
         d8_score = 0
         d8_reason = ""
         # 用关注度/讨论热度代理（当前数据有限，用综合评分rank做代理）
-        total_score = f.get("total_score")
-        if total_score is not None:
-            if total_score >= 85:
-                d8_score = 3
-                d8_reason = "高关注度"
-            elif total_score <= 40:
-                d8_score = -2
-                d8_reason = "低关注冷门"
-            else:
-                d8_reason = "关注度适中"
+        # v9.x 字段对齐修复：fund_screen 产出的字段名是 score（fund_screen.py:228），
+        #   不是 total_score（那是 recommend_engine 的股票字段）。旧代码读 f["total_score"]
+        #   在基金对象上永远是 None → 本维度恒为 0（一个假维度）。
+        # v9.x 口径闸门：85/40 阈值只对 fund_screen 的 0~100 质量分成立。
+        #   持仓列表路径（api/holdings.py:~1166）写的是该路径自算的简化评分（量纲 0~50，
+        #   上限 25+15+10），并带 score_caliber 标记。见到非 0~100 口径一律**不消费** ——
+        #   否则 score 恒 ≤50，本维度会退化成「恒定 −2 偏移」冒充信号（静默错值）。
+        #   注意：这里既不造假分、也不放宽 85/40 阈值（阈值本身是对的）。
+        _caliber = f.get("score_caliber")
+        _caliber_ok = (not _caliber) or (_caliber == _FUND_SCORE_CALIBER)
+        if not _caliber_ok:
+            d8_reason = "本路径无 0~100 质量分，情绪面不计入"
         else:
-            d8_reason = "关注度未知"
+            quality_score = f.get("score")
+            if quality_score is not None:
+                if quality_score >= 85:
+                    d8_score = 3
+                    d8_reason = "高关注度"
+                elif quality_score <= 40:
+                    d8_score = -2
+                    d8_reason = "低关注冷门"
+                else:
+                    d8_reason = "关注度适中"
+            else:
+                d8_reason = "关注度未知"
         dims["情绪面"] = {"score": d8_score, "max": 5, "reason": d8_reason}
+        if not _caliber_ok:
+            # 可被测试断言的「本维度被口径闸门跳过」标记
+            dims["情绪面"]["skipped"] = True
         
         # ═══ 综合评分 ═══
         total = sum(d["score"] for d in dims.values())
@@ -1766,9 +1852,6 @@ def _enrich_trend_forecast(funds: list, *, include_dimensions: bool = False) -> 
         # 完整维度分解（Layer 2/3 详情用）
         if include_dimensions:
             f["trend_dimensions"] = dims
-    
-    # v9.5.123: QDII基金申购状态标注(限购/暂停)
-    _check_qdii_purchase_status(funds)
 
 
 @router.get("/api/fund-estimate-batch")
@@ -1923,11 +2006,11 @@ def _enrich_stock_trend_forecast(stocks: list, *, include_dimensions: bool = Fal
     1. 动量趋势 (25%) — 20D/60D/250D 涨跌
     2. 技术面信号 (20%) — 均线排列/MACD/RSI
     3. 估值水位 (15%) — PE百分位
-    4. 资金流向 (15%) — 主力净流入/北向持仓
-    5. 市场环境 (10%) — 大盘β
+    4. 资金流向 (15%) — catalyst_flags(机构加仓/减持解禁) + 换手率(turnover)代理
+    5. 择时位置 (10%) — 个股择时标签 timing_label（质优低估=买点/估值偏贵=追高风险），与维度1 部分对冲
     6. 赛道热度 (5%) — 板块景气
     7. 波动率风险 (5%) — 振幅/回撤
-    8. 情绪面 (5%) — 换手率/关注度
+    8. 情绪面 (5%) — 综合评分(score)代理指标
     """
     for s in stocks:
         dims = {}
@@ -2039,7 +2122,10 @@ def _enrich_stock_trend_forecast(stocks: list, *, include_dimensions: bool = Fal
             d4_reason = "减持/解禁压力"
         if not d4_reason:
             # 用动量+换手做代理
-            turnover = s.get("turnover_rate")
+            # v9.x 字段对齐修复：股票对象的真实换手率字段是 turnover
+            #   （stock_data_provider.py:124/258/539 写入，stock_screen.py:1023 带出），
+            #   旧代码读 turnover_rate —— 该键全链路无写入点，此代理分支恒为死代码。
+            turnover = s.get("turnover")
             if turnover and r20d and r20d > 5 and turnover > 5:
                 d4_score += 5
                 d4_reason = "放量上涨"
@@ -2051,19 +2137,34 @@ def _enrich_stock_trend_forecast(stocks: list, *, include_dimensions: bool = Fal
         d4_score = max(-15, min(15, d4_score))
         dims["资金流向"] = {"score": d4_score, "max": 15, "reason": d4_reason}
         
-        # ═══ 维度5: 市场环境 (±10) ═══
+        # ═══ 维度5: 择时位置 (±10) ═══
+        # v9.x 维度改名（诚实性）+ 字段对齐修复：timing_label 来自 _stock_timing_label()，
+        #   是**个股择时标签**，不是大盘 β，故原名「市场环境」改名（前端按 key 渲染，改 key 即同步）。
+        #   真实取值只有："💚 质优低估" / "💛 低估震荡" / "⚪ 质优合理" / "⚪ 均衡" /
+        #   "🔴 高估高PE" / "🔴 估值偏贵" / "🟡 动量追高"。
+        #   旧代码判 "偏多"/"强势"/"偏空"/"弱势" —— 这四个词在该字段里**永不出现** → 恒为 0（假维度）。
+        # 【决策留档】同基金引擎维度5：team-lead 裁定不改成大盘择时汇总，
+        #   理由见 _enrich_trend_forecast 内维度5 的注释块（语义漂移 / 依赖失败面 / 无必要）。
+        # ⚠️ 与维度1（动量趋势）存在**部分对冲**：维度1 对 20D 上涨给 +16，本维度对「动量追高」给 −6。
+        #    这是有意的均值回归约束，调本维度权重时必须同时看维度1 的净效应。
         d5_score = 0
         d5_reason = ""
         timing = s.get("timing_label", "")
-        if "偏多" in timing or "强势" in timing:
+        if "质优低估" in timing:
             d5_score = 8
-            d5_reason = "市场偏多"
-        elif "偏空" in timing or "弱势" in timing:
+            d5_reason = "质优低估(最佳买点)"
+        elif "低估震荡" in timing:
+            d5_score = 4
+            d5_reason = "低估震荡(等待确认)"
+        elif "高估高PE" in timing or "估值偏贵" in timing:
             d5_score = -8
-            d5_reason = "市场偏空"
+            d5_reason = "估值偏贵(追高风险)"
+        elif "动量追高" in timing:
+            d5_score = -6
+            d5_reason = "动量追高(注意回撤)"
         else:
-            d5_reason = "市场中性"
-        dims["市场环境"] = {"score": d5_score, "max": 10, "reason": d5_reason}
+            d5_reason = "时机中性"
+        dims["择时位置"] = {"score": d5_score, "max": 10, "reason": d5_reason}
         
         # ═══ 维度6: 赛道热度 (±5) ═══
         d6_score = 0
@@ -2103,12 +2204,16 @@ def _enrich_stock_trend_forecast(stocks: list, *, include_dimensions: bool = Fal
         # ═══ 维度8: 情绪面 (±5) ═══
         d8_score = 0
         d8_reason = ""
-        total_score = s.get("total_score")
-        if total_score is not None:
-            if total_score >= 85:
+        # v9.x 字段对齐修复：股票对象的真实综合评分字段是 score
+        #   （stock_screen.py:1025 写入）；total_score 是 recommend_engine / checklist 的
+        #   另一条链路字段，在 screen_stocks 产出的股票对象上**不存在** → 旧代码恒为 None，
+        #   本维度恒为 0（假维度）。
+        stock_score = s.get("score")
+        if stock_score is not None:
+            if stock_score >= 85:
                 d8_score = 3
                 d8_reason = "高关注度"
-            elif total_score <= 40:
+            elif stock_score <= 40:
                 d8_score = -2
                 d8_reason = "低关注冷门"
             else:

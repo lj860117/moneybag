@@ -756,6 +756,11 @@ def step_r1_phase1():
                 log=log, context="morning_briefing/macro")
             if _fa_hits:
                 log(f"  ⚠️ 宏观研判事实锚点命中 {len(_fa_hits)} 处")
+            elif not _fa_hits.verified:
+                # v9.9.30: 空列表 ≠ 校验通过 —— 无锚点时必须说"没查"，
+                # 否则"0 处命中"会被误读成"数字全部核对过了"。
+                log(f"  ⚠️ 宏观研判本次无事实锚点"
+                    f"（anchor_state={_fa_hits.anchor_state}），未做数字校验")
         except Exception as e:
             log(f"  ⚠️ 事实锚点校验不可用（不影响生成）: {e}")
 
