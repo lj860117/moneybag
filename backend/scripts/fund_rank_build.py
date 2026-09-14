@@ -72,6 +72,13 @@ from backend.services.tushare_data import (  # noqa: E402
 # 这些读取方（都读 config.DATA_DIR/fund_rank_ts.json）落盘目录不一致，榜单永远读不到。
 from backend.config import DATA_DIR  # noqa: E402
 
+# v9.9.36: QDII 判据上提到共享模块，与 services/fund_screen.py 共用同一份。
+# ⚠️ 这里刻意用 `services.` 前缀（而不是 `backend.services.`）：fund_screen.py
+# 那边是 `from services.fund_taxonomy import ...`（uvicorn 从 backend/ 启动，
+# sys.path 根是 backend/）。两边前缀一致，sys.modules 里才是**同一个**模块
+# 对象；否则打桩/故障注入会打到另一个副本上，看起来"改了没生效"。
+from services.fund_taxonomy import QDII_NAME_MARKER, is_qdii_fund  # noqa: E402
+
 
 OUTPUT_FILE = Path(DATA_DIR) / "fund_rank_ts.json"
 
@@ -117,51 +124,25 @@ _PROBE_MAX_PAGES = 1
 # （按 "ETF" in name）兜住。
 INDEX_INVEST_TYPES = ("被动指数型", "增强指数型")
 
-# ---- QDII 基金的识别口径：看法定名称里的 "(QDII)" 标记 ----
+# ---- QDII 基金的识别口径 ----
 #
-# 修前这里写的是 filter_type(["QDII"])，同样是拿 fund_type 去匹配 ——
-# fund_type 全量取值只有 6 个（混合型 6417 / 股票型 6280 / 债券型 4758 /
-# 货币型 335 / REITs 104 / 其他 55），**没有 QDII** → ranks.qdii 也恒为空。
-# 与 index 完全同一个病。已核对归档 data/fund_rank_ts_20260910.json：
-# index=0、qdii=0，属长期静默为空，不是新回归。
+# 判据（v9.9.36）：名称含 "QDII" **OR** 命中 14 个高精关键词（带否定词）。
+# 修前只认 "QDII" 子串，会漏判简称被截断的真 QDII（国泰纳斯达克100指数、
+# 长信标普100等权重指数人民币、博时大中华亚太精选、南方道琼斯美国精选A 等
+# 候选池内 24 只，雪球「基金类型」实测确认为 QDII）。
 #
-# ⚠️ 为什么这里**没有**可替代的结构化字段（与 index 的关键差异）：
-#   * invest_type 全量 36 个取值里**没有任何一个含 QDII**（实测命中 0 只）；
-#   * fund_type 也没有（实测命中 0 只）。
-#   所以 index 那套"改用 invest_type"的办法，在 QDII 上**不存在**。
+# 完整实测证据全部记在 services/fund_taxonomy.py 的 QDII_NAME_MARKER 上方：
+#   * 为什么 fund_type / invest_type 都没有 QDII 可用；
+#   * 三口径 Tushare 481/1180/24 与 AKShare 355/911/556 的对比；
+#   * 24 个关键词的逐个真值精度表（真值=雪球「基金类型」，不是名称代理）；
+#   * 删词理由（港股≈0 精度 / 恒生前海是公司名 / 国际全是 MSCI中国A股）；
+#   * 删"全球"的代价与 top_n 变化时的重算要求；
+#   * 为什么用纯子串 "QDII" 而不是 "(QDII"。
 #
-# 剩下唯一可用的口径是名称。三种口径实测（全量 17949 只）：
-#   ① 名称含 "QDII"            → 481 只，抽样 0 误判          ← 采用
-#   ② fund_screen.py 的 _QDII_KW 关键词并集 → 1180 只，但其中
-#      699 只名称不含 QDII，抽查**全是误判**：
-#        - 港股通 ETF 561 只（走互联互通额度，**不是** QDII）
-#        - 恒生A股 / 恒生港股通 208 只
-#        - "兴证全球…" —— 基金**公司名**里带"全球"
-#        - "沈阳国际软件园REIT" / "深国际仓储物流REIT" —— 名字带"国际"
-#   ③ 海外敞口关键词但名称不含 QDII → 24 只，抽查同样全**不是** QDII
-#        （"标普中国A股…""标普港股通低波红利" 投的是 A 股 / 港股通）
-#
-# 为什么名称匹配在 index 上不可靠、在 QDII 上却可靠：
-#   "QDII" 是法规要求的**法定名称后缀**（如"华夏野村日经225ETF(QDII)"），
-#   是资格标记而不是描述性词汇，所以精度接近 100%；而 index 那批漏判的
-#   ETF 只能靠"名字里有没有指数味儿"去猜，那才是不可靠的。
-QDII_NAME_MARKER = "QDII"
-
-
-def is_qdii_fund(item: dict) -> bool:
-    """QDII 基金判定：看法定名称里的 (QDII) 后缀
-
-    QDII 在 fund_basic 里**没有**对应的结构化字段（invest_type / fund_type
-    实测均无 QDII 取值，详见 QDII_NAME_MARKER 的实测注释），法定名称后缀是
-    唯一可靠信号。
-
-    Args:
-        item: ranks_all 里的一条（必须带 name 字段）。
-
-    Returns:
-        True 表示这是一只 QDII 基金。
-    """
-    return QDII_NAME_MARKER in (item.get("name") or "")
+# ⚠️ 判据本体已上提到 services/fund_taxonomy.py（唯一真源），本脚本改为
+# import，不再自带一份实现 —— 否则 fund_rank_build（Tushare 榜单）与
+# fund_screen（AKShare 选基）又会退化成两套互相矛盾的口径，正是这次修的东西。
+# **改判据前请先读那段注释，不要在这里另起一套。**
 
 
 def is_index_fund(item: dict) -> bool:

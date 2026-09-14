@@ -28,6 +28,12 @@ from config import (
 )
 from infra.cache import MemoryCache
 from services.fund_rank import _load_fund_rank_data
+# v9.9.36: QDII 判据统一到唯一真源，与 scripts/fund_rank_build.py 共用同一份。
+# 修前这里是 24 个海外关键词并集（_QDII_KW），AKShare 全量实测命中 908 ~ 911，
+# 其中 554 ~ 556 只是误判（港股 406~440 / 恒生 152~230 / 标普 22 / 国际 7）。
+# ⚠️ 判据本体在 services/fund_taxonomy.py，**改判据请先读那里的实测表格**，
+# 不要在这里另起一个关键词列表 —— 两套口径就是这次要修的东西。
+from services.fund_taxonomy import is_qdii_fund
 from services.utils import find_col as _find_col, safe_float as _safe_float, parse_fee as _parse_fee
 
 _fund_screen_cache = MemoryCache(default_ttl=FUND_RANK_CACHE_TTL)
@@ -136,11 +142,13 @@ def screen_funds(
                     if not _is_index:
                         continue
                 elif fund_type == "qdii":
-                    _QDII_KW = ["QDII", "标普", "纳斯达克", "纳指", "全球", "海外", "美股",
-                                "恒生", "港股", "日经", "日本", "越南", "印度", "德国",
-                                "法国", "英国", "韩国", "东南亚", "亚太", "欧洲",
-                                "S&P", "道琼", "新兴市场", "国际"]
-                    if not any(k in name for k in _QDII_KW):
+                    # v9.9.36: 判据上提到 services/fund_taxonomy.py（唯一真源），
+                    # = 名称含 "QDII" OR 命中 14 个高精关键词（带否定词）。
+                    # 修前这里是 24 个关键词并集，全市场实测 554 只误判（港股 /
+                    # 恒生前海 / MSCI中国A股国际通）；修后实测 score top30 与
+                    # 1y top50 双双 0 误判 0 漏判。传 dict 是因为共享判据按 item
+                    # 取值（Tushare 榜单 / AKShare 选基两条链路复用同一份）。
+                    if not is_qdii_fund({"name": name}):
                         continue
 
             # 提取收益率

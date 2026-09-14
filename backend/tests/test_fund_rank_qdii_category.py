@@ -26,7 +26,7 @@ index 的修法是"改用 invest_type"，因为 invest_type 里有 `被动指数
 所以 index 那套办法在 QDII 上根本不存在。实测三种口径：
 
     ① 名称含 "QDII"                 → 481 只，抽样 0 误判         ← 采用
-    ② fund_screen.py 的 _QDII_KW 关键词并集 → 1180 只，但其中 699 只
+    ② fund_screen.py 原 _QDII_KW 关键词并集 → 1180 只，但其中 699 只
        名称不含 QDII，抽查全是误判：
          - 港股通 ETF 561 只（走互联互通额度，不是 QDII）
          - 恒生A股 / 恒生港股通 208 只
@@ -38,6 +38,30 @@ index 的修法是"改用 invest_type"，因为 invest_type 里有 `被动指数
 选 ① 的理由：**"QDII" 是法规要求的法定名称后缀**（如"华夏野村日经225ETF
 (QDII)"），是资格标记而非描述性词汇，精度接近 100%。这与 index 那批漏判
 ETF 的情形不同 —— 那批只能靠"名字有没有指数味儿"去猜，才不可靠。
+
+--------------------------------------------------------------------------
+⚠️ v9.9.36 后续修正：口径从「纯名称含 QDII」改为「名称含 QDII OR 高精关键词」
+--------------------------------------------------------------------------
+上面 ③ 那条结论是**错的**，本轮已推翻。当时用的真值是"名称含 QDII"这个
+**代理标签**，而 AKShare / 雪球的「基金简称」会**截断**法定名称里的
+"(QDII)" 后缀 —— 于是"真 QDII 但简称不含 QDII"被代理标签算成了误判，
+口径越准越显得像误判。
+
+本轮换用雪球 ``fund_individual_basic_info_xq`` 的**「基金类型」**做真值
+（结构化字段，取值形如 "QDII-股票" / "QDII-债券" / "混合型"），重新实测
+AKShare 全市场 20357 只（2026-09-14）：
+  * 候选池内 **24 只真 QDII 的简称不含 QDII**（国泰纳斯达克100指数、
+    长信标普100等权重指数人民币、博时大中华亚太精选、南方道琼斯美国精选A…）
+  * 反向校验：名称含 QDII 且真值非 QDII = **0 只** —— 标记本身无假阳性
+  * 24 个老关键词逐个测得真值精度，据此保留 14 个、删除 9 个
+    （港股 ≈0% 全是港股通 / 恒生 40% 里 17 只是"恒生前海"**基金公司名** /
+     国际 0% 全是 MSCI中国A股国际通 / 纳指·美股·英国·韩国·S&P 全市场 0 命中）
+
+最终判据（``services/fund_taxonomy.py``）：名称含 "QDII" OR 命中 14 个高精
+关键词（"标普"另带否定词 {港股通, 中国A股, 香港上市中国}）。候选池 7945 只
+上实测：score top30 与 1y top50 **双双 0 误判 0 漏判**；修前的 24 词并集是
+6 / 7 只误判，纯名称口径是 3 / 4 只漏判。逐个词的精度表见
+``services/fund_taxonomy.py`` 的 ``QDII_NAME_MARKER`` 上方。
 
 本文件全部离线运行：Tushare 全部打桩，只有 ``build_rank()`` 的端到端用例会
 写文件，落点统一指向 tmp_path。
@@ -85,6 +109,13 @@ def _load_fund_rank_build():
 @pytest.fixture
 def frb():
     return _load_fund_rank_build()
+
+
+@pytest.fixture
+def ft():
+    """共享判据模块 services.fund_taxonomy（唯一真源）。"""
+    import importlib
+    return importlib.import_module("services.fund_taxonomy")
 
 
 # ============================================================
@@ -256,38 +287,253 @@ def test_other_categories_are_unchanged(built_payload):
 # D. 故障注入：证明上面的用例是活的
 # ============================================================
 
-def _run_with_marker(frb, tmp_path, monkeypatch, marker):
+def _run_with_marker(frb, ft, tmp_path, monkeypatch, marker):
+    # v9.9.36: QDII 判据已上提到 services/fund_taxonomy.py（唯一真源），
+    # 脚本只是 import 过来。故障注入必须打在**共享模块**上 —— 打在脚本的
+    # 同名属性上已经不生效了（is_qdii_fund 读的是自己模块的全局）。
     monkeypatch.setattr(frb, "OUTPUT_FILE", tmp_path / "fund_rank_ts.json")
     monkeypatch.setattr(frb, "is_configured", lambda: True)
     monkeypatch.setattr(frb, "get_fund_basic_all", lambda: list(BASICS))
     monkeypatch.setattr(frb, "get_fund_nav_by_date", _fake_nav_by_date)
-    monkeypatch.setattr(frb, "QDII_NAME_MARKER", marker)
+    monkeypatch.setattr(ft, "QDII_NAME_MARKER", marker)
+    # ⚠️ 判据是「名称含 QDII **OR** 命中高精关键词」的并集。只注入 marker
+    # 不清关键词的话，"华夏野村日经225ETF(QDII)" 会走"日经"这条支路照样判成
+    # QDII，注入就**打空了**（qdii 仍非空，用例假绿）。要隔离 marker 这一条
+    # 路径，必须同时把关键词白名单清空。
+    monkeypatch.setattr(ft, "QDII_NAME_KEYWORDS", ())
+    # 注入是活的：共享模块取值确实被换掉，且脚本用的就是共享模块那个函数
+    assert ft.QDII_NAME_MARKER == marker
+    assert ft.QDII_NAME_KEYWORDS == ()
+    assert frb.is_qdii_fund is ft.is_qdii_fund, "脚本没用共享判据，故障注入会打到空处"
     assert frb.build_rank() == 0
     return json.loads((tmp_path / "fund_rank_ts.json").read_text(encoding="utf-8"))
 
 
-def test_fault_injection_old_fund_type_marker_yields_empty_qdii(frb, tmp_path, monkeypatch):
+def test_fault_injection_old_fund_type_marker_yields_empty_qdii(frb, ft, tmp_path, monkeypatch):
     """故障注入：把标记改回依赖 fund_type 的"QDII" → qdii 立刻变空。
 
     修前就是 filter_type(["QDII"]) 去匹配 fund_type，而 fund_type 没有这个
     类别 —— 这里用一个名字里绝不会出现的 fund_type 取值来复现"恒空"。
     """
-    payload = _run_with_marker(frb, tmp_path, monkeypatch, "QDII-不存在于名称中")
+    payload = _run_with_marker(frb, ft, tmp_path, monkeypatch, "QDII-不存在于名称中")
     assert payload["ranks"]["qdii"] == [], "故障注入失效：老口径本应产出空 qdii"
 
 
-def test_fault_injection_wrong_marker_case_yields_empty_qdii(frb, tmp_path, monkeypatch):
+def test_fault_injection_wrong_marker_case_yields_empty_qdii(frb, ft, tmp_path, monkeypatch):
     """故障注入 2：大小写写错（"qdii"）—— 差一个字符不会报错，只会静默归零。
 
     这是本类 bug 最容易复发的形态。
     """
-    payload = _run_with_marker(frb, tmp_path, monkeypatch, "qdii")
+    payload = _run_with_marker(frb, ft, tmp_path, monkeypatch, "qdii")
     assert payload["ranks"]["qdii"] == [], "故障注入失效：错大小写本应产出空 qdii"
 
 
-def test_empty_qdii_category_is_warned_not_silent(frb, tmp_path, monkeypatch, capsys):
+def test_empty_qdii_category_is_warned_not_silent(frb, ft, tmp_path, monkeypatch, capsys):
     """静默的空分类同样有害 —— 口径失效时必须留下可检索的告警。"""
     capsys.readouterr()
-    _run_with_marker(frb, tmp_path, monkeypatch, "不存在的取值")
+    _run_with_marker(frb, ft, tmp_path, monkeypatch, "不存在的取值")
     out = capsys.readouterr().out
     assert "qdii" in out and "空" in out, f"qdii 分类为空却没有任何告警: {out}"
+
+
+# ============================================================
+# E. v9.9.36 union 判据：简称被截断的真 QDII 必须进，误判必须不进
+# ============================================================
+#
+# 真值来源：雪球 fund_individual_basic_info_xq 的「基金类型」（2026-09-14
+# 实测），**不是**"名称含 QDII"代理标签 —— 代理标签本身就会把这些截断简称
+# 的真 QDII 算成误判，用它当真值等于自己证明自己。
+#
+# 正例全部来自「候选池内真值=QDII 但简称不含 QDII」的实测清单（24 只），
+# 这里取其中能进 score top30 / 1y top50 的 4 只 + 一批关键词分支的覆盖样本。
+
+UNION_POSITIVES = [
+    # （代码，简称，基金类型）—— 简称里都没有 "QDII"
+    ("160213", "国泰纳斯达克100指数", "QDII-股票"),
+    ("519981", "长信标普100等权重指数人民币", "QDII-股票"),
+    ("050015", "博时大中华亚太精选", "QDII-股票"),
+    ("160140", "南方道琼斯美国精选A", "QDII-房地产信托"),
+    ("160141", "南方道琼斯美国精选C", "QDII-房地产信托"),
+    ("004243", "广发道琼斯石油指数人民币C", "QDII-股票"),
+    ("014982", "华安标普全球石油指数(LOF)C", "QDII-股票"),
+    ("162415", "华宝标普美国消费人民币A", "QDII-股票"),
+    ("118002", "易方达标普消费品指数A", "QDII-股票"),
+    ("164824", "工银印度基金人民币", "QDII-股票"),
+    ("241001", "华宝海外中国成长混合", "QDII-混合"),
+    ("519601", "海富通中国海外混合", "QDII-混合"),
+    ("070012", "嘉实海外中国股票混合", "QDII-混合"),
+    ("164906", "交银中证海外中国互联网指数(LOF)A", "QDII-股票"),
+]
+
+# 反例：修前 24 词并集在 score top30 / 1y top50 上实测的**全部**误判
+# （6 只 + 1y 视角多出的 2 只），加上关键词分支上典型的境内"伪海外"基金。
+UNION_NEGATIVES = [
+    ("013383", "恒生前海高端制造混合A", "恒生前海是**基金公司名**，不是恒生指数"),
+    ("007277", "恒生前海消费升级混合", "同上"),
+    ("014712", "恒生前海恒裕债券A", "同上，且是纯债基金"),
+    ("006535", "恒生前海恒锦裕利A", "同上"),
+    ("024786", "汇添富港股通红利回报混合发起式A", "港股通，走互联互通额度，不是 QDII"),
+    ("006752", "天弘港股通精选A", "港股通"),
+    ("340006", "兴全全球视野股票", "名字带'全球'但投 A 股（股票型-标准指数）"),
+    ("024042", "富国恒生A股专精特新企业ETF发起式联接A", "恒生A股 = 境内"),
+    ("004332", "恒生沪港深新兴产业精选混合", "沪港深，境内"),
+    ("501029", "华宝标普中国A股红利机会ETF联接A(LOF)", "标普指数但投 A 股 → 否定词拦"),
+    ("005125", "华宝标普中国A股红利机会ETF联接C", "同上"),
+    ("022887", "华宝标普港股通低波红利ETF联接A", "标普 + 港股通 → 否定词拦"),
+    ("005051", "摩根标普港股通低波红利指数A", "同上"),
+    ("501021", "华宝港股通标普香港上市中国中小盘指数(LOF)A", "标普 + 香港上市中国 → 否定词拦"),
+]
+
+
+def test_union_positives_truncated_qdii_names_are_caught(ft):
+    """正例：简称被截断的真 QDII 必须被判出来。
+
+    纯"名称含 QDII"口径会**全部漏掉**这批（score top30 漏 3 只、1y top50
+    漏 4 只），这是本轮从纯名称口径改成 union 的唯一理由。
+    """
+    for code, name, ftype in UNION_POSITIVES:
+        assert "QDII" not in name, f"{code} {name} 简称里不含 QDII，才算截断样本"
+        assert ft.is_qdii_fund({"name": name}) is True, (
+            f"漏判真 QDII：{code} {name}（基金类型={ftype}）")
+
+
+def test_union_negatives_rejected_keywords_stay_out(ft):
+    """反例：被删掉的 9 个词带来的误判必须全部挡住。
+
+    这批是修前 24 词并集在 top-N 上实测的全部误判；只要有人把
+    `全球` / `恒生` / `港股` / `国际` 加回白名单，这里立刻转红。
+    """
+    for code, name, why in UNION_NEGATIVES:
+        assert ft.is_qdii_fund({"name": name}) is False, (
+            f"误判成 QDII：{code} {name}（{why}）")
+
+
+def test_negation_words_only_apply_to_their_own_keyword(ft):
+    """否定词只对"标普"生效，不能外溢到别的关键词上。
+
+    "华宝标普港股通低波红利ETF联接A" 被拦是因为命中"标普"+否定词；而
+    "工银印度基金人民币" 这种不含标普的，不能因为名字里有别的字被误拦。
+    """
+    assert ft.is_qdii_fund({"name": "工银印度基金人民币"}) is True
+    assert ft.is_qdii_fund({"name": "华宝标普港股通低波红利ETF联接A"}) is False
+    assert ft.is_qdii_fund({"name": "港股通互联网ETF"}) is False
+
+
+def test_keyword_whitelist_is_pinned(ft):
+    """钉死保留词/删除词清单 —— 加词必须先补实测精度，不能顺手加。"""
+    assert ft.QDII_NAME_KEYWORDS == (
+        "纳斯达克", "海外", "亚太", "新兴市场", "日经", "日本", "越南", "印度",
+        "德国", "法国", "欧洲", "东南亚", "道琼", "标普",
+    )
+    assert ft.QDII_REJECTED_KEYWORDS == (
+        "全球", "恒生", "港股", "国际", "纳指", "美股", "英国", "韩国", "S&P",
+    )
+    # 保留词与删除词不能有交集（有人想"先加回来再说"时这里会红）
+    assert not (set(ft.QDII_NAME_KEYWORDS) & set(ft.QDII_REJECTED_KEYWORDS))
+    # 否定词只服务于白名单里真实存在的词
+    assert set(ft.QDII_KEYWORD_NEGATIONS) <= set(ft.QDII_NAME_KEYWORDS)
+
+
+# ============================================================
+# F. 回潮守卫：fund_screen.py 不许再自带一套关键词并集
+# ============================================================
+
+def _qdii_branch_source(strip_comments: bool = True) -> str:
+    """抠出 fund_screen.py 里 `elif fund_type == "qdii":` 这一支的源码。
+
+    默认**剥掉注释**：注释里出现"恒生前海"这种字样是合法的（本文件自己的
+    注释就在解释为什么删掉"恒生"），但注释不会被执行，不该触发回潮守卫。
+    只看代码才能既抓到真回潮、又不被注释误伤。
+    """
+    src = (BACKEND_DIR / "services" / "fund_screen.py").read_text(encoding="utf-8")
+    lines = src.splitlines()
+    start = None
+    for i, line in enumerate(lines):
+        if 'elif fund_type == "qdii":' in line:
+            start = i
+            break
+    assert start is not None, "fund_screen.py 里找不到 qdii 分支 —— 判据被搬走了？"
+    indent = len(lines[start]) - len(lines[start].lstrip())
+    block = [lines[start]]
+    for line in lines[start + 1:]:
+        if line.strip() and (len(line) - len(line.lstrip())) <= indent:
+            break
+        block.append(line.split("#", 1)[0] if strip_comments else line)
+    return "\n".join(block)
+
+
+def test_fund_screen_qdii_branch_delegates_to_shared_module(ft):
+    """回潮守卫 1：qdii 分支必须调共享判据，不许自带关键词列表。
+
+    这次事故的根因就是"两条链路各写一份判据"。这条钉死接线方式：
+    `is_qdii_fund` 必须是 services.fund_taxonomy 里那一个函数对象。
+    """
+    import importlib
+    fs = importlib.import_module("services.fund_screen")
+    assert fs.is_qdii_fund is ft.is_qdii_fund, (
+        "fund_screen.py 没用共享判据 —— 又退化成两套口径了")
+
+
+def test_fund_screen_qdii_branch_has_no_rejected_keywords(ft):
+    """回潮守卫 2：qdii 分支里不许出现被删掉的 9 个词。
+
+    注意只查 qdii 分支这一块，不查全文件 —— "恒生"/"纳斯达克"/"标普"在
+    同文件的 `_INDEX_KW`（index 分支）里是合法用法，"全球"在 `_compute_reason`
+    的文案里也合法，全文件禁这些字面量会误伤。
+    """
+    branch = _qdii_branch_source()
+    assert "is_qdii_fund" in branch, "qdii 分支没有调共享判据"
+    assert "_QDII_KW" not in branch, "旧的 24 关键词列表又回来了"
+    for word in ft.QDII_REJECTED_KEYWORDS:
+        assert word not in branch, (
+            f"qdii 分支里出现了已删词 {word!r} —— 它的全市场真值精度是 "
+            f"0%~40%，加回来等于把 554 只误判请回来")
+
+
+# ============================================================
+# G. 故障注入：证明 E/F 两节的用例是活的（不是死测试）
+# ============================================================
+
+def test_fault_injection_empty_keywords_loses_truncated_qdii(ft, monkeypatch):
+    """故障注入 3：清空关键词白名单 → 4 只截断简称的真 QDII 立刻漏判。
+
+    这证明 E 节的正例用例不是"因为名称里恰好有 QDII"而绿的。
+    """
+    monkeypatch.setattr(ft, "QDII_NAME_KEYWORDS", ())
+    for code, name, _ftype in UNION_POSITIVES:
+        assert ft.is_qdii_fund({"name": name}) is False, (
+            f"故障注入失效：{code} {name} 本应随关键词清空而漏判")
+
+
+def test_fault_injection_marker_only_still_catches_full_names(ft, monkeypatch):
+    """故障注入 4：清空关键词后，名称里**带** QDII 的仍要判出来。
+
+    与上一条配对，证明并集的两条支路各自独立生效、互不顶替。
+    """
+    monkeypatch.setattr(ft, "QDII_NAME_KEYWORDS", ())
+    assert ft.is_qdii_fund({"name": "华夏野村日经225ETF(QDII)"}) is True
+    assert ft.is_qdii_fund({"name": "博时标普500ETF(QDII)"}) is True
+
+
+def test_fault_injection_negation_removed_lets_a_share_funds_in(ft, monkeypatch):
+    """故障注入 5：删掉"标普"的否定词 → 境内 A 股/港股通基金立刻混入。
+
+    证明 QDII_KEYWORD_NEGATIONS 不是装饰。
+    """
+    monkeypatch.setattr(ft, "QDII_KEYWORD_NEGATIONS", {})
+    leaked = [c for c, n, _w in UNION_NEGATIVES
+              if "标普" in n and ft.is_qdii_fund({"name": n})]
+    assert leaked, "故障注入失效：删掉否定词后应有标普系境内基金混入"
+    assert "501029" in leaked, f"否定词删除后 501029 本应混入，实际 {leaked}"
+
+
+def test_fault_injection_rejected_keyword_readded_brings_back_false_positives(
+        ft, monkeypatch):
+    """故障注入 6：把"港股"加回白名单 → 港股通基金立刻混入。
+
+    这是最可能的回潮形态（"港股听起来就是海外呀"）。
+    """
+    monkeypatch.setattr(ft, "QDII_NAME_KEYWORDS",
+                        tuple(ft.QDII_NAME_KEYWORDS) + ("港股",))
+    assert ft.is_qdii_fund({"name": "天弘港股通精选A"}) is True, (
+        "故障注入失效：加回'港股'后港股通基金本应混入")
