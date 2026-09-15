@@ -367,7 +367,27 @@ TUSHARE_TOKEN = os.environ.get("TUSHARE_TOKEN", "")
 #    （nav_percentile 决定标签配色）→「净值百分位」「择时」标签永不渲染（后端早算好、数据在手）。
 #    已按同样的非 null 守卫补上三键，并加测试。
 # 前端本次有改动，故 index.html 全部 27 处 ?v= 与 sw.js 的 CACHE_NAME 一并 bump 到 9.9.42。
-APP_VERSION = "9.9.42"
+#
+# ---- v9.9.43: 把启发式源码断言升级为**行为级**断言 + 修去注释实现缺陷（QA 真渲染复验凿出）----
+# 1) 2 条新的测试绕路（本仓 test_scorecard_caliber_honesty.py 的范式：node+vm 真跑）：
+#    - I9：URL 断言 `assert '/fund-holdings/detail/' in src_nc` 只问「字面串出现过吗」——
+#      把 decisionUrl 改回 /fund/detail/ 同时在**别处**加一句多余字面串 `/fund-holdings/detail/`
+#      → pytest 仍全绿（只有 Node 真渲染红）。
+#    - I8：并行断言只认 `await _fetch*` 形态——改成 `const _pre=_fetchFundDetailPayload(...);
+#      await _pre;`（真串行）→ 正则抓不到 `await _pre`，pytest 仍全绿（Node 测出 603ms）。
+#    修法：新增 node+vm 行为级测试（无 node 则 pytest.skip，不静默变绿）：
+#      真调 _fetchFundDecisionPayload 抓 fetch 实参 URL（I9 的「别处加字面串」无效）；
+#      真调 showFundDetailModal 注入 600/200ms 延迟、断言总耗时 <750ms（I8 的正解）；
+#      记录 body.innerHTML 每次写入、断言第 2 次以第 1 次为前缀且更长；纯函数合并守卫四方向矩阵。
+#    源码级断言保留但**精确化**：URL 锚定到 `decisionUrl = API_BASE + '/fund-holdings/detail/'`；
+#    「弹窗内除 `await Promise.all([` 外无其它 await」并把作用域界定到 showFundDetailModal 函数体。
+# 2) **_components_src_no_comments() 的真 bug**：不识别正则字面量——`/https?:\/\//` 里的双斜线
+#    被当行注释，吃掉后续代码（方向=假红）。修法：状态机在「`/` 处于表达式起点（前一非空白字符
+#    或关键字）」时按正则字面量扫描到收尾 `/`+flags。另修：块注释展开为等量换行、行注释保留换行，
+#    使去注释前后行数一致（行号对齐）。自带对抗性自测（正则/字符串含 //、字符串含 /*、模板 `${}`
+#    内注释、跨行块注释、真实文件行数对齐）。
+# 注：本轮**未改前端 JS**（仅改测试基础设施 + 版本号）；按团队要求把版本号统一 bump 到 9.9.43。
+APP_VERSION = "9.9.43"
 
 # ---- v9.5.123: API 鉴权 ----
 # 每个用户一个token，格式: userId:token（环境变量或data/auth_tokens.json）
