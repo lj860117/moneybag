@@ -531,9 +531,11 @@ window.showFundDetailModal = async function(code, name) {
       // 决策辅助卡片容器：仅当容器内确有内容（标题/持仓摘要/诊断标签/建议）时才输出，避免空盒子
       const hasDecisionCard = hasHolding || hasAdvices || hasMyHolding || hasTags;
       if (hasDecisionCard) advHtml += '<div style="margin-bottom:14px;padding:10px 12px;background:rgba(99,102,241,.04);border:1px solid rgba(99,102,241,.12);border-radius:8px">';
-      // 标题行仅在「持仓 / 有建议」时输出，避免给未持仓基金顶一个「持仓决策辅助」的误导标题
+      // 标题行仅在「持仓 / 有建议」时输出；文案按 hasHolding 分叉——advices 现在对未持仓基金
+      // 也有值，若仍无条件写「持仓决策辅助」会让未持仓基金顶一个误导标题（改用「决策参考」）。
       if (hasHolding || hasAdvices) {
-        advHtml += `<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px"><span style="font-size:11px;font-weight:600;color:var(--text-primary)">🎯 持仓决策辅助</span>`;
+        const _decisionTitle = hasHolding ? '🎯 持仓决策辅助' : '🎯 决策参考';
+        advHtml += `<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px"><span style="font-size:11px;font-weight:600;color:var(--text-primary)">${_decisionTitle}</span>`;
         // v9.9.41: 只有后端真给了 action_direction 才输出右侧徽章；为假就整段不输出。
         // 不用任何字面串顶替 —— 旧写法会用 '持有观察' 无中生有一个后端从未给出的判断。
         if (d.action_direction) {

@@ -190,3 +190,30 @@ def test_no_fabricated_action_direction_fallback():
         "action_direction 又出现了伪造兜底 ||'持有观察'"
     )
 
+
+def test_decision_title_text_branches_on_has_holding():
+    """标题文案必须按 hasHolding 分叉：持仓→「🎯 持仓决策辅助」，非持仓→「🎯 决策参考」。
+
+    防的是：`advices` 现在对**所有**基金都有值（含未持仓），而标题输出时机仍为
+    `hasHolding || hasAdvices`，若标题无条件写「持仓决策辅助」，未持仓基金的弹窗也会
+    顶一个「持仓决策辅助」的误导标题 —— 正是 :481 注释原本要避免的形态。
+    """
+    src = _components_src()
+    assert "🎯 持仓决策辅助" in src
+    assert "🎯 决策参考" in src
+    assert re.search(
+        r"hasHolding\s*\?\s*'🎯 持仓决策辅助'\s*:\s*'🎯 决策参考'", src
+    ), "标题文案没有按 hasHolding 分叉（期望 hasHolding ? '🎯 持仓决策辅助' : '🎯 决策参考'）"
+
+
+def test_holding_decision_title_not_emitted_unconditionally():
+    """「🎯 持仓决策辅助」不得被无条件直接写进标题 span（未持仓基金不得显示该文案）。
+
+    防的是：标题改回无条件输出，令上一条的分叉失效——未持仓基金也会显示「持仓决策辅助」。
+    """
+    src = _components_src()
+    assert "🎯 持仓决策辅助</span>" not in src, (
+        "标题仍被无条件直接渲染为「持仓决策辅助」——未持仓基金会看到误导标题"
+    )
+
+
