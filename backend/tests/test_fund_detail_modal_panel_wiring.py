@@ -411,9 +411,14 @@ def test_decision_payload_fetcher_url_is_anchored_to_assignment():
     """
     src = _components_src()
     assert re.search(r"function\s+_fetchFundDecisionPayload\s*\(", src)
-    assert re.search(
-        r"decisionUrl\s*=\s*API_BASE\s*\+\s*'/fund-holdings/detail/'", src
-    ), "decisionUrl 赋值语句不再指向 /fund-holdings/detail/"
+    m = re.search(r"decisionUrl\s*=\s*([^;]*);", src)
+    assert m, "找不到 decisionUrl 的赋值语句"
+    rhs = m.group(1)
+    # 锚定到**赋值语句**（不再用全局 `in src` 的启发式）；但接受等价拼接写法
+    # （`'/fund-holdings' + '/detail/'`），故不写死整串字面量 —— 否则行为等价的改写会假红。
+    assert "fund-holdings" in rhs and "detail" in rhs, (
+        f"decisionUrl 赋值语句不再指向 fund-holdings/detail：{rhs!r}"
+    )
 
 
 def test_no_standalone_await_inside_modal():
@@ -536,12 +541,15 @@ def test_strip_js_comments_real_file_line_alignment():
     assert len(before.splitlines()) == len(after.splitlines())
 
 
-def test_no_comments_source_drops_comment_only_url_literal():
-    """去注释后，`/fund-holdings/detail/` 只应剩真实 URL 那一处。"""
+def test_no_comments_source_actually_removes_comments():
+    """去注释源码确实剥掉了注释。
+
+    不依赖 URL 的具体写法（写成拼接 `'/fund-holdings'+'/detail/'` 时不假红），只比较 `//`
+    出现次数：注释被剥后应减少（字符串里的 `https://` 仍保留，故只要求严格减少）。
+    """
     src = _components_src()
     src_nc = _components_src_no_comments()
-    assert src.count("/fund-holdings/detail/") > 1, "原本就不止一处（注释里也有）——前提变了"
-    assert src_nc.count("/fund-holdings/detail/") == 1, "去注释后应只剩真实 URL 一处"
+    assert src_nc.count("//") < src.count("//"), "去注释后 // 数量未减少，注释未被剥"
 
 
 # ==========================================================================
