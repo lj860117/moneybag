@@ -453,17 +453,42 @@ window.showFundDetailModal = async function(code, name) {
     if (!body) return;
     const isMyHolding = !!d.holding_relation;
 
-    // v9.5.122/v9.8.7: 如果后端返回了持仓决策增强数据（advices/holding_relation），展示决策面板
-    if (d.holding_relation && d.advices) {
-      let advHtml = '<div style="margin-bottom:14px;padding:10px 12px;background:rgba(99,102,241,.04);border:1px solid rgba(99,102,241,.12);border-radius:8px">';
-      advHtml += `<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px"><span style="font-size:11px;font-weight:600;color:var(--text-primary)">🎯 持仓决策辅助</span><span style="font-size:12px;font-weight:700;color:${d.action_direction==='减仓观望'?'#F59E0B':d.action_direction==='适量加仓'?'#10B981':'#9AA1AC'}">${d.action_direction||'持有观察'}</span></div>`;
+    // v9.9.40: 决策辅助面板渲染闸门——「有任意可渲染内容」即渲染，不再要求同时具备
+    // holding_relation 与 advices。历史根因（已实测坐实）：
+    //   1) `d.advices` 只由 `GET /api/fund-holdings/detail/{code}` 产出，而本弹窗只调
+    //      `GET /api/fund/detail/{code}`（_fetchFundDetailPayload），两接口之间没有任何 merge，
+    //      故 `d.advices` 对本弹窗恒为 undefined（fund_detail 接口历史上从未产出过 advices）；
+    //   2) `d.holding_relation` 对真实用户也为空（后端数据问题，与前端无关）。
+    // 旧闸门 `if (d.holding_relation && d.advices)` 因此永假，把「走势预估 8 维面板」「智能定投建议」
+    // 等有真实数据的 UI 全部埋死。
+    const hasAdvices = Array.isArray(d.advices) && d.advices.length > 0;
+    const hasHolding = !!d.holding_relation;
+    const hasTrend = !!d.trend_direction;
+    const hasDca = !!(d.dca && d.dca.multiplier != null);
+    const hasMyHolding = !!d.my_holding;
+    const hasTags = !!(d.nav_pct_label || d.timing_label || d.scale_billion || (d.industry_tag && d.industry_tag !== '其他'));
+    const hasDecisionPanel = hasAdvices || hasHolding || hasTrend || hasDca || hasMyHolding || hasTags;
+    // 标志位：面板是否真的写入过 body.innerHTML，供下方通用详情决定「追加 or 覆盖」。
+    // 不使用「innerHTML 里做字面标题串匹配」来判断——标题行现在是条件输出（非持仓基金不出），
+    // 字符串匹配会失效并让下方 `body.innerHTML = html` 覆盖掉本面板。
+    let _panelRendered = false;
+
+    if (hasDecisionPanel) {
+      let advHtml = '';
+      // 决策辅助卡片容器：仅当容器内确有内容（标题/持仓摘要/诊断标签/建议）时才输出，避免空盒子
+      const hasDecisionCard = hasHolding || hasAdvices || hasMyHolding || hasTags;
+      if (hasDecisionCard) advHtml += '<div style="margin-bottom:14px;padding:10px 12px;background:rgba(99,102,241,.04);border:1px solid rgba(99,102,241,.12);border-radius:8px">';
+      // 标题行仅在「持仓 / 有建议」时输出，避免给未持仓基金顶一个「持仓决策辅助」的误导标题
+      if (hasHolding || hasAdvices) {
+        advHtml += `<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px"><span style="font-size:11px;font-weight:600;color:var(--text-primary)">🎯 持仓决策辅助</span><span style="font-size:12px;font-weight:700;color:${d.action_direction==='减仓观望'?'#F59E0B':d.action_direction==='适量加仓'?'#10B981':'#9AA1AC'}">${d.action_direction||'持有观察'}</span></div>`;
+      }
       // 个人持仓摘要
-      if(d.my_holding) {
+      if(hasMyHolding) {
         const my = d.my_holding;
         const pnlColor = (d.pnl_pct||0)>=0 ? 'var(--color-bull,#FF6B6B)' : 'var(--color-bear,#00E5A0)';
         advHtml += `<div style="display:grid;grid-template-columns:repeat(3,1fr);gap:6px;margin-bottom:8px;font-size:11px">
-          <div style="text-align:center;padding:6px;background:rgba(255,255,255,.03);border-radius:4px"><div style="color:var(--text-tertiary);font-size:9px">持有份额</div><div style="font-weight:600">${my.shares.toFixed(2)}</div></div>
-          <div style="text-align:center;padding:6px;background:rgba(255,255,255,.03);border-radius:4px"><div style="color:var(--text-tertiary);font-size:9px">成本均价</div><div style="font-weight:600">¥${my.avg_cost.toFixed(4)}</div></div>
+          <div style="text-align:center;padding:6px;background:rgba(255,255,255,.03);border-radius:4px"><div style="color:var(--text-tertiary);font-size:9px">持有份额</div><div style="font-weight:600">${my.shares!=null?my.shares.toFixed(2):'—'}</div></div>
+          <div style="text-align:center;padding:6px;background:rgba(255,255,255,.03);border-radius:4px"><div style="color:var(--text-tertiary);font-size:9px">成本均价</div><div style="font-weight:600">${my.avg_cost!=null?'¥'+my.avg_cost.toFixed(4):'—'}</div></div>
           <div style="text-align:center;padding:6px;background:rgba(255,255,255,.03);border-radius:4px"><div style="color:var(--text-tertiary);font-size:9px">当前盈亏</div><div style="font-weight:600;color:${pnlColor}">${d.pnl_pct!=null?(d.pnl_pct>=0?'+':'')+d.pnl_pct.toFixed(1)+'%':'—'}</div></div>
         </div>`;
       }
@@ -474,8 +499,8 @@ window.showFundDetailModal = async function(code, name) {
       if(d.timing_label) tags.push(`<span style="font-size:10px;padding:2px 6px;border-radius:4px;background:rgba(148,163,184,.1);color:#9AA1AC">${d.timing_label}</span>`);
       if(d.scale_billion) tags.push(`<span style="font-size:10px;padding:2px 6px;border-radius:4px;background:rgba(148,163,184,.1);color:#9AA1AC">${d.scale_billion}亿</span>`);
       if(tags.length) advHtml += `<div style="display:flex;flex-wrap:wrap;gap:4px;margin-bottom:8px">${tags.join('')}</div>`;
-      // 建议列表
-      if(d.advices.length) {
+      // 建议列表（hasAdvices 已做 Array.isArray + length 守卫，避免 d.advices.length 抛 TypeError）
+      if(hasAdvices) {
         advHtml += '<div style="margin-top:6px">';
         for(const a of d.advices) {
           const bgColor = a.type==='risk'?'rgba(248,113,113,.06)':a.type==='sell'?'rgba(245,158,11,.06)':a.type==='buy'?'rgba(134,239,172,.06)':'rgba(148,163,184,.04)';
@@ -483,14 +508,14 @@ window.showFundDetailModal = async function(code, name) {
         }
         advHtml += '</div>';
       }
-      advHtml += '</div>';
+      if (hasDecisionCard) advHtml += '</div>';
       
       // v9.5.123: 走势预估 Layer 2 摘要面板（8维度+置信度）
       // v9.9.26 P1-9: 置信度不足 / 方向未知时禁止显示方向与带符号分数。
       // 后端把「模型自己承认没看懂」标成 trend_direction='unknown' +
       // trend_confidence_sufficient=false；这里若沿用旧的三元兜底就会渲染成
       // '→ 震荡'，等于把「数据不足」伪装成「判断为横盘」——正是要消灭的形态。
-      if(d.trend_direction) {
+      if(hasTrend) {
         const tDir = d.trend_direction;
         const tInsufficient = d.trend_confidence_sufficient === false || tDir === 'unknown';
         const tScore = d.trend_score || 0;
@@ -533,7 +558,7 @@ window.showFundDetailModal = async function(code, name) {
       }
       
       // v9.5.123: 双因子智能定投建议面板
-      if(d.dca && d.dca.multiplier != null) {
+      if(hasDca) {
         const dca = d.dca;
         const dcaMult = dca.multiplier;
         const dcaColor = dcaMult>=1.5?'#86EFAC':dcaMult>=1.0?'#A5B4FC':dcaMult>=0.5?'#F59E0B':'#FCA5A5';
@@ -573,6 +598,7 @@ window.showFundDetailModal = async function(code, name) {
       }
       
       body.innerHTML = advHtml;
+      _panelRendered = true;
       // 然后继续渲染通用详情（追加到下面）
     }
 
@@ -798,8 +824,10 @@ window.showFundDetailModal = async function(code, name) {
       </div>
     </div>`;
 
-    // v9.5.122: 如果已有决策面板（持仓基金），追加而非覆盖
-    if(isMyHolding && body.innerHTML.includes('持仓决策辅助')){
+    // v9.9.40: 若决策辅助面板已渲染，追加通用详情而非覆盖。
+    // 用 _panelRendered 标志位判断，彻底移除「对 body.innerHTML 做字面标题串匹配」的脆弱写法
+    // （标题行现在是条件输出，匹配会失效并导致覆盖本面板）。
+    if(_panelRendered){
       body.innerHTML += html;
     } else {
       body.innerHTML = html;
