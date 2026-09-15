@@ -169,11 +169,24 @@ def check_data_source(push_file: str) -> list:
     with open(push_file, "r", encoding="utf-8") as f:
         content = f.read()
     
-    # 检查1：QDII基金是否标注 T+1 延迟
+    # 检查1：QDII基金是否标注净值披露延迟
+    #
+    # 2026-09-14 修正一（文案错误）：原来写的是 "T+1"，但 QDII 投的是境外
+    # 市场 —— 境外收盘晚 + 时差 + 汇率折算，净值普遍 **T+2** 才披露。告警
+    # 文案本身是错的，会把修的人往错误方向带（往正文里塞 "T+1" 反而把事实
+    # 说错）。此处改为 T+2。
+    #
+    # 2026-09-14 修正二（判据漏认）：判据原来只认 "T+1" / "延迟"。生成层
+    # 现成的一句文案是「QDII 净值**滞后** 2 天」（services/fund_signal/
+    # render.py）——「滞后」两个字都挂不上，照抄过去质检照样报。所以判据
+    # 追加认 "T+2"。
+    #
+    # ⚠️ 判据只**放宽**不收紧：历史存档里按旧文案标注过 "T+1" 的一律仍判
+    # 合规。收紧会让上百份历史存档一夜之间集体变 FAIL，那是新的一轮误报。
     qdii_mentions = re.findall(r'([^\n\s]+)\(QDII\)', content)
     if qdii_mentions:
-        if "T+1" not in content and "延迟" not in content:
-            issues.append("⚠️ QDII 基金未标注 T+1 延迟")
+        if not any(k in content for k in ("T+2", "T+1", "延迟")):
+            issues.append("⚠️ QDII 基金未标注 T+2 披露延迟")
     
     # 检查2：基金估算净值是否标注了时间戳
     # 2026-09-14 误报修复：旧规则是

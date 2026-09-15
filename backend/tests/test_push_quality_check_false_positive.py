@@ -57,7 +57,10 @@ REAL_SAMPLE_CONTENT = pathlib.Path(REAL_SAMPLE).read_text(encoding="utf-8")
 
 TIMESTAMP_ISSUE = "⚠️ 估值数据未标注时间"
 SEGMENT_ISSUE_PREFIX = "⚠️ 分段可能不合理"
-QDII_ISSUE = "⚠️ QDII 基金未标注 T+1 延迟"
+# v9.9.38：告警文案从 "T+1" 改为 "T+2" —— QDII 投境外市场，净值实际是
+# T+2 披露，旧文案本身是错的（判据同时追加认 "T+2"，见
+# scripts/daily_push_quality_check.py 的 check_data_source）。
+QDII_ISSUE = "⚠️ QDII 基金未标注 T+2 披露延迟"
 
 
 def _write(tmp_dir, content, name="push.txt"):

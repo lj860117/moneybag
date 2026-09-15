@@ -669,12 +669,26 @@ async function _showFundKlineModal(code, name){
   window._klineForeignCur = fxCur;
 
   try{
-    const d = await fetch(API_BASE+'/fund/nav-history/'+code+'?days=90',{signal:AbortSignal.timeout(15000)}).then(r=>r.ok?r.json():null).catch(()=>null);
+    // v9.9.38: 带上 name —— 前端无法 import Python 模块，上面那行 isQdii 只能
+    // 用正则粗判（这也正是仓库里第 4 套口径）。后端用唯一真源
+    // services.fund_taxonomy.is_qdii_fund 回传 is_qdii，下面据此纠正。
+    const d = await fetch(API_BASE+'/fund/nav-history/'+code+'?days=90&name='+encodeURIComponent(name||''),{signal:AbortSignal.timeout(15000)}).then(r=>r.ok?r.json():null).catch(()=>null);
     const area = document.getElementById('klineChartArea');
     if(!area) return;
     if(!d || !d.ok || !d.data || !d.data.length){
       area.innerHTML='<div style="text-align:center;padding:20px;color:var(--text2)">暂无净值数据</div>';
       return;
+    }
+    // v9.9.38: 后端否定前端正则的判定时，撤掉币种切换条。
+    // 正则含 "标普"/"港股" 而无否定词，「华宝标普港股通低波红利A」这类
+    // **境内人民币**基金会误判成 USD；不撤的话用户一点切换就把整条 K 线
+    // 的净值除以 7.2 —— 那是数值错误，不是显示错误。
+    // 只在 is_qdii === false 时纠正：反向（真 QDII 被漏判）只是少个按钮，
+    // 无害，而且币种无从推断，不在这里补。
+    if(d.is_qdii === false && window._klineForeignCur){
+      const bar = document.getElementById('fxToggleBar');
+      if(bar) bar.remove();
+      window._klineForeignCur = null;
     }
     window._klineRawData = d.data;
     _renderKlineChart();

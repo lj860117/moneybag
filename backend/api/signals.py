@@ -41,6 +41,10 @@ from services.signal import (
 )
 from services.backtest import run_backtest
 from services.fund_screen import screen_funds
+# v9.9.38: QDII 判据唯一真源。用 **模块属性访问**（fund_taxonomy.is_qdii_fund）
+# 而不是 `from ... import is_qdii_fund`，这样 monkeypatch 打在
+# services.fund_taxonomy 上能真的传导到这里（守卫用例靠这个做故障注入）。
+from services import fund_taxonomy
 from services.stock_screen import screen_stocks
 from services.ds_enhance import (
     comment_fund_picks, comment_stock_picks, interpret_daily_signal,
@@ -1335,26 +1339,61 @@ def _enrich_manager_stability(funds: list):
         pass
 
 
-# v9.5.123 P3-1: 风格标签(基于名称关键词快速分类)
+def _style_keyword_matcher(keywords: tuple):
+    """构造一个「名称子串命中任一关键词」的判定器，供 _STYLE_MAP 使用。
+
+    把关键词桶和 QDII 桶统一成 callable，这样 _STYLE_MAP 的顺序就是唯一的
+    优先级来源，不需要在循环里对某一项做特例分支。
+    """
+    def _match(name: str) -> bool:
+        return any(kw in name for kw in keywords)
+    return _match
+
+
+# v9.5.123 P3-1: 风格标签规则表 —— **顺序即优先级**（first-match，命中即 break）
+#
+# 每项 = (标签, 判定器(name) -> bool)。
+#
+# ⚠️ QDII 必须排在第一位。v9.9.37 及之前它排第 5，而「指数」桶含
+#   "指数"/"ETF"，于是「国泰纳斯达克100指数」「华夏野村日经225ETF(QDII)」
+#   这类真 QDII 先被「指数」抢走，选基页（pages/insight-fund.js:33-36）
+#   漏挂青绿色 QDII badge。
+#
+# ⚠️ QDII 的关键词**不在这张表里**。判据唯一真源是
+#   services.fund_taxonomy.py::is_qdii_fund（名称含 "QDII" OR 14 个高精
+#   关键词，"标普"带否定词 {港股通, 中国A股, 香港上市中国}）。老口径里的
+#   "港股"（全市场 440 命中、真值精度≈0，全是走互联互通额度的港股通基金）
+#   和 "全球" 会把「天弘港股通精选A」这类**境内**基金误挂 QDII —— 这两个词
+#   在 taxonomy 里已经是已删词，加回来等于把 554 只误判请回来。
+_STYLE_MAP = [
+    ("QDII", lambda name: fund_taxonomy.is_qdii_fund({"name": name})),
+    ("指数", _style_keyword_matcher(("指数", "ETF", "被动", "增强", "跟踪"))),
+    ("价值", _style_keyword_matcher(("价值", "红利", "高股息", "低估", "蓝筹", "稳健", "收益"))),
+    ("成长", _style_keyword_matcher(("成长", "创新", "科技", "先进", "新兴", "未来", "龙头", "先锋"))),
+    ("量化", _style_keyword_matcher(("量化", "对冲", "多因子", "策略", "CTA"))),
+    ("均衡", _style_keyword_matcher(("均衡", "配置", "灵活", "混合", "优选", "精选"))),
+]
+
+# 一只桶都没命中时的兜底标签
+_STYLE_DEFAULT = "主动"
+
+
 def _enrich_style_tag(funds: list):
-    """为每只基金标注投资风格: 价值/成长/均衡/指数/量化/QDII"""
-    _STYLE_MAP = [
-        ("指数", ["指数", "ETF", "被动", "增强", "跟踪"]),
-        ("价值", ["价值", "红利", "高股息", "低估", "蓝筹", "稳健", "收益"]),
-        ("成长", ["成长", "创新", "科技", "先进", "新兴", "未来", "龙头", "先锋"]),
-        ("量化", ["量化", "对冲", "多因子", "策略", "CTA"]),
-        ("QDII", ["QDII", "全球", "海外", "美股", "港股", "纳斯达克", "标普"]),
-        ("均衡", ["均衡", "配置", "灵活", "混合", "优选", "精选"]),
-    ]
+    """为每只基金标注投资风格: QDII/价值/成长/均衡/指数/量化
+
+    只有**非 QDII** 的桶在本文件里定义。QDII 的判据在
+    ``services.fund_taxonomy.py::is_qdii_fund``，改口径请去那里改 ——
+    在本文件给 _STYLE_MAP 加词会重新制造第 7 套口径。
+    """
     for f in funds:
-        name = f.get("name", "")
+        name = f.get("name") or ""
         style = ""
-        for style_name, keywords in _STYLE_MAP:
-            if any(kw in name for kw in keywords):
+        for style_name, matcher in _STYLE_MAP:
+            if matcher(name):
                 style = style_name
                 break
         if not style:
-            style = "主动"  # 默认
+            style = _STYLE_DEFAULT
         f["style_tag"] = style
 
 
@@ -1970,13 +2009,19 @@ def _check_qdii_purchase_status(funds: list):
     """对QDII基金检查申购状态,标注限购/暂停(批量,用缓存)"""
     try:
         from api.fund_detail import _get_fund_purchase_info
-        qdii_keywords = ["QDII", "纳指", "标普", "纳斯达克", "S&P", "海外", "美股", "日经", "印度", "全球", "港股"]
+        # v9.9.38: 判据唯一真源 = services.fund_taxonomy.is_qdii_fund。
+        # 旧口径 ["QDII","纳指","标普","纳斯达克","S&P","海外","美股","日经",
+        # "印度","全球","港股"] 是仓库里第 8 套实现，双向都错：
+        #   - 含已删词 "全球"/"港股" → 把「天弘港股通精选A」这类**境内**基金也
+        #     拉来查限购，挤占下面 `checked >= 8` 的配额，真 QDII 就没机会查了
+        #   - 缺 "越南/德国/法国/欧洲/亚太/新兴市场/道琼/日本" 等高精词
+        #     → 真 QDII 漏查，限购/暂停提示直接缺失
         checked = 0
         for f in funds:
             if checked >= 8:  # 最多查8只QDII,避免太慢
                 break
             name = f.get("name", "")
-            if not any(kw in name for kw in qdii_keywords):
+            if not fund_taxonomy.is_qdii_fund({"name": name}):
                 continue
             code = f.get("code", "")
             if not code:
@@ -2541,7 +2586,12 @@ def _get_style_timing_summary() -> dict:
             "消费":       ["消费", "食品", "饮料", "白酒", "家电"],
             "军工":       ["军工", "国防", "装备", "航天"],
             "金融/红利":  ["金融", "银行", "券商", "红利", "价值"],
-            "海外/QDII":  ["QDII", "纳斯达克", "标普", "海外", "美国", "全球"],
+            # QDII 桶的判据**不在**这里 —— 唯一真源是 services.fund_taxonomy.is_qdii_fund，
+            # 见下方循环里的特判（v9.9.38）。key 保留是为了 style_returns / 前端取数
+            # 的字段名不变。旧口径 ["QDII","纳斯达克","标普","海外","美国","全球"]
+            # 是仓库里第 6 套实现，其中 "全球" 在 taxonomy 里已被删（93 命中、
+            # top-N 唯一误判源是「兴全全球视野股票」——一只境内基金）。
+            "海外/QDII":  [],
             "港股":       ["港股", "恒生", "H股"],
             "指数/宽基":  ["300", "500", "1000", "ETF联接", "沪深"],
         }
@@ -2558,7 +2608,14 @@ def _get_style_timing_summary() -> dict:
                     if r1y is None and r3m is None:
                         continue
                     for style, kws in STYLE_KW.items():
-                        if any(kw in name for kw in kws):
+                        # QDII 桶走共享判据，其余桶仍是关键词匹配。
+                        # 保持原有顺序（QDII 仍排第 8）—— 本轮只换判据、不重排
+                        # 优先级：重排会连带改掉历史归因结果，不属于"统一口径"。
+                        if style == "海外/QDII":
+                            hit = fund_taxonomy.is_qdii_fund({"name": name})
+                        else:
+                            hit = any(kw in name for kw in kws)
+                        if hit:
                             if r3m is not None:
                                 style_returns[style].append(r3m)
                             break

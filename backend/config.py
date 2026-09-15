@@ -251,7 +251,31 @@ TUSHARE_TOKEN = os.environ.get("TUSHARE_TOKEN", "")
 #      对照旧 24 词 6/30、7/50 误判，纯名称版 0 误判但漏 3~4 只。
 # 影响面：选基页「🌐 海外」tab 的**名单会变**（去掉港股通/恒生前海/A股等误判项）。
 # 前端未动，?v= 与 CACHE_NAME 继续保持不变。
-APP_VERSION = "9.9.37"
+# ---- v9.9.38: QDII 口径再统一（第 4/6/8 套）+ 晨报 T+2 标注 + 两处静默失败修复 ----
+# 1) 晨报「QDII 未标注延迟」是 2026-09-14 质检 3 条告警里**唯一为真**的一条。
+#    生成层 scripts/night_worker.py 在持仓速览块追加**写死的**标注行 —— 不靠
+#    LLM：`diag` 是 `_call_v3` 的自由文本，把"记得标注"写进 prompt 会说时不说，
+#    告警正是这么间歇性复发的。告警文案本身也错：QDII 实际 **T+2** 披露，不是
+#    T+1，一并修正（判据只放宽不收紧，历史存档标 "T+1" 的仍判合规）。
+# 2) QDII 口径全仓库普查：实际有 10+ 处（早前以为 5 套）。本轮统一其中 3 处：
+#    api/signals.py 的 _STYLE_MAP（QDII 桶提前到首位，否则「国泰纳斯达克100指数」
+#    「华夏野村日经225ETF(QDII)」先被「指数」桶抢走 → 选基页漏挂 QDII badge）、
+#    _check_qdii_purchase_status（旧词含"全球"/"港股"→ 拉境内基金来查限购，
+#    挤占 checked>=8 的配额；又缺"越南/德国/法国/欧洲"等 → 真 QDII 漏查）、
+#    STYLE_KW 的 "海外/QDII" 归因桶。全部改走 fund_taxonomy.is_qdii_fund。
+#    **语义本就不同、刻意不统一**的：portfolio.py:_detect_qdii（仅文案）、
+#    longterm_screen.py（排除词）、portfolio_doctor.py（资产类别映射）、
+#    signals.py:1078 us_keywords（美股敞口 ≠ QDII；它含"港股"是另一个问题）。
+# 3) 前端 K 线币种误判：pages/insight-fund.js 的正则含 "标普"/"港股" 而无否定词，
+#    「华宝标普港股通低波红利A」这类**境内人民币**基金被判 USD，用户一点切换就把
+#    整条 K 线 ÷7.2 —— 是**数值错误**不是显示错误。改为后端 fund_nav_history
+#    下发 is_qdii（唯一真源判定，不进缓存），前端据此撤掉误判出的切换条。
+# 4) 修两处被静默 except 吞掉的失败：api/fund_detail.py::_enrich_holding 的
+#    industry_tag 三重叠错（传 2 参 → TypeError；传 code 不当 name；拿 dict 当
+#    字符串）导致该字段**恒为空**。except 改为打印日志 —— 裸吞异常是根因。
+# 前端仅动 pages/insight-fund.js，故只 bump 它的 ?v= → 9.9.38 与 sw.js 的
+# CACHE_NAME → moneybag-v9938-cache。
+APP_VERSION = "9.9.38"
 
 # ---- v9.5.123: API 鉴权 ----
 # 每个用户一个token，格式: userId:token（环境变量或data/auth_tokens.json）

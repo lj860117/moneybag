@@ -39,6 +39,18 @@ from datetime import datetime, date
 
 from config import DATA_DIR, LLM_API_KEY
 
+# v9.9.38: QDII 判据必须与 Tushare 榜单（scripts/fund_rank_build.py）和
+# AKShare 选基（services/fund_screen.py）共用同一份真源。
+# 仓库里曾经并存 4 套互相矛盾的 QDII 判据（fund_type 恒空 / 24 词并集 554 只
+# 误判 / 7 词风格标签 / 前端正则判币种），多写一套就多一处口径漂移 —— 本文件
+# 一律 import，禁止自带关键字列表。逐个词的实测精度见
+# services/fund_taxonomy.py 的 QDII_NAME_MARKER 上方。
+#
+# 前缀用 `services.*`（与 fund_rank_build.py 一致，不用 backend.services.*）：
+# uvicorn 从 backend/ 启动、cron 从 scripts/ 启动，两边 sys.path 根都是
+# backend/，sys.modules 里才是**同一个**模块对象 —— 口径才真的只有一份。
+from services.fund_taxonomy import is_qdii_fund
+
 NIGHT_LOG_DIR = DATA_DIR / "night_worker"
 NIGHT_LOG_DIR.mkdir(parents=True, exist_ok=True)
 
@@ -1119,6 +1131,101 @@ def _build_portfolio_thermometer(uid: str) -> str:
 
 
 # ============================================================
+# QDII 净值披露延迟标注（v9.9.38）
+# ============================================================
+#
+# 为什么是**写死的文案**而不是让 LLM 自己说：
+#   `diag` 是 `_call_v3(prompt, 800)` 的自由文本。把"记得标注 T+2"写进
+#   prompt，模型时说时不说 —— 2026-09-14 的质检告警正是这么**间歇性**复发的
+#   （同一份 prompt，三天里两天漏）。固定文案不依赖模型：只要当日持仓里
+#   有 QDII，就必然出现。
+#
+# 为什么文案里必须有「延迟」/「T+2」这两个字面量：
+#   `daily_push_quality_check.check_data_source` 的判据是正文里出现
+#   `T+2 | T+1 | 延迟` 之一。生成层另一处现成的文案是「QDII 净值滞后 2 天」
+#   （services/fund_signal/render.py）—— **「滞后」既不含「延迟」也不含
+#   T+1/T+2**，直接搬过来质检照样报。踩过一次，别再踩。
+#
+# 为什么是 T+2 而不是告警文案里写的 T+1：
+#   QDII 投的是境外市场，境外收盘晚 + 时差 + 汇率折算，净值普遍 **T+2**
+#   才披露（部分市场/节假日更长）。旧告警文案的 "T+1" 本身就是错的，本轮
+#   一并修正（文案见 daily_push_quality_check.py）。
+QDII_DELAY_NOTE_TPL = "⚠️ QDII 基金（{funds}）净值披露延迟约 T+2，文中涨跌幅不是今日实时数据"
+_QDII_NAME_DISPLAY_LIMIT = 3
+
+
+def _collect_qdii_names(funds: list) -> list:
+    """从持仓基金里挑出 QDII 基金的名称（保持持仓顺序、去重、无空串）。
+
+    判据走 `services.fund_taxonomy.is_qdii_fund`（唯一真源），本函数只负责
+    取名与去重。返回的名称直接进晨报文案，所以这里不做任何截断 —— 截断在
+    `_build_qdii_delay_note` 里按展示条数做。
+
+    Args:
+        funds: `load_fund_holdings(uid)` 的返回，每项至少带 `name` / `code`。
+
+    Returns:
+        QDII 基金名称列表；没有 QDII 或 funds 为空时返回 []。
+    """
+    names: list = []
+    for f in funds or []:
+        if not isinstance(f, dict):
+            continue
+        if not is_qdii_fund(f):
+            continue
+        name = str(f.get("name") or f.get("code") or "").strip()
+        if name and name not in names:
+            names.append(name)
+    return names
+
+
+def _build_qdii_delay_note(qdii_names: list) -> str:
+    """生成 QDII 净值披露延迟的固定标注行；没有 QDII 时返回空串。
+
+    Args:
+        qdii_names: `_collect_qdii_names()` 的结果。
+
+    Returns:
+        一行标注文案；`qdii_names` 为空时返回 ""（调用方据此决定拼不拼）。
+    """
+    # 先 strip 再过滤：持仓里 name 可能是空白串（["", "  "] 这类脏数据），
+    # `if n` 对 "  " 是 truthy，不 strip 会拼出「QDII 基金（  等）」——
+    # 一个点名了空气的标注，比不标还糟。
+    clean = [str(n).strip() for n in (qdii_names or []) if n and str(n).strip()]
+    if not clean:
+        return ""
+    shown = clean[:_QDII_NAME_DISPLAY_LIMIT]
+    # 超过展示上限就加「等」，避免一行塞满十几只基金名。
+    # 用 clean 而非原始 qdii_names 比较，否则脏数据会让「等」误触发。
+    tail = "等" if len(clean) > len(shown) else ""
+    return QDII_DELAY_NOTE_TPL.format(funds="、".join(shown) + tail)
+
+
+def _render_holdings_block(name: str, diag: str, advice_section: str,
+                           qdii_names: list) -> str:
+    """拼「逐用户持仓速览」整块（含 QDII 延迟标注）。
+
+    单独抽成函数是为了让回归测试能**直接调生产代码**验证标注，而不是在测试
+    里复刻一份 f-string（复刻 = 实现改了测试还绿的死测试）。
+
+    Args:
+        name: 用户名，用于「📋 【{name} 持仓速览】」标题。
+        diag: LLM 持仓诊断正文（可能为空）。
+        advice_section: 已拼好的【操作建议】段落。
+        qdii_names: `_collect_qdii_names()` 的结果。
+
+    Returns:
+        不含首尾空行的整块文本。
+    """
+    note = _build_qdii_delay_note(qdii_names)
+    lines = [f"📋 【{name} 持仓速览】", f"{diag}{advice_section}"]
+    if note:
+        lines.append(note)
+    lines.append("⚠️ AI建议仅供参考，不构成投资建议")
+    return "\n".join(lines)
+
+
+# ============================================================
 # 02:30 R1 Phase 2: 逐用户持仓诊断
 # ============================================================
 
@@ -1210,7 +1317,12 @@ def step_r1_phase2():
                     diagnosis = diagnosis2
                     log(f"  ✅ {name}: 重试成功 {len(diagnosis2)}字")
 
-            results[uid] = {"diagnosis": diagnosis, "stock_count": len(stocks), "fund_count": len(funds)}
+            # v9.9.38: 记录当日持仓里的 QDII 基金名，供 step_generate_products
+            # 追加「净值披露延迟」标注。整个 data 会被 json.dumps 存进
+            # diagnosis_{uid}.json，新字段自动带到下游，无需改存储层。
+            results[uid] = {"diagnosis": diagnosis, "stock_count": len(stocks),
+                            "fund_count": len(funds),
+                            "qdii_names": _collect_qdii_names(funds)}
             log(f"  ✅ {name}: {len(diagnosis)}字")
 
         except Exception as e:
@@ -1767,9 +1879,8 @@ def step_generate_products(phase1, phase2, phase3):
             
             user_briefing = f"""{briefing}
 
-📋 【{name} 持仓速览】
-{diag}{advice_section}
-⚠️ AI建议仅供参考，不构成投资建议"""
+{_render_holdings_block(name, diag, advice_section,
+                        user_phase2.get("qdii_names") or [])}"""
 
             # v9.5.76: 在持仓诊断前插入组合温度计（纯计算，不依赖 LLM）
             thermometer = _build_portfolio_thermometer(uid)

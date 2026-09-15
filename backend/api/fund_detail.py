@@ -809,13 +809,22 @@ def _enrich_detail_with_holding(detail: dict, code: str, user_id: str) -> dict:
                 detail["timing_label"] = tl
         except Exception:
             pass
+        # v9.9.38 修三重叠错（此前 industry_tag **恒为空**，被下面那个 except 吞掉）：
+        #   1) 传了 2 个参数，而 get_fund_industry 只收 1 个 → TypeError
+        #   2) 就算改成 1 个，传的也是 code 不是 name —— 函数体是
+        #      `any(kw in fund_name ...)`，拿 "000001" 匹配行业词永远不命中
+        #   3) 返回值是 {"tag","desc"} 的 dict（不命中返回 {}，**不是** "其他"），
+        #      旧代码却拿它和字符串比较、又把整个 dict 塞进本该是字符串的字段
+        # 对照正确用法：services/industry_templates.py::enrich_fund_with_industry
         try:
             from services.industry_templates import get_fund_industry
-            industry = get_fund_industry(code, detail.get("name", ""))
-            if industry and industry != "其他":
-                detail["industry_tag"] = industry
-        except Exception:
-            pass
+            match = get_fund_industry(detail.get("name", ""))
+            if match:
+                detail["industry_tag"] = match["tag"]
+                detail["industry_desc"] = match["desc"]
+        except Exception as e:
+            # 不再裸吞：这个 `pass` 正是上面三重叠错能活这么久的原因
+            print(f"[FUND_DETAIL] industry enrich failed for {code}: {e}")
         if not detail.get("scale_billion") and amount:
             detail["scale_billion"] = round(amount / 1e8, 1)
 
@@ -1787,23 +1796,44 @@ _NAV_HISTORY_TTL = 3600  # 1小时缓存（净值日更）
 
 
 @router.get("/api/fund/nav-history/{code}")
-def fund_nav_history(code: str, days: int = 90):
+def fund_nav_history(code: str, days: int = 90, name: str = ""):
     """F10 基金净值历史，供前端 K 线展示
 
     参数：
       code: 6位基金代码（如 110019）
       days: 历史天数，默认 90，最多 365
+      name: 基金名称（v9.9.38 新增，可选）。前端 K 线弹窗本来就持有名称，
+            传上来即可由**后端**用唯一真源判 QDII —— 前端无法 import Python
+            模块，此前只能自备一条正则，那是仓库里的第 4 套口径。
 
     返回：
-      {ok, code, name, data: [{date, nav, cumNav}], benchmark: {name, data}}
+      {ok, code, data: [{date, nav, cumNav}], is_qdii: bool|None}
 
     data 按日期升序排列，方便前端直接传入 Chart.js
+
+    is_qdii（v9.9.38）：
+      判据 = services.fund_taxonomy.is_qdii_fund（唯一真源），**不进缓存**。
+      `_get_cached` 里只有 data、没有 name，而 is_qdii 依赖 name；缓存命中时
+      按当前 name 现算，避免读到上次那个名字的判定结果。未传 name 时为 None，
+      前端据此降级回自己的正则（老缓存/老前端不至于崩）。
+
+      为什么这个字段值得跨栈传：前端拿它决定**要不要显示币种切换按钮**。
+      旧正则含 "标普"/"港股" 而无否定词，「华宝标普港股通低波红利A」这类
+      **境内人民币**基金会被判成 USD，用户一点切换就把整条 K 线的净值除以
+      7.2 —— 是数值错误，不是显示错误。
     """
     days = min(max(days, 30), 365)
+
+    # is_qdii 每次按 name 现算，不进缓存（理由见 docstring）
+    qdii_flag = None
+    if name:
+        from services.fund_taxonomy import is_qdii_fund
+        qdii_flag = bool(is_qdii_fund({"name": name}))
+
     cache_key = f"nav_hist_{code}_{days}"
     cached = _get_cached(cache_key, allow_stale=True)
     if cached:
-        return {**cached, "cached": True}
+        return {**cached, "cached": True, "is_qdii": qdii_flag}
 
     try:
         import akshare as ak
@@ -1829,14 +1859,14 @@ def fund_nav_history(code: str, days: int = 90):
             return {"ok": False, "code": code, "reason": "近期无净值数据"}
 
         result = {"ok": True, "code": code, "data": data, "count": len(data)}
-        _set_cached(cache_key, result)
-        return {**result, "cached": False}
+        _set_cached(cache_key, result)  # 只缓存 data，不缓存 is_qdii
+        return {**result, "cached": False, "is_qdii": qdii_flag}
 
     except Exception as e:
         stale = _get_cached(cache_key, allow_stale=True)
         if stale:
-            return {**stale, "cached": True, "stale": True}
-        return {"ok": False, "code": code, "reason": str(e)[:100]}
+            return {**stale, "cached": True, "stale": True, "is_qdii": qdii_flag}
+        return {"ok": False, "code": code, "reason": str(e)[:100], "is_qdii": qdii_flag}
 
 
 # ============================================================
