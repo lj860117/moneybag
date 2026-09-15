@@ -458,6 +458,11 @@ function _mergeDecisionPayload(base, dec) {
   if (dec.action_direction != null) merged.action_direction = dec.action_direction;
   if (dec.my_holding != null) merged.my_holding = dec.my_holding;
   if (dec.holding_relation != null) merged.holding_relation = dec.holding_relation;
+  // v9.9.42: 三个诊断标签字段只有决断面产出（fund/detail 实测为 None），而面板 tags 消费它们——
+  // nav_pct_label / timing_label / nav_percentile 若不合并，「净值百分位」「择时」标签永不渲染。
+  if (dec.nav_pct_label != null) merged.nav_pct_label = dec.nav_pct_label;
+  if (dec.nav_percentile != null) merged.nav_percentile = dec.nav_percentile;
+  if (dec.timing_label != null) merged.timing_label = dec.timing_label;
   return merged;
 }
 

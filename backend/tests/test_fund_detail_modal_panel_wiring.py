@@ -17,6 +17,15 @@
 **无中生有**输出一个后端从未给出的判断。修法：新增 `_fetchFundDecisionPayload` 并行取决断面，
 `_mergeDecisionPayload` 合并（my_holding/holding_relation 仅非 null 时覆盖），并删掉伪造兜底。
 
+**第三层（v9.9.42，测试自身的假绿 + 漏合并）**：独立 QA 用 Node+vm 真渲染对照，证伪了本文件
+3 条假绿测试：(1) 只断言字面串 `'/fund-holdings/detail/'` 存在于源码——但该串在三处注释里也有，
+把真 URL 改回 `/fund/detail/` 照样绿；(2) 只断言 `if(_panelRendered){` 等字面存在——把 `+=`
+削弱回 `=`（「面板刚渲染就被覆盖」缺陷复活）照样绿；(3) 只查 `Promise.all` 后 400 字符窗口出现
+两个函数名——在 `Promise.all` 前插一行 `await` 详情（伪并行/串行）照样绿。修法：新增**去注释**
+源码 `_components_src_no_comments()`，并对「await 序列」「确切分支语句」做断言。另修一处漏合并：
+`_mergeDecisionPayload` 未合并 nav_pct_label / nav_percentile / timing_label（只有决断面产出，
+fund/detail 实测为 None，而面板 tags 消费它们）。
+
 ## 断言类型声明（不许把没验证的说成验证过）
 
 - 本文件**全部**是**源码级结构断言**：只在源码文本里匹配结构/关键字/正则，**不执行 JS**，
@@ -36,6 +45,57 @@ COMPONENTS = BACKEND_DIR.parent / "pages" / "_components.js"
 
 def _components_src() -> str:
     return COMPONENTS.read_text(encoding="utf-8")
+
+
+def _strip_js_comments(src: str) -> str:
+    """剥掉 JS 的 `//` 行注释与 `/* */` 块注释，**保留字符串字面量**（含 `https://` 之类）。
+
+    手写状态机：跟踪 `'` `"` 反引号三种字符串与反斜杠转义，字符串内一律不判注释——
+    否则 URL 里的 `//` 会被误当行注释、把后面整行（含真实代码）吃掉。纯函数，便于校验。
+    """
+    out: list[str] = []
+    i, n = 0, len(src)
+    state: str | None = None
+    while i < n:
+        ch = src[i]
+        nxt = src[i + 1] if i + 1 < n else ""
+        if state is None:
+            if ch in ("'", '"', "`"):
+                state = ch
+                out.append(ch)
+                i += 1
+                continue
+            if ch == "/" and nxt == "/":
+                nl = src.find("\n", i)
+                if nl == -1:
+                    break
+                i = nl
+                continue
+            if ch == "/" and nxt == "*":
+                close = src.find("*/", i + 2)
+                if close == -1:
+                    break
+                i = close + 2
+                continue
+            out.append(ch)
+            i += 1
+        else:
+            out.append(ch)
+            if ch == "\\":
+                if i + 1 < n:
+                    out.append(src[i + 1])
+                    i += 2
+                    continue
+            elif ch == state:
+                state = None
+            i += 1
+    return "".join(out)
+
+
+def _components_src_no_comments() -> str:
+    """去注释后的 _components.js —— 只认真实代码，不认注释里复现的字面串。"""
+    return _strip_js_comments(_components_src())
+
 
 
 def test_gate_no_longer_requires_holding_relation_and_advices():
@@ -83,17 +143,29 @@ def test_advices_length_access_is_guarded():
 
 
 def test_panel_append_uses_flag_not_fragile_title_match():
-    """面板渲染后的「追加 or 覆盖」必须用标志位判断，脆弱字符串匹配必须消失。
+    """面板渲染后的「追加 or 覆盖」必须用标志位判断，且两分支语句**确切**。
 
-    防的是：字面标题串匹配（对 body.innerHTML 做 includes 标题）在标题行改为条件输出后失效，
-    进而 `body.innerHTML = html` 覆盖掉刚渲染好的决策面板。这正是本项目已吃过一次的教训
-    （组合温度计死码）。
+    防的是两件事：
+      1) 字面标题串匹配失效后 `body.innerHTML = html` 覆盖刚渲染的面板；
+      2) 把追加 `+=` 削弱回 `=`（「面板刚渲染就被覆盖」缺陷原样复活）。
+    旧版只断言 `if(_panelRendered){` / `_panelRendered = true;` 等**字面存在**——把 `+=` 改成 `=`
+    也照样全绿（QA 注入 I7 实证），故此处改为钉住两个分支的确切语句。
+
+    断言性质：**源码级结构断言**（正则匹配语句结构，不执行 JS）。
     """
     src = _components_src()
     assert "body.innerHTML.includes('持仓决策辅助')" not in src
     assert "let _panelRendered = false;" in src
     assert "_panelRendered = true;" in src
-    assert "if(_panelRendered){" in src
+    # if 分支必须是「追加」（+=）——否则面板刚渲染就被覆盖
+    assert re.search(
+        r"if\s*\(\s*_panelRendered\s*\)\s*\{\s*body\.innerHTML\s*\+=\s*html\s*;", src
+    ), "标志位为真时必须是追加（body.innerHTML += html），不能被削弱成覆盖"
+    # 覆盖写法只能出现在 else 分支，且只此一处
+    assert re.search(r"else\s*\{\s*body\.innerHTML\s*=\s*html\s*;", src), (
+        "覆盖写法不在 else 分支，或两分支结构被改坏"
+    )
+    assert src.count("body.innerHTML = html;") == 1, "覆盖写法出现了不止一次"
 
 
 def test_decision_title_only_when_holding_or_advices():
@@ -132,28 +204,48 @@ def test_is_my_holding_guard_still_declared():
 # v9.9.41 第二层根因：面板数据源接错接口。全部为**源码级结构断言**。
 # ==========================================================================
 def test_decision_payload_fetcher_exists_and_hits_holdings_endpoint():
-    """必须存在 `_fetchFundDecisionPayload`，且 URL 打 `/fund-holdings/detail/`。
+    """决断面取数必须存在，且 URL 真打 `/fund-holdings/detail/`（**去注释后**断言）。
 
-    防的是：回退到「只调 fund/detail」——该接口永不返回 advices/dca/action_direction，
-    于是「智能定投建议」面板与「建议列表」永不渲染（v9.9.40 只救出了走势/持仓摘要/纪律线）。
+    防的是：把 URL 改回 `/fund/detail/`（= 整个数据源修复回退，定投/建议列表复活为永不渲染）。
+    旧版只断言 `'/fund-holdings/detail/' in src`——该字面串在三处**注释**里也有，所以改回 URL
+    照样全绿（QA 注入 I5 实证：pytest 全绿、只有 Node harness 红）。故本条改用**去注释**源码：
+    注释里的同名字面串被剥掉，只有真实 URL 那行算数。
+
+    断言性质：**源码级结构断言**（去注释后匹配字面串，不执行 JS）。
     """
-    src = _components_src()
-    assert "function _fetchFundDecisionPayload" in src or "async function _fetchFundDecisionPayload" in src
-    assert "/fund-holdings/detail/" in src
+    src_nc = _components_src_no_comments()
+    assert (
+        "function _fetchFundDecisionPayload" in src_nc
+        or "async function _fetchFundDecisionPayload" in src_nc
+    ), "决断面取数函数不存在"
+    assert "/fund-holdings/detail/" in src_nc, (
+        "去注释后的源码里没有 /fund-holdings/detail/ —— URL 可能被改回 /fund/detail/"
+    )
 
 
 def test_decision_and_detail_fetches_are_parallel_in_promise_all():
-    """决断面与 fund/detail 必须**并行**（同一个 `Promise.all`），而不是串行 await。
+    """决断面与 fund/detail 必须**真并行**：都在 `await Promise.all([...])` 里，且**都不被单独 await**。
 
-    防的是：改回串行取数——fund/detail 冷态本来就要 60s+，串行会让总延迟翻倍。
-    断言方式：在 `Promise.all([` 之后的窗口里必须同时出现两个取数函数。
+    防的是：伪并行——在 `Promise.all` 之前/之外插一行 `await` 取数（串行执行、延迟翻倍）。
+    旧版只查 `Promise.all([` 后 400 字符窗口里出现两个函数名：在 `Promise.all` **之前**插
+    `await` 详情不碰任何被断言的字符串，照样全绿（QA 注入 I4b 实证：pytest 全绿、Node 测出 605ms）。
+    故本条改为对「await 序列」断言（去注释源码）。
+
+    断言性质：**源码级结构断言**（匹配 await 用法，不执行 JS；真正的时序需行为测试/真机）。
     """
-    src = _components_src()
-    assert "Promise.all([" in src, "未找到 Promise.all([ —— 决断面与详情可能被改成串行"
-    idx = src.index("Promise.all([")
-    window = src[idx : idx + 400]
-    assert "_fetchFundDetailPayload" in window, "Promise.all 里没有 fund/detail 取数"
-    assert "_fetchFundDecisionPayload" in window, "Promise.all 里没有决断面取数（可能被拆成串行）"
+    src_nc = _components_src_no_comments()
+    assert re.search(r"await\s+Promise\.all\s*\(\s*\[", src_nc), "未找到 `await Promise.all([`"
+    # 只在 showFundDetailModal 内检查：_prefetchFundDetail（:471）有一处**合法**的
+    # `await _fetchFundDetailPayload`，那是预取辅助函数、不是本弹窗的取数路径，不能误伤。
+    start = src_nc.index("window.showFundDetailModal = async function")
+    modal_body = src_nc[start:]
+    # 弹窗内两个取数都不允许被单独 await —— 只能作为 Promise.all 的入参（内联调用，不带 await）
+    assert re.search(r"await\s+_fetchFundDetailPayload", modal_body) is None, (
+        "弹窗内出现单独 `await _fetchFundDetailPayload` —— 伪并行/串行"
+    )
+    assert re.search(r"await\s+_fetchFundDecisionPayload", modal_body) is None, (
+        "弹窗内出现单独 `await _fetchFundDecisionPayload` —— 伪并行/串行"
+    )
 
 
 def test_merge_decision_payload_guards_null_holding_fields():
@@ -165,6 +257,22 @@ def test_merge_decision_payload_guards_null_holding_fields():
     assert "function _mergeDecisionPayload" in src
     assert re.search(r"dec\.my_holding\s*!==?\s*null", src), "my_holding 合并缺少非 null 守卫"
     assert re.search(r"dec\.holding_relation\s*!==?\s*null", src), "holding_relation 合并缺少非 null 守卫"
+
+
+def test_merge_decision_payload_includes_diagnostic_label_fields():
+    """`_mergeDecisionPayload` 必须合并 nav_pct_label / nav_percentile / timing_label（非 null 守卫）。
+
+    防的是：这三个字段只有决断面产出（fund/detail 实测为 None），而面板 tags 确实消费
+    `d.nav_pct_label` / `d.timing_label`（nav_percentile 决定标签配色）——不合并则
+    「净值百分位」「择时」标签永不渲染（后端早算好、数据就在手上）。
+
+    断言性质：**源码级结构断言**（只核对合并函数里的守卫键，不执行 JS）。
+    """
+    src = _components_src()
+    assert "function _mergeDecisionPayload" in src
+    assert re.search(r"dec\.nav_pct_label\s*!==?\s*null", src), "nav_pct_label 未合并或缺非 null 守卫"
+    assert re.search(r"dec\.nav_percentile\s*!==?\s*null", src), "nav_percentile 未合并或缺非 null 守卫"
+    assert re.search(r"dec\.timing_label\s*!==?\s*null", src), "timing_label 未合并或缺非 null 守卫"
 
 
 def test_decision_fetch_has_catch_fallback_at_call_site():

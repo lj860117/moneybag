@@ -346,7 +346,28 @@ TUSHARE_TOKEN = os.environ.get("TUSHARE_TOKEN", "")
 #  4) 删掉 :483 伪造兜底 `${d.action_direction||'持有观察'}` —— 仅当后端真给出
 #     action_direction 才输出徽章，为假整段不输出，不用任何字面串顶替。
 # 前端本次有改动，故 index.html 全部 27 处 ?v= 与 sw.js 的 CACHE_NAME 一并 bump 到 9.9.41。
-APP_VERSION = "9.9.41"
+#
+# ---- v9.9.42: 3 条假绿测试根治 + 补合并 3 个诊断标签字段（独立 QA 用 Node+vm 真渲染证伪）----
+# 1) **测试自身的假绿**（本仓 test_scorecard_caliber_honesty.py 早有教训：只有行为级断言
+#    才能挡住「逻辑被改坏但字符串还在」）。backend/tests/test_fund_detail_modal_panel_wiring.py
+#    里 3 条只断言字面串/窗口，可被绕过：
+#    - ① 只断言 '/fund-holdings/detail/' in src —— 该字面串在三处**注释**里也有，把真 URL
+#         改回 /fund/detail/（= 数据源修复整体回退）pytest 仍全绿（QA 注入 I5）。
+#    - ② 只断言 if(_panelRendered){ / _panelRendered = true; 字面存在 —— 把
+#         `body.innerHTML += html` 削弱回 `=`（「面板刚渲染就被覆盖」缺陷复活）仍全绿（I7）。
+#    - ③ 只查 Promise.all 后 400 字符窗口出现两个函数名 —— 在 Promise.all **之前**插一行
+#         await 详情（伪并行/串行）不碰被断言字符串，仍全绿（I4b；Node 测出 605ms > 400ms）。
+#    修法：新增去注释源码 _components_src_no_comments()（剥 // 与 /* */，保留字符串字面量，
+#    不误伤 URL 里的 //）；① 改用去注释源码断言 URL；② 钉住 if 分支 `+=` 与 else 分支 `=`
+#    的确切语句；③ 断言弹窗内两个取数都不被单独 await（仅查 showFundDetailModal 内，
+#    _prefetchFundDetail:471 那处合法 await 不误伤）。QA 的 4 条注入现全部真红。
+# 2) **真实漏合并**：pages/_components.js `_mergeDecisionPayload` 未合并 nav_pct_label /
+#    nav_percentile / timing_label。这三个字段只有 GET /api/fund-holdings/detail/{code} 产出
+#    （fund/detail 实测为 None），而决策面板 tags 确实消费 d.nav_pct_label / d.timing_label
+#    （nav_percentile 决定标签配色）→「净值百分位」「择时」标签永不渲染（后端早算好、数据在手）。
+#    已按同样的非 null 守卫补上三键，并加测试。
+# 前端本次有改动，故 index.html 全部 27 处 ?v= 与 sw.js 的 CACHE_NAME 一并 bump 到 9.9.42。
+APP_VERSION = "9.9.42"
 
 # ---- v9.5.123: API 鉴权 ----
 # 每个用户一个token，格式: userId:token（环境变量或data/auth_tokens.json）
