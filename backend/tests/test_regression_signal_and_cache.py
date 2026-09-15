@@ -1037,7 +1037,10 @@ def test_longterm_fund_detail_reuses_shared_cache_when_user_not_holding(monkeypa
     base_payload = {"code": "013466", "name": "博时智选量化多因子股票C", "nav": 1.29}
     cache_hits = []
 
-    def fake_get_cached(key, allow_stale=False):
+    def fake_get_cached(key, allow_stale=False, require_pv=None):
+        # v9.9.40: _get_cached 新增 opt-in 的载荷形状版本门 require_pv；
+        # 本测试只验证「非持仓用户复用共享缓存」，桩需接受该 kwarg（本测试
+        # 断言的是 cache_hits 元组，故不把 require_pv 记入元组）。
         cache_hits.append((key, allow_stale))
         if key == "fund_detail_013466":
             return dict(base_payload)

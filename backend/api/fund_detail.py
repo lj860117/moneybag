@@ -29,6 +29,11 @@ except Exception:
 _detail_cache: dict = {}
 _CACHE_TTL = 3600 * 24  # v9.5.121: 放宽到24h（基金经理/规模/持仓季度才变）
 
+# 载荷形状版本：改动 fund_detail 共享载荷「新增/改名/删除顶层键」时必须 +1。
+# 背景：v9.9.39 把 industry_tag 加进共享结果后，682 个旧缓存（无该键）因
+# allow_stale 早退继续被返回，导致修复最长 72h 不可见，且 warmer 也不强制刷新。
+_DETAIL_PAYLOAD_VER = 1   # 旧缓存信封里没有 pv 字段 → 一律视为 miss 并重算
+
 # 购买数据全局缓存（每天只拉一次，26000条数据）
 _purchase_df_cache = {"df": None, "t": 0}
 _PURCHASE_TTL = 3600 * 24  # 24小时
@@ -313,17 +318,32 @@ def _get_nav_history_cached(code: str, days: int = 365) -> list:
     return []
 
 
-def _get_cached(key: str, allow_stale=False):
+def _get_cached(key: str, allow_stale=False, require_pv=None):
+    """读缓存。
+
+    v9.9.40 新增按调用点 opt-in 的载荷形状门 `require_pv`：仅当传了
+    `require_pv` 时校验缓存信封里的 `pv` 字段，版本不符一律视为 miss
+    （返回 None），绝不把旧形状载荷返回出去（否则新字段最长 72h 不可见）。
+    不传 `require_pv` 时行为与旧版一字不变（stock_info_map / nav 历史 /
+    fund_ai_score 等调用点不受影响）。
+    ⚠️ 版本不符只会「视为 miss」，**不删文件** —— 让重算后的 _set_cached
+    覆盖即可，避免无谓 IO。
+    """
     # 1) 内存缓存（TTL 内直接返回）
     entry = _detail_cache.get(key)
     if entry and time.time() - entry["t"] < _CACHE_TTL:
-        return entry["v"]
+        if require_pv is None or entry.get("pv") == require_pv:
+            return entry["v"]
+        # 版本不符：内存条目不返回，继续往下走文件分支（可能文件是新的）
     # 2) 文件缓存
     try:
         path = os.path.join(_DETAIL_CACHE_DIR, f"{key}.json")
         if os.path.exists(path):
             with open(path, "r", encoding="utf-8") as f:
                 fc = json.load(f)
+            # 载荷形状门：require_pv 不符 → 视为 miss（fresh 与 stale 两条路径都拦）
+            if require_pv is not None and fc.get("pv") != require_pv:
+                return None
             age = time.time() - fc.get("t", 0)
             if age < _CACHE_TTL:
                 _detail_cache[key] = fc  # 回填内存
@@ -337,8 +357,11 @@ def _get_cached(key: str, allow_stale=False):
     return None
 
 
-def _set_cached(key: str, val):
+def _set_cached(key: str, val, pv=None):
     rec = {"v": val, "t": time.time()}
+    # v9.9.40: pv 非 None 时写入信封，供 _get_cached(require_pv=...) 校验载荷形状
+    if pv is not None:
+        rec["pv"] = pv
     _detail_cache[key] = rec
     # v9.5.100: 同步写入文件
     try:
@@ -413,18 +436,21 @@ def fund_detail(code: str, userId: str = ""):
     user_cache_key = f"{shared_cache_key}_{userId}" if userId else shared_cache_key
 
     if userId:
-        cached = _get_cached(user_cache_key, allow_stale=True)
+        cached = _get_cached(user_cache_key, allow_stale=True,
+                             require_pv=_DETAIL_PAYLOAD_VER)
         if cached:
             return cached
-        shared_cached = _get_cached(shared_cache_key, allow_stale=True)
+        shared_cached = _get_cached(shared_cache_key, allow_stale=True,
+                                    require_pv=_DETAIL_PAYLOAD_VER)
         if shared_cached:
             enriched_cached = _enrich_detail_with_holding(dict(shared_cached), code, userId)
             if enriched_cached.get("holding_relation") == "🔵 已持仓":
-                _set_cached(user_cache_key, enriched_cached)
+                _set_cached(user_cache_key, enriched_cached, pv=_DETAIL_PAYLOAD_VER)
                 return enriched_cached
             return shared_cached
     else:
-        cached = _get_cached(shared_cache_key, allow_stale=True)
+        cached = _get_cached(shared_cache_key, allow_stale=True,
+                             require_pv=_DETAIL_PAYLOAD_VER)
         if cached:
             return cached
 
@@ -756,12 +782,12 @@ def fund_detail(code: str, userId: str = ""):
 
     # v9.8.7/v9.9.3: 共享详情永远落共享缓存；只有真实持仓基金才需要单独落用户缓存。
     shared_result = dict(result)
-    _set_cached(shared_cache_key, shared_result)
+    _set_cached(shared_cache_key, shared_result, pv=_DETAIL_PAYLOAD_VER)
 
     if userId:
         enriched_result = _enrich_detail_with_holding(dict(shared_result), code, userId)
         if enriched_result.get("holding_relation") == "🔵 已持仓":
-            _set_cached(user_cache_key, enriched_result)
+            _set_cached(user_cache_key, enriched_result, pv=_DETAIL_PAYLOAD_VER)
             return enriched_result
 
     return shared_result
@@ -769,17 +795,29 @@ def fund_detail(code: str, userId: str = ""):
 
 # v9.8.7: 持仓增强（内联到 detail 接口，避免前端二次请求）
 def _enrich_detail_with_holding(detail: dict, code: str, user_id: str) -> dict:
-    """为基金详情补充用户持仓决策数据（轻量版）"""
+    """为基金详情补充用户持仓决策数据（轻量版）
+
+    v9.9.40 修复两处真 bug（用户可见）：
+    1) 持仓来源取错。旧代码读 `load_user(uid).portfolio.holdings`，但该字段
+       对真实用户**恒为空**（实测 LeiJiang / BuLuoGeLi 长度均为 0），真实持仓
+       存在 `data/fund_holdings_{uid}.json`。全仓 15+ 处都用规范读法
+       `services.fund_monitor.load_fund_holdings(uid)`（见 api/holdings.py:726、
+       api/shared_helpers.py:412/:840、services/weekly_report.py:34、
+       services/unified_networth.py:104、services/fund_rank.py:103、
+       services/ds_enhance.py:765 等），只有本处用错源 → 对真实用户永远在
+       `if not holding: return detail` 早退，持仓 UI 恒不显示。
+    2) 字段名对不上真实 schema。`load_fund_holdings` 记录真实形状是
+       `{"code","name","costNav","shares","note","addedAt"}`，而旧代码读的是
+       `cost_nav`（应为 costNav）、`buyDate`（应为 addedAt）、`amount`
+       （记录里根本没有这个字段）。
+    盈亏基准 = 成本净值 costNav，与全仓口径一致（参考 services/cfo_dashboard.py:211、
+    services/unified_networth.py:108、services/portfolio_doctor.py:395、api/chart.py:92）。
+    """
     try:
-        from services.persistence import load_user
+        from services.fund_monitor import load_fund_holdings
         from api.signals import _get_fund_nav_percentile, _fund_timing_label
 
-        user = load_user(user_id)
-        if not user:
-            return detail
-
-        portfolio = user.get("portfolio") or {}
-        holdings = portfolio.get("holdings") or user.get("holdings") or []
+        holdings = load_fund_holdings(user_id) or []
 
         holding = None
         for h in holdings:
@@ -790,18 +828,23 @@ def _enrich_detail_with_holding(detail: dict, code: str, user_id: str) -> dict:
             return detail
 
         shares = holding.get("shares", 0)
-        cost_nav = holding.get("cost_nav", 0)
-        amount = holding.get("amount", 0)
-        buy_date = holding.get("buyDate", "")
+        cost_nav = holding.get("costNav", 0)      # 真实 schema 用 costNav
+        amount = holding.get("amount")            # 记录里通常没有该字段 → 兼容读法
+        buy_date = holding.get("addedAt", "")     # 真实 schema 用 addedAt
 
-        my_holding = {"shares": shares, "amount": amount}
-        if cost_nav > 0:
-            my_holding["avg_cost"] = cost_nav
+        # 防前端崩溃：pages/_components.js:465-466 会执行
+        # `my.shares.toFixed(2)` 和 `my.avg_cost.toFixed(4)`。所以只要下发
+        # my_holding，就必须保证 shares 与 avg_cost **都存在且是数字**
+        # （costNav 缺失/为 0 时 avg_cost 给 0，不省略该键）。
+        my_holding = {"shares": shares or 0, "avg_cost": cost_nav or 0}
+        if amount is not None:
+            my_holding["amount"] = amount
         if buy_date:
             my_holding["buy_date"] = buy_date
 
         nav_now = detail.get("nav")
         pnl_pct = None
+        # 盈亏口径：pnl_pct = (nav_now - costNav) / costNav * 100（保留两位小数）
         if nav_now and cost_nav and cost_nav > 0:
             pnl_pct = round((nav_now - cost_nav) / cost_nav * 100, 2)
 
@@ -823,6 +866,8 @@ def _enrich_detail_with_holding(detail: dict, code: str, user_id: str) -> dict:
                 detail["timing_label"] = tl
         except Exception:
             pass
+        # scale_billion 依赖 amount；真实记录没有 amount 时本段不会触发（正常，
+        # 不要改成别的估算口径）。
         if not detail.get("scale_billion") and amount:
             detail["scale_billion"] = round(amount / 1e8, 1)
 
@@ -842,6 +887,8 @@ def fund_ai_score(code: str):
     缓存 12h，每天每只基金最多消耗 2 次 LLM 调用。
     """
     # 先拿基金详情数据作为评分输入
+    # 注意：此处**有意不传 require_pv** —— 评分只需要一个近似输入，旧形状载荷
+    # 也可接受，不应因载荷形状版本而放弃缓存、拖慢 AI 评分。这不是漏改。
     cache_key = f"fund_detail_{code}"
     fund_info = _get_cached(cache_key, allow_stale=True)
     if not fund_info:
