@@ -163,8 +163,8 @@ def test_merge_decision_payload_guards_null_holding_fields():
     """
     src = _components_src()
     assert "function _mergeDecisionPayload" in src
-    assert re.search(r"dec\.my_holding\s*!=\s*null", src), "my_holding 合并缺少非 null 守卫"
-    assert re.search(r"dec\.holding_relation\s*!=\s*null", src), "holding_relation 合并缺少非 null 守卫"
+    assert re.search(r"dec\.my_holding\s*!==?\s*null", src), "my_holding 合并缺少非 null 守卫"
+    assert re.search(r"dec\.holding_relation\s*!==?\s*null", src), "holding_relation 合并缺少非 null 守卫"
 
 
 def test_decision_fetch_has_catch_fallback_at_call_site():
