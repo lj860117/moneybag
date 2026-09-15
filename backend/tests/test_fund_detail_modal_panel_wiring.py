@@ -1,24 +1,32 @@
-"""源码级回归测试：基金详情弹窗「决策辅助面板」的渲染闸门与追加逻辑。
+"""源码级回归测试：基金详情弹窗「决策辅助面板」的渲染闸门、数据源与追加逻辑。
 
-背景（根因）：
-    `pages/_components.js` 的 `window.showFundDetailModal` 里，决策辅助面板（走势预估 8 维面板、
-    智能定投建议、持仓摘要等）曾由闸门 `if (d.holding_relation && d.advices) {` 控制。该闸门对任何人、
-    任何时候都不成立：
-      1) `d.advices` 只由 `GET /api/fund-holdings/detail/{code}` 产出，而弹窗只调
-         `GET /api/fund/detail/{code}`（_fetchFundDetailPayload），两接口之间没有任何 merge，
-         故 `d.advices` 恒为 undefined；
-      2) `d.holding_relation` 对真实用户也为空（后端数据问题）。
-    结果：后端已算好、载荷里确实带有的 `trend_direction/trend_score/trend_dimensions` 等 UI
-    从不渲染。
+## 两层根因
 
-同时有一个耦合缺陷：面板渲染后，通用详情用字面标题串匹配
-`if(isMyHolding && body.innerHTML.includes('持仓决策辅助'))` 决定「追加 or 覆盖」。一旦面板标题行改为
-条件输出，该匹配失效 → 走 `body.innerHTML = html` 把刚渲染的面板整个覆盖掉。
+**第一层（v9.9.40，闸门）**：`pages/_components.js` 的 `window.showFundDetailModal` 里，决策
+辅助面板（走势预估 8 维 / 智能定投建议 / 持仓摘要等）曾由闸门
+`if (d.holding_relation && d.advices) {` 控制，对任何人都不成立（`d.advices` 恒为 undefined、
+`d.holding_relation` 对真实用户为空）→ 后端已算好的 UI 从不渲染。
+另有一处耦合缺陷：面板渲染后用脆弱字面标题串匹配决定「追加 or 覆盖」，标题行条件化后会失效并
+覆盖掉刚渲染的面板。
 
-这些断言都是「结构级」的（匹配关键字/判据，不写死整行/空白），用于防止回退。
-注意：源码级断言不能证明浏览器里真的渲染出来了，真机视觉复验另行进行。
+**第二层（v9.9.41，数据源）**：只放宽闸门**不足以**让面板全部活过来。面板要的
+`advices` / `dca` / `action_direction` **只由** `GET /api/fund-holdings/detail/{code}`
+（backend/api/holdings.py）产出，而弹窗只调 `GET /api/fund/detail/{code}`（_fetchFundDetailPayload），
+该接口**历史上从不返回这三个字段**。所以 v9.9.40 只救出了持仓摘要 / 走势预估 8 维 / 纪律线，
+「智能定投建议」面板与「建议列表」仍永不渲染，且 `${d.action_direction||'持有观察'}` 会
+**无中生有**输出一个后端从未给出的判断。修法：新增 `_fetchFundDecisionPayload` 并行取决断面，
+`_mergeDecisionPayload` 合并（my_holding/holding_relation 仅非 null 时覆盖），并删掉伪造兜底。
+
+## 断言类型声明（不许把没验证的说成验证过）
+
+- 本文件**全部**是**源码级结构断言**：只在源码文本里匹配结构/关键字/正则，**不执行 JS**，
+  因此**无法证明浏览器里真的渲染出来了**。
+- 也**没有行为断言**（无 JS 运行时、无 DOM）——「点开弹窗后走势/定投面板确实出现在页面上」
+  这一层留给真机/浏览器视觉复验，本文件不声称验证过。
+- 断言刻意匹配结构而非整行/空白，格式化不应让其变红。
 """
 
+import re
 from pathlib import Path
 
 
@@ -118,3 +126,67 @@ def test_is_my_holding_guard_still_declared():
     src = _components_src()
     assert "const isMyHolding = !!d.holding_relation;" in src
     assert "if(isMyHolding) {" in src
+
+
+# ==========================================================================
+# v9.9.41 第二层根因：面板数据源接错接口。全部为**源码级结构断言**。
+# ==========================================================================
+def test_decision_payload_fetcher_exists_and_hits_holdings_endpoint():
+    """必须存在 `_fetchFundDecisionPayload`，且 URL 打 `/fund-holdings/detail/`。
+
+    防的是：回退到「只调 fund/detail」——该接口永不返回 advices/dca/action_direction，
+    于是「智能定投建议」面板与「建议列表」永不渲染（v9.9.40 只救出了走势/持仓摘要/纪律线）。
+    """
+    src = _components_src()
+    assert "function _fetchFundDecisionPayload" in src or "async function _fetchFundDecisionPayload" in src
+    assert "/fund-holdings/detail/" in src
+
+
+def test_decision_and_detail_fetches_are_parallel_in_promise_all():
+    """决断面与 fund/detail 必须**并行**（同一个 `Promise.all`），而不是串行 await。
+
+    防的是：改回串行取数——fund/detail 冷态本来就要 60s+，串行会让总延迟翻倍。
+    断言方式：在 `Promise.all([` 之后的窗口里必须同时出现两个取数函数。
+    """
+    src = _components_src()
+    assert "Promise.all([" in src, "未找到 Promise.all([ —— 决断面与详情可能被改成串行"
+    idx = src.index("Promise.all([")
+    window = src[idx : idx + 400]
+    assert "_fetchFundDetailPayload" in window, "Promise.all 里没有 fund/detail 取数"
+    assert "_fetchFundDecisionPayload" in window, "Promise.all 里没有决断面取数（可能被拆成串行）"
+
+
+def test_merge_decision_payload_guards_null_holding_fields():
+    """`_mergeDecisionPayload` 必须存在，且对 my_holding / holding_relation 有非 null 守卫。
+
+    防的是：让决断面里未持仓基金的 `my_holding=null` 覆盖掉 fund/detail 已算好的好值。
+    """
+    src = _components_src()
+    assert "function _mergeDecisionPayload" in src
+    assert re.search(r"dec\.my_holding\s*!=\s*null", src), "my_holding 合并缺少非 null 守卫"
+    assert re.search(r"dec\.holding_relation\s*!=\s*null", src), "holding_relation 合并缺少非 null 守卫"
+
+
+def test_decision_fetch_has_catch_fallback_at_call_site():
+    """决断面取数必须有 `.catch(...)` 兜底，不能把异常抛进渲染路径。
+
+    防的是：决断面接口失败/超时（008655 冷态实测 17.8s）时，异常冒进渲染 try →
+    整个弹窗被打成「基金详情渲染失败」，而 fund/detail 其实已经成功。
+    """
+    src = _components_src()
+    assert re.search(
+        r"_fetchFundDecisionPayload\s*\(\s*code\s*,\s*getProfileId\(\)\s*\)\s*\.catch\(", src
+    ), "决断面取数调用点没有 .catch(...) 兜底"
+
+
+def test_no_fabricated_action_direction_fallback():
+    """不得存在 `|| '持有观察'` 这种伪造兜底。
+
+    防的是：后端从未给出 action_direction 时，前端无中生有一个「持有观察」判断
+    （旧写法 `${d.action_direction||'持有观察'}` 正是如此）。
+    """
+    src = _components_src()
+    assert re.search(r"\|\|\s*'持有观察'", src) is None, (
+        "action_direction 又出现了伪造兜底 ||'持有观察'"
+    )
+

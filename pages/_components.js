@@ -390,6 +390,9 @@ window._saveDiscipline = async function(code) {
 
 window.__fundDetailPrefetchCache = window.__fundDetailPrefetchCache || new Map();
 window.__fundDetailInflightCache = window.__fundDetailInflightCache || new Map();
+// v9.9.41: 决断面（advices/dca/action_direction）来自另一个接口，用**独立**缓存，不与 fund/detail 混用。
+window.__fundDecisionPrefetchCache = window.__fundDecisionPrefetchCache || new Map();
+window.__fundDecisionInflightCache = window.__fundDecisionInflightCache || new Map();
 
 function _fundDetailCacheKey(code, userId){
   return `${userId || ''}:${code || ''}`;
@@ -413,6 +416,49 @@ async function _fetchFundDetailPayload(code, userId, opts={}) {
     });
   window.__fundDetailInflightCache.set(key, request);
   return request;
+}
+
+// v9.9.41: 决策辅助面板所需的 advices / dca / action_direction 的**唯一来源**是
+// `GET /api/fund-holdings/detail/{code}`（backend/api/holdings.py）；`/api/fund/detail/{code}`
+// 历史上从不产出这三个字段。只放宽前端闸门不够——必须把决断面也取回来并合并。
+// 照抄 _fetchFundDetailPayload 的 prefetch/inflight 双缓存模式（自己的 cache，独立键）。
+// 失败必须 reject，由调用方 `.catch()` 兜住，绝不把异常抛进渲染路径。
+function _fundDecisionCacheKey(code, userId){
+  return `${userId || ''}:${code || ''}`;
+}
+
+async function _fetchFundDecisionPayload(code, userId, opts={}) {
+  const key = _fundDecisionCacheKey(code, userId);
+  const force = !!opts.force;
+  if(!force && window.__fundDecisionPrefetchCache.has(key)) return window.__fundDecisionPrefetchCache.get(key);
+  if(!force && window.__fundDecisionInflightCache.has(key)) return window.__fundDecisionInflightCache.get(key);
+  const decisionUrl = API_BASE + '/fund-holdings/detail/' + code + '?userId=' + encodeURIComponent(userId || '');
+  const request = fetch(decisionUrl, { signal: AbortSignal.timeout(opts.timeoutMs || 20000) })
+    .then(async (r) => {
+      if (!r.ok) throw new Error('API ' + r.status);
+      const dec = await r.json();
+      window.__fundDecisionPrefetchCache.set(key, dec);
+      return dec;
+    })
+    .finally(() => {
+      window.__fundDecisionInflightCache.delete(key);
+    });
+  window.__fundDecisionInflightCache.set(key, request);
+  return request;
+}
+
+// v9.9.41: 只合并决策面板真正需要的字段。my_holding / holding_relation **仅在决断面非 null 时**
+// 才覆盖 —— 决断面里未持仓基金的 my_holding 是 null，绝不能让这个 null 抹掉 fund/detail 里
+// 已算好的值。其余字段一律保留 base（fund/detail，带着 v9.9.38 的 industry_tag 修复与载荷版本门）。
+function _mergeDecisionPayload(base, dec) {
+  const merged = Object.assign({}, base || {});
+  if (!dec) return merged;
+  if (Array.isArray(dec.advices)) merged.advices = dec.advices;
+  if (dec.dca != null) merged.dca = dec.dca;
+  if (dec.action_direction != null) merged.action_direction = dec.action_direction;
+  if (dec.my_holding != null) merged.my_holding = dec.my_holding;
+  if (dec.holding_relation != null) merged.holding_relation = dec.holding_relation;
+  return merged;
 }
 
 window._prefetchFundDetail = async function(code, name, opts={}) {
@@ -448,7 +494,14 @@ window.showFundDetailModal = async function(code, name) {
 
   // 异步加载详情（v9.9.4: 优先复用前 3 个预取缓存，其次复用同 code 的 inflight 请求）
   try {
-    const d = await _fetchFundDetailPayload(code, getProfileId(), { timeoutMs: 30000 });
+    // v9.9.41: 决策字段（advices/dca/action_direction）只在 fund-holdings/detail 产出，
+    // fund/detail 永不返回它们 —— 必须额外取决断面并合并（只放宽闸门是不够的）。
+    // 两请求**并行**：总延迟 = max(两者)；若串行，fund/detail 冷态（60s+）时延迟会翻倍。
+    const [d0, decision] = await Promise.all([
+      _fetchFundDetailPayload(code, getProfileId(), { timeoutMs: 30000 }),
+      _fetchFundDecisionPayload(code, getProfileId()).catch(() => null),
+    ]);
+    const d = decision ? _mergeDecisionPayload(d0, decision) : d0;
     const body = document.getElementById('fundDetailBody');
     if (!body) return;
     const isMyHolding = !!d.holding_relation;
@@ -480,7 +533,13 @@ window.showFundDetailModal = async function(code, name) {
       if (hasDecisionCard) advHtml += '<div style="margin-bottom:14px;padding:10px 12px;background:rgba(99,102,241,.04);border:1px solid rgba(99,102,241,.12);border-radius:8px">';
       // 标题行仅在「持仓 / 有建议」时输出，避免给未持仓基金顶一个「持仓决策辅助」的误导标题
       if (hasHolding || hasAdvices) {
-        advHtml += `<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px"><span style="font-size:11px;font-weight:600;color:var(--text-primary)">🎯 持仓决策辅助</span><span style="font-size:12px;font-weight:700;color:${d.action_direction==='减仓观望'?'#F59E0B':d.action_direction==='适量加仓'?'#10B981':'#9AA1AC'}">${d.action_direction||'持有观察'}</span></div>`;
+        advHtml += `<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px"><span style="font-size:11px;font-weight:600;color:var(--text-primary)">🎯 持仓决策辅助</span>`;
+        // v9.9.41: 只有后端真给了 action_direction 才输出右侧徽章；为假就整段不输出。
+        // 不用任何字面串顶替 —— 旧写法会用 '持有观察' 无中生有一个后端从未给出的判断。
+        if (d.action_direction) {
+          advHtml += `<span style="font-size:12px;font-weight:700;color:${d.action_direction==='减仓观望'?'#F59E0B':d.action_direction==='适量加仓'?'#10B981':'#9AA1AC'}">${d.action_direction}</span>`;
+        }
+        advHtml += `</div>`;
       }
       // 个人持仓摘要
       if(hasMyHolding) {

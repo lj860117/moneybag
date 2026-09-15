@@ -323,7 +323,30 @@ TUSHARE_TOKEN = os.environ.get("TUSHARE_TOKEN", "")
 #    以后改动共享载荷的顶层键形状，**必须把 `_DETAIL_PAYLOAD_VER` +1**。
 # 前端本次有改动（pages/_components.js），故 index.html 全部 27 处 ?v= 与
 # sw.js 的 CACHE_NAME 一并 bump 到 9.9.40。
-APP_VERSION = "9.9.40"
+#
+# ---- v9.9.41: 决策辅助面板**数据源接错接口**（v9.9.40 只修了一半）----
+# 真正的根因：面板要的 `advices` / `dca` / `action_direction` **只由**
+# `GET /api/fund-holdings/detail/{code}`（backend/api/holdings.py：dca@:666、
+# action_direction@:741/743/745/748、advices@:735）产出；而弹窗只调
+# `GET /api/fund/detail/{code}`，实测该接口 40 个顶层键里**没有**这三个字段。
+# 故 v9.9.40 放宽闸门后**只救出三块**：持仓摘要 / 走势预估 8 维 / 纪律线；
+# 「💡 智能定投建议」面板与「建议列表」**仍永不渲染**，且 :483 的
+# `${d.action_direction||'持有观察'}` 会**无中生有**一个后端从未给出的判断
+# （后端给的是 None）。v9.9.40 的 commit message 写「救出走势预估/定投面板」有误：
+# 走势预估确实救出了，定投面板没有。
+# 修法（pages/_components.js）：
+#  1) 新增 `_fetchFundDecisionPayload`，照抄 fund/detail 的 prefetch/inflight 双缓存，
+#     URL 打 `/fund-holdings/detail/{code}`，默认 timeout 20000ms；失败 reject，由调用方兜住。
+#  2) 在 showFundDetailModal 里**并行**取数（`Promise.all`）：决断面 + fund/detail
+#     → 总延迟 = max(两者)。**必须并行**：fund/detail 冷态本就 60s+，串行会翻倍。
+#  3) 新增 `_mergeDecisionPayload(base, dec)`：只取 advices/dca/action_direction，
+#     以及 my_holding/holding_relation **仅在决断面非 null 时**才覆盖
+#     （决断面未持仓基金的 my_holding 是 null，不能抹掉 fund/detail 已算好的值）；
+#     其余字段保留 fund/detail（带 v9.9.38 的 industry_tag 修复与载荷版本门）。
+#  4) 删掉 :483 伪造兜底 `${d.action_direction||'持有观察'}` —— 仅当后端真给出
+#     action_direction 才输出徽章，为假整段不输出，不用任何字面串顶替。
+# 前端本次有改动，故 index.html 全部 27 处 ?v= 与 sw.js 的 CACHE_NAME 一并 bump 到 9.9.41。
+APP_VERSION = "9.9.41"
 
 # ---- v9.5.123: API 鉴权 ----
 # 每个用户一个token，格式: userId:token（环境变量或data/auth_tokens.json）
