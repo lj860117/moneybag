@@ -740,6 +740,20 @@ def fund_detail(code: str, userId: str = ""):
         "updatedAt": datetime.now().strftime("%Y-%m-%d %H:%M"),
     }
 
+    # v9.9.38: industry_tag 只依赖基金名，与用户持仓无关，所以放进**共享结果**
+    # 而不是 _enrich_detail_with_holding（那个函数有两道 `return detail` 早退，
+    # 真实用户的 load_user(uid).portfolio.holdings 恒为空，永远走不到）。
+    # 放共享结果还有个好处：不带 userId 的调用路径（pages/insight-fund.js:513
+    # 的 fallback）也拿得到 —— 那条路径只读共享缓存。
+    try:
+        from services.industry_templates import get_fund_industry
+        _ind = get_fund_industry(result.get("name", ""))
+        if _ind:
+            result["industry_tag"] = _ind["tag"]
+            result["industry_desc"] = _ind["desc"]
+    except Exception as e:
+        print(f"[FUND_DETAIL] industry enrich failed for {code}: {e}")
+
     # v9.8.7/v9.9.3: 共享详情永远落共享缓存；只有真实持仓基金才需要单独落用户缓存。
     shared_result = dict(result)
     _set_cached(shared_cache_key, shared_result)
@@ -809,22 +823,6 @@ def _enrich_detail_with_holding(detail: dict, code: str, user_id: str) -> dict:
                 detail["timing_label"] = tl
         except Exception:
             pass
-        # v9.9.38 修三重叠错（此前 industry_tag **恒为空**，被下面那个 except 吞掉）：
-        #   1) 传了 2 个参数，而 get_fund_industry 只收 1 个 → TypeError
-        #   2) 就算改成 1 个，传的也是 code 不是 name —— 函数体是
-        #      `any(kw in fund_name ...)`，拿 "000001" 匹配行业词永远不命中
-        #   3) 返回值是 {"tag","desc"} 的 dict（不命中返回 {}，**不是** "其他"），
-        #      旧代码却拿它和字符串比较、又把整个 dict 塞进本该是字符串的字段
-        # 对照正确用法：services/industry_templates.py::enrich_fund_with_industry
-        try:
-            from services.industry_templates import get_fund_industry
-            match = get_fund_industry(detail.get("name", ""))
-            if match:
-                detail["industry_tag"] = match["tag"]
-                detail["industry_desc"] = match["desc"]
-        except Exception as e:
-            # 不再裸吞：这个 `pass` 正是上面三重叠错能活这么久的原因
-            print(f"[FUND_DETAIL] industry enrich failed for {code}: {e}")
         if not detail.get("scale_billion") and amount:
             detail["scale_billion"] = round(amount / 1e8, 1)
 
