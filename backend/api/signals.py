@@ -1025,6 +1025,39 @@ def _get_fund_nav_percentile(code: str) -> dict:
         return {}
 
 
+# v9.9.x: 再平衡"欠配方向"判据（原为 _enrich_fund_holding_relation 内的嵌套
+# 函数，提到模块级以便回归测试直接调**生产代码**，而不是在测试里复刻一份）。
+#   ① 美股/QDII 方向：欠配 -22%（「美股敞口 ∪ QDII」）。
+#   ② 红利低波方向：欠配 -15%。
+_GAP_LABEL_US_QDII = "⬇ 补仓方向（美股/QDII欠配-22%）"
+_GAP_LABEL_DIV_LOWVOL = "⬇ 补仓方向（红利低波欠配-15%）"
+
+
+def _is_gap_match(fund_name: str, fund_code: str = "") -> tuple:
+    """返回 (是否命中缺口, 缺口说明)。
+
+    纯名称关键词判断，不依赖 LLM。两个方向各自独立：
+      - 美股/QDII（欠配 -22%）：命中美股敞口或 QDII 基金。
+      - 红利低波（欠配 -15%）：命中红利/低波/价值类。
+    都不命中返回 (False, "")。
+
+    ⚠️ 美股桶的关键词里**不要加回 "港股"**：港股/港股通基金法律上既非美股、
+    也非 QDII（走互联互通额度）。fund_taxonomy 全市场实测 "港股" 440 命中、
+    真值精度≈0，几乎全是港股通基金。加进来会把「天弘港股通精选A」标成
+    「美股/QDII欠配-22%补仓方向」，诱导用户买港股去补**美股桶**。
+    "日经/亚太/欧洲" 则保留 —— 它们属 QDII，本桶名里本就写了 QDII。
+    """
+    n = (fund_name or "").lower()
+    us_keywords = ["qdii", "标普", "sp500", "s&p", "纳斯达克", "纳指", "美国", "美股", "全球科技",
+                   "全球智能", "日经", "海外", "美元", "亚太", "欧洲"]
+    if any(k in n for k in us_keywords):
+        return True, _GAP_LABEL_US_QDII
+    div_keywords = ["红利", "股息", "低波", "价值", "dividend", "高息", "红利低波"]
+    if any(k in n for k in div_keywords):
+        return True, _GAP_LABEL_DIV_LOWVOL
+    return False, ""
+
+
 def _enrich_fund_holding_relation(funds: list, user_id: str, get_fund_industry_fn=None) -> None:
     """给推荐基金列表标注与用户持仓的关联（已持仓/风格重叠/新敞口）。
     v9.5.76: 增加再平衡缺口方向标注（欠配方向优先提示）
@@ -1069,21 +1102,9 @@ def _enrich_fund_holding_relation(funds: list, user_id: str, get_fund_industry_f
         except Exception:
             pass
 
-        # v9.5.76: 判断推荐基金是否属于"欠配方向"（用简单名称关键词判断，不依赖 LLM）
-        # 欠配方向：S&P500/纳指QDII（美股桶欠配-22%），红利低波（欠配-15%）
-        def _is_gap_match(fund_name: str, fund_code: str) -> tuple[bool, str]:
-            """返回 (是否命中缺口, 缺口说明)"""
-            n = fund_name.lower()
-            # 美股QDII方向：欠配 -22%
-            us_keywords = ["qdii", "标普", "sp500", "s&p", "纳斯达克", "纳指", "美国", "美股", "全球科技",
-                           "全球智能", "日经", "海外", "美元", "亚太", "欧洲", "港股"]
-            if any(k in n for k in us_keywords):
-                return True, "⬇ 补仓方向（美股/QDII欠配-22%）"
-            # 红利低波方向：欠配 -15%
-            div_keywords = ["红利", "股息", "低波", "价值", "dividend", "高息", "红利低波"]
-            if any(k in n for k in div_keywords):
-                return True, "⬇ 补仓方向（红利低波欠配-15%）"
-            return False, ""
+        # v9.5.76: 判断推荐基金是否属于"欠配方向"（名称关键词，不依赖 LLM）。
+        # v9.9.x: 判据已提到**模块级** `_is_gap_match` —— 原为嵌套函数，
+        #   外部无法直接调用，回归测试只能复刻一份（复刻=实现改了测试还绿）。
 
         # v9.5.77: 预拉用户持仓净值序列（只拉一次，后面复用）
         my_nav_series = {}

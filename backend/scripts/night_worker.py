@@ -1202,8 +1202,8 @@ def _build_qdii_delay_note(qdii_names: list) -> str:
 
 
 def _render_holdings_block(name: str, diag: str, advice_section: str,
-                           qdii_names: list) -> str:
-    """拼「逐用户持仓速览」整块（含 QDII 延迟标注）。
+                           qdii_names: list, thermometer: str = "") -> str:
+    """拼「逐用户持仓速览」整块（含 QDII 延迟标注 + 可选组合温度计）。
 
     单独抽成函数是为了让回归测试能**直接调生产代码**验证标注，而不是在测试
     里复刻一份 f-string（复刻 = 实现改了测试还绿的死测试）。
@@ -1213,16 +1213,44 @@ def _render_holdings_block(name: str, diag: str, advice_section: str,
         diag: LLM 持仓诊断正文（可能为空）。
         advice_section: 已拼好的【操作建议】段落。
         qdii_names: `_collect_qdii_names()` 的结果。
+        thermometer: 组合温度计文本（``_build_portfolio_thermometer`` 的结果）。
+            非空时插在「📋 …持仓速览」标题**之前**（与 v9.5.76 原行为一致）。
 
     Returns:
         不含首尾空行的整块文本。
     """
     note = _build_qdii_delay_note(qdii_names)
-    lines = [f"📋 【{name} 持仓速览】", f"{diag}{advice_section}"]
+    lines = []
+    # v9.9.x: 组合温度计改由本函数**直接拼进块首** —— 不再靠调用方对标题做
+    # 字符串 replace。旧写法把 replace 的目标串写成「…持仓诊断」（右括号收尾），
+    # 而块的真实标题是「…持仓速览」（两者 2026-08-09 同一次改动里分叉），于是
+    # 温度计**从未进过晨报**（死码）。直接拼装从根上消掉这种脆弱匹配。
+    if thermometer:
+        lines.append(thermometer)
+        lines.append("")  # 空行，等价旧行为的 "\n\n" 分隔
+    lines.append(f"📋 【{name} 持仓速览】")
+    lines.append(f"{diag}{advice_section}")
     if note:
         lines.append(note)
     lines.append("⚠️ AI建议仅供参考，不构成投资建议")
     return "\n".join(lines)
+
+
+def _render_user_briefing(briefing: str, name: str, diag: str,
+                          advice_section: str, qdii_names: list,
+                          uid: str = "") -> str:
+    """拼单用户最终晨报正文 = 公共简报 + 持仓速览块（含组合温度计）。
+
+    温度计在这里从 ``uid`` 现算（纯计算，不依赖 LLM）。把这段组装抽出来，是
+    为了让回归测试能对**最终 user_briefing** 断言「温度计真的出现了」，而不是
+    去断言"调用过 replace"。
+    """
+    thermometer = _build_portfolio_thermometer(uid) if uid else ""
+    block = _render_holdings_block(name, diag, advice_section, qdii_names,
+                                   thermometer)
+    return f"""{briefing}
+
+{block}"""
 
 
 # ============================================================
@@ -1877,18 +1905,14 @@ def step_generate_products(phase1, phase2, phase3):
             else:
                 advice_section = f"\n【操作建议】\n  暂无操作建议"
             
-            user_briefing = f"""{briefing}
-
-{_render_holdings_block(name, diag, advice_section,
-                        user_phase2.get("qdii_names") or [])}"""
-
-            # v9.5.76: 在持仓诊断前插入组合温度计（纯计算，不依赖 LLM）
-            thermometer = _build_portfolio_thermometer(uid)
-            if thermometer:
-                user_briefing = user_briefing.replace(
-                    f"📋 【{name} 持仓诊断】",
-                    f"{thermometer}\n\n📋 【{name} 持仓诊断】"
-                )
+            # v9.5.76/v9.9.x: 组合温度计（纯计算，不依赖 LLM）由
+            # `_render_user_briefing` 现算并拼进持仓速览块首。
+            # 曾用 replace 把温度计插到「…持仓诊断…」标题前 —— 而标题实际是
+            # 「…持仓速览…」，replace 恒不命中，温度计从来没进过晨报（死码）。
+            # 改为直接拼装（见 _render_holdings_block），从根上消除该隐患。
+            user_briefing = _render_user_briefing(
+                briefing, name, diag, advice_section,
+                user_phase2.get("qdii_names") or [], uid)
 
         products[uid] = user_briefing
 
