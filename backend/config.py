@@ -296,7 +296,34 @@ TUSHARE_TOKEN = os.environ.get("TUSHARE_TOKEN", "")
 # fund_risk_adjusted.py:67（"沪深300基准不适用"比 QDII 宽）、
 # industry_templates.py:456（展示兜底）、ds_enhance.py:168（纯文案）。
 # 本轮**未动前端**，故 index.html/sw.js 的 ?v= 与 CACHE_NAME 保持 9.9.38 不变。
-APP_VERSION = "9.9.39"
+#
+# ---- v9.9.40: 详情弹窗 121 行死区 + 两处缓存/取源真 bug（独立 QA 挖出）----
+# 1) pages/_components.js 决策辅助面板**永假闸门**（`:457-577`）：
+#    闸门 `if (d.holding_relation && d.advices)` 对任何人都不成立 ——
+#    `advices` 只由 `GET /api/fund-holdings/detail/{code}` 产出，而弹窗只调
+#    `/api/fund/detail/{code}`（两接口间无 merge，fund_detail 历史上从未产出该字段）；
+#    `holding_relation` 那边另有下面第 2 条 bug。后果：**后端一直在算**的
+#    「走势预估 8 维面板」「智能定投建议」「止盈止损纪律线设定」「持仓摘要」全部从不渲染。
+#    同时修 `:801-806` 的第二处脆弱接线：原本用字面标题串
+#    `body.innerHTML.includes('持仓决策辅助')` 决定「追加 or 覆盖」，标题行条件化后
+#    会失效并把刚渲染的面板整个覆盖 → 改为 `_panelRendered` 标志位。
+# 2) api/fund_detail.py `_enrich_detail_with_holding` **取错持仓源**：
+#    读 `load_user(uid).portfolio.holdings`，而该字段对真实用户**恒为空**
+#    （实测 LeiJiang/BuLuoGeLi 长度均 0；真实持仓在 `data/fund_holdings_{uid}.json`）。
+#    全仓 15+ 处都用 `services.fund_monitor.load_fund_holdings(uid)`，只有此处用错源
+#    → 对真实用户永远在 `if not holding: return detail` 早退。且字段名也对不上真实
+#    schema（真实是 `costNav` / `addedAt`，代码读 `cost_nav` / `buyDate` / `amount`）。
+#    盈亏基准 = 成本净值 costNav（全仓口径）。
+# 3) api/fund_detail.py 缓存加**载荷形状版本门** `_DETAIL_PAYLOAD_VER`：
+#    v9.9.39 把 industry_tag 加进共享结果后，682 个旧缓存（无该键）因
+#    `allow_stale` 早退继续被返回，且 `cache_warmer._warm_fund_details` 只 GET
+#    同一接口、**从不强制刷新** → 修复最长 72h 不可见（实测 industry_tag=None）。
+#    改法：`_get_cached(require_pv=)` 按调用点 opt-in，fresh 与 stale 两条路径都校验，
+#    信封 `pv` 不符即视为 miss（**不删文件**，让重算覆盖）；`_set_cached(pv=)` 写入。
+#    以后改动共享载荷的顶层键形状，**必须把 `_DETAIL_PAYLOAD_VER` +1**。
+# 前端本次有改动（pages/_components.js），故 index.html 全部 27 处 ?v= 与
+# sw.js 的 CACHE_NAME 一并 bump 到 9.9.40。
+APP_VERSION = "9.9.40"
 
 # ---- v9.5.123: API 鉴权 ----
 # 每个用户一个token，格式: userId:token（环境变量或data/auth_tokens.json）
