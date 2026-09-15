@@ -275,7 +275,28 @@ TUSHARE_TOKEN = os.environ.get("TUSHARE_TOKEN", "")
 #    字符串）导致该字段**恒为空**。except 改为打印日志 —— 裸吞异常是根因。
 # 前端仅动 pages/insight-fund.js，故只 bump 它的 ?v= → 9.9.38 与 sw.js 的
 # CACHE_NAME → moneybag-v9938-cache。
-APP_VERSION = "9.9.38"
+#
+# ---- v9.9.39: 三处"看着像 QDII 其实不是"的实修 + 一处死码 ----
+# 1) api/signals.py 再平衡"欠配方向"判据 _is_gap_match：「美股/QDII 欠配-22%」
+#    的 us_keywords 混进了 "港股"。港股/港股通基金法律上**既非美股也非 QDII**
+#    （走互联互通额度），全市场实测 "港股" 440 命中、真值精度≈0 → 一只港股通
+#    基金会被打上「补仓方向（美股/QDII欠配-22%）」绿色徽章，诱导用户买港股去
+#    补**美股桶**。删掉 "港股"；同时把判据提到模块级便于回归测试直调生产代码。
+# 2) services/weekly_report.py 把展示桶 key "QDII" 改名 "海外/全球"（该桶装的是
+#    海外/全球配置而非仅法律 QDII，同 dict 已有独立"港股"桶）→ 纯展示改名。
+# 3) scripts/night_worker.py 组合温度计**死码**：晨报用 replace("📋 【{name} 持仓
+#    诊断】") 插温度计，但块真实标题是「持仓速览」（2026-08-09 同一 commit 分叉）
+#    → replace 恒不命中 → 温度计从未进过任何晨报。改为 _render_holdings_block
+#    直接拼进块首，新增 _render_user_briefing 组装正文，从根上消除脆弱字符串匹配。
+# 4) api/fund_detail.py industry_tag：v9.9.38 修好三重叠错但生产仍为 None ——
+#    根因在其**之前**的第二道门（真实用户 portfolio.holdings 恒为 []，早退）。
+#    industry_tag 只依赖基金名、与持仓无关 → 挪到共享结果，所有读缓存路径都拿到。
+# 本轮仍**不**统一（语义不同）：portfolio.py:_detect_qdii（文案）、
+# longterm_screen.py（排除词）、portfolio_doctor.py（类别映射）、
+# fund_risk_adjusted.py:67（"沪深300基准不适用"比 QDII 宽）、
+# industry_templates.py:456（展示兜底）、ds_enhance.py:168（纯文案）。
+# 本轮**未动前端**，故 index.html/sw.js 的 ?v= 与 CACHE_NAME 保持 9.9.38 不变。
+APP_VERSION = "9.9.39"
 
 # ---- v9.5.123: API 鉴权 ----
 # 每个用户一个token，格式: userId:token（环境变量或data/auth_tokens.json）

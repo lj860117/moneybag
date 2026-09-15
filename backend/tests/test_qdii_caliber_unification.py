@@ -30,10 +30,11 @@ QDII 口径统一回归测试（v9.9.38）
    旧词含 "全球"（taxonomy 已删：93 命中，top-N 唯一误判源是
    「兴全全球视野股票」——一只境内基金）。
 
-刻意**不**统一的（语义本就不同，见 ``backend/config.py`` 的 v9.9.38 注释）：
+刻意**不**统一的（语义本就不同，见 ``backend/config.py`` 的 v9.9.38/v9.9.39 注释）：
 ``portfolio.py:_detect_qdii``（仅文案措辞）、``longterm_screen.py``（排除词）、
-``portfolio_doctor.py``（资产类别映射）、``signals.py:1078`` 的 ``us_keywords``
-（美股**敞口**≠QDII；它含 "港股" 是另一个问题，不在本轮范围）。
+``portfolio_doctor.py``（资产类别映射）、``signals.py`` 的 ``us_keywords``
+（美股**敞口**≠QDII，是"欠配方向"判据不是身份判据；它混进的 "港股" 已在
+v9.9.39 单独删除，回归见 ``test_us_qdii_gap_keywords.py``）。
 
 守卫设计
 --------
