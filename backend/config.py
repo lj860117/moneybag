@@ -267,9 +267,16 @@ TUSHARE_TOKEN = os.environ.get("TUSHARE_TOKEN", "")
 #    longterm_screen.py（排除词）、portfolio_doctor.py（资产类别映射）、
 #    signals.py:1078 us_keywords（美股敞口 ≠ QDII；它含"港股"是另一个问题）。
 # 3) 前端 K 线币种误判：pages/insight-fund.js 的正则含 "标普"/"港股" 而无否定词，
-#    「华宝标普港股通低波红利A」这类**境内人民币**基金被判 USD，用户一点切换就把
-#    整条 K 线 ÷7.2 —— 是**数值错误**不是显示错误。改为后端 fund_nav_history
-#    下发 is_qdii（唯一真源判定，不进缓存），前端据此撤掉误判出的切换条。
+#    「华宝标普港股通低波红利A」这类**境内人民币**基金被判 USD。改为后端
+#    fund_nav_history 下发 is_qdii（唯一真源判定，不进缓存），前端据此撤掉误判
+#    出的切换条。
+#    ⚠️ 措辞更正（2026-09-16 生产实测）：下面这个说法**在当前线上不可达**，别再
+#    照抄 —— 「用户一点切换就把整条 K 线 ÷7.2，是数值错误」。实测依据：后端
+#    is_qdii 判定准确（探针 501310→false、006555→true），撤除逻辑会执行；且
+#    fetch 失败路径 `_klineRawData` 为 null、无数据可除。当前**可观察**后果是
+#    非正常路径下切换条残留、点了没反应 —— 错误可操作性，属 UX 缺陷。仅当后端
+#    漂移/未回传 is_qdii 时才退化为数值错误。v9.9.44 已改为「确认 is_qdii===true
+#    才插入」的失效安全写法，从结构上免疫该类退化。
 # 4) 修两处被静默 except 吞掉的失败：api/fund_detail.py::_enrich_holding 的
 #    industry_tag 三重叠错（传 2 参 → TypeError；传 code 不当 name；拿 dict 当
 #    字符串）导致该字段**恒为空**。except 改为打印日志 —— 裸吞异常是根因。
