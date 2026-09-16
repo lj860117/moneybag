@@ -161,6 +161,18 @@ def _open(code: str, name: str, fetch_js: str) -> dict:
     return _run_js(_OPEN_AND_REPORT % (json.dumps(code), json.dumps(name)), fetch_js)
 
 
+def _assert_no_bar(r: dict, ctx: str) -> None:
+    """「不该出现切换条」的三重断言：动态插入、初始模板、币种确认，一处都不能漏。
+
+    `inInitial` 这条是故障注入 J1 补上的：只断言 `inserted` 时，若有人把切换条
+    写回**初始模板**（即回到「先画后撤」），非正常路径会假绿 —— 初始模板里的
+    切换条根本不受后端 is_qdii 把门。
+    """
+    assert r["inserted"] is False, f"{ctx}：出现了币种切换条（动态插入）"
+    assert r["inInitial"] is False, f"{ctx}：切换条被写进初始模板（先画后撤回来了）"
+    assert r["cur"] is None, f"{ctx}：却确认了外币币种 {r['cur']!r}"
+
+
 # ==========================================================================
 # 一、源码级结构断言
 # ==========================================================================
@@ -251,9 +263,7 @@ def test_behavior_domestic_fund_gets_no_toggle_bar():
     「华宝标普港股通低波红利A」正是旧正则会误判成 USD 的那只。
     """
     r = _open("501029", "华宝标普港股通低波红利A", _fetch_ok(_NAV_DOMESTIC))
-    assert r["inserted"] is False, "境内基金出现了币种切换条"
-    assert r["inInitial"] is False, "切换条被写进了初始模板（先画后撤回来了）"
-    assert r["cur"] is None, f"境内基金却确认了外币币种 {r['cur']!r}"
+    _assert_no_bar(r, "境内人民币基金")
 
 
 def test_behavior_true_qdii_gets_toggle_bar():
@@ -271,22 +281,19 @@ def test_behavior_ok_false_payload_gets_no_toggle_bar():
     而后端此时明明回了 `is_qdii:false` —— 这正是本轮最关键的回归。
     """
     r = _open("050025", "华宝标普港股通低波红利A", _fetch_ok(_NAV_OK_FALSE))
-    assert r["inserted"] is False, "ok:false 路径下仍出现了切换条"
-    assert r["cur"] is None, f"ok:false 路径下却确认了币种 {r['cur']!r}"
+    _assert_no_bar(r, "载荷 ok:false 路径")
 
 
 def test_behavior_fetch_rejection_gets_no_toggle_bar():
     """行为级断言：fetch reject（d=null，如超时）→ 不出现切换条。"""
     r = _open("050025", "华宝标普港股通低波红利A", _FETCH_REJECT)
-    assert r["inserted"] is False, "请求失败路径下仍出现了切换条"
-    assert r["cur"] is None, f"请求失败路径下却确认了币种 {r['cur']!r}"
+    _assert_no_bar(r, "fetch reject / 超时路径")
 
 
 def test_behavior_empty_data_gets_no_toggle_bar():
     """行为级断言：data 为空 → 不出现切换条（没有 K 线可切换）。"""
     r = _open("050025", "博时标普500ETF(QDII)", _fetch_ok(_NAV_EMPTY))
-    assert r["inserted"] is False, "空数据下仍出现了切换条"
-    assert r["cur"] is None
+    _assert_no_bar(r, "data 为空路径")
 
 
 def test_behavior_currency_symbol_guessed_from_name():
