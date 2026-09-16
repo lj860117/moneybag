@@ -642,20 +642,41 @@ function _loadAiCheckup(){
 }
 
 // F10 v9.5.47: 基金净值 K 线弹窗
-async function _showFundKlineModal(code, name){
-  const o=document.createElement('div');o.className='modal-overlay';o.onclick=e=>{if(e.target===o)o.remove()};
-  // F11 v9.5.48: QDII 检测（名称含关键字 → 显示币种切换）
-  const isQdii = /QDII|纳指|标普|纳斯达克|S&P|海外|港股|美股|日经|越南|印度/i.test(name||'');
-  const fxCur = isQdii ? (/纳指|标普|纳斯达克|S&P|美股|海外科技/i.test(name||'') ? 'USD' : /港股|恒生/i.test(name||'') ? 'HKD' : /日经/i.test(name||'') ? 'JPY' : 'USD') : null;
-  o.innerHTML=`<div class="modal-sheet" onclick="event.stopPropagation()" style="max-height:85vh">
-    <div class="modal-handle"></div>
-    <div class="modal-title">📈 ${name||code} 净值走势</div>
-    ${isQdii?`<div id="fxToggleBar" style="padding:0 12px;margin-bottom:8px;display:flex;gap:6px;align-items:center">
+//
+// v9.9.44: 外币判定改为**失效安全**。
+//   旧实现：先用内联正则判 isQdii（该正则含 港股/纳指/美股/S&P 等**真源已删词**，
+//   且一个否定词都没有 —— taxonomy 给「标普」配的 {港股通, 中国A股, 香港上市中国}
+//   在这里完全缺失），**先画**币种切换条，再等后端 is_qdii === false 时撤掉。
+//   但撤除代码排在 `!d.ok / 空 data / fetch reject` 的提前 return **之后**，
+//   于是任何非正常路径都撤不掉：境内人民币基金（如「华宝标普港股通低波红利A」）
+//   会留下 USD 切换条，用户一点切换就把整条 K 线 ÷ 7.2 —— 那是**数值错误**。
+//   新实现：是否外币**只由后端唯一真源** services.fund_taxonomy.is_qdii_fund 回传的
+//   d.is_qdii 决定；初始**不渲染**切换条，仅当 d.is_qdii === true 才动态插入。
+//   失败 / 超时 / 空数据的默认态 =「只有 CNY」——失效安全。
+function _guessFxCurrency(name){
+  // v9.9.44: 只在**已确认 QDII 之后**调用，作用仅是挑币种符号，**不判定是不是外币**。
+  const n = name || '';
+  if(/日经/i.test(n)) return 'JPY';
+  if(/恒生|港股/i.test(n)) return 'HKD';
+  return 'USD';
+}
+
+function _fxToggleBarHtml(fxCur){
+  // v9.9.44: 切换条 HTML 独立成函数，供「确认 QDII 后动态插入」使用。
+  return `<div id="fxToggleBar" style="padding:0 12px;margin-bottom:8px;display:flex;gap:6px;align-items:center">
       <span style="font-size:11px;color:var(--text2)">币种：</span>
       <button onclick="_fxSwitch('CNY')" data-cur="CNY" class="fx-btn active" style="padding:3px 10px;border-radius:4px;border:1px solid rgba(99,102,241,.4);background:rgba(99,102,241,.15);color:#A5B4FC;font-size:11px;cursor:pointer">¥ CNY</button>
       <button onclick="_fxSwitch('${fxCur}')" data-cur="${fxCur}" class="fx-btn" style="padding:3px 10px;border-radius:4px;border:1px solid rgba(148,163,184,.2);background:transparent;color:var(--text2);font-size:11px;cursor:pointer">${fxCur==='USD'?'$':fxCur==='HKD'?'HK$':fxCur==='JPY'?'¥(日)':fxCur} ${fxCur}</button>
       <span id="fxNote" style="font-size:10px;color:var(--text-tertiary,#7A8499);margin-left:auto"></span>
-    </div>`:''}
+    </div>`;
+}
+
+async function _showFundKlineModal(code, name){
+  const o=document.createElement('div');o.className='modal-overlay';o.onclick=e=>{if(e.target===o)o.remove()};
+  // v9.9.44: 初始**不渲染**币种切换条（失效安全；确认 QDII 后才插）。
+  o.innerHTML=`<div class="modal-sheet" onclick="event.stopPropagation()" style="max-height:85vh">
+    <div class="modal-handle"></div>
+    <div class="modal-title">📈 ${name||code} 净值走势</div>
     <div id="klineChartArea" style="padding:12px 0">
       <div style="text-align:center;padding:20px;color:var(--text2)"><div class="loading-spinner" style="width:24px;height:24px;margin:0 auto 8px;border-width:2px"></div>加载中...</div>
     </div>
@@ -666,12 +687,15 @@ async function _showFundKlineModal(code, name){
   window._klineRawData = null;
   window._klineFxRate = 1;  // 1 = CNY 原值
   window._klineDisplayCur = 'CNY';
-  window._klineForeignCur = fxCur;
+  // v9.9.44: 初始**无**外币币种。旧实现在这里就把内联正则猜的 fxCur 写进来了，
+  // 若随后后端否定（或请求失败根本走不到纠偏），_fxSwitch 会拿到脏币种。
+  // 现在只在「后端确认 is_qdii === true 并插入切换条」时才赋值。
+  window._klineForeignCur = null;
 
   try{
-    // v9.9.38: 带上 name —— 前端无法 import Python 模块，上面那行 isQdii 只能
-    // 用正则粗判（这也正是仓库里第 4 套口径）。后端用唯一真源
-    // services.fund_taxonomy.is_qdii_fund 回传 is_qdii，下面据此纠正。
+    // v9.9.44: 带上 name —— 前端无法 import Python 模块，所以「是不是 QDII」**不在前端判**：
+    // 后端用唯一真源 services.fund_taxonomy.is_qdii_fund 判定后回传 is_qdii
+    // （每次按 name 现算，不进缓存）。前端只消费这个 bool，不再自带第 4 套口径。
     const d = await fetch(API_BASE+'/fund/nav-history/'+code+'?days=90&name='+encodeURIComponent(name||''),{signal:AbortSignal.timeout(15000)}).then(r=>r.ok?r.json():null).catch(()=>null);
     const area = document.getElementById('klineChartArea');
     if(!area) return;
@@ -679,16 +703,17 @@ async function _showFundKlineModal(code, name){
       area.innerHTML='<div style="text-align:center;padding:20px;color:var(--text2)">暂无净值数据</div>';
       return;
     }
-    // v9.9.38: 后端否定前端正则的判定时，撤掉币种切换条。
-    // 正则含 "标普"/"港股" 而无否定词，「华宝标普港股通低波红利A」这类
-    // **境内人民币**基金会误判成 USD；不撤的话用户一点切换就把整条 K 线
-    // 的净值除以 7.2 —— 那是数值错误，不是显示错误。
-    // 只在 is_qdii === false 时纠正：反向（真 QDII 被漏判）只是少个按钮，
-    // 无害，而且币种无从推断，不在这里补。
-    if(d.is_qdii === false && window._klineForeignCur){
-      const bar = document.getElementById('fxToggleBar');
-      if(bar) bar.remove();
-      window._klineForeignCur = null;
+    // v9.9.44: 仅当后端**确认**是 QDII（唯一真源 services.fund_taxonomy.is_qdii_fund）
+    // 且真有净值数据时，才动态插入币种切换条 —— 取代旧实现「先画后撤」的写法。
+    // 「先画后撤」挡不住任何非正常路径：旧的撤除代码排在上面「无数据」提前 return
+    // 之后，fetch reject / ok:false / 空 data 三种情况都走不到撤除，切换条原样留着。
+    // 「确认后才插」则让这些路径的默认态天然是「只有 CNY」。
+    // 币种符号仍由名称启发式挑（_guessFxCurrency），但它已不再决定「是不是外币」。
+    if(d && d.ok && d.data && d.data.length && d.is_qdii === true){
+      const fxCur = _guessFxCurrency(name);
+      const title = o.querySelector('.modal-title');
+      if(title && title.insertAdjacentHTML) title.insertAdjacentHTML('afterend', _fxToggleBarHtml(fxCur));
+      window._klineForeignCur = fxCur;
     }
     window._klineRawData = d.data;
     _renderKlineChart();
@@ -701,6 +726,10 @@ async function _showFundKlineModal(code, name){
 // F11 v9.5.48: K 线币种切换
 window._fxSwitch = async function(cur){
   if(cur === window._klineDisplayCur) return;
+  // v9.9.44: 外币币种未经后端确认（window._klineForeignCur 为 null）时，只允许切回 CNY。
+  // 纵深防御：即便页面上残留/伪造了一个外币切换按钮，也绝不会拿未确认的币种去除 K 线
+  // （那是数值错误：境内人民币基金 ÷ 7.2）。
+  if(cur !== 'CNY' && cur !== window._klineForeignCur) return;
   // 切换按钮高亮
   document.querySelectorAll('.fx-btn').forEach(b=>{
     const isActive = b.dataset.cur === cur;
