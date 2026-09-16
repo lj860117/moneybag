@@ -31,6 +31,7 @@ from services.data_layer import (
     get_shibor, get_dividend_yield, get_news_sentiment_score,
     get_policy_news, analyze_news_impact,
 )
+from services.fund_name_util import shorten_fund_name
 from services.signal import calc_smart_dca
 
 from fastapi.responses import FileResponse
@@ -337,7 +338,11 @@ def _build_market_context() -> str:
                 lines.append(f"\n选基推荐TOP3：")
                 for f in funds:
                     r = f.get("returns", {})
-                    lines.append(f"  - {f.get('name','')[:12]} 评分{f.get('score',0):.0f} 近1年{r.get('1y','?')}%")
+                    # 2026-09-16：裸 `[:12]` 会把 `(QDII)` 截成 `(Q`，留下未闭合括号，
+                    # 污染质检的括号计数。统一走 services/fund_name_util 的配平截断；
+                    # 名字被括号吃光时回落到基金代码（与 night_worker 持仓明细一致）。
+                    name_short = shorten_fund_name(f.get("name", ""), 12) or f.get("code", "")
+                    lines.append(f"  - {name_short} 评分{f.get('score',0):.0f} 近1年{r.get('1y','?')}%")
     except Exception as e:
         print(f"[MARKET_CTX] fund_screen injection failed: {e}")
 

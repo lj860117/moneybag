@@ -24,6 +24,8 @@ import time
 from datetime import datetime, date, timedelta
 from pathlib import Path
 
+from services.fund_name_util import shorten_fund_name  # noqa: E402  (需位于 sys.path 引导之后)
+
 DATA_DIR = Path(config.DATA_DIR)
 USERS = ["LeiJiang", "BuLuoGeLi"]
 
@@ -264,7 +266,13 @@ def generate_family_view() -> dict:
     if overlap_rate > 60:
         warnings.append(f"⚠️ 两人行业重叠率{overlap_rate}%, 分散度不足")
     if len(overlap) >= 3:
-        names = [h["name"][:6] for h in overlap[:3]]
+        # 2026-09-16：裸 `[:6]` 比 12 更容易断在括号里（`(QDII)` 截成 `(Q`），
+        # 留下未闭合括号。统一走 services/fund_name_util 的配平截断；名字被
+        # 括号吃光时回落到基金代码（与 night_worker 持仓明细一致）。
+        names = [
+            shorten_fund_name(h.get("name"), 6) or h.get("code", "")
+            for h in overlap[:3]
+        ]
         warnings.append(f"📎 {len(overlap)}只基金两人都持有: {', '.join(names)}{'等' if len(overlap)>3 else ''}")
     
     if not warnings:
