@@ -649,7 +649,14 @@ function _loadAiCheckup(){
 //   在这里完全缺失），**先画**币种切换条，再等后端 is_qdii === false 时撤掉。
 //   但撤除代码排在 `!d.ok / 空 data / fetch reject` 的提前 return **之后**，
 //   于是任何非正常路径都撤不掉：境内人民币基金（如「华宝标普港股通低波红利A」）
-//   会留下 USD 切换条，用户一点切换就把整条 K 线 ÷ 7.2 —— 那是**数值错误**。
+//   会留下 USD 切换条。
+//   ⚠️ 后果分两层，别把「潜在风险」说成「已发生」：
+//     · **当前线上可观察**：后端 is_qdii 判定是准的（生产双向探针实测
+//       501310→false / 006555→true），且上述非正常路径下本就没有净值数据可画，
+//       所以实际后果是「切换条残留但点了没反应」——错误可操作性，属 UX 缺陷。
+//     · **潜在风险（当前不可达）**：若后端漂移（不回传或回错 is_qdii），
+//       同一处会在**有数据**路径下误留外币切换条，一点切换就把整条 K 线 ÷ 汇率
+//       —— 那才是数值错误。本改法顺带把这条退路一起堵掉。
 //   新实现：是否外币**只由后端唯一真源** services.fund_taxonomy.is_qdii_fund 回传的
 //   d.is_qdii 决定；初始**不渲染**切换条，仅当 d.is_qdii === true 才动态插入。
 //   失败 / 超时 / 空数据的默认态 =「只有 CNY」——失效安全。
@@ -727,8 +734,9 @@ async function _showFundKlineModal(code, name){
 window._fxSwitch = async function(cur){
   if(cur === window._klineDisplayCur) return;
   // v9.9.44: 外币币种未经后端确认（window._klineForeignCur 为 null）时，只允许切回 CNY。
-  // 纵深防御：即便页面上残留/伪造了一个外币切换按钮，也绝不会拿未确认的币种去除 K 线
-  // （那是数值错误：境内人民币基金 ÷ 7.2）。
+  // 纵深防御：即便页面上残留/伪造了一个外币切换按钮，也绝不会拿未确认的币种去除 K 线。
+  // （一旦发生就是数值错误 —— 境内人民币基金按外币汇率折算；当前线上因后端 is_qdii
+  //  判定准确而不可达，此处防的是后端漂移 / 未来改动。）
   if(cur !== 'CNY' && cur !== window._klineForeignCur) return;
   // 切换按钮高亮
   document.querySelectorAll('.fx-btn').forEach(b=>{

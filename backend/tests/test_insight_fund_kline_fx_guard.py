@@ -19,8 +19,17 @@
 3. **纠偏时机错了（最关键）**：撤除代码排在 `!d.ok / 空 data / fetch reject`
    的提前 return **之后**。后端其实**总会**回真 bool（`api/fund_detail.py:1876`
    `bool(is_qdii_fund(...))`，连 `ok:false` 支也带），但任何非正常路径都走不到撤除
-   → 切换条原样留着。用户一点切换，`_fxSwitch` 设 `_klineFxRate = d.rate` 后
-   `_renderKlineChart()` 重算，**整条 K 线 ÷ 7.2** —— 那是数值错误，不是显示错误。
+   → 切换条原样留着。
+
+## 后果分两层（诚实区分「已验证」与「潜在风险」）
+
+- **当前线上可观察**：后端 `is_qdii` 判定是准的（team-lead 生产双向探针实测
+  `501310/华宝标普港股通低波红利A → is_qdii=False`、`006555/浦银安盛全球智能科技(QDII)A
+  → is_qdii=True`，**无部署漂移**），且上述非正常路径下本就没有净值数据可画。
+  所以实际后果是「切换条残留但点了没反应」——**错误可操作性，属 UX 缺陷**。
+- **潜在风险（当前线上不可达）**：若后端漂移（不回传或回错 `is_qdii`），同一处会在
+  **有数据**路径下误留外币切换条，一点切换就把整条 K 线 ÷ 汇率 —— 那才是**数值错误**。
+  失效安全的改法把这条退路也一起堵掉，但**本仓库没有任何用例声称该数值错误已在线上发生**。
 
 ## 修法（v9.9.44，失效安全）
 
@@ -306,7 +315,8 @@ def test_behavior_currency_symbol_guessed_from_name():
 def test_behavior_fx_switch_ignores_unconfirmed_currency():
     """行为级断言：_klineForeignCur 为 null 时，_fxSwitch('USD') 不得改变显示币种。
 
-    防「脏币种残留 → 整条 K 线 ÷ 7.2」。
+    防「脏币种残留 → K 线按错误汇率折算」（数值错误；当前线上因后端 is_qdii 准确
+    而不可达，此处防的是后端漂移 / 未来改动）。
     """
     res = _run_js(
         "await __sandbox._showFundKlineModal('501029','华宝标普港股通低波红利A');"
