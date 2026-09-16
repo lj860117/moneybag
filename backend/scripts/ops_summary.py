@@ -164,12 +164,48 @@ def collect_disk() -> dict[str, Any]:
     }
 
 
-def collect_llm_balance() -> dict[str, Any]:
-    """抓取 LLM 余额监控日志里的关键信号（余额 + 欠费）。"""
+# 余额行的行首日期，例：
+#   2026-09-16 08:05:02,123 [INFO] [deepseek] 当前余额: ¥104.74（阈值 ¥10.00）
+# 分隔符容忍 `-` / `/` / `.`；`(?!\d)` 防止把 `2026-09-161` 这类脏数据当前缀吃进来。
+_BALANCE_LINE_DATE_RE = re.compile(
+    r"^(?P<y>\d{4})[-/.](?P<m>\d{1,2})[-/.](?P<d>\d{1,2})(?!\d)"
+)
+
+
+def _balance_line_date(line: str) -> Optional[str]:
+    """取余额行行首日期，规范化成 `YYYY-MM-DD`；解析不出返回 None。
+
+    解析不出（行首没时间戳 / 格式变了）= 无法证明这行是当天写的，调用方按
+    「当日未取到」处理 —— 往"报未知"的方向失败，绝不往"拿旧数充数"的方向失败。
+    """
+    m = _BALANCE_LINE_DATE_RE.match(line)
+    if not m:
+        return None
+    try:
+        return date(int(m.group("y")), int(m.group("m")), int(m.group("d"))).isoformat()
+    except ValueError:  # 非法日期（如 2026-02-30）
+        return None
+
+
+def collect_llm_balance(target_date: Optional[date] = None) -> dict[str, Any]:
+    """抓取 LLM 余额监控日志里的关键信号（余额 + 欠费）。
+
+    ⚠️ 只认**当日**的余额行。2026-09-16 事故：cron 里本脚本 08:03 生成快照、
+    llm_balance_monitor.py 08:05 才把当天的余额写进日志，而本函数原本从日志
+    **文本**反解析、无脑后写覆盖 —— 当天的行还没写出来时，就静默拿昨天的余额
+    冒充当天，快照连续四天滞后一天（09-16 日报写 ¥9.87，实际当天已充值到
+    ¥104.78）。根治办法是**不依赖执行顺序**：行首日期 != 目标日期的行一律丢弃；
+    取不到当天的行就置 `stale=True`、`balances` 留空，让下游能说"当日未取到"。
+
+    target_date: 快照目标日期（默认 date.today()），仅供测试注入。
+    """
+    target = (target_date or date.today()).isoformat()
     result: dict[str, Any] = {
         "checked": False,
-        "balances": {},   # {provider: 余额字符串}
-        "arrears": [],    # 欠费的 provider 列表
+        "balances": {},        # {provider: 余额字符串}
+        "arrears": [],         # 欠费的 provider 列表
+        "stale": True,         # True = 当日未取到余额；取到任意当日余额行后翻 False
+        "balance_asof": None,  # 当日余额行的日期（YYYY-MM-DD），供下游核对新鲜度
     }
     # 余额监控日志在 backend/logs/（相对脚本），需同时扫描两处 data/logs
     candidates = _candidate_dirs("logs") + [_BACKEND_DIR / "logs"]
@@ -182,14 +218,23 @@ def collect_llm_balance() -> dict[str, Any]:
     text = log_file.read_text(encoding="utf-8", errors="ignore")
     for line in text.splitlines():
         if "当前余额" in line:
-            # 例：[INFO] [deepseek] 当前余额: ¥31.15（阈值 ¥10.00）
+            # 只认当天写的余额行 —— 昨天的余额不是今天的余额（2026-09-16 事故根因）。
+            # 行首没日期的余额行同样丢弃：无法证明它是当天的，就当没取到。
+            line_date = _balance_line_date(line)
+            if line_date != target:
+                continue
+            # 例：2026-09-16 08:05:02,123 [INFO] [deepseek] 当前余额: ¥104.74（阈值 ¥10.00）
             # provider 出现在最后一个 [xxx] 块（紧邻「当前余额」前）
             try:
                 prefix = line.split("当前余额:")[0]
                 # 取最后一个方括号里的 token
                 provider = prefix.rstrip().rsplit("[", 1)[-1].rstrip("]").strip()
                 balance = line.split("当前余额:")[1].split("（")[0].strip()
+                if not provider or not balance:
+                    continue  # 缺字段的行不值得进报告（provider 空会记出 'INFO' 这种假 provider）
                 result["balances"][provider] = balance
+                result["stale"] = False
+                result["balance_asof"] = line_date
             except Exception:
                 pass
         if "Arrearage" in line or "overdue-payment" in line:
