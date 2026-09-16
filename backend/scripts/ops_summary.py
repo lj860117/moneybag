@@ -175,8 +175,8 @@ _BALANCE_LINE_DATE_RE = re.compile(
 def _balance_line_date(line: str) -> Optional[str]:
     """取余额行行首日期，规范化成 `YYYY-MM-DD`；解析不出返回 None。
 
-    解析不出（行首没时间戳 / 格式变了）= 无法证明这行是当天写的，调用方按
-    「当日未取到」处理 —— 往"报未知"的方向失败，绝不往"拿旧数充数"的方向失败。
+    解析不出（行首没时间戳 / 格式变了）= 无法证明这行是哪天写的，调用方直接丢弃
+    该行 —— 往"报未知"的方向失败，绝不往"拿旧数充数"的方向失败。
     """
     m = _BALANCE_LINE_DATE_RE.match(line)
     if not m:
@@ -190,12 +190,21 @@ def _balance_line_date(line: str) -> Optional[str]:
 def collect_llm_balance(target_date: Optional[date] = None) -> dict[str, Any]:
     """抓取 LLM 余额监控日志里的关键信号（余额 + 欠费）。
 
-    ⚠️ 只认**当日**的余额行。2026-09-16 事故：cron 里本脚本 08:03 生成快照、
-    llm_balance_monitor.py 08:05 才把当天的余额写进日志，而本函数原本从日志
-    **文本**反解析、无脑后写覆盖 —— 当天的行还没写出来时，就静默拿昨天的余额
-    冒充当天，快照连续四天滞后一天（09-16 日报写 ¥9.87，实际当天已充值到
-    ¥104.78）。根治办法是**不依赖执行顺序**：行首日期 != 目标日期的行一律丢弃；
-    取不到当天的行就置 `stale=True`、`balances` 留空，让下游能说"当日未取到"。
+    口径：**取每个 provider 最近一次写进日志的余额，并把它的日期如实报出来**。
+
+    - 日志是追加写的（llm_balance_monitor.py 每轮探测追加一行），所以「最近一次」
+      = 日志里**最后一条**该 provider 的余额行 —— 按行序取，不按日期大小排序。
+    - 行首解析不出日期的余额行一律丢弃：无法证明它是哪天写的，就不能参与
+      「最近一次」的判断。
+    - `balance_asof` = 已报出的余额里**最旧**那条的日期，`stale` = 它 != target_date。
+      取最旧而不是最新，是为了不给任何一个 provider 贴上比它实际更晚的日期 ——
+      那正是 2026-09-16 事故的形态（拿旧数冒充当天）。
+
+    为什么不「只认当天的行」（9dfd22c 的写法，已回归）：cron 里本脚本 08:03
+    生成快照、llm_balance_monitor.py 08:05 才把当天的余额写进日志 —— 08:03 那一刻
+    当天的行根本不存在，「只认当天」会让日报天天报「未取到」，比滞后一天更没用。
+    现在的写法既**有数**（拿最近一次）又**不假**（日期一并报出，下游写成
+    「DeepSeek 余额 ¥104.74（截至 09-16）」）。
 
     target_date: 快照目标日期（默认 date.today()），仅供测试注入。
     """
@@ -204,8 +213,8 @@ def collect_llm_balance(target_date: Optional[date] = None) -> dict[str, Any]:
         "checked": False,
         "balances": {},        # {provider: 余额字符串}
         "arrears": [],         # 欠费的 provider 列表
-        "stale": True,         # True = 当日未取到余额；取到任意当日余额行后翻 False
-        "balance_asof": None,  # 当日余额行的日期（YYYY-MM-DD），供下游核对新鲜度
+        "stale": True,         # True = 最近一次余额不是 target_date 那天的
+        "balance_asof": None,  # 最近一次余额的日期（YYYY-MM-DD），供下游核对新鲜度
     }
     # 余额监控日志在 backend/logs/（相对脚本），需同时扫描两处 data/logs
     candidates = _candidate_dirs("logs") + [_BACKEND_DIR / "logs"]
@@ -216,12 +225,12 @@ def collect_llm_balance(target_date: Optional[date] = None) -> dict[str, Any]:
     # 取最新一份日志
     log_file = max(log_files, key=lambda p: p.stat().st_mtime)
     text = log_file.read_text(encoding="utf-8", errors="ignore")
+    latest: dict[str, tuple[str, str]] = {}   # {provider: (余额, 该行日期)}
     for line in text.splitlines():
         if "当前余额" in line:
-            # 只认当天写的余额行 —— 昨天的余额不是今天的余额（2026-09-16 事故根因）。
-            # 行首没日期的余额行同样丢弃：无法证明它是当天的，就当没取到。
+            # 行首没日期的余额行丢弃：无法证明它是哪天写的，就不能参与「最近一次」。
             line_date = _balance_line_date(line)
-            if line_date != target:
+            if line_date is None:
                 continue
             # 例：2026-09-16 08:05:02,123 [INFO] [deepseek] 当前余额: ¥104.74（阈值 ¥10.00）
             # provider 出现在最后一个 [xxx] 块（紧邻「当前余额」前）
@@ -232,9 +241,8 @@ def collect_llm_balance(target_date: Optional[date] = None) -> dict[str, Any]:
                 balance = line.split("当前余额:")[1].split("（")[0].strip()
                 if not provider or not balance:
                     continue  # 缺字段的行不值得进报告（provider 空会记出 'INFO' 这种假 provider）
-                result["balances"][provider] = balance
-                result["stale"] = False
-                result["balance_asof"] = line_date
+                # 日志追加写：后写的行就是该 provider 最近一次的值（后写覆盖）
+                latest[provider] = (balance, line_date)
             except Exception:
                 pass
         if "Arrearage" in line or "overdue-payment" in line:
@@ -251,6 +259,12 @@ def collect_llm_balance(target_date: Optional[date] = None) -> dict[str, Any]:
                         result["arrears"].append(b)
             except Exception:
                 pass
+    if latest:
+        result["balances"] = {p: bal for p, (bal, _) in latest.items()}
+        # 取最旧那条当 asof：宁可少报新鲜度，也不给任何 provider 贴上比它实际
+        # 更晚的日期（那正是 2026-09-16 事故「拿旧数冒充当天」的形态）。
+        result["balance_asof"] = min(day for _, day in latest.values())
+        result["stale"] = result["balance_asof"] != target
     return result
 
 

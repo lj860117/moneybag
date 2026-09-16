@@ -22,12 +22,16 @@
 09-16 08:05:02 监控实测 ¥104.78。但 09-16 的巡检日报仍写「deepseek 余额
 ¥9.87」，用户看了会误判要再充值。
 
-修复取向：**不依赖执行顺序**。行首日期 != 快照目标日期的余额行一律丢弃；
-取不到当天的行就 `balances` 留空 + `stale=True`，让下游能说"当日未取到余额"。
+修复取向：**取最近一次，但必须把它的日期报出来**。日志是追加写的，所以
+「最近一次」= 日志里最后一条该 provider 的余额行（按行序取，不按日期大小
+排序）；行首解析不出日期的行一律丢弃。`balance_asof` 记下这批余额的真实日期，
+`stale` = 它 != 目标日期 —— 既不假（日期标出来了）也不缺（有数）。
 
-⚠️ 本文件最关键的是第 2 节「只有昨天的行 → 必须报未取到」，那正是本次事故
-的复现。若哪天有人为了"让报告好看"把旧数回填进来，这条必须红。反向地，
-第 3 节「昨天的行 + 今天的行 → 必须取今天的」防止退回到"后写覆盖"的老口径。
+⚠️ 本文件最关键的是第 2 节「只有昨天的行 → 必须取到，且 stale=True、
+asof=昨天」。那是 9dfd22c「只认当天」回归的直接复现：生产 cron 08:03 生成
+快照、08:05 才写当天余额，只认当天会让日报天天报"未取到"。反向地，第 3 节
+「昨天的行 + 今天的行 → 必须取今天的」保证"最近一次"确实按日志顺序取最新，
+不会退回拿旧数冒充的老口径。
 
 设计原则（与 test_ops_error_dedup.py 一致）：
   - **不复制实现里的正则/常量**，全部真实调用 `scripts/ops_summary.py` 的
@@ -88,7 +92,11 @@ def ops_env(monkeypatch, tmp_path):
             "\n".join(lines) + ("\n" if lines else ""), encoding="utf-8"
         )
 
-    def collect(target=TODAY):
+    # ⚠️ 默认必须是 None，不能是 TODAY：collect() 不传参时要真的走到
+    # `collect_llm_balance()` 的「target_date 缺省 = date.today()」分支。
+    # 曾经写成 `target=TODAY`，于是 test_default_target_date_is_today 拿
+    # 2026-09-16 当目标去比对 date.today() 写的行 —— 在 09-17 及以后必红。
+    def collect(target=None):
         return mod.collect_llm_balance(target)
 
     return SimpleNamespace(log_dir=log_dir, write_log=write_log, collect=collect)
@@ -148,34 +156,52 @@ def test_date_separator_variants_normalized(ops_env):
     assert r["stale"] is False
 
 
-# ── 2. 只有昨天的余额行：必须报「当日未取到」（本次事故回归点）────
-def test_only_yesterday_line_is_stale(ops_env):
-    """事故复现：今天的行还没写出来，日志里只有昨天的 —— 不许拿昨天的数充数。"""
+# ── 2. 只有昨天的余额行：取到，但必须标 stale + asof（9dfd22c 回归点）──
+def test_only_yesterday_line_is_collected_but_stale(ops_env):
+    """9dfd22c 回归复现：今天的行还没写出来，日志里只有昨天的。
+
+    「只认当天」的写法在这里返回空 → 生产 08:03 天天报"未取到"。正确行为是照
+    取昨天的数，但把日期亮出来（stale=True / asof=昨天），让日报写成
+    「DeepSeek 余额 ¥9.87（截至 09-15）」—— 有数，且不假。
+    """
     ops_env.write_log([
         f"{YESTERDAY.isoformat()} 08:05:02,123 [INFO] ===== LLM 余额监控启动 =====",
-        _balance_line(YESTERDAY, "deepseek", "9.87"),   # 09-16 日报里那个冒牌货
+        _balance_line(YESTERDAY, "deepseek", "9.87"),   # 09-16 日报里那个数
     ])
     r = ops_env.collect(TODAY)
 
-    assert r["checked"] is True          # 日志文件是找到了的
-    assert r["balances"] == {}           # 但当天没有余额 → 留空，不拿旧数
+    assert r["checked"] is True
+    assert r["balances"] == {"deepseek": "¥9.87"}   # 有数，不再留空
+    assert r["stale"] is True                        # 但不是今天的
+    assert r["balance_asof"] == YESTERDAY.isoformat()
+
+
+def test_latest_line_three_days_ago_is_collected_but_stale(ops_env):
+    """跨天场景：日志里最新一条是 3 天前的 —— 照样取到，asof 如实报 3 天前。"""
+    ops_env.write_log([
+        _balance_line(date(2026, 9, 10), "deepseek", "60.00"),
+        _balance_line(date(2026, 9, 13), "deepseek", "31.15"),   # 最后一条
+    ])
+    r = ops_env.collect(TODAY)
+
+    assert r["balances"] == {"deepseek": "¥31.15"}
     assert r["stale"] is True
-    assert r["balance_asof"] is None
+    assert r["balance_asof"] == "2026-09-13"
 
 
-def test_week_old_line_is_stale(ops_env):
-    """不只是昨天：任何非当天的行都不许冒充当天的。"""
+def test_week_old_line_is_collected_but_stale(ops_env):
+    """不只是昨天：任何非当天的行都照样取，只是 asof 如实标旧。"""
     ops_env.write_log([_balance_line(date(2026, 9, 9), "deepseek", "31.15")])
     r = ops_env.collect(TODAY)
 
-    assert r["balances"] == {}
+    assert r["balances"] == {"deepseek": "¥31.15"}
     assert r["stale"] is True
-    assert r["balance_asof"] is None
+    assert r["balance_asof"] == "2026-09-09"
 
 
 # ── 3. 昨天的行 + 今天的行：必须取今天的 ─────────────────────────
 def test_yesterday_then_today_takes_today(ops_env):
-    """多天滚动追加的日志里，后写覆盖的旧口径会踩坑：今天的必须赢。"""
+    """多天滚动追加的日志里，最后一条是今天的 —— 必须取今天的。"""
     ops_env.write_log([
         _balance_line(YESTERDAY, "deepseek", "9.87"),
         _balance_line(TODAY, "deepseek", "104.78"),
@@ -187,29 +213,38 @@ def test_yesterday_then_today_takes_today(ops_env):
     assert r["balance_asof"] == TODAY.isoformat()
 
 
-def test_today_then_yesterday_still_takes_today(ops_env):
-    """顺序反过来（今天的先写、昨天的后写）也不能被覆盖 —— 不再依赖写入顺序。"""
+def test_today_then_yesterday_takes_yesterday(ops_env):
+    """「最近一次」按日志行序，不按日期大小：最后一条是谁就报谁。
+
+    正常追加写的日志不会出现「旧的写在新的后面」；真出现了也以行序为准 ——
+    按日期挑最大的，等于凭空造出一个日志里并不存在的"最新值"。
+    """
     ops_env.write_log([
         _balance_line(TODAY, "deepseek", "104.78"),
-        _balance_line(YESTERDAY, "deepseek", "9.87"),
+        _balance_line(YESTERDAY, "deepseek", "9.87"),   # 后写 → 算"最近一次"
     ])
     r = ops_env.collect(TODAY)
 
-    assert r["balances"] == {"deepseek": "¥104.78"}
-    assert r["stale"] is False
+    assert r["balances"] == {"deepseek": "¥9.87"}
+    assert r["stale"] is True
+    assert r["balance_asof"] == YESTERDAY.isoformat()
 
 
-def test_yesterday_provider_not_leaked_when_only_today_other_provider(ops_env):
-    """昨天的 deepseek 不能因为『今天只有 doubao』就混进来。"""
+def test_older_provider_reported_with_conservative_asof(ops_env):
+    """昨天 deepseek + 今天 doubao：两个都报，asof 取较旧的那个（09-15）。
+
+    asof 取最旧而不是最新，是为了不给 deepseek 贴上 09-16 的日期 —— 那正是
+    「拿旧数冒充当天」的事故形态。宁可少报新鲜度，也不多报。
+    """
     ops_env.write_log([
         _balance_line(YESTERDAY, "deepseek", "9.87"),
         _balance_line(TODAY, "doubao", "52.10"),
     ])
     r = ops_env.collect(TODAY)
 
-    assert r["balances"] == {"doubao": "¥52.10"}
-    assert "deepseek" not in r["balances"]
-    assert r["stale"] is False
+    assert r["balances"] == {"deepseek": "¥9.87", "doubao": "¥52.10"}
+    assert r["balance_asof"] == YESTERDAY.isoformat()
+    assert r["stale"] is True
 
 
 # ── 4. 畸形行 / 缺字段的行：不能抛异常 ──────────────────────────
@@ -232,10 +267,25 @@ def test_malformed_lines_do_not_raise(ops_env):
     # 畸形行被跳过，正常行照常取到
     assert r["balances"] == {"deepseek": "¥104.78"}
     assert r["stale"] is False
+    assert r["balance_asof"] == TODAY.isoformat()
+
+
+def test_undated_balance_line_never_becomes_latest(ops_env):
+    """行首没日期的余额行即使写在最后，也绝不能当「最近一次」——
+    无法证明它是哪天写的，就不能拿来更新余额/asof。"""
+    ops_env.write_log([
+        _balance_line(TODAY, "deepseek", "104.78"),
+        "当前余额: ¥1.00（阈值 ¥10.00）",     # 无日期，且写在最后
+    ])
+    r = ops_env.collect(TODAY)
+
+    assert r["balances"] == {"deepseek": "¥104.78"}
+    assert r["balance_asof"] == TODAY.isoformat()
+    assert r["stale"] is False
 
 
 def test_malformed_only_leaves_stale(ops_env):
-    """整份日志都是畸形行时：不抛异常，且如实报「当日未取到」。"""
+    """整份日志都是畸形行时：不抛异常，且如实报「未取到」。"""
     ops_env.write_log([
         "当前余额: ¥1.00（阈值 ¥10.00）",
         f"{TODAY.isoformat()} 08:05:02,123 [INFO] 当前余额",
@@ -246,6 +296,7 @@ def test_malformed_only_leaves_stale(ops_env):
 
     assert r["balances"] == {}
     assert r["stale"] is True
+    assert r["balance_asof"] is None
 
 
 # ── 5. 日志文件根本不存在 ───────────────────────────────────────
