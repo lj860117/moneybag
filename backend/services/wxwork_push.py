@@ -31,6 +31,7 @@ MODULE_META = {
 import os
 import re
 import json
+import math
 import time
 import bisect
 import datetime
@@ -494,6 +495,19 @@ def _force_text() -> bool:
     return os.getenv("WXWORK_FORCE_MARKDOWN", "").strip().lower() not in ("1", "true", "yes")
 
 
+def effective_channel() -> tuple:
+    """当前**实际生效**的通道：(channel_name, channel_limit, chunk_budget)。
+
+    告警文案 / 落盘事件都必须用这里的数字，绝不能写死 markdown 的 4096：
+    生产默认走 text 通道（上限 2048、分段预算 1800），写 4096 等于把风险基准
+    抬高整整一倍 —— 实测 3729 字节会被报成「距通道上限 4096 还剩 367 字节」，
+    可对 text 通道来说它早已超上限、必然切成 3 条，运维照这个数判断会完全错。
+    """
+    if _force_text():
+        return ("text", WECOM_TEXT_LIMIT, TEXT_CHUNK_BUDGET)
+    return ("markdown", WECOM_MARKDOWN_LIMIT, MARKDOWN_CHUNK_BUDGET)
+
+
 def _record_event(event: dict) -> None:
     """把长度/截断事件追加写入 JSONL，供 daily_push_quality_check 复盘。
 
@@ -529,10 +543,28 @@ def _length_guard(total_bytes: int, source: str = "", user_id: str = "") -> str:
         return "ok"
 
     level = "warn" if total_bytes <= MARKDOWN_CHUNK_BUDGET else "split"
+
+    # 基准必须是**实际生效**的通道，不能写死 markdown 的 4096：
+    # 生产默认 text（上限 2048），3729 字节早就超上限了，报「还剩 367」纯属误导。
+    channel, channel_limit, chunk_budget = effective_channel()
+    if total_bytes <= channel_limit:
+        headroom = (f"距 {channel} 通道上限 {channel_limit} 还剩 "
+                    f"{channel_limit - total_bytes} 字节")
+    else:
+        headroom = (f"已超 {channel} 通道上限 {channel_limit} 字节 "
+                    f"{total_bytes - channel_limit} 字节")
+
+    # text 通道下「会分成几条」才是运维真正需要的信号：内容不丢，但用户收到多条。
+    # ceil 是下界（断点优先 + "(i/N)" 标记还会再占字节），所以写 "≥"。
+    split_note = ""
+    if channel == "text":
+        parts = math.ceil(total_bytes / chunk_budget)
+        split_note = (f"将按 {chunk_budget} 字节预算无损拆分为 ≥{parts} 条发送"
+                      f"（内容不丢，但用户会收到多条）；")
+
     print(f"[WXWORK] ⚠️ 推送长度告警（{source}）：{total_bytes} 字节 > 告警线 "
-          f"{LENGTH_ALERT_BYTES} 字节，处理={level}；"
-          f"距通道上限 {WECOM_MARKDOWN_LIMIT} 还剩 "
-          f"{WECOM_MARKDOWN_LIMIT - total_bytes} 字节（内容不做任何裁剪）")
+          f"{LENGTH_ALERT_BYTES} 字节，处理={level}；{headroom}；"
+          f"{split_note}内容不做任何裁剪")
     _record_event({
         "kind": "length_alert",
         "level": level,
@@ -540,7 +572,7 @@ def _length_guard(total_bytes: int, source: str = "", user_id: str = "") -> str:
         "user_id": user_id,
         "bytes": total_bytes,
         "alert_line": LENGTH_ALERT_BYTES,
-        "channel_limit": WECOM_MARKDOWN_LIMIT,
+        "channel_limit": channel_limit,
     })
     return level
 

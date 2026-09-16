@@ -9,6 +9,7 @@ import os
 import sys
 import json
 import re
+import math
 import datetime
 from pathlib import Path
 
@@ -20,6 +21,7 @@ from services.persistence import atomic_write_json  # 铁律：JSON 落盘禁止
 from services.wxwork_push import (
     send_markdown,
     byte_len,
+    effective_channel,
     WECOM_MARKDOWN_LIMIT,
     MARKDOWN_CHUNK_BUDGET,
     LENGTH_ALERT_BYTES,
@@ -282,11 +284,24 @@ def check_push_format(push_file: str) -> list:
             f"将拆成多条推送（内容无损，但阅读体验受损）"
         )
     elif sent_bytes > LENGTH_ALERT_BYTES:
+        # 上限必须取**实际生效**的通道：生产默认 text（2048），写死 markdown 的
+        # 4096 会把「早就超上限必须分片」说成「还剩几百字节」，完全误导。
+        channel, channel_limit, chunk_budget = effective_channel()
+        if sent_bytes <= channel_limit:
+            headroom = (f"距 {channel} 通道上限 {channel_limit} 仅剩 "
+                        f"{channel_limit - sent_bytes} 字节")
+        else:
+            headroom = (f"已超 {channel} 通道上限 {channel_limit} 字节 "
+                        f"{sent_bytes - channel_limit} 字节")
+        split_note = ""
+        if channel == "text":
+            parts = math.ceil(sent_bytes / chunk_budget)
+            split_note = (f"，将按 {chunk_budget} 字节预算无损拆分为 ≥{parts} 条"
+                          f"（内容不丢，但用户会收到多条）")
         issues.append(
             f"⚠️ 消息接近告警线：{sent_bytes} 字节（body {body_bytes}B + 信封 "
             f"{PUSH_ENVELOPE_OVERHEAD_BYTES}B）> {LENGTH_ALERT_BYTES} 字节，"
-            f"距通道上限 {WECOM_MARKDOWN_LIMIT} 仅剩 "
-            f"{WECOM_MARKDOWN_LIMIT - sent_bytes} 字节"
+            f"{headroom}{split_note}"
         )
     
     # 检查3：分段是否合理

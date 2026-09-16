@@ -488,3 +488,79 @@ def test_quality_check_passes_normal_length(tmp_path):
     f.write_text(body, encoding="utf-8")
     issues = qc.check_push_format(str(f))
     assert not any(("字节" in i and "长" in i) for i in issues), issues
+
+
+# ------------------------------------------------------------------
+# 通道感知的告警基准（2026-09-17）
+#
+# 起因：生产默认走 text 通道（上限 2048 / 分段预算 1800），但告警文案和落盘
+# 事件都写死了 markdown 的 4096。实测 3729 字节被报成「距通道上限 4096 还剩
+# 367 字节」—— 可对 text 通道来说它早已超上限、必然切成多条，等于把风险基准
+# 抬高了一倍。下面固定「基准必须跟通道走」这件事。
+# ------------------------------------------------------------------
+
+def test_effective_channel_default_is_text(monkeypatch):
+    """不设 WXWORK_FORCE_MARKDOWN 时，生效通道必须是 text(2048/1800)。"""
+    monkeypatch.delenv("WXWORK_FORCE_MARKDOWN", raising=False)
+    assert wp.effective_channel() == ("text", 2048, 1800)
+    assert wp.effective_channel()[1] == wp.WECOM_TEXT_LIMIT
+    assert wp.effective_channel()[2] == wp.TEXT_CHUNK_BUDGET
+
+
+def test_effective_channel_markdown_when_forced(monkeypatch):
+    """显式 WXWORK_FORCE_MARKDOWN=1 才切到 markdown(4096/3900)。"""
+    monkeypatch.setenv("WXWORK_FORCE_MARKDOWN", "1")
+    assert wp.effective_channel() == ("markdown", 4096, 3900)
+    assert wp.effective_channel()[1] == wp.WECOM_MARKDOWN_LIMIT
+
+
+def test_length_guard_text_channel_reports_2048_and_split_count(monkeypatch, capsys):
+    """text 通道：3729 字节的告警必须说 2048 + 会拆成几条，绝不能出现 4096。
+
+    3729 就是 2026-09-16 生产实测那条（日志误报「距 4096 还剩 367」）。
+    """
+    monkeypatch.delenv("WXWORK_FORCE_MARKDOWN", raising=False)
+    events = []
+    monkeypatch.setattr(wp, "_record_event", events.append)
+
+    level = wp._length_guard(3729, source="send_markdown", user_id="LeiJiang")
+    out = capsys.readouterr().out
+
+    assert level == "warn"          # 分级契约不变（<= MARKDOWN_CHUNK_BUDGET）
+    assert "2048" in out, out       # 通道上限必须是 text 的 2048
+    assert "4096" not in out, out   # 绝不能再拿 markdown 的 4096 当基准
+    assert "≥3 条" in out, out      # ceil(3729/1800) = 3，运维真正要的信息
+    assert "无损拆分" in out, out
+
+    # 落盘事件同样不能被 4096 污染（会毁掉 push_length_events.jsonl 的语义）
+    assert events[0]["channel_limit"] == 2048
+    assert events[0]["bytes"] == 3729
+
+
+def test_length_guard_markdown_channel_reports_4096(monkeypatch, capsys):
+    """markdown 通道下基准就该是 4096 —— 证明上面的 2048 不是写死的。"""
+    monkeypatch.setenv("WXWORK_FORCE_MARKDOWN", "1")
+    monkeypatch.setattr(wp, "_record_event", lambda event: None)
+
+    wp._length_guard(3729, source="send_markdown", user_id="LeiJiang")
+    out = capsys.readouterr().out
+
+    assert "4096" in out, out
+    assert "2048" not in out, out
+
+
+def test_quality_check_uses_effective_channel_limit(tmp_path, monkeypatch):
+    """daily_push_quality_check 的「距上限还剩多少」也必须用实际通道的 2048。"""
+    monkeypatch.delenv("WXWORK_FORCE_MARKDOWN", raising=False)
+    qc = _import_quality_check()
+
+    body = make_text(3650)  # +52 信封 = 3702 > 3600 告警线，text 通道下早已超上限
+    f = tmp_path / "2026-09-16_briefing_LeiJiang.txt"
+    f.write_text(body, encoding="utf-8")
+    issues = qc.check_push_format(str(f))
+
+    hit = [i for i in issues if "告警线" in i]
+    assert hit, f"issues={issues}"
+    assert "2048" in hit[0], hit[0]
+    assert "4096" not in hit[0], hit[0]
+    assert "≥3 条" in hit[0], hit[0]   # ceil(3702/1800) = 3
