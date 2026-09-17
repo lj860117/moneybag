@@ -270,23 +270,40 @@ def check_push_format(push_file: str) -> list:
     #   实际发送 2087B > 2048B 被截断，监控却每晚 22:00 稳定全绿 —— bug 藏了很久。
     body_bytes = byte_len(content)
     sent_bytes = body_bytes + PUSH_ENVELOPE_OVERHEAD_BYTES
-    if sent_bytes > WECOM_MARKDOWN_LIMIT:
+
+    # 2026-09-17（漏报修复）：上限 / 分段预算必须取**实际生效**的通道。
+    #
+    # 生产默认走 text 通道（`_force_text()` 默认 True，上限 2048 / 分段预算
+    # 1800），只有显式 `WXWORK_FORCE_MARKDOWN=1` 才切 markdown（4096 / 3900）。
+    # 前两级判定原来写死的是 markdown 的 4096 / 3900，后果是 **text 通道下
+    # sent_bytes 落在 2049~3600 时三个分支全不命中 → 一行都不报、完全静默**。
+    #
+    # 铁证：2026-09-17 晨报 body 3420B + 信封 52B = 3472B，text 通道（上限
+    # 2048）必然拆成 2 条，质检却只报「接近告警线 3600」，还写成「距通道上限
+    # 4096 还剩 X 字节」—— 那个 4096 根本不是生产用的通道。**漏报 + 错误基准**
+    # 比「报了警但措辞不准」严重得多，所以这里统一改成 effective_channel()。
+    #
+    # ⚠️ 注意判定顺序：`LENGTH_ALERT_BYTES = 3600` 这条与通道无关的「体量偏大」
+    # 预警线语义保持不变，但 text 通道下 3600 > 2048，所以 2049~3600 会被
+    # 上面的「超上限 / 会分段」分支先吃掉，3600 分支在 text 下实际不触发 ——
+    # 这是**正确**的，不要为了让 3600 分支活着而扭曲判定顺序。
+    channel, channel_limit, chunk_budget = effective_channel()
+    if sent_bytes > channel_limit:
         issues.append(
             f"❌ 消息超长：{sent_bytes} 字节（body {body_bytes}B + 信封 "
-            f"{PUSH_ENVELOPE_OVERHEAD_BYTES}B）> 企微 markdown 通道上限 "
-            f"{WECOM_MARKDOWN_LIMIT} 字节 —— send_markdown 会按字节无损分段，"
+            f"{PUSH_ENVELOPE_OVERHEAD_BYTES}B）> 企微 {channel} 通道上限 "
+            f"{channel_limit} 字节 —— send_markdown 会按字节无损分段，"
             f"若真被截断说明有调用方绕过了分段逻辑，必须排查"
         )
-    elif sent_bytes > MARKDOWN_CHUNK_BUDGET:
+    elif sent_bytes > chunk_budget:
         issues.append(
             f"⚠️ 消息会分段：{sent_bytes} 字节（body {body_bytes}B + 信封 "
-            f"{PUSH_ENVELOPE_OVERHEAD_BYTES}B）> 分段预算 {MARKDOWN_CHUNK_BUDGET} 字节，"
-            f"将拆成多条推送（内容无损，但阅读体验受损）"
+            f"{PUSH_ENVELOPE_OVERHEAD_BYTES}B）> 企微 {channel} 通道分段预算 "
+            f"{chunk_budget} 字节，将拆成多条推送（内容无损，但阅读体验受损）"
         )
     elif sent_bytes > LENGTH_ALERT_BYTES:
         # 上限必须取**实际生效**的通道：生产默认 text（2048），写死 markdown 的
         # 4096 会把「早就超上限必须分片」说成「还剩几百字节」，完全误导。
-        channel, channel_limit, chunk_budget = effective_channel()
         if sent_bytes <= channel_limit:
             headroom = (f"距 {channel} 通道上限 {channel_limit} 仅剩 "
                         f"{channel_limit - sent_bytes} 字节")

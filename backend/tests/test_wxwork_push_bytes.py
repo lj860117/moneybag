@@ -460,10 +460,19 @@ def test_quality_check_counts_envelope_overhead(tmp_path):
     assert any(("❌" in i and "字节" in i) for i in issues), f"issues={issues}"
 
 
-def test_quality_check_flags_multi_message_split(tmp_path):
-    """超过分段预算（3900）会拆成多条：内容无损，但必须让人知道。"""
+def test_quality_check_flags_multi_message_split(tmp_path, monkeypatch):
+    """超过分段预算（3900）会拆成多条：内容无损，但必须让人知道。
+
+    v9.9.47 起必须**锁 markdown 通道**：分段预算现在是 `effective_channel()`
+    给的，text 通道的预算是 1800，3902 字节在 text 下属于「已超上限 2048」，
+    会走 ❌ 分支（那时该测的是超长，不是分段）。本用例测的是「超分段预算
+    但没超上限」这一档，只有在 markdown（4096/3900）下才存在。
+    text 通道对应的「会分段」档（1801~2048）见
+    test_push_quality_channel_aware_limit.py 的边界用例。
+    """
+    monkeypatch.setenv("WXWORK_FORCE_MARKDOWN", "1")
     qc = _import_quality_check()
-    body = make_text(3850)  # +52 = 3902 > 3900
+    body = make_text(3850)  # +52 = 3902 > 3900，但 < 4096
     f = tmp_path / "2026-09-21_briefing_LeiJiang.txt"
     f.write_text(body, encoding="utf-8")
     issues = qc.check_push_format(str(f))
@@ -471,7 +480,15 @@ def test_quality_check_flags_multi_message_split(tmp_path):
     assert not any("❌" in i for i in issues)
 
 
-def test_quality_check_warns_before_hard_limit(tmp_path):
+def test_quality_check_warns_before_hard_limit(tmp_path, monkeypatch):
+    """没到硬上限但过了 3600 告警线，必须报「接近告警线」。
+
+    v9.9.47 起同样必须**锁 markdown 通道**：3600 这条预警线是**与通道无关**
+    的，但 text 通道上限只有 2048，3702 字节在 text 下早就超上限、会被
+    ❌ 分支先吃掉，走不到告警线这一级。告警线这一档（3601~3900）只在
+    markdown 下存在 —— 这是正确的判定顺序，不要为了让它活着而调序。
+    """
+    monkeypatch.setenv("WXWORK_FORCE_MARKDOWN", "1")
     qc = _import_quality_check()
     body = make_text(3650)  # +52 = 3702 > 3600 告警线，但 < 3900
     f = tmp_path / "2026-09-12_briefing_LeiJiang.txt"
@@ -479,6 +496,27 @@ def test_quality_check_warns_before_hard_limit(tmp_path):
     issues = qc.check_push_format(str(f))
     assert any("告警线" in i for i in issues), f"issues={issues}"
     assert not any("❌" in i for i in issues)
+
+
+def test_quality_check_text_channel_over_limit_is_not_silent(tmp_path, monkeypatch):
+    """text 通道下 3702 字节必须报 ❌ 超长，且基准是 2048（不是 4096）。
+
+    v9.9.47 补：同一份 3702 字节，在 text 通道下走的是「超上限」分支 ——
+    修复前这里三个阈值（>4096 / >3900 / >3600）全不成立，质检**一行都不报**，
+    是 2026-09-17 那次漏报的同款形态。本用例把它钉死。
+    """
+    monkeypatch.delenv("WXWORK_FORCE_MARKDOWN", raising=False)
+    qc = _import_quality_check()
+    body = make_text(3650)  # +52 = 3702
+    f = tmp_path / "2026-09-16_briefing_LeiJiang.txt"
+    f.write_text(body, encoding="utf-8")
+    issues = qc.check_push_format(str(f))
+
+    assert issues, "3702 字节在 text 通道（上限 2048）下绝不能静默"
+    joined = " | ".join(issues)
+    assert "❌" in joined, joined
+    assert "2048" in joined, f"必须报 text 通道上限 2048：{joined}"
+    assert "4096" not in joined, f"绝不能再出现 markdown 的 4096：{joined}"
 
 
 def test_quality_check_passes_normal_length(tmp_path):
@@ -550,17 +588,26 @@ def test_length_guard_markdown_channel_reports_4096(monkeypatch, capsys):
 
 
 def test_quality_check_uses_effective_channel_limit(tmp_path, monkeypatch):
-    """daily_push_quality_check 的「距上限还剩多少」也必须用实际通道的 2048。"""
-    monkeypatch.delenv("WXWORK_FORCE_MARKDOWN", raising=False)
-    qc = _import_quality_check()
+    """同一份 3702 字节，text 报 2048、markdown 报 4096 —— 基准跟通道走。
 
-    body = make_text(3650)  # +52 信封 = 3702 > 3600 告警线，text 通道下早已超上限
+    v9.9.47 重写：旧版只测了 text 一侧（且当时走的是「告警线」分支）。
+    通道感知修复后，text 的 3702 字节落在「超上限」分支、markdown 的 3702
+    字节落在「告警线」分支，两侧文案里的上限数字必须各自正确 —— 这条用例
+    同时钉死「2048 不是写死的常量」，靠的是 markdown 侧必须出现 4096。
+    """
+    qc = _import_quality_check()
+    body = make_text(3650)  # +52 信封 = 3702
     f = tmp_path / "2026-09-16_briefing_LeiJiang.txt"
     f.write_text(body, encoding="utf-8")
-    issues = qc.check_push_format(str(f))
 
-    hit = [i for i in issues if "告警线" in i]
-    assert hit, f"issues={issues}"
-    assert "2048" in hit[0], hit[0]
-    assert "4096" not in hit[0], hit[0]
-    assert "≥3 条" in hit[0], hit[0]   # ceil(3702/1800) = 3
+    monkeypatch.delenv("WXWORK_FORCE_MARKDOWN", raising=False)
+    text_side = " | ".join(qc.check_push_format(str(f)))
+    assert "2048" in text_side, f"text 侧必须报 2048：{text_side}"
+    assert "4096" not in text_side, f"text 侧不得出现 4096：{text_side}"
+    assert "text" in text_side, f"text 侧必须点名通道：{text_side}"
+
+    monkeypatch.setenv("WXWORK_FORCE_MARKDOWN", "1")
+    md_side = " | ".join(qc.check_push_format(str(f)))
+    assert "4096" in md_side, f"markdown 侧必须报 4096：{md_side}"
+    assert "2048" not in md_side, f"markdown 侧不得出现 2048：{md_side}"
+    assert "markdown" in md_side, f"markdown 侧必须点名通道：{md_side}"

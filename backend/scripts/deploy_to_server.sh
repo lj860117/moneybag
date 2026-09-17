@@ -352,34 +352,54 @@ BASE="http://$SERVER:8000"
 SMOKE_FAIL=0
 SMOKE_TOTAL=0
 
-# check_endpoint <url> <desc> [预算秒=10] [慢响应阈值秒=5]
+# check_endpoint <url> <desc> [预算秒=10] [慢响应阈值秒=5] [最大尝试次数=3]
 # 预算必须按端点冷启动真实耗时给：重启后内存缓存被清空，
 # 需要现算的端点（如晨报）冷态可到 40s+，硬编码 10s 会把健康端点误报为 ❌。
+#
+# 单次 curl 无重试是历史假红根因：服务刚重启时首个请求可能撞上冷启动/瞬时超时，
+# 一次 000 就直接判 ❌，运维只能靠"再跑一次部署"来排除。这里非 200 最多重试 2 次
+# （共 3 次尝试），每次独立计时（每次都重新给满 --max-time $budget，不改变预算语义），
+# 三次全非 200 才真判 ❌。
 check_endpoint() {
     local url="$1"
     local desc="$2"
     local budget="${3:-10}"
     local slow_at="${4:-5}"
+    local max_attempts="${5:-3}"
+    local retry_interval="${SMOKE_RETRY_INTERVAL:-3}"
+    local attempt=1
     local out code elapsed
     SMOKE_TOTAL=$((SMOKE_TOTAL + 1))
-    out=$(curl -s -o /dev/null -w "%{http_code} %{time_total}" --max-time "$budget" "$url" 2>/dev/null || true)
-    [ -n "$out" ] || out="000 0"
-    out="${out%%$'\n'*}"   # 超时(curl rc!=0)时 curl 已打印 "000 <elapsed>"，避免再拼一行导致 elapsed 被读成 0
-    code="${out%% *}"
-    elapsed="${out##* }"
-    if [ "$code" = "200" ]; then
-        # 200 不等于体验可接受：冷启动慢的端点单独标注，别让它冒充绿
-        if awk "BEGIN{exit !($elapsed > $slow_at)}" 2>/dev/null; then
-            echo "  ⚠️  $desc — HTTP 200 但耗时 ${elapsed}s（冷启动慢，预算 ${budget}s）"
-        else
-            echo "  ✅ $desc ($url)"
+
+    while [ "$attempt" -le "$max_attempts" ]; do
+        out=$(curl -s -o /dev/null -w "%{http_code} %{time_total}" --max-time "$budget" "$url" 2>/dev/null || true)
+        [ -n "$out" ] || out="000 0"
+        out="${out%%$'\n'*}"   # 超时(curl rc!=0)时 curl 已打印 "000 <elapsed>"，避免再拼一行导致 elapsed 被读成 0
+        code="${out%% *}"
+        elapsed="${out##* }"
+
+        if [ "$code" = "200" ]; then
+            # 200 不等于体验可接受：冷启动慢的端点单独标注，别让它冒充绿
+            if awk "BEGIN{exit !($elapsed > $slow_at)}" 2>/dev/null; then
+                echo "  ⚠️  $desc — HTTP 200 但耗时 ${elapsed}s（冷启动慢，预算 ${budget}s，第 ${attempt}/${max_attempts} 次尝试）"
+            else
+                echo "  ✅ $desc ($url)"
+            fi
+            return 0
         fi
-    else
-        SMOKE_FAIL=$((SMOKE_FAIL + 1))
-        # 注意：${code} 必须带花括号。紧跟全角字符时会话 locale 非 UTF-8 时
-        # bash 会把多字节字节当成变量名的一部分（unbound variable），set -e 下直接崩。
-        echo "  ❌ $desc — HTTP ${code}（预算 ${budget}s / 实测 ${elapsed}s）($url)"
-    fi
+
+        if [ "$attempt" -lt "$max_attempts" ]; then
+            # 重试期间必须有输出：否则运维对着黑屏干等，以为脚本卡死
+            echo "  🔄 $desc 第 ${attempt}/${max_attempts} 次尝试 HTTP ${code}（实测 ${elapsed}s），${retry_interval}s 后重试…"
+            sleep "$retry_interval"
+        fi
+        attempt=$((attempt + 1))
+    done
+
+    SMOKE_FAIL=$((SMOKE_FAIL + 1))
+    # 注意：${code} 必须带花括号。紧跟全角字符时会话 locale 非 UTF-8 时
+    # bash 会把多字节字节当成变量名的一部分（unbound variable），set -e 下直接崩。
+    echo "  ❌ $desc — HTTP ${code}（预算 ${budget}s / 实测 ${elapsed}s / 已试 ${max_attempts} 次）($url)"
 }
 
 check_endpoint "$BASE/api/timing?userId=default"        "MB-007 置信度"
@@ -388,17 +408,32 @@ check_endpoint "$BASE/api/risk-metrics?userId=default"  "MB-017/016 风险指标
 check_endpoint "$BASE/api/news"                         "MB-012 新闻列表"
 check_endpoint "$BASE/api/news/deep-impact"             "MB-008 深度新闻分析"
 check_endpoint "$BASE/api/global/snapshot"              "MB-015 全球快照"
-check_endpoint "$BASE/api/steward/briefing?userId=default"         "MB-018 晨报缓存" 120 15
+# MB-018 用真实用户 LeiJiang，不要用 default：
+#   default 是冒烟专用的空用户，没有任何离线任务给它预生成晨报缓存，打它必然走
+#   「现算」路径（fast 管线 + 持仓/估值/地缘等现拉），并把结果写成
+#   data/briefings/default_YYYYMMDD.json —— 每次部署往生产 data 目录扔一个垃圾文件。
+#   LeiJiang 是真实用户，晨报缓存在真实用户命名空间下是合法数据（chat 上下文也会读它）。
+#
+# ⚠️ 但别以为换成 LeiJiang 就一定能命中缓存，两道坎仍然存在：
+#   1) 缓存文件名是 f"{user_id}_{YYYYMMDD}.json"（services/steward.py），大小写敏感；
+#      而凌晨唯一会现算晨报的定时任务（briefing_hallucination_check.py，cron 07:50，
+#      --user 默认小写 leijiang）写的是小写 leijiang_*.json。所以 LeiJiang 同样读不到。
+#   2) steward.briefing() 的 CACHE_TTL_HOURS=4，07:50 生成的缓存 11:50 后就失效被删除。
+# 结论：MB-018 大概率仍然走「现算」路径，120s 预算 + 3 次重试只是兜底，不是保证命中缓存。
+# 实测参考（2026-09-17）：重启后首次现算 59s，服务热起来后 3s —— 不调 LLM（fast 管线 llm_max=0）。
+check_endpoint "$BASE/api/steward/briefing?userId=LeiJiang"        "MB-018 晨报缓存" 120 15
 check_endpoint "$BASE/api/steward/briefing-history?userId=default" "MB-005 往期晨报"
 
 # 验证新闻条数
 NEWS_COUNT=$(curl -s "$BASE/api/news?limit=20" | python3 -c "import sys,json;d=json.load(sys.stdin);print(len(d.get('news',[])))" 2>/dev/null || echo "?")
 echo "  📰 新闻条数: $NEWS_COUNT (期望 ≥15)"
 
+# 措辞避免 $SMOKE_FAIL/$SMOKE_TOTAL 这种分数式写法：「1/8 项失败」容易被读成
+# 「八分之一项失败」，实际含义是「共 8 项，其中 1 项失败」。
 if [ "$SMOKE_FAIL" -eq 0 ]; then
-    echo "  ── 冒烟汇总: $SMOKE_TOTAL/$SMOKE_TOTAL 项通过 ──"
+    echo "  ── 冒烟汇总: 共 $SMOKE_TOTAL 项，全部通过 ──"
 else
-    echo "  ── 冒烟汇总: $SMOKE_FAIL/$SMOKE_TOTAL 项失败 ──"
+    echo "  ── 冒烟汇总: 共 $SMOKE_TOTAL 项，失败 $SMOKE_FAIL 项 ──"
 fi
 
 echo ""
@@ -431,7 +466,7 @@ echo "验证 risk-metrics GET:  curl -s '$BASE/api/risk-metrics?userId=default' 
 # 就是「闸门空转仍显绿」。
 if [ "$SMOKE_FAIL" -ne 0 ]; then
     echo ""
-    echo "=== 部署收尾：文件已同步、服务已重启，但冒烟测试 $SMOKE_FAIL/$SMOKE_TOTAL 项失败 ==="
+    echo "=== 部署收尾：文件已同步、服务已重启，但冒烟测试 $SMOKE_FAIL 项失败（共 $SMOKE_TOTAL 项）==="
     exit 1
 fi
 
