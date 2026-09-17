@@ -12,23 +12,28 @@ try{const ov=await fetch(API_BASE+'/portfolio/overview?'+getProfileParam()).then
 const el=document.getElementById('overviewHero');if(!el)return;
 const pnlC=ov.totalPnl>=0?'var(--green)':'var(--red)';
 const hC=ov.healthScore>=80?'var(--green)':ov.healthScore>=60?'#F59E0B':'var(--red)';
-// 环形图 SVG（股/债/现 三段）
-const eq=ov.allocation?.equity||0;const bd=ov.allocation?.bond||0;const ca=ov.allocation?.cash||0;
+// 环形图 SVG（股/债/现/金 四段）
+// FIX 2026-09-15: 后端 portfolio_overview 已把黄金拆成独立第 4 档
+// （不再并进 equity），这里同步加第 4 段，否则黄金在环形图里依旧是隐形的。
+const eq=ov.allocation?.equity||0;const bd=ov.allocation?.bond||0;const ca=ov.allocation?.cash||0;const gd=ov.allocation?.gold||0;
 const r=36;const c=2*Math.PI*r;
-const eqLen=c*eq/100;const bdLen=c*bd/100;const caLen=c*(ca||100-eq-bd)/100;
-const eqOff=0;const bdOff=-(eqLen);const caOff=-(eqLen+bdLen);
+const eqLen=c*eq/100;const bdLen=c*bd/100;const gdLen=c*gd/100;
+const caLen=c*(ca||Math.max(0,100-eq-bd-gd))/100;
+const eqOff=0;const bdOff=-(eqLen);const caOff=-(eqLen+bdLen);const gdOff=-(eqLen+bdLen+caLen);
 const ringSvg=ov.totalMarketValue>0?`<svg width="90" height="90" viewBox="0 0 90 90" style="transform:rotate(-90deg)">
 <circle cx="45" cy="45" r="${r}" fill="none" stroke="var(--bg3)" stroke-width="10"/>
 <circle cx="45" cy="45" r="${r}" fill="none" stroke="var(--accent)" stroke-width="10" stroke-dasharray="${eqLen} ${c-eqLen}" stroke-dashoffset="${eqOff}"/>
 <circle cx="45" cy="45" r="${r}" fill="none" stroke="#60A5FA" stroke-width="10" stroke-dasharray="${bdLen} ${c-bdLen}" stroke-dashoffset="${bdOff}"/>
 <circle cx="45" cy="45" r="${r}" fill="none" stroke="#A78BFA" stroke-width="10" stroke-dasharray="${caLen} ${c-caLen}" stroke-dashoffset="${caOff}"/>
+<circle cx="45" cy="45" r="${r}" fill="none" stroke="#F59E0B" stroke-width="10" stroke-dasharray="${gdLen} ${c-gdLen}" stroke-dashoffset="${gdOff}"/>
 </svg>`:'';
-const legendHtml=ov.totalMarketValue>0?`<div style="display:flex;gap:12px;justify-content:center;margin-top:8px;font-size:11px;color:var(--text2)">
+const legendHtml=ov.totalMarketValue>0?`<div style="display:flex;gap:12px;justify-content:center;margin-top:8px;font-size:11px;color:var(--text2);flex-wrap:wrap">
 <span><span style="display:inline-block;width:8px;height:8px;border-radius:50%;background:var(--accent);margin-right:3px"></span>股票 ${eq}%</span>
 <span><span style="display:inline-block;width:8px;height:8px;border-radius:50%;background:#60A5FA;margin-right:3px"></span>债券 ${bd}%</span>
 <span><span style="display:inline-block;width:8px;height:8px;border-radius:50%;background:#A78BFA;margin-right:3px"></span>现金 ${ca}%</span>
+<span><span style="display:inline-block;width:8px;height:8px;border-radius:50%;background:#F59E0B;margin-right:3px"></span>黄金 ${gd}%</span>
 </div>`:'';
-const devHtml=ov.totalMarketValue>0&&ov.deviation?Object.entries({equity:'股票',bond:'债券',cash:'现金'}).map(([k,label])=>{
+const devHtml=ov.totalMarketValue>0&&ov.deviation?Object.entries({equity:'股票',bond:'债券',cash:'现金',gold:'黄金'}).map(([k,label])=>{
 const d=ov.deviation[k]||0;const dc=Math.abs(d)>15?'var(--red)':Math.abs(d)>5?'#F59E0B':'var(--green)';
 return`<span style="font-size:11px;color:${dc}">${label}${d>0?'+':''}${d}%</span>`}).join(' · '):'';
 el.innerHTML=`<div class="pnl-hero" style="position:relative">

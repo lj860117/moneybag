@@ -32,6 +32,24 @@ if env.exists():
 DEFAULT_TARGET = {"stock": 60, "bond": 20, "cash": 10, "gold": 10}
 
 
+def _pct_of(d: dict, *keys: str) -> float:
+    """按候选键名依次取值，全取不到返回 0.0。
+
+    portfolio_overview 的 allocation/deviation/target 用 "equity" 作键名，
+    而本脚本的 DEFAULT_TARGET 与兼容分支用 "stock"，两者指同一个东西。
+    早期这里写死 `result['current']['stock']`，而 allocation 里根本没有
+    "stock" 键 → KeyError 直接把整次推送打挂（异常被 main 的 try 吞掉，
+    表现为"[REBALANCE] FAILED"）。改为按候选键名容错取值。
+    """
+    for k in keys:
+        if k in d:
+            try:
+                return float(d[k] or 0)
+            except (TypeError, ValueError):
+                return 0.0
+    return 0.0
+
+
 def analyze_user(user_id: str) -> dict:
     """拉用户持仓 → 算当前比例 → 对比目标（美林时钟推荐）→ 返回偏离"""
     try:
@@ -104,7 +122,10 @@ def main():
                     f"🎯 钱袋子·月度再平衡（{datetime.now().strftime('%Y-%m')}）\n\n"
                     f"✅ {user}的资产结构健康\n"
                     f"━━━━━━━━━━━━━━━\n"
-                    f"当前：股{result['current']['stock']}% · 基金{result['current']['bond']}% · 现金{result['current']['cash']}%\n"
+                    f"当前：股{_pct_of(result['current'], 'stock', 'equity')}% · "
+                    f"基金{_pct_of(result['current'], 'bond')}% · "
+                    f"现金{_pct_of(result['current'], 'cash')}% · "
+                    f"黄金{_pct_of(result['current'], 'gold')}%\n"
                     f"最大偏离：{result['max_dev']}%（< 5% 无需调整）\n\n"
                     f"💡 下月继续保持～"
                 )
@@ -114,7 +135,10 @@ def main():
                 suggestions = []
                 for asset, dev in devs.items():
                     if abs(dev) > 5:
-                        cn = {"stock": "股票", "bond": "基金", "cash": "现金", "gold": "黄金"}[asset]
+                        # "equity" 是 portfolio_overview 用的键名，"stock" 是本脚本
+                        # DEFAULT_TARGET / 兼容分支用的键名，两者都要认。
+                        cn = {"stock": "股票", "equity": "股票", "bond": "基金",
+                              "cash": "现金", "gold": "黄金"}[asset]
                         if dev > 0:
                             suggestions.append(f"  • {cn} 超配 {dev:+.1f}%，考虑减仓")
                         else:
@@ -124,7 +148,10 @@ def main():
                     f"⚠️ 钱袋子·月度再平衡（{datetime.now().strftime('%Y-%m')}）\n\n"
                     f"🔔 {user}的资产结构需要调整\n"
                     f"━━━━━━━━━━━━━━━\n"
-                    f"当前：股{result['current']['stock']}% · 基金{result['current']['bond']}% · 现金{result['current']['cash']}%\n"
+                    f"当前：股{_pct_of(result['current'], 'stock', 'equity')}% · "
+                    f"基金{_pct_of(result['current'], 'bond')}% · "
+                    f"现金{_pct_of(result['current'], 'cash')}% · "
+                    f"黄金{_pct_of(result['current'], 'gold')}%\n"
                     f"目标：股60% · 基金20% · 现金10% · 黄金10%\n\n"
                     f"📋 调整建议：\n"
                     + "\n".join(suggestions) +

@@ -274,12 +274,16 @@ const actualCash = c.actual_cash_pct || 0;
 const fundCash = c.fund_cash_est_pct || 0;
 const actualStock = c.actual_stock_pct || 0;
 const fundEquity = c.fund_equity_pct || 0;
+const fundGold = c.fund_gold_pct || 0;
 
 // 基础行：股权/债券/现金
 const items=[
   {label: hasFundOnly?'股权类':'股票', sublabel: hasFundOnly?'基金穿透估算':'', key:'stock', color:'#6366F1'},
   {label:'债券类', sublabel: hasFundOnly?'基金穿透估算':'', key:'bond', color:'#22C55E'},
 ];
+// FIX 2026-09-15: 后端已把黄金拆成独立第 4 档（不再并进股权），这里同步显示，
+// 否则这块资产在配置条里是隐形的。黄金是避险资产，不并入股票。
+if(fundGold>0) items.push({label:'黄金', sublabel: hasFundOnly?'基金穿透估算':'', key:'gold', color:'#F59E0B'});
 // 现金行：有手录现金和基金估算现金时分开显示
 const cashItems=[];
 if(actualCash>0) cashItems.push({label:'现金', sublabel:'手录资产', val:actualCash, color:'#F59E0B'});

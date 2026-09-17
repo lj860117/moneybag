@@ -380,6 +380,7 @@ def _build_allocation(nw, val_pct: int = 50, user_id: str = "") -> dict | None:
         fund_equity = 0.0
         fund_bond = 0.0
         fund_cash_est = 0.0  # 基金内部现金估算
+        fund_gold = 0.0      # 黄金：独立第 4 档，不是股权
         used_precise = False
 
         if user_id:
@@ -387,11 +388,17 @@ def _build_allocation(nw, val_pct: int = 50, user_id: str = "") -> dict | None:
                 from services.portfolio_overview import get_portfolio_overview
                 overview = get_portfolio_overview(user_id)
                 alloc = overview.get("allocation", {})
-                if alloc.get("equity", 0) > 0 or alloc.get("bond", 0) > 0:
+                if (alloc.get("equity", 0) > 0 or alloc.get("bond", 0) > 0
+                        or alloc.get("gold", 0) > 0):
                     inv_ratio = inv / total if total > 0 else 0
                     fund_equity = round(alloc["equity"] * inv_ratio / 100 * 100, 1)
                     fund_bond = round(alloc["bond"] * inv_ratio / 100 * 100, 1)
                     fund_cash_est = round(alloc.get("cash", 0) * inv_ratio / 100 * 100, 1)
+                    # FIX 2026-09-15: portfolio_overview 已把 gold 拆成独立第 4 档，
+                    # 这里同步取出，否则黄金会从这个展示口径里彻底消失。
+                    # 黄金是避险资产（见 risk.py:172 `has_hedge = bond_n>0 or gold_n>0`），
+                    # 绝不能并回股权。
+                    fund_gold = round(alloc.get("gold", 0) * inv_ratio / 100 * 100, 1)
                     used_precise = True
             except Exception as e:
                 print(f"[CFO] portfolio_overview fallback: {e}")
@@ -415,24 +422,30 @@ def _build_allocation(nw, val_pct: int = 50, user_id: str = "") -> dict | None:
             "equity": equity_pct,
             "bond": bond_pct,
             "cash": cash_pct,
+            "gold": round(fund_gold, 1),               # 黄金第 4 档（非股权）
             # 分层数据（前端可用来区分显示）
             "actual_cash_pct": actual_cash_pct,       # 手录现金占比
             "fund_cash_est_pct": fund_cash_est,        # 基金估算现金占比
             "actual_stock_pct": actual_stock_pct,      # 直接持股占比
             "fund_equity_pct": fund_equity,            # 基金穿透股权占比
+            "fund_gold_pct": fund_gold,                # 基金穿透黄金占比
         }
 
+        # 目标同步加黄金第 4 档：黄金目标 5% 取自
+        # domain/rule_engine/glide_path_rules.py:35 GOLD_PCT_DEFAULT = 0.05，
+        # 该表 stock_pct 注释「已扣除黄金」，故从 stock 里扣出 5 点，四档合计仍 100。
         if val_pct > 70:
-            target = {"stock": 40, "bond": 35, "cash": 25}
+            target = {"stock": 35, "bond": 35, "cash": 25, "gold": 5}
         elif val_pct < 30:
-            target = {"stock": 70, "bond": 20, "cash": 10}
+            target = {"stock": 65, "bond": 20, "cash": 10, "gold": 5}
         else:
-            target = {"stock": 55, "bond": 30, "cash": 15}
+            target = {"stock": 50, "bond": 30, "cash": 15, "gold": 5}
 
         deviation = {
             "stock": round(current["stock"] - target["stock"], 1),
             "bond": round(current["bond"] - target["bond"], 1),
             "cash": round(current["cash"] - target["cash"], 1),
+            "gold": round(current["gold"] - target["gold"], 1),
         }
 
         return {
