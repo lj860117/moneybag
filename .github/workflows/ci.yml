@@ -19,8 +19,17 @@ jobs:
         run: |
           pip install -r requirements-dev.txt
       - name: Run import-linter
+        # PYTHONPATH=backend 是必须的，不是可选项：
+        # .importlinter 的 root_packages 是 backend/ 下的顶层包
+        # （api / services / infra / domain / use_cases / models / routers / scripts），
+        # 因为 backend/main.py 把 backend/ 目录本身插进了 sys.path，全仓库跨层导入
+        # 都写成 `from services.xxx import yyy` 而不是 `from backend.services...`。
+        # 不设 PYTHONPATH 时 grimp 找不到这些包；设成 backend 之前如果写
+        # root_packages = backend，则所有导入都会被当成 external 丢掉，
+        # 依赖图 0 条边、契约恒绿（2026-09-17 修复的正是这个问题）。
+        # 另见 backend/tests/test_architecture_contracts.py（同一套契约挂进 pytest）。
         run: |
-          lint-imports
+          PYTHONPATH=backend lint-imports
 
   mypy-strict:
     name: mypy strict (new architecture)

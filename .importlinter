@@ -1,54 +1,216 @@
+# MoneyBag — import-linter 架构分层契约
+# ============================================================================
+#
+# 【2026-09-17 修复：本文件此前完全失效，4 条契约恒绿（零覆盖）】
+#
+# 症状：
+#   `lint-imports` 输出 `Analyzed 265 files, 0 dependencies.` 且 4 条契约
+#   全部 KEPT。无论代码怎么写都不会红 —— 等于没有这道闸门。
+#
+# 根因（两条，都已实测确认）：
+#
+#   1) 依赖图为空（265 个文件、0 条边）
+#      root_packages 写的是 `backend`，但 backend/ 下**没有任何一处**用
+#      `backend.xxx` 形式导入（全仓库 `import backend.*` / `from backend.*`
+#      计数 = 0）。真正生效的导入根是 backend/ 目录本身：
+#        backend/main.py:17  sys.path.insert(0, os.path.dirname(__file__))
+#      所以所有跨层导入都写成 `from services.xxx import yyy`、
+#      `from infra.cache import MemoryCache` 这种以 backend/ 为根的形式。
+#      grimp 按 root_packages 给模块命名（backend.api.chat ...），再去图里
+#      找 `services.xxx` —— 找不到，于是全部判为 external 并丢弃
+#      （include_external_packages 默认 False）。结果：265 个节点、0 条边。
+#
+#   2) backend/scripts/ 根本不在任何一层里
+#      旧契约的 layers 只列了 api / use_cases / domain / infra（外加一条
+#      自相矛盾的 "legacy services exempt"），scripts/ 下 37 个脚本
+#      （night_worker / cache_warmer / monthly_report ...）从未被检查。
+#
+# 修法：
+#   root_packages 改成 backend/ 下真实的顶层包（与运行时 sys.path 根一致），
+#   并把 scripts/ 一起纳入。修复后：307 个模块、876 条依赖。
+#
+# 运行方式（必须先让 backend/ 出现在 sys.path 上，否则 grimp 找不到这些包）：
+#       PYTHONPATH=backend lint-imports
+#   CI 见 .github/workflows/ci.yml 的 lint-architecture job。
+#   另有 backend/tests/test_architecture_contracts.py 把同一套契约挂进
+#   pytest 全量套件，并额外断言「依赖边数 > 0 且 scripts 在图中」，
+#   防止再次静默退化成空图恒绿。
+#
+# 已知局限（不掩饰）：
+#   - backend/config.py 与 backend/main.py 是**顶层模块不是包**，而
+#     import-linter 的 root_packages 只接受包，这两文件的出向导入不在图里。
+#   - backend/tests/、backend/_archive/ 刻意不纳入（不是生产代码）。
+#
+# 关于 ignore_imports（棘轮机制）：
+#   下面每条被豁免的 import 都是**修复时已存在的历史违规**，本次只让闸门
+#   通电、不改业务代码。豁免是逐条精确到模块对的，任何**新的**跨层导入
+#   依然会让契约变红。unmatched_ignore_imports_alerting 保持默认的 error：
+#   一旦有人把某条历史违规真正修掉，CI 会报"该豁免已匹配不到"，
+#   强制同步删除豁免行 —— 只许收紧，不许放任。
+# ============================================================================
+
 [importlinter]
 root_packages =
-    backend
-
-# ---- 四层架构依赖规则 ----
-# 设计文档：docs/design/12-framework-refactor.md §四
-# 核心原则：上层可导下层；下层不可导上层
-
-[importlinter:contract:four-layer-architecture]
-name = Four-layer architecture (api > use_cases > domain > infra)
-type = layers
-containers = backend
-layers =
     api
+    routers
     use_cases
+    services
     domain
     infra
+    models
+    scripts
 
-# domain 内部不能互 import（services <-> rule_engine 禁止循环）
-[importlinter:contract:domain-independence]
-name = Domain layer internal independence
-type = independence
-modules =
-    backend.domain.services
-    backend.domain.rule_engine
 
-# infra 只能依赖 domain.protocols，不能依赖 domain.services / domain.rule_engine
-[importlinter:contract:infra-only-protocols]
-name = Infra only depends on domain.protocols
+# ---------------------------------------------------------------------------
+# 铁律：infra 不得依赖 services
+# ---------------------------------------------------------------------------
+# 分层约定：上层可依赖下层（api -> services -> infra），下层不得反向依赖上层。
+# infra 是最底层，一旦它 import services，依赖图立刻成环，分层形同虚设。
+#
+# 现存 5 处历史违规（逐条豁免，见文件头说明）：
+#   infra.data_source.alt              -> services.news_data
+#   infra.data_source.market           -> services.fund_monitor
+#   infra.data_source.market           -> services.fund_rank
+#   infra.data_source.providers.tushare_chart -> services.tushare_data
+#   infra.llm.gateway                  -> services.llm_quota_alert
+[importlinter:contract:infra-must-not-depend-on-services]
+name = IRON RULE: infra must NOT depend on services
 type = forbidden
 source_modules =
-    backend.infra.cache
-    backend.infra.store
-    backend.infra.llm
-    backend.infra.data_source
-    backend.infra.knowledge
-    backend.infra.events
-    backend.infra.config
+    infra
 forbidden_modules =
-    backend.domain.services
-    backend.domain.rule_engine
-    backend.domain.models
+    services
+ignore_imports =
+    infra.data_source.alt -> services.news_data
+    infra.data_source.market -> services.fund_monitor
+    infra.data_source.market -> services.fund_rank
+    infra.data_source.providers.tushare_chart -> services.tushare_data
+    infra.llm.gateway -> services.llm_quota_alert
+broken_contract_guidance = infra 只能依赖 domain.protocols / domain.models 与第三方库。需要 services 的能力时，把该能力下沉到 domain.protocols 定义的接口，由上层注入实现。
 
-# 遗留代码宽容：services/ 下旧代码允许跨层导入，M2 起逐步收紧
-[importlinter:contract:legacy-services-exempt]
-name = Legacy services exempt until M2
-type = layers
-containers = backend
-layers =
+
+# ---------------------------------------------------------------------------
+# infra 不得依赖任何上层（api / use_cases）与运维脚本（scripts）
+# ---------------------------------------------------------------------------
+# 当前 0 违规 —— 这条是干净的，用来锁住现状，防止新增。
+[importlinter:contract:infra-must-not-depend-on-upper-layers]
+name = infra must not depend on api / use_cases / scripts / routers
+type = forbidden
+source_modules =
+    infra
+forbidden_modules =
+    api
+    routers
+    use_cases
+    scripts
+broken_contract_guidance = infra 是最底层，不得反向依赖上层，也不得依赖一次性运维脚本。
+
+
+# ---------------------------------------------------------------------------
+# infra 只应依赖 domain 的协议与数据结构，不得依赖 domain 的业务逻辑
+# ---------------------------------------------------------------------------
+# domain.models（数据结构）与 domain.protocols（接口）允许；
+# domain.services / domain.rule_engine（业务逻辑）不允许。
+#
+# 现存 3 处历史违规（逐条豁免）：
+#   infra.knowledge.indexer            -> domain.services.rag_service
+#   infra.knowledge.multi_view_advisor -> domain.services.multi_view_advisor_service
+#   infra.knowledge.retriever          -> domain.services.rag_service
+[importlinter:contract:infra-must-not-depend-on-domain-logic]
+name = infra must not depend on domain.services / domain.rule_engine
+type = forbidden
+source_modules =
+    infra
+forbidden_modules =
+    domain.services
+    domain.rule_engine
+ignore_imports =
+    infra.knowledge.indexer -> domain.services.rag_service
+    infra.knowledge.multi_view_advisor -> domain.services.multi_view_advisor_service
+    infra.knowledge.retriever -> domain.services.rag_service
+broken_contract_guidance = infra 需要业务规则时，应依赖 domain.protocols 里的抽象接口，由上层注入具体实现。
+
+
+# ---------------------------------------------------------------------------
+# domain 不得依赖任何外层（infra / services / api / use_cases / scripts）
+# ---------------------------------------------------------------------------
+# domain 是纯业务内核，infra 也算它的外层（实现细节）。
+#
+# 现存 1 处历史违规（逐条豁免）：
+#   domain.rule_engine.decision_archive -> infra.llm.gateway
+#
+# 注意这条为什么必须显式豁免、不能"忍一忍"：不豁免时契约会沿着
+#   domain.rule_engine.decision_archive -> infra.llm.gateway -> services.llm_quota_alert
+# 这条**间接链**报 BROKEN。也就是说 domain 借道 infra 摸到了 services —— 问题
+# 的源头在 infra.llm.gateway 那条铁律违规上，但闸门必须先如实报出来。
+# 这里把 domain -> infra 这一跳显式豁免并登记在案，等 infra 侧的
+# 历史违规被清掉，这条豁免也应当一并消失。
+[importlinter:contract:domain-must-not-depend-on-outer-layers]
+name = domain must not depend on infra / services / api / use_cases / scripts / routers
+type = forbidden
+source_modules =
+    domain
+forbidden_modules =
+    infra
     services
     api
+    routers
     use_cases
-    domain
-    infra
+    scripts
+ignore_imports =
+    domain.rule_engine.decision_archive -> infra.llm.gateway
+broken_contract_guidance = domain 是纯业务内核，不得感知任何外层实现（含 infra）。需要外部能力时应由 use_cases 注入。
+
+
+# ---------------------------------------------------------------------------
+# domain 内部：services 与 rule_engine 不得互相依赖（防环）
+# ---------------------------------------------------------------------------
+# 现存 3 处历史违规（逐条豁免）：
+#   domain.services.allocation_service            -> domain.rule_engine.defaults
+#   domain.rule_engine.behavior_intervention_rules -> domain.services.behavior_detector
+#   domain.rule_engine.decision_archive            -> domain.services.user_preference_service
+[importlinter:contract:domain-internal-independence]
+name = domain.services and domain.rule_engine stay independent
+type = independence
+modules =
+    domain.services
+    domain.rule_engine
+ignore_imports =
+    domain.services.allocation_service -> domain.rule_engine.defaults
+    domain.rule_engine.behavior_intervention_rules -> domain.services.behavior_detector
+    domain.rule_engine.decision_archive -> domain.services.user_preference_service
+broken_contract_guidance = domain.services 与 domain.rule_engine 互相 import 会形成环，公共部分应下沉到 domain.models 或第三方子包。
+
+
+# ---------------------------------------------------------------------------
+# services 不得反向依赖 api / use_cases
+# ---------------------------------------------------------------------------
+# 现存 1 处历史违规（逐条豁免）：
+#   services.cfo_dashboard -> api.shared_helpers
+[importlinter:contract:services-must-not-depend-on-api]
+name = services must not depend on api / use_cases
+type = forbidden
+source_modules =
+    services
+forbidden_modules =
+    api
+    routers
+    use_cases
+ignore_imports =
+    services.cfo_dashboard -> api.shared_helpers
+broken_contract_guidance = services 被 api 调用，不得反向 import api。共用工具应下沉到 services 或新的共享层。
+
+
+# ---------------------------------------------------------------------------
+# use_cases 不得依赖 api
+# ---------------------------------------------------------------------------
+# 当前 0 违规 —— 锁住现状。
+[importlinter:contract:use-cases-must-not-depend-on-api]
+name = use_cases must not depend on api / routers
+type = forbidden
+source_modules =
+    use_cases
+forbidden_modules =
+    api
+    routers
+broken_contract_guidance = use_cases 编排业务，transport 层（api/routers）不得反向依赖。

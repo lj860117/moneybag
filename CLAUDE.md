@@ -181,8 +181,14 @@ DATA_DIR（只认 `MONEYBAG_PYTEST_DATA_DIR`），留着只会误导，已去掉
 # mypy 类型检查（仅对新架构层 strict）
 mypy backend/domain backend/infra/cache backend/use_cases
 
-# import-linter 架构依赖检查（四层单向依赖）
-lint-imports
+# import-linter 架构依赖检查（分层单向依赖）
+# PYTHONPATH=backend 不可省：.importlinter 的 root_packages 是 backend/ 下的顶层包
+# （api/services/infra/domain/use_cases/models/routers/scripts），因为 backend/main.py
+# 把 backend/ 目录本身插进 sys.path，跨层导入都写成 `from services.xxx import yyy`。
+PYTHONPATH=backend lint-imports
+
+# 同一套契约也挂进了 pytest 全量套件（含"依赖图不得为空"的元守卫）
+python -m pytest backend/tests/test_architecture_contracts.py -q
 
 # main.py 行数检查（超 200 行 CI 报错）
 python scripts/lint_main_py.py
@@ -230,15 +236,35 @@ sw.js              # Service Worker（PWA 离线缓存）
 tests/             # 测试（主体为纯 pytest 单测；少量集成用例 httpx 直连后端不 mock）
 ```
 
-### 四层单向依赖（强制约束，import-linter 门禁）
+### 分层单向依赖（强制约束，import-linter 门禁）
+
+目标形态（绞杀者迁移完成后）：
 
 ```
 api/ → use_cases/ → domain/ → infra/
 ```
 
-- 反向依赖禁止
-- `domain/services` 之间禁止互相 import，只走 `domain/protocols`
-- `infra/` 只能依赖 `domain/protocols`，不能依赖 `domain/services` 或 `domain/rule_engine`
+现网实际形态（`services/` 是遗留层，尚未迁入 `domain/`）：
+
+```
+api/ → services/ → infra/
+```
+
+- **铁律：`infra/` 不得依赖 `services/`**（`services` 是遗留上层，`infra` 是最底层，
+  反向依赖会立刻让依赖图成环）。这条由 `.importlinter` 的
+  `infra-must-not-depend-on-services` 契约强制，并由
+  `backend/tests/test_architecture_contracts.py` 挂进 pytest 全量套件。
+- 反向依赖禁止；`infra/` 不得依赖 `api/`、`use_cases/`、`scripts/`
+- `domain/` 不得依赖 `infra/`、`services/`、`api/`、`use_cases/`、`scripts/`
+- `domain/services` 与 `domain/rule_engine` 之间禁止互相 import，只走 `domain/protocols`
+- `infra/` 只能依赖 `domain/protocols` 与 `domain/models`，不能依赖
+  `domain/services` 或 `domain/rule_engine`
+
+> 2026-09-17：`.importlinter` 此前**完全失效**（`0 dependencies`、契约恒绿），
+> 原因是 `root_packages = backend` 与运行时 `sys.path` 根不一致，grimp 把所有跨层
+> 导入判为 external 丢弃，且 `scripts/` 从未入层。现为 310 个模块 / 885 条依赖。
+> 存量历史违规已在 `.importlinter` 里逐条 `ignore_imports` 登记（棘轮：只许收紧），
+> 清理它们是有意为之的独立重构任务，不要在顺手改动里碰业务代码。
 - 新架构层（domain/、infra/cache、infra/store、infra/llm、use_cases/）有 mypy strict 检查；遗留层（services/、api/）暂时忽略类型错误
 
 ### 前端架构（原生 JS SPA，无框架无构建）
