@@ -57,9 +57,9 @@ _BRIEF_DIR = Path(config.DATA_DIR) / "briefings"
 # （写穿越），?userId=../.. 还能让 briefing_history() 的 glob 去列别的
 # 目录（读穿越）。
 #
-# 修法：文件名键走**白名单**（只留 [A-Za-z0-9_-]），其余字符一律压成 "_"，
+# 修法：文件名键走**白名单**（只留 \w 和连字符），其余字符一律压成 "_"，
 # 再对拼完的路径做一次「必须仍在 _BRIEF_DIR 内」的断言兜底。
-# 白名单是 `\w` + 连字符：`\w` 涵盖 ASCII 和 Unicode 字母/数字/下划线
+# 白名单是 \w + 连字符：\w 涵盖 ASCII 和 Unicode 字母/数字/下划线
 # （所以「厉害了哥」这类中文 userId 不会被误杀），但**不含点号、斜杠、反斜杠、
 # 冒号、空白、控制字符**——".." 和路径分隔符都是穿越的基本原料。
 # 存量 userId（LeiJiang / BuLuoGeLi / default / TestBot / 三个 hex 串）全部落在
