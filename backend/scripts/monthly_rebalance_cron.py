@@ -28,8 +28,17 @@ if env.exists():
             os.environ.setdefault(k, v.strip().strip('"').strip("'"))
 
 
-# 默认 60/20/10/10 的稳健组合
-DEFAULT_TARGET = {"stock": 60, "bond": 20, "cash": 10, "gold": 10}
+# 稳健组合目标：65/20/10/5
+#
+# FIX 2026-09-18: 黄金目标由孤立的 10 统一为 **5**。原值 10 是本文件里一个没有
+# 任何来源依据的字面量（注释只写「默认 60/20/10/10 的稳健组合」），而 domain 层
+# 两处权威源一致给 5：
+#   - domain/rule_engine/glide_path_rules.py:35  GOLD_PCT_DEFAULT = 0.05
+#     （_GLIDE_PATH_TABLE 每个年龄档 gold 均为 5：20岁 75/10/10/5、25岁 70/15/10/5 …）
+#   - domain/rule_engine/defaults.py:36-37       目标矩阵 (50,25,20,5) / (35,40,20,5)
+# 且 glide_path 的 stock_pct 注释写明「股票目标占比（已扣除黄金）」，
+# 因此从 stock 扣 5（60 → 65），四档合计仍为 100。
+DEFAULT_TARGET = {"stock": 65, "bond": 20, "cash": 10, "gold": 5}
 
 
 def _pct_of(d: dict, *keys: str) -> float:
@@ -48,6 +57,16 @@ def _pct_of(d: dict, *keys: str) -> float:
             except (TypeError, ValueError):
                 return 0.0
     return 0.0
+
+
+def _fmt_pct(v: float) -> str:
+    """渲染百分比：整数值不带小数点（65.0 → "65"），非整数保留 1 位（14.3 → "14.3"）。
+
+    目标是整数（65/20/10/5），当前值来自 allocation 是带小数的（57.1）。
+    统一走这个函数，避免出现「目标：股65.0%」这种和原硬编码文案不一致的写法。
+    """
+    fv = float(v)
+    return str(int(fv)) if fv.is_integer() else f"{fv:.1f}"
 
 
 def analyze_user(user_id: str) -> dict:
@@ -99,6 +118,73 @@ def analyze_user(user_id: str) -> dict:
     }
 
 
+def _render_message(result: dict) -> str:
+    """渲染推送正文。
+
+    目标值一律从 `result["target"]` **动态**渲染，不再硬编码。
+
+    FIX 2026-09-18: 正文原先写死「目标：股60% · 基金20% · 现金10% · 黄金10%」，
+    与 DEFAULT_TARGET 是两份独立维护的同一个数字。更糟的是正常路径下
+    `target = overview.get("target")`，拿到的是 portfolio_overview 的
+    45/30/20/5，而正文仍在说 60/20/10/10 —— 也就是说这行文本在绝大多数
+    情况下**本来就是错的**，只是没人发现（异常被 main 的 try 吞掉）。
+    改成动态渲染后，目标值只可能有一个真源，这类不一致不可能再发生。
+    """
+    user = result.get("user", "")
+    cur = result.get("current") or {}
+    tgt = result.get("target") or {}
+    month = datetime.now().strftime("%Y-%m")
+
+    cur_line = (
+        f"当前：股{_fmt_pct(_pct_of(cur, 'stock', 'equity'))}% · "
+        f"基金{_fmt_pct(_pct_of(cur, 'bond'))}% · "
+        f"现金{_fmt_pct(_pct_of(cur, 'cash'))}% · "
+        f"黄金{_fmt_pct(_pct_of(cur, 'gold'))}%"
+    )
+    tgt_line = (
+        f"目标：股{_fmt_pct(_pct_of(tgt, 'stock', 'equity'))}% · "
+        f"基金{_fmt_pct(_pct_of(tgt, 'bond'))}% · "
+        f"现金{_fmt_pct(_pct_of(tgt, 'cash'))}% · "
+        f"黄金{_fmt_pct(_pct_of(tgt, 'gold'))}%"
+    )
+
+    if not result.get("need_rebalance"):
+        # 偏离 < 5%，温和提醒
+        return (
+            f"🎯 钱袋子·月度再平衡（{month}）\n\n"
+            f"✅ {user}的资产结构健康\n"
+            f"━━━━━━━━━━━━━━━\n"
+            f"{cur_line}\n"
+            f"最大偏离：{result['max_dev']}%（< 5% 无需调整）\n\n"
+            f"💡 下月继续保持～"
+        )
+
+    # 需要再平衡
+    suggestions = []
+    for asset, dev in (result.get("deviations") or {}).items():
+        if abs(dev) > 5:
+            # "equity" 是 portfolio_overview 用的键名，"stock" 是本脚本
+            # DEFAULT_TARGET / 兼容分支用的键名，两者都要认。
+            cn = {"stock": "股票", "equity": "股票", "bond": "基金",
+                  "cash": "现金", "gold": "黄金"}[asset]
+            if dev > 0:
+                suggestions.append(f"  • {cn} 超配 {dev:+.1f}%，考虑减仓")
+            else:
+                suggestions.append(f"  • {cn} 低配 {dev:+.1f}%，考虑加仓")
+
+    return (
+        f"⚠️ 钱袋子·月度再平衡（{month}）\n\n"
+        f"🔔 {user}的资产结构需要调整\n"
+        f"━━━━━━━━━━━━━━━\n"
+        f"{cur_line}\n"
+        f"{tgt_line}\n\n"
+        f"📋 调整建议：\n"
+        + "\n".join(suggestions) +
+        "\n\n💡 再平衡不是必做，但可以降低风险\n"
+        "⚠️ 仅供参考，不构成投资建议"
+    )
+
+
 def main():
     try:
         # v9.9.20 (B3): 裸 send_text 没有任何长度保护，超 2048 字节就被企微硬截断。
@@ -116,48 +202,7 @@ def main():
                 print(f"[REBALANCE] {user}: {result.get('reason')}，跳过")
                 continue
 
-            if not result["need_rebalance"]:
-                # 偏离 < 5%，温和提醒
-                text = (
-                    f"🎯 钱袋子·月度再平衡（{datetime.now().strftime('%Y-%m')}）\n\n"
-                    f"✅ {user}的资产结构健康\n"
-                    f"━━━━━━━━━━━━━━━\n"
-                    f"当前：股{_pct_of(result['current'], 'stock', 'equity')}% · "
-                    f"基金{_pct_of(result['current'], 'bond')}% · "
-                    f"现金{_pct_of(result['current'], 'cash')}% · "
-                    f"黄金{_pct_of(result['current'], 'gold')}%\n"
-                    f"最大偏离：{result['max_dev']}%（< 5% 无需调整）\n\n"
-                    f"💡 下月继续保持～"
-                )
-            else:
-                # 需要再平衡
-                devs = result["deviations"]
-                suggestions = []
-                for asset, dev in devs.items():
-                    if abs(dev) > 5:
-                        # "equity" 是 portfolio_overview 用的键名，"stock" 是本脚本
-                        # DEFAULT_TARGET / 兼容分支用的键名，两者都要认。
-                        cn = {"stock": "股票", "equity": "股票", "bond": "基金",
-                              "cash": "现金", "gold": "黄金"}[asset]
-                        if dev > 0:
-                            suggestions.append(f"  • {cn} 超配 {dev:+.1f}%，考虑减仓")
-                        else:
-                            suggestions.append(f"  • {cn} 低配 {dev:+.1f}%，考虑加仓")
-
-                text = (
-                    f"⚠️ 钱袋子·月度再平衡（{datetime.now().strftime('%Y-%m')}）\n\n"
-                    f"🔔 {user}的资产结构需要调整\n"
-                    f"━━━━━━━━━━━━━━━\n"
-                    f"当前：股{_pct_of(result['current'], 'stock', 'equity')}% · "
-                    f"基金{_pct_of(result['current'], 'bond')}% · "
-                    f"现金{_pct_of(result['current'], 'cash')}% · "
-                    f"黄金{_pct_of(result['current'], 'gold')}%\n"
-                    f"目标：股60% · 基金20% · 现金10% · 黄金10%\n\n"
-                    f"📋 调整建议：\n"
-                    + "\n".join(suggestions) +
-                    "\n\n💡 再平衡不是必做，但可以降低风险\n"
-                    "⚠️ 仅供参考，不构成投资建议"
-                )
+            text = _render_message(result)
 
             ok = False
             dry_run = "--dry-run" in sys.argv
