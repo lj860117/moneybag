@@ -342,6 +342,18 @@ def send_markdown(content: str, user_id: str = "") -> dict:
         按字节无损分段（预算 1800 字节 < 2048 限制，超长自动切多条），
         不依赖 markdown 通道。想用 markdown 需显式设 WXWORK_FORCE_MARKDOWN=1。
 
+    ⛔ 2026-09-17 第二次实测：markdown 通道**依然不可用，已死心。**
+      这次不是历史传闻，是带着完整证据链做的真机验证：
+        - 方式：生产服务器单次注入 WXWORK_FORCE_MARKDOWN=1，
+          用生产真实路径 send_daily_report_to() 发真实晨报内容（3727 字节）；
+        - 企微 API 返回 **errcode=0 / errmsg=ok**（服务端完全接受，msgid 正常下发）；
+        - 但用户手机收到的仍是「暂不支持此消息类型，请在企业微信中查看」。
+      **关键教训：API 返回 ok ≠ 用户能看到。** 服务端接受只说明消息格式合法，
+      不代表接收端支持渲染。下次想验证 markdown 能不能用，唯一的判据是
+      **人在手机上看一眼**，任何服务端返回值都不能作为依据。
+      距 2026-09-12 首次失败已 5 个月，接收端行为毫无变化 —— 别再试第三次，
+      把精力放在砍内容或接受多条上。
+
     返回: {"ok": bool, "data": dict, "skipped_81013": bool}
     """
     body = _to_wecom_markdown(content).strip()
@@ -491,6 +503,11 @@ def _force_text() -> bool:
     所以默认改回 text：稳妥压倒一切。
 
     显式设置 WXWORK_FORCE_MARKDOWN=1 才会走 markdown（保留能力，不删代码）。
+
+    ⛔ 警告：这个开关**当前不可用**，设了会让用户什么都收不到。
+    2026-09-12 首次实测失败、2026-09-17 带着完整证据链二次实测仍失败
+    （详见 send_markdown 的 docstring）。两次间隔 5 个月，接收端行为未变。
+    保留它只是为了「将来企微支持了能立刻打开」，**不是让你现在去设**。
     """
     return os.getenv("WXWORK_FORCE_MARKDOWN", "").strip().lower() not in ("1", "true", "yes")
 
