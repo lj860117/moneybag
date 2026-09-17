@@ -24,6 +24,7 @@ import time
 import json
 import traceback
 from datetime import datetime
+from typing import Any, Dict, Iterator, List, Optional, Tuple
 from infra.cache import MemoryCache
 
 # ---- 缓存 ----
@@ -132,6 +133,72 @@ POLICY_TOPICS = {
     "房改": {"keywords": ["保障房", "城中村", "棚改", "旧改", "安居"], "emoji": "🏗️"},
 }
 
+# 中文主题名 → 前端使用的英文 key（前端 topicMap 用英文 key）
+KEY_MAP = {"房地产": "realestate", "公积金": "gongjijin", "科技": "tech", "经济": "economy", "房改": "fanggai"}
+_EN_TO_CN = {v: k for k, v in KEY_MAP.items()}
+
+# topics 字典值的唯一合法键集合。任何写入路径都必须产出完全一致的键，
+# 避免出现「dict vs dict 但键不同」这种比原先更隐蔽的不一致。
+_TOPIC_PAYLOAD_KEYS = ("topic", "news", "emoji", "error")
+
+
+def _topic_payload(
+    topic_cn: str,
+    news: Optional[List[Any]] = None,
+    emoji: Optional[str] = None,
+    error: str = "",
+) -> Dict[str, Any]:
+    """构造 topics 映射里的值，保证键集合恒定且类型正确。
+
+    背景（P0 修复）：get_all_policy_topics() 历史上两条路径都往
+    topics[en_key] 里塞「新闻列表」（正常路径 data.get("news", []) /
+    异常路径 []），而下游 analyze_policy_impact_ds() 与 _build_policy_context()
+    都按 dict 消费（data.get("emoji") / data.get("news")），于是
+    AttributeError: 'list' object has no attribute 'get'
+    → GET /api/policy/impact HTTP 500。
+
+    这里把「正常路径」也一并改成 dict（不只是异常路径），否则只会把崩溃
+    从异常路径转移到更高频的正常路径上。
+    """
+    return {
+        "topic": topic_cn,
+        "news": news if isinstance(news, list) else [],
+        "emoji": emoji or POLICY_TOPICS.get(topic_cn, {}).get("emoji", "📋"),
+        "error": str(error or ""),
+    }
+
+
+def _normalize_topic_payload(key: str, raw: Any) -> Dict[str, Any]:
+    """把 topics 里任意历史形态的值归一化成 dict。
+
+    兜底场景：发版后内存缓存里可能仍残留旧结构（list）。这里把 list 当作
+    news 列表保留下来，而不是静默丢弃——丢掉才是真正的信息丢失。
+    """
+    topic_cn = _EN_TO_CN.get(key, key)
+    if isinstance(raw, dict):
+        return _topic_payload(
+            topic_cn,
+            news=raw.get("news"),
+            emoji=raw.get("emoji"),
+            error=raw.get("error", ""),
+        )
+    if isinstance(raw, list):
+        return _topic_payload(topic_cn, news=raw, error="legacy list payload")
+    return _topic_payload(topic_cn, error=f"unexpected payload: {type(raw).__name__}")
+
+
+def _iter_policy_topics(all_topics: Any) -> Iterator[Tuple[str, Dict[str, Any]]]:
+    """统一遍历 get_all_policy_topics() 的结果，产出 (key, dict)。
+
+    下游两处消费点都改走这里，任何非 dict 的值都会被就地归一化，
+    因此不会再出现 'list' object has no attribute 'get'。
+    """
+    raw_topics = all_topics.get("topics", {}) if isinstance(all_topics, dict) else {}
+    if not isinstance(raw_topics, dict):
+        return
+    for key, raw in raw_topics.items():
+        yield key, _normalize_topic_payload(key, raw)
+
 
 def get_policy_news_by_topic(topic: str = "房地产", limit: int = 5) -> dict:
     """按主题搜索政策新闻（东方财富数据源）"""
@@ -175,9 +242,6 @@ def get_all_policy_topics() -> dict:
     if cached is not None:
         return cached
 
-    # 中文→英文 key 映射（前端 topicMap 用英文 key）
-    KEY_MAP = {"房地产": "realestate", "公积金": "gongjijin", "科技": "tech", "经济": "economy", "房改": "fanggai"}
-
     # 并发抓取 5 个主题（避免串行 15-25 秒超时）
     from concurrent.futures import ThreadPoolExecutor, as_completed
     topics = {}
@@ -185,18 +249,29 @@ def get_all_policy_topics() -> dict:
     def _fetch_topic(topic_cn):
         en_key = KEY_MAP.get(topic_cn, topic_cn)
         data = get_policy_news_by_topic(topic_cn, 5)
-        return en_key, data.get("news", [])
+        if not isinstance(data, dict):
+            # 上游返回了非 dict（历史形态或异常），显式标注而不是静默变形
+            return en_key, _topic_payload(
+                topic_cn, error=f"unexpected payload: {type(data).__name__}"
+            )
+        return en_key, _topic_payload(
+            topic_cn,
+            news=data.get("news"),
+            emoji=data.get("emoji"),
+            error=data.get("error", ""),
+        )
 
     with ThreadPoolExecutor(max_workers=5) as pool:
         futures = {pool.submit(_fetch_topic, t): t for t in POLICY_TOPICS}
         for f in as_completed(futures):
             try:
-                en_key, news_list = f.result(timeout=10)
-                topics[en_key] = news_list
+                en_key, payload = f.result(timeout=10)
+                topics[en_key] = payload
             except Exception as e:
                 topic_cn = futures[f]
                 en_key = KEY_MAP.get(topic_cn, topic_cn)
-                topics[en_key] = []
+                # 异常路径与正常路径产出完全同构的 dict（键集合一致）
+                topics[en_key] = _topic_payload(topic_cn, error=str(e))
                 print(f"[POLICY] topic {topic_cn} failed: {e}")
 
     result = {"topics": topics, "updatedAt": datetime.now().isoformat()}
@@ -219,7 +294,7 @@ def analyze_policy_impact_ds() -> dict:
     # 收集全部政策新闻
     all_news = get_all_policy_topics()
     news_lines = []
-    for topic, data in all_news.get("topics", {}).items():
+    for topic, data in _iter_policy_topics(all_news):
         emoji = data.get("emoji", "")
         for n in data.get("news", [])[:3]:
             news_lines.append(f"{emoji} [{topic}] {n.get('title', '')}")
@@ -305,7 +380,7 @@ def get_policy_summary_for_context() -> str:
 
     # 政策新闻标题
     all_topics = get_all_policy_topics()
-    for topic, data in all_topics.get("topics", {}).items():
+    for topic, data in _iter_policy_topics(all_topics):
         news = data.get("news", [])
         if news:
             lines.append(f"{data.get('emoji','')} {topic}：{news[0].get('title', '')}")
