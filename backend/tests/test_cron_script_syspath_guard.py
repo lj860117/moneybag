@@ -381,6 +381,17 @@ def _probe_env(cwd: Path) -> dict[str, str]:
         "PYTHONDONTWRITEBYTECODE": "1",
         # 防止被脚本的模块级代码写进真实数据目录
         "DATA_DIR": str(cwd / "_probe_data"),
+        # FIX 2026-09-18：只隔离 DATA_DIR **不够** —— backend/scripts 下还有两个
+        # 模块在 **import 期** 自己 mkdir，各自读自己的环境变量，完全不认 DATA_DIR：
+        #   llm_balance_monitor.py:76   LOG_DIR     → 默认 backend/logs
+        #   stock_monitor_cron.py:46    MONITOR_DIR → 默认 <repo>/data/monitor
+        # 漏掉这两个，子进程会把目录建到**真实仓库**里。在 data/ 与
+        # backend/logs 尚不存在的干净 checkout 上（两者都未入库、被 .gitignore
+        # 排除），conftest 的仓库写入守卫会把它们判成「新增 7 项」并让会话失败，
+        # 而守卫报错被 pytest 挂到全量会话最后一条用例名下 —— 表现为一条
+        # 张冠李戴的 ERROR（2026-09-18 实测，本文件的运行时用例是唯二污染源之一）。
+        "LOG_DIR": str(cwd / "_probe_logs"),
+        "MONITOR_DIR": str(cwd / "_probe_monitor"),
     }
     if os.environ.get("PYTHONHASHSEED"):
         env["PYTHONHASHSEED"] = os.environ["PYTHONHASHSEED"]
@@ -603,6 +614,31 @@ def test_script_imports_cleanly_in_cron_mode(script: Path, mode: str, tmp_path: 
         f"—— 这就是 2026-09-14 生产事故的原样复现。\n"
         f"子进程输出尾部:\n{output[-2000:]}"
     )
+
+
+def test_probe_env_isolates_every_import_time_mkdir_dir(tmp_path: Path) -> None:
+    """反空转：`_probe_env` 必须把三个「import 期建目录」的变量**全部**指到 tmp。
+
+    背景（2026-09-18）：`_probe_env` 原版只设了 DATA_DIR，漏掉 LOG_DIR 与
+    MONITOR_DIR。子进程里这两个变量为空 →
+    `llm_balance_monitor.py:76`（默认 backend/logs）与
+    `stock_monitor_cron.py:46`（默认 <repo>/data/monitor）在 import 期 mkdir
+    到**真实仓库**。在干净 checkout 上被 conftest 的仓库写入守卫判为「新增」，
+    守卫报错又被 pytest 挂到全量会话最后一条用例名下，变成一条张冠李戴的
+    ERROR —— 而**本文件自己一条用例都没红**，所以靠看测试绿不绿根本发现不了。
+
+    故障注入方向：把 `_probe_env` 里的 LOG_DIR / MONITOR_DIR 两行删掉，
+    本用例必须转红。缺了它，那个修复就是一次没人看守的修改，随时能被改回去。
+    """
+    env = _probe_env(tmp_path)
+    for key in ("DATA_DIR", "LOG_DIR", "MONITOR_DIR"):
+        assert key in env, (
+            f"_probe_env 没有设置 {key}：子进程里读它的模块会回落到真实仓库路径"
+            f"并在 import 期建目录（实际只设了 {sorted(env)}）")
+        target = Path(env[key])
+        assert target.is_relative_to(tmp_path), (
+            f"{key}={target} 不在 tmp_path({tmp_path}) 下 —— 隔离没生效，"
+            f"子进程会写真实仓库")
 
 
 def test_fund_rank_build_regression_is_pinned() -> None:

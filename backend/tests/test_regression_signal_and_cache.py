@@ -61,6 +61,16 @@ def test_config_data_dir_defaults_to_project_root(monkeypatch):
     probe = (
         "import os, sys; "
         "os.environ.pop('DATA_DIR', None); "
+        # FIX 2026-09-18：本用例要的是「DATA_DIR 未设时默认值解析成 <repo>/data」
+        # 这条**路径解析**结论，与「顺手把目录建出来」无关。但 config.py 在
+        # import 期会 mkdir DATA_DIR/users|receipts|logs/pushes，上面刚 pop 掉
+        # DATA_DIR，于是这四个目录被建到**真实仓库**的 data/ 下。
+        # 在 data/ 尚未存在的干净 checkout 上（未入库、被 .gitignore 排除），
+        # conftest 的仓库写入守卫会把它们判成「新增」并让会话失败，守卫报错
+        # 又被 pytest 挂到全量会话最后一条用例名下 —— 一条张冠李戴的 ERROR。
+        # MONEYBAG_SKIP_DIR_BOOTSTRAP=1（config.py:29-38）让 config 只解析
+        # 路径、不建目录，四个 *_DIR 常量取值完全不变，本用例的断言原样成立。
+        "os.environ['MONEYBAG_SKIP_DIR_BOOTSTRAP'] = '1'; "
         f"sys.path.insert(0, {str(backend_dir)!r}); "
         "import config; "
         "from pathlib import Path; "
