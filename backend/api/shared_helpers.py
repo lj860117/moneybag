@@ -39,6 +39,41 @@ from infra.cache import MemoryCache
 
 
 # ========================================================
+# 原子写文本（并发安全）
+# ========================================================
+def _atomic_write_text(path: str, text: str) -> None:
+    """原子写文本：同目录临时文件 + ``os.replace``，避免并发写同一缓存文件时撕裂。
+
+    背景（2026-09-18，P0）：把 `_build_market_context` / `_build_portfolio_context`
+    从 event loop 搬进线程池后，两个并发请求可能**同时**命中冷缓存并各自写同一个
+    文件。旧写法 `open(path, "w")` 是「先截断再写」，并发下读侧会读到半截内容
+    （市场/持仓上下文被截断成乱码喂给 LLM）。`os.replace` 在同一文件系统上是原子
+    rename —— 读侧要么看到旧内容、要么看到完整新内容，不存在中间态。
+
+    与既有约定一致（infra/store/file_store.atomic_write_json、cache_warmer、
+    fund_risk_adjusted 等都是「临时文件 + os.replace」）。
+
+    Args:
+        path: 目标文件路径（其父目录会被创建）。
+        text: 要写入的完整文本。
+    """
+    import tempfile as _tempfile
+    directory = os.path.dirname(path) or "."
+    os.makedirs(directory, exist_ok=True)
+    fd, tmp_path = _tempfile.mkstemp(dir=directory, suffix=".tmp")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as tmp_f:
+            tmp_f.write(text)
+        os.replace(tmp_path, path)
+    except Exception:
+        try:
+            os.unlink(tmp_path)
+        except OSError:
+            pass
+        raise
+
+
+# ========================================================
 # v9.5.122: 市场上下文 — 文件缓存优先，后台 cache_warmer 预热
 # ========================================================
 _MARKET_CTX_FILE = os.path.join(config.DATA_DIR, "_cache", "market_context.txt")
@@ -349,10 +384,9 @@ def _build_market_context() -> str:
     result = "\n".join(lines) if lines else "暂无市场数据"
     _market_ctx_cache.set("market_context", result, ttl=_MARKET_CTX_TTL)
     # v9.5.122: 写文件缓存（供后续请求和重启后读取）
+    # 2026-09-18：改为原子写 —— 搬进线程池后并发请求可能同时写这个文件。
     try:
-        os.makedirs(os.path.dirname(_MARKET_CTX_FILE), exist_ok=True)
-        with open(_MARKET_CTX_FILE, "w", encoding="utf-8") as f:
-            f.write(result)
+        _atomic_write_text(_MARKET_CTX_FILE, result)
     except Exception:
         pass
     return result
@@ -907,10 +941,9 @@ def _build_portfolio_context(p=None, user_id: str = "default") -> str:
 
     result = "\n".join(lines) if lines else "用户尚未建仓。"
     # v9.5.122: 写 per-user 文件缓存
+    # 2026-09-18：改为原子写 —— 搬进线程池后并发请求可能同时写同一 per-user 文件。
     try:
-        os.makedirs(_PORTFOLIO_CTX_DIR, exist_ok=True)
-        with open(ctx_file, "w", encoding="utf-8") as f:
-            f.write(result)
+        _atomic_write_text(ctx_file, result)
     except Exception:
         pass
     return result

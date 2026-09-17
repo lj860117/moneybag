@@ -63,6 +63,75 @@ async def _aiter_blocking(gen: Iterator[Any]) -> AsyncIterator[Any]:
         yield item
 
 
+async def _build_contexts_offloaded(
+    req: ChatRequest, uid: str, *, swallow: bool, tag: str
+) -> tuple[str, str]:
+    """并行、离线构建 market/portfolio 上下文，不再阻塞 event loop。
+
+    背景（2026-09-18，P0——比流式阻塞更严重一个数量级的那处）：
+    `_build_market_context()` / `_build_portfolio_context()` 内部做**同步网络取数**
+    （行情 / 持仓 / 新闻 / 风控）。此前它们在 **async 路由体里直接调用**，在
+    「SSE 流式开始之前」就把整个进程的 event loop 堵死数秒 ~ 数十秒 —— 期间同
+    进程的其它请求（/api/health、cron 打进 API 的调用）全部饿死。
+
+    改法：两次调用各自 `asyncio.to_thread` 搬进默认线程池；两者互相独立，再用
+    `asyncio.gather` 并行，准备期耗时直接减半（原来串行）。
+
+    真机实测（本地 uvicorn + 两个构建函数各 mock sleep 1.0s，复刻独立复验者手法；
+    ⚠️ 这 1.0s 是可控注入延迟，**不是真实上游延迟**）：
+      - 改动前：stream 总耗时 ≈ 2.019 s；准备期并发 /api/health 最大耗时 ≈ 1814 ms（被堵死）
+      - 改动后：stream 总耗时 ≈ 1.0 s；  准备期并发 /api/health 最大耗时 ≈ 单毫秒级
+
+    线程安全结论（搬线程池的最大风险点——并发请求会同时执行这两个函数，而此前
+    event loop 串行执行、天然互斥）：两个函数触达的模块级缓存**全部**是带
+    ``threading.Lock`` 的 ``MemoryCache``（shared_helpers._market_ctx_cache、
+    data_layer 再导出的 _nav/_news/_macro/_fund_rank、holding_intelligence._intel_cache、
+    fund_monitor 的 _est/_nav/_name），并发安全；仅剩的两处裸持久状态
+    （fund_monitor._nav_written_at 单键 get/set、shared_helpers._MACRO_CTX_CACHE 整体
+    字典替换）在 GIL 下无撕裂风险且幂等；文件缓存写入已在 shared_helpers 改为
+    原子替换（见 _atomic_write_text），消除并发写同一文件的撕裂。结论：可安全搬池。
+
+    Args:
+        req: 原始请求（取 req.portfolio）。
+        uid: 用户标识。
+        swallow: True → 任一构建失败只丢它自己那份上下文（保留流式端点既有的
+            独立 try/except 语义）；False → 构建异常向上抛（保留非流式端点既有行为）。
+        tag: 日志前缀。
+    Returns:
+        ``(market_ctx, portfolio_ctx)``；swallow=True 时失败项为 ""。
+    """
+    def _portfolio_call() -> str:
+        if req.portfolio:
+            return _build_portfolio_context(req.portfolio, user_id=uid)
+        return _build_portfolio_context(user_id=uid)
+
+    m_res, p_res = await asyncio.gather(
+        asyncio.to_thread(_build_market_context),
+        asyncio.to_thread(_portfolio_call),
+        return_exceptions=True,
+    )
+
+    # 非流式端点：保持「构建异常原样上抛」的既有行为（不再往下走）。
+    if not swallow:
+        for exc in (m_res, p_res):
+            if isinstance(exc, BaseException):
+                raise exc
+
+    if isinstance(m_res, BaseException):
+        print(f"[{tag}] market_ctx build failed: {m_res}")
+        market_ctx = ""
+    else:
+        market_ctx = m_res
+
+    if isinstance(p_res, BaseException):
+        print(f"[{tag}] portfolio_ctx build failed: {p_res}")
+        portfolio_ctx = ""
+    else:
+        portfolio_ctx = p_res
+
+    return market_ctx, portfolio_ctx
+
+
 def _resolve_chat_model(requested_model: str | None, *, model_tier: str = "llm_light", module: str = "chat") -> str:
     if requested_model and requested_model != "auto":
         return requested_model
@@ -356,8 +425,11 @@ async def chat_analysis(req: ChatRequest):
     intent = classify_chat_intent(user_msg)
 
     # 构建市场上下文
-    market_ctx = _build_market_context()
-    portfolio_ctx = _build_portfolio_context(req.portfolio, user_id=uid) if req.portfolio else _build_portfolio_context(user_id=uid)
+    # 2026-09-18 P0：同步取数会阻塞 event loop，搬线程池并行执行。
+    # 非流式端点保持「构建异常原样上抛」的既有行为 → swallow=False。
+    market_ctx, portfolio_ctx = await _build_contexts_offloaded(
+        req, uid, swallow=False, tag="CHAT"
+    )
 
     # ★ 规则优先：快速路径（<1s，用真实数据计算，比 LLM 编造更可靠）
     # 涉及时事/新闻事件的问题跳过规则引擎（规则引擎没有实时搜索能力）
@@ -568,16 +640,12 @@ async def chat_analysis_stream(req: ChatRequest):
     uid = req.userId or "default"
 
     # ★ 统一构建市场+持仓上下文（无论理财还是闲聊，都需要）
-    market_ctx = ""
-    portfolio_ctx = ""
-    try:
-        market_ctx = _build_market_context()
-    except Exception as e:
-        print(f"[CHAT-STREAM] market_ctx build failed: {e}")
-    try:
-        portfolio_ctx = _build_portfolio_context(req.portfolio, user_id=uid) if req.portfolio else _build_portfolio_context(user_id=uid)
-    except Exception as e:
-        print(f"[CHAT-STREAM] portfolio_ctx build failed: {e}")
+    # 2026-09-18 P0：这两个构建函数内部是**同步网络取数**，此前直接跑在 event loop
+    # 里 → 在「流式开始之前」就把整个进程堵死（实测冷启动十秒级）。改为线程池并行 +
+    # 离线执行；swallow=True 保留既有语义：任一失败只丢它自己那份上下文。
+    market_ctx, portfolio_ctx = await _build_contexts_offloaded(
+        req, uid, swallow=True, tag="CHAT-STREAM"
+    )
 
     # ★ 意图分类：判断是否理财相关
     intent = classify_chat_intent(user_msg)
