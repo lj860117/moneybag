@@ -11,6 +11,7 @@
 import config
 import json
 import os
+import re
 import time
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -49,20 +50,88 @@ _BRIEF_DIR = Path(config.DATA_DIR) / "briefings"
 # 结果：cron 预生成的缓存从来没被 API 命中过，每次访问都现算，
 # 一天还堆出多份内容重复、只有大小写不同的缓存文件。
 #
+# 【2026-09-17 修复：路径穿越】
+# 缓存文件名是 f"{user_id}_{date}.json" 直接拼出来的，而 user_id 来自
+# 查询参数（GET /api/steward/briefing?userId=...），完全外部可控。
+# 于是一发 ?userId=../../tmp/x 就能把文件写到 data/briefings/ 外面去
+# （写穿越），?userId=../.. 还能让 briefing_history() 的 glob 去列别的
+# 目录（读穿越）。
+#
+# 修法：文件名键走**白名单**（只留 [A-Za-z0-9_-]），其余字符一律压成 "_"，
+# 再对拼完的路径做一次「必须仍在 _BRIEF_DIR 内」的断言兜底。
+# 白名单是 `\w` + 连字符：`\w` 涵盖 ASCII 和 Unicode 字母/数字/下划线
+# （所以「厉害了哥」这类中文 userId 不会被误杀），但**不含点号、斜杠、反斜杠、
+# 冒号、空白、控制字符**——".." 和路径分隔符都是穿越的基本原料。
+# 存量 userId（LeiJiang / BuLuoGeLi / default / TestBot / 三个 hex 串）全部落在
+# 白名单内，零影响。
+#
 # 纪律：所有读写 data/briefings/ 的地方都必须调用这里的函数，
 # 不许再各自拼 f"{user_id}_{date}.json"。本项目为「同一逻辑散落多处导致
 # 分裂」付过学费（fund_name_util.py 就是为此抽出来的），不要再犯第二次。
 
-def brief_cache_key(user_id: str) -> str:
-    """晨报缓存文件名的「用户键」：去首尾空白 + 转小写。
+# 缓存文件名键的白名单：不在表内的连续字符压成一个 "_"。
+# 注意要写 `[^\w-]` 而不是 `[^A-Za-z0-9_-]`：后者会把中文/其他 Unicode
+# userId 全部打成 invalid，那是改安全问题时附带的功能回退，不值当。
+_SAFE_KEY_RE = re.compile(r"[^\w-]+")
+# 键的最大长度，防止超长 user_id 撞上文件系统 255 字节的文件名上限
+_SAFE_KEY_MAX_LEN = 64
+# 消毒之后变成空串时（如 userId="../.."）落到的惰性键。
+# 刻意不叫 "default"：那是真实用户的键，不能让畸形输入污染它。
+_SAFE_KEY_FALLBACK = "invalid"
+
+
+def _safe_key_fragment(value: str) -> str:
+    r"""把任意字符串消毒成可安全拼进文件名的片段（**不改大小写**）。
+
+    白名单消毒，不是黑名单过滤——只放行 \w（字母/数字/下划线，含 Unicode）和连字符：
+      1. 表外字符的连续串压成一个 "_"
+      2. 去掉首尾 "_"（避免 "__leijiang" 这类隐形分裂）
+      3. 截断到 64 字符
+
+    结果里不可能出现 "." 或任何路径分隔符，因此拼进文件名后无法穿越目录。
 
     Args:
-        user_id: 原始用户 ID（可能是 "LeiJiang" 也可能是 "leijiang"）
+        value: 任意原始字符串，通常是 user_id 或 date_str
 
     Returns:
-        归一化后的键，如 "leijiang"
+        str — 只含 `\w` 与连字符的片段，可能是空串（调用方负责兜底）
     """
-    return (user_id or "").strip().lower()
+    return _SAFE_KEY_RE.sub("_", value or "").strip("_")[:_SAFE_KEY_MAX_LEN]
+
+
+def brief_cache_key(user_id: str) -> str:
+    """晨报缓存文件名的「用户键」：去首尾空白 + 转小写 + 白名单消毒。
+
+    Args:
+        user_id: 原始用户 ID（可能是 "LeiJiang" 也可能是 "leijiang"，
+            也可能是 "../../tmp/x" 这类恶意输入）
+
+    Returns:
+        归一化后的键，如 "leijiang"；畸形输入落到 "invalid"
+    """
+    return _safe_key_fragment((user_id or "").strip().lower()) or _SAFE_KEY_FALLBACK
+
+
+def _safe_brief_path(filename: str) -> Path:
+    """把文件名钉死在 _BRIEF_DIR 内：拼完再验一次，出界就直接报错。
+
+    纵深兜底——正常调用链上 _safe_key_fragment() 已经保证不可能出界，
+    这一层是防以后有人绕过消毒直接拼文件名。
+
+    Args:
+        filename: 形如 "leijiang_20260917.json"
+
+    Returns:
+        Path — 保证位于 _BRIEF_DIR 之内
+
+    Raises:
+        ValueError: 拼出来的路径逃出了 _BRIEF_DIR
+    """
+    base = _BRIEF_DIR.resolve()
+    fp = (base / filename).resolve()
+    if not fp.is_relative_to(base):
+        raise ValueError(f"晨报缓存文件名越界，已拒绝: {filename!r}")
+    return fp
 
 
 def brief_cache_path(user_id: str, date_str: str) -> Path:
@@ -75,7 +144,7 @@ def brief_cache_path(user_id: str, date_str: str) -> Path:
     Returns:
         Path — data/briefings/{归一化键}_{YYYYMMDD}.json
     """
-    return _BRIEF_DIR / f"{brief_cache_key(user_id)}_{date_str}.json"
+    return _safe_brief_path(f"{brief_cache_key(user_id)}_{_safe_key_fragment(date_str)}.json")
 
 
 def brief_cache_candidates(user_id: str, date_str: str) -> list[Path]:
@@ -95,7 +164,12 @@ def brief_cache_candidates(user_id: str, date_str: str) -> list[Path]:
         list[Path] — 长度为 1 或 2，按优先级排列
     """
     normalized = brief_cache_path(user_id, date_str)
-    raw = _BRIEF_DIR / f"{user_id}_{date_str}.json"
+    # 原样键同样要过消毒——否则它自己就是一条读穿越路径。
+    # 只消毒不转小写，存量 LeiJiang_*.json / BuLuoGeLi_*.json 照样能读到。
+    raw = _safe_brief_path(
+        f"{_safe_key_fragment((user_id or '').strip()) or _SAFE_KEY_FALLBACK}"
+        f"_{_safe_key_fragment(date_str)}.json"
+    )
     if raw == normalized:
         return [normalized]
     return [normalized, raw]
@@ -104,6 +178,9 @@ def brief_cache_candidates(user_id: str, date_str: str) -> list[Path]:
 def brief_cache_key_variants(user_id: str) -> list[str]:
     """briefing_history() 做 glob 时的用户键候选（归一化键优先，原样键兜底）。
 
+    两个键都经过 _safe_key_fragment() 消毒：glob 的 pattern 里如果出现 ".."
+    会真的去列上级目录，所以这里不能把原始 user_id 直接交出去。
+
     Args:
         user_id: 原始用户 ID
 
@@ -111,7 +188,7 @@ def brief_cache_key_variants(user_id: str) -> list[str]:
         list[str] — 长度为 1 或 2，按优先级排列
     """
     normalized = brief_cache_key(user_id)
-    raw = user_id or ""
+    raw = _safe_key_fragment((user_id or "").strip()) or _SAFE_KEY_FALLBACK
     if raw == normalized:
         return [normalized]
     return [normalized, raw]
