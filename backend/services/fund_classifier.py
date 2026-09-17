@@ -22,8 +22,19 @@ KNOWN_FUND_TYPES = {
     "110020": "equity", "050025": "equity", "008114": "equity",
     "510300": "equity", "510500": "equity", "510050": "equity",
     "159915": "equity", "159919": "equity",
+    # 519736 = 交银新成长混合：证监会分类为「偏股混合型」，不是纯债。
+    #   此前误记为 bond（docs/HEALTH-CHECK-2026-04-19.md 更误记为「交银裕隆纯债A」），已按
+    #   生产 /api/fund/detail/519736 的 name + top_holdings（全为个股）核实并纠正。
+    #   归 equity 而非 mixed，是遵循项目既有惯例 risk.py:52 的 mixed → equity 保守归并。
+    # ★ 不要改成 "mixed"：本表在 classify_fund() 的「1. 尝试精确代码查询」分支（:68-75）
+    #   中优先短路，返回体只含 {type, keywords, is_mixed}，**不带 allocation**；
+    #   而 classify_and_allocate
+    #   的判据是 `fund_type == "mixed" and "allocation" in classification`，两者叠加会让
+    #   equity/bond/money/gold 四桶全为 0，这笔持仓直接从股债配置分母里蒸发 —— 比错成 bond
+    #   更糟。要真支持 mixed 档，必须让本表的短路分支一并吐出 allocation。
+    "519736": "equity",
     # 债券
-    "217022": "bond", "519736": "bond", "003376": "bond",
+    "217022": "bond", "003376": "bond",
     # 黄金
     "000216": "gold", "518880": "gold",
     # 货币
