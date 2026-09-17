@@ -222,6 +222,90 @@ def test_markdown_channel_boundaries(tmp_path, markdown_channel,
 
 
 # ------------------------------------------------------------------
+# 分片条数（2026-09-17 死代码修复）
+#
+# 「会拆成几条」原本只挂在最下面那个 `> LENGTH_ALERT_BYTES(3600)` 分支里。
+# 通道感知修复之后：text 通道要进那一层需 sent_bytes > 3600，可 text 上限
+# 只有 2048 ⇒ 恒不成立；markdown 通道下又因为 `channel != "text"` 恒为空串。
+# 也就是说那段代码 100% 不可达 —— 留着会让下一个人以为「超上限会提示分片」
+# 是已实现的功能。现在挪到真正会触发的 ❌ / ⚠️ 两级。
+# ------------------------------------------------------------------
+
+@pytest.mark.parametrize(
+    "channel, sent_bytes, expect_parts, budget",
+    [
+        ("text", 2048, 2, 1800),    # ⚠️ 仅超分段预算：ceil(2048/1800)=2
+        ("text", 3472, 2, 1800),    # ❌ 超硬上限（09-17 真值）：ceil=2
+        ("text", 5600, 4, 1800),    # ❌ 更极端：ceil(5600/1800)=4
+        ("markdown", 4097, 2, 3900),  # ❌ 超 markdown 硬上限
+        ("markdown", 8000, 3, 3900),  # ❌ ceil(8000/3900)=3
+    ],
+)
+def test_over_limit_issue_always_carries_split_count(
+    tmp_path, monkeypatch, channel, sent_bytes, expect_parts, budget,
+):
+    """★ 超分段预算 / 超硬上限时，提示里**必须**给出会拆成几条。
+
+    这是死代码修复的回归点：修复前「≥N 条」只存在于 text 通道下恒不触发的
+    3600 分支，于是 3472 字节（必拆 2 条）的告警里**一个条数都没有**。
+    """
+    if channel == "markdown":
+        monkeypatch.setenv("WXWORK_FORCE_MARKDOWN", "1")
+    else:
+        monkeypatch.delenv("WXWORK_FORCE_MARKDOWN", raising=False)
+    assert wp.effective_channel()[2] == budget
+
+    issues = length_issues(tmp_path, sent_bytes)
+    joined = " | ".join(issues)
+
+    assert issues, f"{channel} sent={sent_bytes} 必须报出来"
+    assert f"≥{expect_parts} 条" in joined, (
+        f"{channel} sent={sent_bytes} 应拆 ≥{expect_parts} 条，实际：{joined}"
+    )
+    assert "拆分为" in joined, f"必须明说拆分条数，实际：{joined}"
+
+
+def test_split_count_uses_effective_budget_not_hardcoded_1800(tmp_path, monkeypatch):
+    """条数必须按**实际通道**的 chunk_budget 算，不能写死 1800。
+
+    同一份 8000 字节：text（预算 1800）拆 ≥5 条，markdown（预算 3900）拆
+    ≥3 条。若哪天又写死 1800，markdown 这条会立刻变红。
+    """
+    f = tmp_path / "2026-09-17_briefing_LeiJiang.txt"
+    f.write_text(make_body(8000 - wp.PUSH_ENVELOPE_OVERHEAD_BYTES), encoding="utf-8")
+
+    monkeypatch.delenv("WXWORK_FORCE_MARKDOWN", raising=False)
+    text_side = " | ".join(qc.check_push_format(str(f)))
+    assert "1800" in text_side, f"text 侧应按 1800 预算算：{text_side}"
+    assert "3900" not in text_side, f"text 侧不该出现 markdown 预算：{text_side}"
+    assert "≥5 条" in text_side, f"ceil(8000/1800)=5：{text_side}"
+
+    monkeypatch.setenv("WXWORK_FORCE_MARKDOWN", "1")
+    md_side = " | ".join(qc.check_push_format(str(f)))
+    assert "3900" in md_side, f"markdown 侧应按 3900 预算算：{md_side}"
+    assert "1800" not in md_side, f"markdown 侧不该出现 text 预算：{md_side}"
+    assert "≥3 条" in md_side, f"ceil(8000/3900)=3：{md_side}"
+
+
+def test_alert_line_branch_no_longer_owns_the_split_note():
+    """静态护栏：「拆分为」不得再退回 `> LENGTH_ALERT_BYTES` 那一层。
+
+    那一层在 text 通道下恒不触发（3600 > 上限 2048），把分片条数放回去
+    等于重新制造死代码。这条从源码层面钉死它必须挂在真正会触发的两级上。
+    """
+    src = inspect.getsource(qc.check_push_format)
+
+    alert_branch = src.split("elif sent_bytes > LENGTH_ALERT_BYTES:", 1)[1]
+    assert "拆分为" not in alert_branch, (
+        "分片条数不得放回 3600 告警线分支 —— text 通道下 3600 > 上限 2048，"
+        "那一层恒不触发，放进去就是死代码"
+    )
+    # 并且它必须真的出现在上面的两级里
+    head = src.split("elif sent_bytes > LENGTH_ALERT_BYTES:", 1)[0]
+    assert "拆分为" in head, "分片条数必须挂在「超上限 / 超分段预算」两级上"
+
+
+# ------------------------------------------------------------------
 # 静态护栏：禁止再把通道常量写死回去
 # ------------------------------------------------------------------
 

@@ -288,18 +288,31 @@ def check_push_format(push_file: str) -> list:
     # 上面的「超上限 / 会分段」分支先吃掉，3600 分支在 text 下实际不触发 ——
     # 这是**正确**的，不要为了让 3600 分支活着而扭曲判定顺序。
     channel, channel_limit, chunk_budget = effective_channel()
+
+    # 「会拆成几条」是运维真正要的信息：只说「会分段」，他还得自己拿计算器除。
+    # 预算用 effective_channel() 给的 chunk_budget，绝不写死 1800 —— text 是
+    # 1800、markdown 是 3900，写死就是下一个「拿错通道当基准」。
+    #
+    # 2026-09-17：这段原来只挂在最下面那个 `> LENGTH_ALERT_BYTES` 分支里，
+    # 而 text 通道下要进那一层需 sent_bytes > 3600，可 text 上限只有 2048 ——
+    # 恒不成立，是**100% 死代码**（留着会让下一个人误以为「超上限会提示分片」
+    # 是已实现的功能）。现在挪到真正会触发的两级上。
+    parts = math.ceil(sent_bytes / chunk_budget)
+    split_note = f"将按 {chunk_budget} 字节预算无损拆分为 ≥{parts} 条"
+
     if sent_bytes > channel_limit:
         issues.append(
             f"❌ 消息超长：{sent_bytes} 字节（body {body_bytes}B + 信封 "
             f"{PUSH_ENVELOPE_OVERHEAD_BYTES}B）> 企微 {channel} 通道上限 "
             f"{channel_limit} 字节 —— send_markdown 会按字节无损分段，"
+            f"{split_note}（内容不丢，但用户会收到多条）；"
             f"若真被截断说明有调用方绕过了分段逻辑，必须排查"
         )
     elif sent_bytes > chunk_budget:
         issues.append(
             f"⚠️ 消息会分段：{sent_bytes} 字节（body {body_bytes}B + 信封 "
             f"{PUSH_ENVELOPE_OVERHEAD_BYTES}B）> 企微 {channel} 通道分段预算 "
-            f"{chunk_budget} 字节，将拆成多条推送（内容无损，但阅读体验受损）"
+            f"{chunk_budget} 字节，{split_note}（内容无损，但阅读体验受损）"
         )
     elif sent_bytes > LENGTH_ALERT_BYTES:
         # 上限必须取**实际生效**的通道：生产默认 text（2048），写死 markdown 的
@@ -310,15 +323,10 @@ def check_push_format(push_file: str) -> list:
         else:
             headroom = (f"已超 {channel} 通道上限 {channel_limit} 字节 "
                         f"{sent_bytes - channel_limit} 字节")
-        split_note = ""
-        if channel == "text":
-            parts = math.ceil(sent_bytes / chunk_budget)
-            split_note = (f"，将按 {chunk_budget} 字节预算无损拆分为 ≥{parts} 条"
-                          f"（内容不丢，但用户会收到多条）")
         issues.append(
             f"⚠️ 消息接近告警线：{sent_bytes} 字节（body {body_bytes}B + 信封 "
             f"{PUSH_ENVELOPE_OVERHEAD_BYTES}B）> {LENGTH_ALERT_BYTES} 字节，"
-            f"{headroom}{split_note}"
+            f"{headroom}"
         )
     
     # 检查3：分段是否合理
