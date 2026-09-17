@@ -150,6 +150,32 @@ function showModelPicker(){
   document.body.appendChild(o);
 }
 
+// ---- SSE 超时预算（毫秒）----
+// 首字节预算：连接 + 后端预处理（市场/持仓上下文、联网搜索、记忆注入）+ LLM 首 token。
+// 后端在 return StreamingResponse 之前是同步阻塞构建的，这段时间内响应头还没发出，
+// 20s 会把「慢但健康」的请求直接掐死 —— 而本文件自己就在提示「R1 深度思考需要 15-30 秒」。
+const _CHAT_FIRST_BYTE_MS=60000;
+// 流式阶段 chunk 间隔预算：只要后端还在吐数据就永不超时，一旦静默超过它即判为卡死。
+const _CHAT_CHUNK_GAP_MS=45000;
+
+// SSE 不活跃（stall）看门狗。
+// 纯逻辑、不碰 DOM，方便用 node + vm 直接单测（见 backend/tests/test_chat_sse_stall_watchdog.py）。
+// 语义：整条请求生命周期共用一把定时器，每收到一个网络 chunk 就 kick 一下重新计时；
+// 首字节前后用不同的预算。旧实现是「等响应头期间挂 20s 一次性定时器，拿到响应头就
+// clearTimeout」，结果流式读取阶段完全没有超时保护 —— 后端一旦中途卡住，
+// reader.read() 永不 settle，界面永久转圈、输入框永久锁定且无任何反馈。
+function _createStallWatchdog(abortFn,firstByteMs,chunkGapMs){
+  let timer=null,stalled=false;
+  function arm(ms){
+    if(timer)clearTimeout(timer);
+    timer=setTimeout(function(){stalled=true;try{abortFn()}catch(e){}},ms);
+  }
+  // hasFirstByte=false → 用首字节预算；true → 用 chunk 间隔预算
+  function kick(hasFirstByte){arm(hasFirstByte?chunkGapMs:firstByteMs);}
+  function stop(){if(timer){clearTimeout(timer);timer=null;}}
+  return {kick:kick,stop:stop,arm:arm,isStalled:function(){return stalled;}};
+}
+
 let _chatSending=false;
 function _setChatLock(locked){
 _chatSending=locked;
@@ -169,26 +195,38 @@ let _thinkSec=0;_thinkTimer=setInterval(()=>{_thinkSec++;const el=document.getEl
 // 真实失败由 try/catch 处理，离线兜底只在真的网络错误时触发
 let _streamSuccess = false;
 let _streamTimeout = false; // 连接/首字节超时标记（区别于网络错误，用于展示「请求超时」提示）
+let _partialText = '';      // 中断前已吐出的正文（超时/异常时不丢掉用户已经看到的内容）
+let _partialSrc = 'ai';     // 上面对应的来源标记
+let _botDiv = null;         // 流式气泡 DOM（中断时要在它上面补「响应中断」标记）
+let _wd = null;             // SSE stall 看门狗（try 外声明，catch 里还要读 isStalled）
 try{
 // D2 v9.5.45: 持仓上下文快照
 const p=_buildChatPortfolioSnapshot();
 const _history=chatMessages.slice(-21,-1).filter(m=>m.role==='user'||m.role==='bot').map(m=>({role:m.role==='bot'?'assistant':'user',content:m.text||''}));
-// SSE 流式请求不能整体 timeout（会掐断长输出），只用 AbortController 限制「连接/首字节」阶段：
-// 20s 内没收到响应头就 abort；一旦拿到响应头即清除定时器，进入流式读取阶段不再超时。
-const _ctl=new AbortController();const _tmo=setTimeout(()=>_ctl.abort(),20000);
+// SSE 超时模型（不活跃看门狗）：
+// 整条请求共用一把「不活跃」看门狗 —— 一旦拿到响应头就撤销、流式阶段彻底裸奔的做法，
+// 会让后端中途卡死时 reader.read() 永不 settle（界面永久转圈 + 输入永久锁定 + 零反馈）。
+// 反过来，固定 20s 又会把「后端预处理慢 / R1 长思考」的健康请求误杀。
+// 现在：首字节前用 _CHAT_FIRST_BYTE_MS 预算，之后每收到一个 chunk 就 kick 一次重新计时
+// （间隔预算 _CHAT_CHUNK_GAP_MS）。只要后端还在吐数据就永不超时，静默超时才 abort。
+const _ctl=new AbortController();
+_wd=_createStallWatchdog(function(){_ctl.abort()},_CHAT_FIRST_BYTE_MS,_CHAT_CHUNK_GAP_MS);
+_wd.kick(false);
 const r=await fetch(API_BASE+'/chat/stream',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({message:msgToSend,model:chatModel,portfolio:p,userId:getProfileId(),history:_history.length?_history:undefined}),signal:_ctl.signal});
-clearTimeout(_tmo);
+_wd.kick(true); // 首字节已到 → 切到「chunk 间隔」预算
 // v9.5.63: 请求成功 → 标记 API 在线（修复假阴性）
 if(r.ok){ API_AVAILABLE = true; }
 rmTyping();
 if(_thinkTimer){clearInterval(_thinkTimer);_thinkTimer=null;}
 if(r.ok&&r.body){
 // SSE 流式逐字渲染
-const el=document.getElementById('chatMsgs');if(!el){_setChatLock(false);return;}
-const botDiv=document.createElement('div');botDiv.className='mb-bubble mb-bubble--ai';botDiv.innerHTML='<span class="stream-cursor">▊</span>';el.appendChild(botDiv);scrollChat();
+const el=document.getElementById('chatMsgs');if(!el){if(_wd)_wd.stop();_setChatLock(false);return;}
+const botDiv=document.createElement('div');botDiv.className='mb-bubble mb-bubble--ai';botDiv.innerHTML='<span class="stream-cursor">▊</span>';el.appendChild(botDiv);scrollChat();_botDiv=botDiv;
 let fullText='',source='ai',thinkText='',_r1Thinking=false,panelHtml='',_doneModel='',_doneFallback=false;
 const reader=r.body.getReader();const dec=new TextDecoder();let buf='';
 while(true){const{done,value}=await reader.read();if(done)break;
+// 收到 chunk → 重新计时：长思考/长输出只要有数据在流就永不超时
+_wd.kick(true);
 buf+=dec.decode(value,{stream:true});
 const lines=buf.split('\n');buf=lines.pop()||'';
 for(const line of lines){if(!line.startsWith('data: '))continue;
@@ -245,7 +283,9 @@ botDiv.innerHTML=thinkBlock+_md(fullText)+'<span class="stream-cursor">▊</span
 }}
 if(d.done){
 const thinkBlock=thinkText?`<details style="font-size:11px;color:var(--text2);margin-bottom:8px;border:1px solid var(--bg3);border-radius:8px;padding:6px 8px"><summary style="cursor:pointer;opacity:0.7">🧠 查看思考过程</summary><div style="margin-top:4px;white-space:pre-wrap;opacity:0.6">${thinkText}</div></details>`:'';
-botDiv.innerHTML=thinkBlock+_md(fullText)+`<div class="src-tag">${source==='ai'?'🤖 '+_formatModelName(_doneModel||d.model, _doneFallback||!!d.fallback_used):'📐 规则引擎 · 实时数据'}</div>`;scrollChat()}}catch(parseErr){console.warn('[chat] SSE JSON parse error (ignored):', parseErr.message);}}}
+botDiv.innerHTML=thinkBlock+_md(fullText)+`<div class="src-tag">${source==='ai'?'🤖 '+_formatModelName(_doneModel||d.model, _doneFallback||!!d.fallback_used):'📐 规则引擎 · 实时数据'}</div>`;scrollChat()}}catch(parseErr){console.warn('[chat] SSE JSON parse error (ignored):', parseErr.message);}}
+// 每处理完一个 chunk 就刷新「已生成内容」快照：中断时用它兜底，不丢用户已看到的内容
+_partialText=fullText;_partialSrc=source;}
 // 处理剩余 buffer
 if(buf.startsWith('data: ')){try{const d=JSON.parse(buf.slice(6));if(d.delta){if(d.phase==='thinking')thinkText+=d.delta;else fullText+=d.delta}if(d.source)source=d.source}catch{}}
 // v9.5.63: 只有 fullText 为空时才算失败
@@ -273,13 +313,15 @@ if(d&&d.reply){
     console.warn('[chat] error body:', errBody.slice(0, 500));
   } catch {}
 }
+if(_wd)_wd.stop(); // 请求已完整结束（无论成功/失败），撤销看门狗
 }catch(e){
-  // 真实网络异常
+  // 真实网络异常 / 看门狗 abort
   console.error('[chat] network error:', e);
   rmTyping();
   if(_thinkTimer){clearInterval(_thinkTimer);_thinkTimer=null;}
   // 真实网络错误才置 false；超时(AbortError)只是连接慢，不判为离线
-  if(e.name==='AbortError'){
+  if(_wd)_wd.stop();
+  if((_wd&&_wd.isStalled())||e.name==='AbortError'){
     _streamTimeout = true;
   } else if(e.name==='TypeError'){
     API_AVAILABLE = false;
@@ -289,10 +331,23 @@ if(d&&d.reply){
 if(!_streamSuccess){
   rmTyping();
   if(_thinkTimer){clearInterval(_thinkTimer);_thinkTimer=null;}
+  if(_wd){if(_wd.isStalled())_streamTimeout=true;_wd.stop();}
+  // 失败后残留的流式光标要清掉，否则界面一直闪「▊」看起来还在生成
+  try{document.querySelectorAll('.stream-cursor').forEach(c=>c.remove())}catch(e){}
   const fb = _streamTimeout ? '请求超时，请重试。' : (API_AVAILABLE ? '抱歉，AI 回复异常，请稍后重试。' : '后端未连接，无法获取实时数据。请确保后端运行中。');
   const fbSrc = _streamTimeout ? 'timeout' : (API_AVAILABLE?'error':'offline');
-  chatMessages.push({role:'bot',text:fb,src:fbSrc});_saveChatHistory();
-  appendMsg('bot',fb,fbSrc);
+  if(_partialText){
+    // 中断前已经吐出内容 → 保留用户已经看到的部分（botDiv 里已渲染），
+    // 只补一个中断标记，而不是把整段回答丢掉只留一句「请求超时」。
+    if(_botDiv){_botDiv.innerHTML=_md(_partialText)+'<div class="src-tag">⚠️ 响应中断，以上为已生成内容</div>';scrollChat();}
+    else{appendMsg('bot',_partialText,_partialSrc);}
+    chatMessages.push({role:'bot',text:_partialText,src:_partialSrc});_saveChatHistory();
+    _partialText='';
+  }else{
+    chatMessages.push({role:'bot',text:fb,src:fbSrc});_saveChatHistory();
+    appendMsg('bot',fb,fbSrc);
+  }
+  _botDiv=null;
   // v9.5.82: 重试按钮 — 自动用上一条用户消息重发
   const retryLastUserMsg = chatMessages.slice().reverse().find(m=>m.role==='user')?.text;
   if(retryLastUserMsg){
