@@ -346,46 +346,162 @@ fi
 
 # ---- 7. 冒烟测试 ----
 echo "[7/7] 冒烟测试..."
-sleep 5  # 等待服务启动
+sleep 5  # 等待服务启动（systemd restart 后进程还没监听端口，先给一个基础宽限）
 BASE="http://$SERVER:8000"
 
 SMOKE_FAIL=0
 SMOKE_TOTAL=0
 
-# check_endpoint <url> <desc> [预算秒=10] [慢响应阈值秒=5] [最大尝试次数=3]
-# 预算必须按端点冷启动真实耗时给：重启后内存缓存被清空，
-# 需要现算的端点（如晨报）冷态可到 40s+，硬编码 10s 会把健康端点误报为 ❌。
+# ============================================================
+# 7.0 就绪探针 —— 把「服务没起来」和「某个端点慢」两件事分开判
+# ============================================================
+# 为什么单独一步：restart 之后端口不是立刻可连的。以前这件事混在每个端点内部判，
+# 端口没开时 curl 拿到 000，和「端点真的挂了」长得一模一样 —— 于是只能靠把预算
+# 调大去掩盖，代价是真挂死的端点也要等满预算才报红。分开之后：
 #
-# 单次 curl 无重试是历史假红根因：服务刚重启时首个请求可能撞上冷启动/瞬时超时，
-# 一次 000 就直接判 ❌，运维只能靠"再跑一次部署"来排除。这里非 200 最多重试 2 次
-# （共 3 次尝试），每次独立计时（每次都重新给满 --max-time $budget，不改变预算语义），
-# 三次全非 200 才真判 ❌。
+#   · 探针只回答「端口有没有人在应答」：拿到**任何** HTTP 码（含 4xx/5xx）都算
+#     就绪，因为那已经证明 uvicorn 在监听、应用在服务；只有连接级失败（000）
+#     才算没起来。所以探针不会因为某个端点返回 500 而误判"服务没起来"。
+#   · 探针**不计入** SMOKE_FAIL：它不是质量判定，是前置条件。质量判定交给下面
+#     每个端点的 check_endpoint()。
+#   · deadline 内始终没起来 → 直接判部署失败退出，不再往下跑 8 个注定 000 的
+#     端点、把人晾在屏幕前等几分钟。这是「不放过真失败」的一半。
+#
+# 探针路径默认 /api/news：它是已验证在产线可用的最便宜端点之一（不是 /api/health，
+# 那个要查 LLM 预算 + 数据源健康 + 磁盘，冷启动可能比业务端点还慢，拿它当探针
+# 反而会引入新的假红）。可用 SMOKE_READY_PATH 覆盖。
+#
+# 【--noproxy】冒烟是「本机 → 目标 IP:端口」的直连探测，不该被 http_proxy 劫持。
+# 实测（2026-09-17 本机）：`curl -v` 明确打出 "Uses proxy env variable
+# http_proxy == 'http://127.0.0.1:62584'"，而 no_proxy 未设置 —— 也就是每个冒烟
+# 请求都先绕一层本地代理。代理会加入自己的连接/转发耗时，它自己的超时还会以
+# 502/504 的形式冒出来，被误读成"端点坏了"。这正是「客户端耗时 ≫ 服务端处理耗时」
+# 的一个可能来源（详见下面 MB-018 处的悬案归档）。
+# 默认绕开；确实需要走代理时用 SMOKE_NOPROXY='' 恢复。
+wait_for_service_ready() {
+    local url="$1"
+    local deadline_secs="${SMOKE_READY_TIMEOUT:-120}"
+    local interval="${SMOKE_READY_INTERVAL:-2}"
+    local probe_budget="${SMOKE_READY_PROBE_BUDGET:-10}"
+    local deadline=$(( $(date +%s) + deadline_secs ))
+    local code="000"
+    local waited=0
+
+    # 注意：${url} 必须带花括号。$url 紧跟全角逗号（多字节）时，bash 在部分
+    # locale 下会把后续字节当成变量名的一部分 → set -u 下 unbound variable 直接崩
+    # （这个坑本文件已经踩过一次，见 check_endpoint 里 ${code} 的注释）。
+    # 本机实测复现：/tmp/_fn_ready.sh:10 url? unbound variable。
+    echo "  ⏳ 等待服务就绪（${url}，最多 ${deadline_secs}s）…"
+    while [ "$(date +%s)" -lt "$deadline" ]; do
+        # 这里必须 `|| true` + 判空，不能写 `|| echo "000"`：
+        # curl 失败时 -w 已经打印了 "000" 且返回非 0，`|| echo "000"` 会再拼一个，
+        # 而 $( ) 又会吃掉 echo 末尾的换行 —— 结果 code 变成 "000000"，
+        # 于是 `code != "000"` 恒成立，探针永远报「已就绪」，整个闸门空转。
+        # （这个是实测踩到的，不是读代码推的：死端口上探针返回了 HTTP 000000。）
+        code=$(curl -s -o /dev/null --noproxy "${SMOKE_NOPROXY:-*}" -w "%{http_code}" --max-time "$probe_budget" "$url" 2>/dev/null || true)
+        [ -n "$code" ] || code="000"
+        if [ "$code" != "000" ]; then
+            echo "  ✅ 服务已就绪（HTTP ${code}，等待 ${waited}s）"
+            return 0
+        fi
+        sleep "$interval"
+        waited=$(( waited + interval ))
+    done
+    echo "  ❌ 服务在 ${deadline_secs}s 内始终没有应答（最后 HTTP ${code}）"
+    return 1
+}
+
+if ! wait_for_service_ready "$BASE${SMOKE_READY_PATH:-/api/news}"; then
+    echo ""
+    echo "  ── 冒烟汇总: 服务未就绪，未执行任何端点检查 ──"
+    exit 1
+fi
+
+# check_endpoint <url> <desc> [单次预算秒=30] [慢响应阈值秒=5] [最大尝试次数=3] [总墙钟上限秒=单次预算×2]
+#
+# 三个时间量各管一件事，别混为一谈：
+#   1) budget  —— 单次 curl 的 --max-time。它必须覆盖该端点**冷启动**的真实耗时：
+#                 慢但健康的端点要能在一次尝试里跑完，否则就是假红。
+#   2) total   —— 本端点的总墙钟上限（含重试间隔）。到点就不再试，直接判 ❌。
+#                 没有它，3 次重试会把最坏耗时乘 3 倍。
+#   3) attempts—— 最多试几次，只对**瞬时**故障（连接被 reset、偶发 502）有意义。
+#
+# 【为什么默认预算从 10s 提到 30s】依据，不是拍脑袋：
+#   2026-09-17 v9.9.47 部署实测：MB-015 全球快照冷启动 5.318s（当时预算 10s，
+#   **余量不到 2 倍**，再慢一点就假红）；MB-018 晨报冷启动 46.526s（它自己显式
+#   要了 120s，不走默认值）。
+#   30s ≈ MB-015 冷启动实测值的 5.7 倍，覆盖了「重启后首批请求要现拉数据」的量级；
+#   同时 30s 仍然是个硬上限 —— 真挂死的端点 30s 内就会被判掉，不会变成橡皮图章。
+#
+# 【「重试救不了冷启动慢」这个说法只对了一半】实测过的结论（见提交记录中的验证台）：
+#   curl 撞到 --max-time 只是**客户端**放弃等连接，服务端那一发请求并不会被取消，
+#   它算完会把结果写进缓存。所以重试把本端点的有效覆盖从 budget 扩大到约 total：
+#     · 冷启动 12s / 预算 10s / 总上限 20s → 第 1 次 10s 超时，第 2 次命中缓存
+#       毫秒级返回，✅（实测通过）
+#     · 冷启动 15s / 预算 10s / 总上限 20s → 第 1 次 10s 超时，第 2 次只剩 7s
+#       还是不够，❌（实测）—— 这种情况重试救不了，只能靠 budget 本身够大
+#   所以正确顺序是**先把 budget 抬到能覆盖冷启动，再用重试兜住"差一点点"的那段**，
+#   反过来指望重试去补一个太小的预算是不行的。
+#
+# 【只对 000 重试】拿到真实 HTTP 码（4xx/5xx）就直接判 ❌，不再重试：
+#   应用已经应答了，说明它在工作；5xx 是它给的**结论**，重试不会把结论改成 200，
+#   只会拖慢出结论（默认预算 30s 下，一个恒定 500 的端点会白耗 2×30=60s）。
+#   而冷启动慢的表现是**超时（000）**，不是 5xx —— 要救的正是这一类。
+#   若线上确实存在「重启后首个请求瞬时 5xx」，用 SMOKE_RETRY_ON_HTTP_ERROR=1 打开。
+#
+# 【不放过真失败】四条硬保证，缺一不可：
+#   · 200 才算通过；4xx/5xx 一次就判 ❌（不会靠重试把 500 洗成绿）。
+#   · 挂死的端点单次撞满 budget，最多撑到 total 上限，必定 ❌ 且退出码非 0。
+#   · total 上限的存在让最坏耗时**有界**：没有它，3 次重试能把单点拖到 3×budget。
+#   · 预算只是"允许慢"，不是"允许坏"：⚠️ 慢响应照旧单独标注，不冒充 ✅。
 check_endpoint() {
     local url="$1"
     local desc="$2"
-    local budget="${3:-10}"
+    local budget="${3:-30}"
     local slow_at="${4:-5}"
     local max_attempts="${5:-3}"
     local retry_interval="${SMOKE_RETRY_INTERVAL:-3}"
+    local total_budget="${6:-$(( budget * 2 ))}"
+    local deadline=$(( $(date +%s) + total_budget ))
     local attempt=1
-    local out code elapsed
+    local tried=0
+    local out code="000" elapsed="0"
+    local remaining attempt_budget
     SMOKE_TOTAL=$((SMOKE_TOTAL + 1))
 
     while [ "$attempt" -le "$max_attempts" ]; do
-        out=$(curl -s -o /dev/null -w "%{http_code} %{time_total}" --max-time "$budget" "$url" 2>/dev/null || true)
+        # 总墙钟到点就不再重试：把已经拿到的结果交出去判 ❌，
+        # 而不是继续把 budget 一份一份往外花。
+        remaining=$(( deadline - $(date +%s) ))
+        if [ "$remaining" -le 0 ]; then
+            break
+        fi
+
+        attempt_budget="$budget"
+        if [ "$remaining" -lt "$attempt_budget" ]; then
+            attempt_budget="$remaining"
+        fi
+
+        out=$(curl -s -o /dev/null --noproxy "${SMOKE_NOPROXY:-*}" -w "%{http_code} %{time_total}" --max-time "$attempt_budget" "$url" 2>/dev/null || true)
         [ -n "$out" ] || out="000 0"
         out="${out%%$'\n'*}"   # 超时(curl rc!=0)时 curl 已打印 "000 <elapsed>"，避免再拼一行导致 elapsed 被读成 0
         code="${out%% *}"
         elapsed="${out##* }"
+        tried="$attempt"
 
         if [ "$code" = "200" ]; then
             # 200 不等于体验可接受：冷启动慢的端点单独标注，别让它冒充绿
             if awk "BEGIN{exit !($elapsed > $slow_at)}" 2>/dev/null; then
-                echo "  ⚠️  $desc — HTTP 200 但耗时 ${elapsed}s（冷启动慢，预算 ${budget}s，第 ${attempt}/${max_attempts} 次尝试）"
+                echo "  ⚠️  $desc — HTTP 200 但耗时 ${elapsed}s（冷启动慢，单次预算 ${budget}s，第 ${attempt}/${max_attempts} 次尝试）"
             else
                 echo "  ✅ $desc ($url)"
             fi
             return 0
+        fi
+
+        # 拿到真实 HTTP 码就不再重试（理由见函数头「只对 000 重试」）
+        if [ "$code" != "000" ] && [ "${SMOKE_RETRY_ON_HTTP_ERROR:-0}" != "1" ]; then
+            break
         fi
 
         if [ "$attempt" -lt "$max_attempts" ]; then
@@ -399,7 +515,7 @@ check_endpoint() {
     SMOKE_FAIL=$((SMOKE_FAIL + 1))
     # 注意：${code} 必须带花括号。紧跟全角字符时会话 locale 非 UTF-8 时
     # bash 会把多字节字节当成变量名的一部分（unbound variable），set -e 下直接崩。
-    echo "  ❌ $desc — HTTP ${code}（预算 ${budget}s / 实测 ${elapsed}s / 已试 ${max_attempts} 次）($url)"
+    echo "  ❌ $desc — HTTP ${code}（单次预算 ${budget}s / 总上限 ${total_budget}s / 实测 ${elapsed}s / 已试 ${tried} 次）($url)"
 }
 
 check_endpoint "$BASE/api/timing?userId=default"        "MB-007 置信度"
@@ -422,6 +538,22 @@ check_endpoint "$BASE/api/global/snapshot"              "MB-015 全球快照"
 #      services/steward.py 的 brief_cache_key() 归一化修掉。
 # 结论：11:50 之后部署，MB-018 仍会走「现算」路径；120s 预算 + 3 次重试只是兜底。
 # 实测参考（2026-09-17）：重启后首次现算 59s，服务热起来后 3s —— 不调 LLM（fast 管线 llm_max=0）。
+#
+# 【悬案归档：那个「MB-018 耗时 413s」是从哪来的】
+# 曾经出现过「curl 侧报 413s、journalctl 侧服务端只花 59s」的对不上账，一直没复现。
+# 查了各版本脚本后可以排除一个方向：**413s 不可能来自本函数的 %{time_total}**。
+#   · 96bbff8 起 MB-018 就是 --max-time 120，curl 单次操作不可能超出自己的
+#     --max-time，time_total 恒 ≤ 120；
+#   · 96bbff8 之前本函数只打印 %{http_code}，压根不测量耗时。
+# 所以 413s 是别处量出来的（多半是"整步/整次部署的墙钟"，或是一次手工 curl 没带
+# --max-time），和"服务端处理 59s"并不矛盾 —— 两者量的不是同一个东西。
+# 顺带记一笔真正会导致「客户端耗时 ≫ 服务端处理耗时」的机制，改这个文件时别忘：
+#   · 服务端日志量的是**处理**耗时，curl 量的是**排队 + 处理**；冒烟撞上 cron
+#     （night_worker / cache_warmer / hallucination_check）时，请求会在 uvicorn
+#     里排队，客户端看到的时间可以远大于服务端。
+#   · 重试会累加：本函数最坏耗时 = budget×attempts + interval×(attempts-1)。
+#     这也是上面要给 total_budget 加总墙钟上限的直接原因（没有它，MB-018
+#     最坏能拖到 120×3+3×2 = 366s，和当年那个 413s 已经是同一量级了）。
 check_endpoint "$BASE/api/steward/briefing?userId=LeiJiang"        "MB-018 晨报缓存" 120 15
 check_endpoint "$BASE/api/steward/briefing-history?userId=default" "MB-005 往期晨报"
 
