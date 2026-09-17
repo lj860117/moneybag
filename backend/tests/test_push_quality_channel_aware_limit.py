@@ -37,8 +37,11 @@
    本文件最核心的回归点，见 `test_text_channel_2100_must_not_be_silent`）。
 2. markdown 通道 sent_bytes = 2100 **必须**静默（证明 ① 的告警来自通道上限
    变小，而不是「把阈值一律调低」）。
-3. text 通道 sent_bytes = 3472（09-17 真实值）产生的 issue 里，出现的上限数字
-   必须是 **2048**，绝不能是 4096。
+3. text 通道 sent_bytes = 3472 产生的 issue 里，出现的上限数字必须是 **2048**，
+   绝不能是 4096。
+   （3472 是修复时引用的体量，落在 2049~3600 静默区里；真实 09-17 存档实测
+   是 3610B + 信封 52B = 3662B，拆 3 条。见 test_push_quality_expected_issues.py
+   里跑真实文件的用例。）
 
 本仓铁律：测试要能**精确红**。本文件每条用例都经过故障注入验证 —— 把
 `daily_push_quality_check.py` 的判定改回写死的 4096 / 3900 后，本文件
@@ -82,6 +85,27 @@ def make_body(target_bytes: int) -> str:
     assert wp.byte_len(body) == target_bytes, "make_body 必须字节精确"
     assert "\n\n" not in body, "正文不得含空行，避免触发另一条无关的段检查"
     return body
+
+
+def format_check_source() -> str:
+    """返回「格式检查」真实逻辑的源码，供静态护栏使用。
+
+    ⚠️ 不要写成 `inspect.getsource(qc.check_push_format)`。
+
+    v9.9.47 起 `check_push_format` 退化成转发到 `check_push_format_classified`
+    的薄壳（后者要多返回一个「预期类」列表），真正的长度判定在后者里。
+    只钉 `check_push_format` 的护栏会 inspect 到一个 5 行空壳、条件恒真 ——
+    看着在守，实际什么都拦不住（2026-09-17 这轮真踩了一次，4 条护栏集体
+    假绿）。
+
+    这里把两个函数的源码**拼起来**：无论逻辑放在哪一侧、或者将来又搬回
+    `check_push_format`，护栏都成立。
+    """
+    return (
+        inspect.getsource(qc.check_push_format)
+        + "\n"
+        + inspect.getsource(qc.check_push_format_classified)
+    )
 
 
 def length_issues(tmp_path, sent_bytes: int) -> list:
@@ -168,7 +192,7 @@ def test_over_limit_branch_is_warn_not_fatal_by_source():
     行为级用例能证明"当前报 ⚠️"，但拦不住后人在别的字节数上再开一个 ❌。
     这条直接检查 `if sent_bytes > channel_limit:` 分支的文案字面量。
     """
-    src = inspect.getsource(qc.check_push_format)
+    src = format_check_source()
 
     head, rest = src.split("if sent_bytes > channel_limit:", 1)
     over_limit_branch = rest.split("elif sent_bytes > chunk_budget:", 1)[0]
@@ -343,7 +367,7 @@ def test_alert_line_branch_no_longer_owns_the_split_note():
     那一层在 text 通道下恒不触发（3600 > 上限 2048），把分片条数放回去
     等于重新制造死代码。这条从源码层面钉死它必须挂在真正会触发的两级上。
     """
-    src = inspect.getsource(qc.check_push_format)
+    src = format_check_source()
 
     alert_branch = src.split("elif sent_bytes > LENGTH_ALERT_BYTES:", 1)[1]
     assert "拆分为" not in alert_branch, (
@@ -365,7 +389,7 @@ def test_check_push_format_must_not_hardcode_markdown_constants():
     行为级用例只能证明「当前字节数下会红」，拦不住后人把 2048 直接写成
     另一个魔数。这条直接从函数源码层面钉死「必须经 effective_channel() 取」。
     """
-    src = inspect.getsource(qc.check_push_format)
+    src = format_check_source()
 
     assert "effective_channel()" in src, (
         "check_push_format 必须调用 effective_channel() 取实际通道"
@@ -386,7 +410,7 @@ def test_alert_line_3600_semantics_are_untouched():
     （text 通道下 3600 > 上限 2048，所以它会被上面的分支先吃掉、实际不
     触发 —— 这是正确的，不要为了让这条活着而扭曲判定顺序。）
     """
-    src = inspect.getsource(qc.check_push_format)
+    src = format_check_source()
 
     assert "LENGTH_ALERT_BYTES" in src
     assert qc.LENGTH_ALERT_BYTES == 3600

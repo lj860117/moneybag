@@ -243,13 +243,43 @@ def check_ai_quality(push_file: str) -> list:
 
 def check_push_format(push_file: str) -> list:
     """
-    检查推送格式是否正确
-    
+    检查推送格式是否正确（**完整** issue 列表，含预期类）。
+
+    保持原有签名与返回类型，既有调用方 / 测试不受影响。需要把预期类单独
+    分出来时用 check_push_format_classified()。
+
     Returns:
         list: 检测到的问题列表
     """
+    issues, _expected = check_push_format_classified(push_file)
+    return issues
+
+
+def check_push_format_classified(push_file: str) -> tuple:
+    """
+    检查推送格式，并把「预期类」issue 单独分出来。
+
+    预期类 = **长度**引发的、send_markdown 会按字节**无损分片**处理掉、不需要
+    任何人处理的那几条：
+
+      ① 超通道上限    → 拆成多条
+      ② 仅超分段预算  → 拆成多条
+      ③ 过 3600 告警线 → 只是「体量偏大」的提前预警，不产生任何分片动作
+
+    生产定局走 text 通道（上限 2048），晨报 3472 字节必然拆多条 —— 这是**预期
+    结果**，不是故障。所以这三条仍然显示、仍然扣分，但**不参与 FAIL 判定**：
+    天天为此告警会训练人忽略它（告警疲劳），等真出事反而看不见。
+
+    ⚠️ 只有长度类能进预期类。QDII 未标注 T+2 / AI 模板化 / 分段空行 /
+    基金名称为空 这些是真问题，**一个都不许塞进来** —— 那是用漏报换清净。
+    （2026-09-15 才修过 QDII 未标注，它是真 bug，必须继续报 FAIL。）
+
+    Returns:
+        tuple: (issues, expected_issues)。expected_issues 是 issues 的子集。
+    """
     issues = []
-    
+    expected = []
+
     with open(push_file, "r", encoding="utf-8") as f:
         content = f.read()
     
@@ -278,10 +308,15 @@ def check_push_format(push_file: str) -> list:
     # 前两级判定原来写死的是 markdown 的 4096 / 3900，后果是 **text 通道下
     # sent_bytes 落在 2049~3600 时三个分支全不命中 → 一行都不报、完全静默**。
     #
-    # 铁证：2026-09-17 晨报 body 3420B + 信封 52B = 3472B，text 通道（上限
-    # 2048）必然拆成 2 条，质检却只报「接近告警线 3600」，还写成「距通道上限
-    # 4096 还剩 X 字节」—— 那个 4096 根本不是生产用的通道。**漏报 + 错误基准**
-    # 比「报了警但措辞不准」严重得多，所以这里统一改成 effective_channel()。
+    # 铁证：2026-09-17 真实晨报存档 3610B（含 28B 的 "=== ... ===" 头行）
+    # + 信封 52B = 3662B，text 通道（上限 2048）必然按 1800 预算拆成 3 条，
+    # 质检却只报「接近告警线 3600」（3600 < 3662 才勉强报出来），还写成
+    # 「距通道上限 4096 还剩 X 字节」—— 那个 4096 根本不是生产用的通道。
+    # **漏报 + 错误基准**比「报了警但措辞不准」严重得多，所以这里统一改成
+    # effective_channel()。
+    #
+    # （存档里的字节数每次都在变，别把 3662 / 3 条当定值 —— 这里只是记录
+    # 2026-09-17 那一份的实测值，用于说明「text 通道下必然拆多条」。）
     #
     # ⚠️ 注意判定顺序：`LENGTH_ALERT_BYTES = 3600` 这条与通道无关的「体量偏大」
     # 预警线语义保持不变，但 text 通道下 3600 > 2048，所以 2049~3600 会被
@@ -316,20 +351,30 @@ def check_push_format(push_file: str) -> list:
         #
         # ⚠️ 降级的是**级别**，不是**是否上报**：这一级仍然必须产 issue。
         # 它曾经整段静默过（2049~3600 三阈值全不命中），那是更严重的事故。
-        issues.append(
+        msg = (
             f"⚠️ 消息超长：{sent_bytes} 字节（body {body_bytes}B + 信封 "
             f"{PUSH_ENVELOPE_OVERHEAD_BYTES}B）> 企微 {channel} 通道上限 "
             f"{channel_limit} 字节 —— send_markdown 会按字节无损分段，"
             f"{split_note}（内容不丢，但用户会收到多条）；"
             f"若真被截断说明有调用方绕过了分段逻辑，必须排查"
         )
+        issues.append(msg)
+        expected.append(msg)  # 预期类①：无损分片，内容不丢
     elif sent_bytes > chunk_budget:
-        issues.append(
+        msg = (
             f"⚠️ 消息会分段：{sent_bytes} 字节（body {body_bytes}B + 信封 "
             f"{PUSH_ENVELOPE_OVERHEAD_BYTES}B）> 企微 {channel} 通道分段预算 "
             f"{chunk_budget} 字节，{split_note}（内容无损，但阅读体验受损）"
         )
+        issues.append(msg)
+        expected.append(msg)  # 预期类②：同样是分片，同样无需处理
     elif sent_bytes > LENGTH_ALERT_BYTES:
+        # 预期类③：3600 是「体量偏大」的提前预警，本身不产生任何分片动作，
+        # 也没有任何需要人去做的动作，与 ①② 同属长度类，一并放行。
+        #
+        # 注（不是忘了处理）：text 通道下这一级恒不触发 —— 3600 > 上限 2048，
+        # sent_bytes > 3600 必然先被上面的「超上限」分支吃掉。它只在
+        # markdown（4096/3900）下才可能命中（3601~3900）。
         # 上限必须取**实际生效**的通道：生产默认 text（2048），写死 markdown 的
         # 4096 会把「早就超上限必须分片」说成「还剩几百字节」，完全误导。
         if sent_bytes <= channel_limit:
@@ -338,21 +383,25 @@ def check_push_format(push_file: str) -> list:
         else:
             headroom = (f"已超 {channel} 通道上限 {channel_limit} 字节 "
                         f"{sent_bytes - channel_limit} 字节")
-        issues.append(
+        msg = (
             f"⚠️ 消息接近告警线：{sent_bytes} 字节（body {body_bytes}B + 信封 "
             f"{PUSH_ENVELOPE_OVERHEAD_BYTES}B）> {LENGTH_ALERT_BYTES} 字节，"
             f"{headroom}"
         )
-    
+        issues.append(msg)
+        expected.append(msg)  # 预期类③
+
     # 检查3：分段是否合理
     # 2026-09-14 误报修复：旧阈值写死 `> 10`，而实测 106 份
     # 晨报的正常带就是 10~13（p95 = 13），等于把阈值压在正常带下沿上 ——
     # 误伤率 43/106 = 40.6%。阈值与依据见 MAX_BLANK_LINE_RUNS 的注释。
+    # ⚠️ 这条**不是**预期类：空行 26 处是真阳性（AI prompt 泄漏导致正文膨胀），
+    # 必须继续参与 FAIL 判定。
     blank_runs = content.count("\n\n")
     if blank_runs > MAX_BLANK_LINE_RUNS:
         issues.append(f"⚠️ 分段可能不合理：{blank_runs} 处空行")
-    
-    return issues
+
+    return issues, expected
 
 
 _DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
@@ -405,6 +454,10 @@ def evaluate_push_quality(date_str: str, user_id: str = "LeiJiang") -> dict:
         "status": "PASS",
         "issues": [],
         "checks_skipped": [],
+        # v9.9.47：预期类 issue 条数（长度类，会无损分片、无需处理）。
+        # 它们照常进 total_issues、照常扣分，但**不参与 FAIL 判定**。
+        "expected_issues": 0,
+        "blocking_issues": 0,
     }
     
     # 查找今日的推送存档
@@ -439,6 +492,7 @@ def evaluate_push_quality(date_str: str, user_id: str = "LeiJiang") -> dict:
         
         # 运行所有检查
         issues = []
+        expected: list = []
         issues.extend(check_truncation(content))
         
         # 获取实际数据（用于幻觉检查）
@@ -453,24 +507,42 @@ def evaluate_push_quality(date_str: str, user_id: str = "LeiJiang") -> dict:
         
         issues.extend(check_data_source(str(push_file)))
         issues.extend(check_ai_quality(str(push_file)))
-        issues.extend(check_push_format(str(push_file)))
-        
+
+        # v9.9.47：只有 check_push_format 会产生预期类（长度 / 无损分片），
+        # 用 classified 版本把条数单独记下来。
+        fmt_issues, fmt_expected = check_push_format_classified(str(push_file))
+        issues.extend(fmt_issues)
+        expected.extend(fmt_expected)
+
         # 记录结果
         push_result = {
             "file": push_file.name,
             "type": push_type,
             "issues": issues,
+            "expected_issues": expected,
             "issue_count": len(issues),
         }
         results["pushes"].append(push_result)
         results["total_issues"] += len(issues)
+        results["expected_issues"] += len(expected)
         results["score"] -= len(issues) * 5  # 每个问题扣 5 分
-    
+
     results["score"] = max(0, results["score"])
     results["checks_skipped"] = sorted(set(results["checks_skipped"]))
-    if results["total_issues"] > 0:
+
+    # v9.9.47：FAIL 只看「非预期」issue。
+    #
+    # 长度类（超上限 / 超分段预算 / 过 3600 线）在 text 通道下是**必然结果**
+    # —— send_markdown 会无损分片，内容一个字节都不丢，没有任何动作需要人做。
+    # 把它们算进 FAIL 会让质检天天 FAIL，最后没人看。
+    #
+    # ⚠️ 反过来，绝不能写反成「长度超了就整体跳过检查」：QDII 未标注 /
+    # AI 模板化 / 基金名称为空 / 空行超标 这些是真问题，必须照常判 FAIL。
+    blocking = results["total_issues"] - results["expected_issues"]
+    results["blocking_issues"] = blocking
+    if blocking > 0:
         results["status"] = "FAIL"
-    
+
     return results
 
 
@@ -481,15 +553,30 @@ def send_alert_if_needed(results: dict):
     # v9.9.24 (P0-1)：原来只判 `total_issues == 0`，而"找不到存档"时
     # total_issues 恒为 0 → 走 ✅ 分支。改为认 status，且 fatal（无存档）
     # 也要告警 —— 「没检查到」本身就是最该被看见的告警。
-    if results.get("status") == "PASS" and results.get("total_issues", 0) == 0:
-        print("✅ 所有推送质量检查通过")
+    #
+    # v9.9.47：status == PASS 就**不发告警**，即使 total_issues > 0 ——
+    # 多出来的那些是预期类（长度超限 → 无损分片），发了就是告警疲劳。
+    if results.get("status") == "PASS":
+        expected_n = results.get("expected_issues", 0)
+        if expected_n:
+            print(
+                f"✅ 推送质量检查通过（{expected_n} 条预期类提示："
+                f"长度超限会由 send_markdown 无损分片，内容不丢，无需处理）"
+            )
+        else:
+            print("✅ 所有推送质量检查通过")
         return
-    
+
     # 生成告警消息
     alert_msg = f"📊 {results['date']} 推送质量评估\n\n"
     alert_msg += f"结论：{results.get('status', 'FAIL')}\n"
     alert_msg += f"总分：{results['score']}/100\n"
-    alert_msg += f"检测到 {results['total_issues']} 处问题：\n\n"
+    alert_msg += (
+        f"检测到 {results['total_issues']} 处问题"
+        f"（其中 {results.get('expected_issues', 0)} 条为预期类："
+        f"长度超限会无损分片，无需处理；"
+        f"{results.get('blocking_issues', 0)} 条需要处理）：\n\n"
+    )
     
     # 无存档 / 其它致命问题（不属于任何单个 push）
     for fatal in results.get("issues", []):
@@ -569,14 +656,24 @@ def main():
         send_alert_if_needed(results)
     
     # v9.9.24 (P0-1)：退出码必须能反映结论，否则 cron 永远看不到失败
-    if results.get("status") == "FAIL" or results.get("total_issues", 0) > 0:
+    #
+    # v9.9.47：退出码只认 status。原来这里还有 `or total_issues > 0`，
+    # 而预期类也会让 total_issues > 0 —— 不去掉的话，长度超限（PASS）
+    # 照样退出 1，等于白改。
+    if results.get("status") == "FAIL":
         print(
-            f"❌ 推送质量检查未通过：{results['total_issues']} 处问题，"
+            f"❌ 推送质量检查未通过：{results['total_issues']} 处问题"
+            f"（{results.get('blocking_issues', 0)} 条需处理 / "
+            f"{results.get('expected_issues', 0)} 条预期类），"
             f"score={results['score']}/100，date={date_str}"
         )
         sys.exit(1)
-    
-    print(f"✅ 所有推送质量检查通过（score={results['score']}/100）")
+
+    print(
+        f"✅ 所有推送质量检查通过（score={results['score']}/100"
+        f"，{results.get('expected_issues', 0)} 条预期类提示："
+        f"长度超限会无损分片，无需处理）"
+    )
     sys.exit(0)
 
 
