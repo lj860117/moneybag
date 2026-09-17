@@ -6,6 +6,7 @@
   3. 支持显式类型映射 + 关键字推断两种方式
   4. 混合基金返回配置信息供后续比例分配
 """
+from typing import Optional
 
 # ============================================================
 # 基金类型关键字（完整版，包含混合/QDII/偏股/偏债）
@@ -191,23 +192,46 @@ def _infer_mixed_allocation(name: str, keywords: list) -> dict:
         return {"equity": 0.50, "bond": 0.35, "money": 0.15}
 
 
-def classify_and_allocate(code: str = "", name: str = "", nav_cost: float = 0, shares: float = 0) -> dict:
+def classify_and_allocate(
+    code: str = "",
+    name: str = "",
+    nav_cost: float = 0,
+    shares: float = 0,
+    nav_current: Optional[float] = None,
+) -> dict:
     """
     一步到位：分类基金 + 计算各类别占比金额
-    
+
+    分配基数（**口径**）说明 —— 2026-09 修订：
+      本函数历史上只有一个基数，即「成本口径」`total_cost = nav_cost * shares`。
+      当它被 portfolio_overview 用于「资产配置占比」时，会与同一分母里的
+      股票市值（实时价 × 股数）口径不一致：资产涨了，基金部分仍按成本计价，
+      配置占比就被低估。因此新增可选参数 `nav_current` 支持「市值口径」。
+
+      向后兼容是硬约束：
+        - `nav_current` 不传（None）或非正数 → 基数 = nav_cost * shares，
+          即**完全维持旧语义**，既有调用点与既有断言不受影响；
+        - 显式传入正的 `nav_current` → 基数 = nav_current * shares（市值口径）。
+      注意「传了实时净值、但实时净值取不到」的调用点应当回落到
+      `nav_current = nav_cost` 再传入，此时两种口径**数值等价**（退化路径连续）。
+
     Args:
         code: 基金代码
         name: 基金名称
-        nav_cost: 基金成本净值
+        nav_cost: 基金成本净值（元/份）
         shares: 持仓份额
-    
+        nav_current: 基金当前净值（元/份）。可选；不传或不大于 0 时按成本口径分配。
+
     Returns:
         {
             "code": code,
             "name": name,
             "type": "equity" | "bond" | "money" | "gold" | "mixed" | "unknown",
-            "totalCost": float,  # 总成本金额
-            "equity": float,     # 按类别分配的股票占比成本
+            "totalCost": float,   # 总成本金额（恒为 nav_cost * shares）
+            "totalValue": float,  # 实际参与分配的基数金额（成本或市值口径）
+            "navCurrent": float | None,  # 生效的当前净值（未传则为 None）
+            "basis": "cost" | "market",  # 本次实际使用的口径
+            "equity": float,      # 按类别分配的股票占比金额
             "bond": float,
             "money": float,
             "gold": float,
@@ -215,34 +239,47 @@ def classify_and_allocate(code: str = "", name: str = "", nav_cost: float = 0, s
     """
     classification = classify_fund(code, name)
     total_cost = nav_cost * shares if shares > 0 else 0
-    
+
+    # 口径选择：只有「显式传入正的当前净值 + 有份额」才切到市值口径，
+    # 其余情况一律退化到成本口径（含 nav_current=None / 0 / 负数 / shares<=0）。
+    use_market = (
+        nav_current is not None
+        and nav_current > 0
+        and shares > 0
+    )
+    basis = "market" if use_market else "cost"
+    total_value = (nav_current * shares) if use_market else total_cost
+
     result = {
         "code": code,
         "name": name,
         "type": classification["type"],
         "totalCost": round(total_cost, 2),
+        "totalValue": round(total_value, 2),
+        "navCurrent": nav_current if use_market else None,
+        "basis": basis,
         "equity": 0,
         "bond": 0,
         "money": 0,
         "gold": 0,
     }
-    
+
     fund_type = classification["type"]
-    
+
     if fund_type == "mixed" and "allocation" in classification:
         # 按推断的比例分配
         alloc = classification["allocation"]
-        result["equity"] = round(total_cost * alloc.get("equity", 0), 2)
-        result["bond"] = round(total_cost * alloc.get("bond", 0), 2)
-        result["money"] = round(total_cost * alloc.get("money", 0), 2)
+        result["equity"] = round(total_value * alloc.get("equity", 0), 2)
+        result["bond"] = round(total_value * alloc.get("bond", 0), 2)
+        result["money"] = round(total_value * alloc.get("money", 0), 2)
     elif fund_type == "equity":
-        result["equity"] = round(total_cost, 2)
+        result["equity"] = round(total_value, 2)
     elif fund_type == "bond":
-        result["bond"] = round(total_cost, 2)
+        result["bond"] = round(total_value, 2)
     elif fund_type == "money":
-        result["money"] = round(total_cost, 2)
+        result["money"] = round(total_value, 2)
     elif fund_type == "gold":
-        result["gold"] = round(total_cost, 2)
+        result["gold"] = round(total_value, 2)
     # unknown 类型所有占比都是 0
-    
+
     return result

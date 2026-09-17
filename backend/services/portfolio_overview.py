@@ -97,11 +97,16 @@ def get_portfolio_overview(user_id: str = "default") -> dict:
         fund_count += 1
 
         # 使用新分类器，支持混合/QDII 基金的比例分配
+        # FIX 2026-09-18 (口径统一): 传入上面已算好的 current_nav，让分配基数走**市值口径**，
+        #   与 stock_total_mv（:67 实时价）对齐，见下方 :128-136 的说明。
+        #   注意 current_nav 在拿不到实时净值时已退化为 cost_nav（:86），
+        #   故此处即便退化为成本口径也与旧行为完全一致（不重复拉行情）。
         allocation = classify_and_allocate(
             code=h.get("code", ""),
             name=h.get("name", ""),
             nav_cost=h.get("costNav", 0),
             shares=h.get("shares", 0),
+            nav_current=current_nav,
         )
         fund_equity += allocation["equity"]
         fund_bond += allocation["bond"]
@@ -125,10 +130,32 @@ def get_portfolio_overview(user_id: str = "default") -> dict:
     #   直接矛盾 —— 风控侧把黄金当权益的**对冲资产**，这里却把它当**权益本身**。
     #   二者不可能同时成立，故判定为 bug：归入 equity 是错的。
     #
-    # TODO(单独排期，本轮不动): fund_equity/bond/money/gold 走的是**成本**口径
-    #   （fund_classifier.classify_and_allocate: `total_cost = nav_cost * shares`），
-    #   而 stock_total_mv 走的是**市值**口径（本文件上方 :67 用实时价），
-    #   两者被加进同一个 total_for_alloc。属独立缺陷，另行立项。
+    # FIX 2026-09-18 (口径统一，闭环原 TODO): 此前 fund_equity/bond/money/gold 走**成本**口径
+    #   （fund_classifier.classify_and_allocate 的基数 `total_cost = nav_cost * shares`），
+    #   而 stock_total_mv 走的是**市值**口径（本文件上方 :67 用实时价），两者却被加进同一个
+    #   total_for_alloc —— 结果是「资产涨了，基金那部分仍按买入成本计价」，配置占比被系统性
+    #   低估（未实现浮盈越大的持仓，低估越明显），而 totalMarketValue 又是市值口径，
+    #   同一份 overview 里两个口径自相矛盾。
+    #
+    #   改法：由本文件把 :86-96 已经算好的 `current_nav`（优先实时净值、取不到才 fallback
+    #   到 cost_nav）作为可选参数 `nav_current` 传给 classify_and_allocate，使基金分配基数
+    #   切到市值口径 `nav_current * shares`。**不新增行情请求**，复用已有结果。
+    #
+    #   为什么安全：
+    #     - `nav_current` 是该函数的新增**可选**参数，不传时基数仍为 nav_cost * shares，
+    #       即旧语义原样保留（test_fund_classifier*.py 的既有断言不受影响）。
+    #     - current_nav 在实时净值取不到时等于 cost_nav（:86 的初始化 + :92 的条件赋值），
+    #       故退化路径下新旧口径**数值等价**，不存在断崖。
+    #     - 改后不变量：无现金等其他资产时 total_for_alloc == total_mv；基金四桶之和
+    #       == fund_total_mv。新增测试 test_portfolio_overview_caliber.py 守卫这两条。
+    #
+    #   影响面：仅 portfolio_overview 这一处生产调用点（Grep 确认 classify_and_allocate
+    #   的其余命中全在 backend/tests/）。allocation 四档百分比、deviation、rebalance
+    #   金额与 direction 会随之变化（分母由成本变为市值）；healthScore 仅在偏离跨过
+    #   10/20 阈值时才可能变动。
+    #
+    #   仍**未解决**（独立缺陷，另行立项）：`cash = fund_money` 只统计基金内的货币类份额，
+    #   账户真实现金余额未进 allocation —— 详见 docs/design 中「现金漏计」条目。
     equity = stock_total_mv + fund_equity
     bond = fund_bond
     cash = fund_money
