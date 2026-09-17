@@ -9,14 +9,36 @@ from pathlib import Path
 BACKEND_DIR = Path(__file__).resolve().parent
 DEFAULT_DATA_DIR = BACKEND_DIR.parent / "data"
 DATA_DIR = Path(os.environ.get("DATA_DIR", str(DEFAULT_DATA_DIR))).expanduser()
-DATA_DIR.mkdir(parents=True, exist_ok=True)
 USERS_DIR = DATA_DIR / "users"
-USERS_DIR.mkdir(exist_ok=True)
 RECEIPTS_DIR = DATA_DIR / "receipts"
-RECEIPTS_DIR.mkdir(exist_ok=True)
 # 推送存档目录（用于质量评估）
 PUSH_ARCHIVE_DIR = DATA_DIR / "logs" / "pushes"
-PUSH_ARCHIVE_DIR.mkdir(parents=True, exist_ok=True)
+
+# ---- import 期 mkdir 的跳过开关（v9.9.48）----
+# 事故根因：上面这 4 个 mkdir 是**模块 import 的副作用**。只要有任何进程在
+# DATA_DIR 没设的情况下 import 本模块（cron 的 cwd 不对、一次性脚本、
+# `python -c "import config"`、CI 里的静态检查……），就会在默认位置凭空造出
+# 一整棵目录树。服务器上 /opt/moneybag 那棵 **8KB、0 个文件** 的
+# backend/data 就是这么来的 —— 它从来没被用过，只是被"建"过。
+#
+# 开关语义：设了 MONEYBAG_SKIP_DIR_BOOTSTRAP=1 → **只解析路径，不建目录**。
+# 所有 *_DIR 常量的取值完全不变，缺的只是那次 mkdir。
+#
+# ⚠️ 生产（systemd 注入 DATA_DIR 的 API 进程）**不设**这个变量，
+#    因此生产行为与改动前逐字节一致 —— 这是能直接发版的前提。
+#    需要它们的服务在启动时自己 ensure 一次即可（第二步的 ensure_dirs()
+#    会把这件事收敛成显式调用，届时本开关即可退役）。
+_SKIP_DIR_BOOTSTRAP = os.environ.get(
+    "MONEYBAG_SKIP_DIR_BOOTSTRAP", "").strip().lower() in ("1", "true", "yes", "on")
+
+if not _SKIP_DIR_BOOTSTRAP:
+    DATA_DIR.mkdir(parents=True, exist_ok=True)
+    USERS_DIR.mkdir(exist_ok=True)
+    RECEIPTS_DIR.mkdir(exist_ok=True)
+    PUSH_ARCHIVE_DIR.mkdir(parents=True, exist_ok=True)
+else:
+    print(f"[CONFIG] MONEYBAG_SKIP_DIR_BOOTSTRAP=1，已跳过 import 期建目录；"
+          f"DATA_DIR={DATA_DIR}（目录未创建，调用方需自行确保）", flush=True)
 
 # ---- 启动期路径自检（v9.9.x P4）----
 # 事故根因：API 由 systemd 注入 DATA_DIR=/opt/moneybag/data，cron 侧没有这个变量，
