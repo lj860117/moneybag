@@ -529,63 +529,50 @@ GUARD_ENABLED = os.environ.get(_GUARD_ENABLED_ENV, "1").strip().lower() not in (
 _GUARD_BASELINE: dict = guard_snapshot(GUARD_TREES) if GUARD_ENABLED else {}
 
 
-@pytest.fixture(scope="session", autouse=True)
-def _repo_write_guard():
-    """会话级守卫：跑完所有用例后核对受保护目录树有没有被动过。
-
-    只在 teardown 做事（setup 无事可做，基线已在 conftest 顶层拍好）。
-    一旦出现新增/改写/删除就让**会话失败**：权威判定在
-    :func:`pytest_sessionfinish`（改 session.exitstatus），本 fixture
-    只额外给一行 stderr 摘要 —— **它不再 raise**，理由见下面「假凶手」。
-
-    ⚠️⚠️ 同一个机制的两副面孔（务必一起读，只看一副会修错地方）
-    ------------------------------------------------------------
-    根因是 pytest 的一条语义：**session 级 fixture 的 teardown 错误会被挂在
-    会话最后一个 item 名下**，而不是挂在"守卫"名下。这条语义有两副面孔：
-
-    面孔 A —— **假绿**（2026-09-17 实测，pytest 9.1.1）：
-      最后一个用例是 xfail / skip 时，本 fixture teardown 抛的错被一起吞掉。
-      最小复现：`test_a`（pass）+ `test_b`（non-strict xfail），teardown 抛
-      AssertionError → 输出 `1 passed, 2 xfailed`、**退出码 0** —— 那个
-      AssertionError 被算成「第 3 个 xfailed」，守卫彻底静音。
-
-    面孔 B —— **假凶手**（2026-09-18 定位）：
-      最后一个用例是**普通 pass** 时，同一个 teardown 错误不会被吞，而是被
-      **渲染成 `ERROR <最后一个用例>`**，于是守卫嫁祸给一个完全无辜的用例。
-      实测：只跑 `tests/test_wxwork_push_bytes.py` 并让守卫开火，输出
-      `49 passed, 1 error`，且
-      `ERROR tests/test_wxwork_push_bytes.py::test_quality_check_uses_effective_channel_limit`。
-      该用例字母序最后、又排在文件末尾，所以命中"最后一个 item"——**它与
-      仓库被写脏毫无关系**，曾被人当成"顺序依赖污染"排查了很久。
-
-    两副面孔的共同点：错误**归属**不可靠，跟"污染是否真发生"无关。
-    所以：判定必须在 :func:`pytest_sessionfinish`（改 session.exitstatus，
-    与用例标记和归属都无关，既吞不掉也不会嫁祸），本 fixture **不再 raise**。
-    本 fixture 保留的价值只剩一个：它比 sessionfinish **早一步**，能给出
-    一行带计数的摘要，便于在长会话里尽早发现。
-
-    ⚠️ 故障注入锚点：把 conftest 顶层的
-       ``os.environ["DATA_DIR"] = _PYTEST_DATA_DIR``
-    注释掉再跑 `pytest tests/test_phase3_services.py`，本守卫必须转红并
-    列出真实 data/users/ 下新增的文件。恒绿的守卫等于空转的绿。
-    （2026-09-18 补充验收：转红的形式必须是「退出码非 0 + stderr 有完整
-    清单」，且 **stdout 不得出现 `ERROR <某个用例>`** —— 后者正是面孔 B。）
-    """
-    yield
-    if not GUARD_ENABLED:
-        print(f"[conftest] ⚠️ {_GUARD_ENABLED_ENV}=0，已跳过仓库写入守卫")
-        return
-
-    added, changed, removed = _guard_check()
-    if not (added or changed or removed):
-        return
-
-    # 只用 stderr，且**不 raise**（raise 会被归到最后一个 item 名下 → 假凶手）。
-    # 这里只给摘要；完整清单由 pytest_sessionfinish 输出，避免重复一大段。
-    sys.stderr.write(
-        "\n[MONEYBAG_WRITE_GUARD] 摘要：受保护目录树被改动 —— "
-        f"新增 {len(added)} / 改写 {len(changed)} / 删除 {len(removed)} 项；"
-        "完整清单见文末 pytest_sessionfinish 输出。\n")
+# ============================================================================
+# 这里**故意**没有 session 级 autouse fixture。
+# ============================================================================
+# 2026-09-18 之前有个 `_repo_write_guard`（session/autouse），它在 teardown
+# 里先 raise、后改成写 stderr，**两次都被实测证明不可靠**，现已删除。
+# 守卫的唯一判定点收敛到下面的 :func:`pytest_sessionfinish`，单一真相源。
+#
+# ⚠️⚠️ 同一个 pytest 机制的三副面孔（务必一起读，只看一副会修错地方）
+# ----------------------------------------------------------------------------
+# 根因是 pytest 的一条语义：**session 级 fixture 的 teardown 会被算到会话
+# 最后一个 item 名下**，而不是挂在"守卫"名下。它有三副面孔：
+#
+#   面孔 A —— **假绿**（2026-09-17 实测，pytest 9.1.1）：
+#     最后一个用例是 xfail / skip 时，teardown 抛的 AssertionError 被一起吞成
+#     xfailed。最小复现 `test_a`(pass) + `test_b`(non-strict xfail) → 输出
+#     `1 passed, 2 xfailed`、**退出码 0**，守卫彻底静音。
+#
+#   面孔 B —— **假凶手**（2026-09-18 定位）：
+#     最后一个用例是普通 pass 时，同一个 teardown 错误不被吞，而是被渲染成
+#     `ERROR <最后一个用例>`，守卫嫁祸给一个完全无辜的用例。
+#     实测：只跑 `tests/test_wxwork_push_bytes.py` 并让守卫开火 →
+#     `49 passed, 1 error`，且
+#     `ERROR tests/test_wxwork_push_bytes.py::test_quality_check_uses_effective_channel_limit`。
+#     该用例字母序最后、又排在文件末尾，因此命中"最后一个 item"，**与仓库被
+#     写脏毫无关系** —— 曾被人当成"顺序依赖型污染"排查了很久。
+#
+#   面孔 C —— **静默空转**（2026-09-18 实测，压垮它的最后一根稻草）：
+#     把 raise 换成 `sys.stderr.write` 后，那行摘要**一条都没输出**：用 Grep
+#     工具在 stderr 里只搜到完整清单 1 处、摘要 0 处 —— session 级 fixture 的
+#     teardown 期间 pytest 捕获仍生效，写进去的内容进了缓冲区且无人消费。
+#     ⇒ 在 fixture teardown 里做**任何输出**都不可靠。
+#
+# 三副面孔的共同点：**fixture teardown 这个位置本身就不可靠** —— 错误归属
+# 不可靠（A/B）、输出不可靠（C）。所以判定放在 pytest_sessionfinish：它在
+# 所有 item 之后运行、直接改 session.exitstatus，既不受用例标记影响，也不受
+# 捕获影响 —— 吞不掉、嫁祸不了、也不会静默。
+#
+# ⚠️ 故障注入锚点：把 conftest 顶层的
+#    ``os.environ["DATA_DIR"] = _PYTEST_DATA_DIR``
+# 注释掉再跑 `pytest tests/test_phase3_services.py`，守卫必须转红并列出真实
+# data/users/ 下新增的文件。恒绿的守卫等于空转的绿。
+# 验收三条（2026-09-18 定）：① 退出码非 0；② stderr 出现
+# MONEYBAG_WRITE_GUARD 完整清单；③ **stdout 不得出现 `ERROR <某个用例>`**
+# （第 ③ 条正是面孔 B，是这次改动的核心目的）。
 
 
 def pytest_sessionfinish(session, exitstatus):
@@ -595,13 +582,16 @@ def pytest_sessionfinish(session, exitstatus):
     用户通过 MONEYBAG_PYTEST_DATA_DIR 显式指定的目录绝不删除 —— 那是用户
     的数据，不是我们的临时产物。
 
-    ⚠️ 这里还有第二件事，而且是**权威**的那件：仓库写入守卫的最终判定放在
-    这里，而不是只放在上面那个 session fixture 的 teardown。原因见
-    ``_repo_write_guard`` 的 docstring —— pytest 会把 session 级 fixture 的
-    teardown 错误挂在最后一个 item 名下，而 non-strict xfail 会把它一起吞掉，
-    于是"最后一个用例是 xfail"的会话里守卫完全静音、退出码还是 0。
-    pytest_sessionfinish 在所有 item 之后运行，且直接改 session.exitstatus，
-    不受任何用例标记影响。
+    ⚠️ 这里还有第二件事，而且是**权威**的那件：仓库写入守卫的判定**唯一**
+    放在这里（2026-09-18 起）。原先那个 session 级 autouse fixture
+    `_repo_write_guard` 已被删除，原因见上方「同一个 pytest 机制的三副面孔」
+    注释块 —— pytest 会把 session 级 fixture 的 teardown 算到会话最后一个
+    item 名下：最后一个用例是 xfail 时错误被吞（守卫静音、退出码 0），是普通
+    pass 时被渲染成 `ERROR <该用例>`（嫁祸无辜用例），而改成写 stderr 则整行
+    进了捕获缓冲区、一条都出不来（静默空转）。
+    pytest_sessionfinish 在所有 item 之后运行，直接改 session.exitstatus，
+    不受任何用例标记影响；且实测这里的 stderr 写入能落地，而 session 级
+    fixture teardown 里的写入会被捕获吞掉（面孔 C）。
     """
     if GUARD_ENABLED:
         added, changed, removed = _guard_check()
@@ -612,6 +602,11 @@ def pytest_sessionfinish(session, exitstatus):
                              + _guard_message(added, changed, removed)
                              + "\n" + "=" * 72 + "\n")
             session.exitstatus = 1
+    else:
+        # 守卫被显式关闭时必须留痕：否则「压根没生效」和「确实没污染」
+        # 在输出上完全无法区分 —— 那是另一种静默空转。
+        sys.stderr.write(
+            f"\n[conftest] ⚠️ {_GUARD_ENABLED_ENV}=0，已跳过仓库写入守卫\n")
 
     if _PYTEST_DATA_DIR_OWNED and _PYTEST_DATA_DIR \
             and os.path.isdir(_PYTEST_DATA_DIR):
