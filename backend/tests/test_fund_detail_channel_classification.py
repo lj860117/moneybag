@@ -12,9 +12,20 @@
 
 * 5 开头的中国基金代码里既有场内（沪市 ETF 51xxxx / 沪市 LOF 50xxxx），
   **也大量是场外开放式基金**（519xxx 是最典型的场外段）。
-* 铁证：`519736`（用户本人真实持仓，见 docs/HEALTH-CHECK-2026-04-19.md:6；后端
-  `services/fund_classifier.py:26` KNOWN_FUND_TYPES 把它归为 `"bond"`）是**场外**
-  开放式基金，却因 `startsWith('5')` 成立被前端打上「🏦 场内基金 / LOF」。
+* 铁证：`519736`（用户本人真实持仓，见 docs/HEALTH-CHECK-2026-04-19.md:6）是**场外**
+  开放式基金（生产 `purchase_status='开放申购'`），却因 `startsWith('5')` 成立被前端
+  打上「🏦 场内基金 / LOF」。
+
+  ⚠️ 顺带发现的**独立**后端问题（不在本文件修复范围，已报 team-lead）：
+  `docs/HEALTH-CHECK-2026-04-19.md:6` 与 `services/fund_classifier.py:26`
+  （`KNOWN_FUND_TYPES["519736"] = "bond"`）都把 519736 当成「交银裕隆纯债A / 债券」，
+  但生产 `/api/fund/detail/519736` 返回的是「交银新成长混合」，且 `top_holdings`
+  全是股票（药明康德/宁德时代/宇通客车…）、`returns['2y']=34.89` —— **这是一只
+  股票/混合型基金，把它硬编码成 `bond` 是分类错误**（影响
+  `portfolio_overview.py:100 classify_and_allocate` 的股债配置）。
+  本文件的结论**不依赖**这个争议：两个候选名字都无 ETF/LOF 标记、
+  `purchase_status` 都是场外状态，判成场外是同一个结果。
+  本语料采用生产实抓值 `交银新成长混合`。
 * 收窄前缀解决不了：`519736`.startsWith('51') 与 .startsWith('50') 都是 false，
   但 .startsWith('5') 是 true；而 51 这个前缀本身又会撞上别的东西。**代码前缀
   这条路本身不可靠，换一个前缀只是换一种猜法。**
