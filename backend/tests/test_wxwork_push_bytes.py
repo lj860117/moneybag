@@ -18,7 +18,7 @@ import sys
 
 import pytest
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+sys.path.insert(0, os.path.normpath(os.path.join(os.path.dirname(__file__), "..")))
 
 from services import wxwork_push as wp  # noqa: E402
 
@@ -418,7 +418,7 @@ def test_send_text_has_no_length_protection_by_design(recorder):
 # ------------------------------------------------------------------
 
 def _import_quality_check():
-    sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "scripts"))
+    sys.path.insert(0, os.path.normpath(os.path.join(os.path.dirname(__file__), "..", "scripts")))
     import daily_push_quality_check as qc
     return qc
 

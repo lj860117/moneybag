@@ -142,6 +142,30 @@ else:
 os.environ["DATA_DIR"] = _PYTEST_DATA_DIR
 (Path(_PYTEST_DATA_DIR) / "users").mkdir(parents=True, exist_ok=True)
 
+# ============================================================
+# FIX 2026-09-17：只隔离 DATA_DIR 是不够的 —— 还有两个"自己读环境变量定目录"
+# 的模块，同样在 **import 期 mkdir**，而且完全不走 config.DATA_DIR：
+#
+#   scripts/llm_balance_monitor.py:76
+#       _LOG_DIR = Path(os.environ.get("LOG_DIR", str(_BACKEND_DIR / "logs")))
+#       _LOG_DIR.mkdir(parents=True, exist_ok=True)   # 默认 backend/logs
+#   scripts/stock_monitor_cron.py:46
+#       MONITOR_DIR = Path(os.environ.get("MONITOR_DIR",
+#                          Path(__file__).parent.parent.parent / "data" / "monitor"))
+#       MONITOR_DIR.mkdir(parents=True, exist_ok=True)
+#
+# 实测（2026-09-17，全量 2417 条 + 文件系统调用插桩）：这两个变量没被隔离时，
+# 每跑一轮全量套件就会往**真实仓库**里写 4 次：
+#   backend/logs/                          mkdir x3
+#   backend/logs/llm_balance_monitor.log   open(a) x1  ← 实测已累积到 645KB
+# 也就是说"DATA_DIR 隔离"只能证明测试没写 data/，证明不了测试没写仓库。
+# 这里把两个变量一起指进会话临时目录，从源头掐掉。
+#
+# ⚠️ 为什么不用 `if not os.environ.get(...)`：与上面 DATA_DIR 的教训同源
+# （2026-09-08 逃逸口事故）——"尊重外部显式设置"正是事故入口。一律强制覆盖。
+os.environ["LOG_DIR"] = str(Path(_PYTEST_DATA_DIR) / "_logs")
+os.environ["MONITOR_DIR"] = str(Path(_PYTEST_DATA_DIR) / "monitor")
+
 if _OVERRIDDEN_EXTERNAL_DATA_DIR and \
         _OVERRIDDEN_EXTERNAL_DATA_DIR != _PYTEST_DATA_DIR:
     # 明确告知，避免"我明明设了 DATA_DIR 怎么没生效"的困惑，
@@ -151,13 +175,249 @@ if _OVERRIDDEN_EXTERNAL_DATA_DIR and \
           f"（如需挂真实数据调试请设 MONEYBAG_PYTEST_DATA_DIR）")
 
 
+# ============================================================
+# 仓库写入守卫（FIX 2026-09-17：把"测试不写真实 data 目录"从惯例变成断言）
+# ============================================================
+# 为什么还需要这一层——上面的环境变量隔离有两个结构性盲区：
+#
+#  盲区 1：**环境变量只能管到"愿意读环境变量的模块"**。实测仍有模块用
+#    `Path(__file__).parent... / "data"` 硬编码拼路径（例如
+#    infra/data_source/alt/flows.py:374 写 backend/infra/.cache、
+#    services/longterm_screen.py:232 读 backend/data/fund_rank_ts.json），
+#    它们不看 DATA_DIR，环境变量隔离对它们完全无效。
+#
+#  盲区 2：**sys.path 里带未归一化的 ".."** 会让 `Path(__file__).parent.parent.parent`
+#    算错目录。实测真事故：
+#      test_alert_push_test_mode_guard.py:39
+#        sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+#      → sys.path 里出现 `backend/tests/..`（**未归一化**）
+#      → `from scripts import stock_monitor_cron` 的 __file__ 变成
+#        `backend/tests/../scripts/stock_monitor_cron.py`
+#      → pathlib 不会折叠 ".."，于是 .parent.parent.parent 算出 `backend/tests`
+#      → MONITOR_DIR = backend/tests/data/monitor 被真实 mkdir 出来
+#    这类"路径算错"不可能靠"多隔离几个环境变量"提前想到，只能靠事后核对发现。
+#
+# 所以守卫改成**量结局而不是猜入口**：在 conftest 顶层（早于任何 test_*.py
+# 被 import）给受保护目录树拍快照，会话结束时再拍一次，只要出现
+# 新增/改写/删除就**让会话失败**并列出清单。
+#
+# 为什么是"快照对比"而不是"拦截 os.mkdir/open"：
+#   本仓的开发机 python 是托管版，pathlib 被套了一层 broker，
+#   `os.mkdir` / `sys.addaudithook` 都拦不到 `Path.mkdir()`（实测插桩漏掉
+#   全部 pathlib 建目录调用）。**依赖拦截 = 在部分环境上静默失效**，
+#   这正是本项目最忌讳的"闸门空转仍显绿"。快照对比只用 os.stat/rglob，
+#   在任何 python 上行为一致。
+_GUARD_BACKEND_DIR = Path(__file__).resolve().parent.parent
+_GUARD_REPO_ROOT = _GUARD_BACKEND_DIR.parent
+
+# 受保护的目录树（默认）：真实数据目录 + 实测被写脏过的两处 + 测试目录自身。
+# _GUARD_REPO_ROOT / "data"  = config.DEFAULT_DATA_DIR（生产权威数据目录）
+# _GUARD_BACKEND_DIR / "data" = 历史遗留目录（ops_summary.py:64 命名为
+#                               _LEGACY_DATA_DIR，服务器上的 /opt/moneybag/backend/data）
+_DEFAULT_GUARD_TREES = (
+    _GUARD_REPO_ROOT / "data",
+    _GUARD_BACKEND_DIR / "data",
+    _GUARD_BACKEND_DIR / "logs",
+    _GUARD_BACKEND_DIR / "tests",
+)
+#
+# ⚠️ 已知**尚未**纳入的第四条通道（2026-09-17 实测，全量一轮必中一次）：
+#   backend/infra/.cache/industry_board_cache.json   ← 被"改写"1 次
+#   元凶 infra/data_source/alt/flows.py:374
+#       cache_dir = Path(__file__).parent.parent.parent / ".cache"
+#       cache_dir.mkdir(exist_ok=True)
+#     —— 硬编码路径，既不走 config.DATA_DIR，也没有可覆盖的环境变量，
+#        测试侧**无法**隔离；要治必须动生产代码（把它改成读
+#        config.DATA_DIR 或新增一个 MONEYBAG_CACHE_DIR 环境变量）。
+#   为什么现在不把它加进受保护清单：加了全量立刻转红（实测改写 1 项/
+#   一轮），而修法在生产侧，测试侧加了只能得到一条永远红的守卫 —— 那正是
+#   "闸门空转"的反面（噪音红），同样会让人第一反应是把它关掉。
+#   ✅ 一旦 flows.py 改成可配置，把 `_GUARD_BACKEND_DIR / "infra" / ".cache"`
+#      追加进上面的元组即可，无需改任何其他代码。
+#   现状由 test_pytest_repo_write_guard.py 里的
+#   test_known_unfixed_repo_write_channel_is_documented 钉住：
+#   谁改了 flows.py，那条用例会红，提醒他回来补这一行。
+
+# 逃生/测试阀：设了就用它**替换**默认清单（不合并），供守卫自测用诱饵目录。
+# 与 MONEYBAG_PYTEST_DATA_DIR 同理，不复用业务变量。
+_GUARD_TREES_ENV = "MONEYBAG_PYTEST_GUARD_TREES"
+# 开关：实时生产机上跑测试时，data/ 会被线上进程同时写入，快照对比会误报。
+# 这种场景显式关掉守卫（MONEYBAG_PYTEST_WRITE_GUARD=0），不要改成"只警告"。
+_GUARD_ENABLED_ENV = "MONEYBAG_PYTEST_WRITE_GUARD"
+
+# 不纳入快照的目录/后缀：它们由 python 解释器与 pytest 自己维护，
+# 把 __pycache__ 算进来会每次都"变了"，守卫立刻退化成噪音。
+_GUARD_SKIP_DIR_NAMES = frozenset({
+    "__pycache__", ".pytest_cache", ".git", ".mypy_cache", ".ruff_cache",
+    ".idea", ".vscode", ".DS_Store",
+})
+_GUARD_SKIP_SUFFIXES = frozenset({".pyc", ".pyo"})
+
+GUARD_TREES: tuple = ()
+GUARD_ENABLED: bool = True
+
+
+def _guard_tree_list() -> tuple:
+    """解析受保护目录树清单（可被 MONEYBAG_PYTEST_GUARD_TREES 覆盖）。"""
+    raw = os.environ.get(_GUARD_TREES_ENV, "").strip()
+    if raw:
+        return tuple(Path(part).resolve() for part in raw.split(os.pathsep) if part.strip())
+    return tuple(p.resolve() for p in _DEFAULT_GUARD_TREES)
+
+
+def guard_snapshot(roots=_DEFAULT_GUARD_TREES) -> dict:
+    """对受保护目录树做一次内容快照。
+
+    Args:
+        roots: 要快照的根目录（不存在则跳过）。
+
+    Returns:
+        {根目录字符串: {相对路径: (大小, mtime_ns)}}。目录与文件都记，
+        这样"只建了个空目录"这种污染也能被发现——服务器上的
+        /opt/moneybag/backend/data 就是这种形态（8KB、0 个文件的空目录树）。
+    """
+    out: dict = {}
+    for root in roots:
+        root_path = Path(root)
+        if not root_path.exists():
+            continue
+        entries: dict = {}
+        for p in root_path.rglob("*"):
+            try:
+                rel = p.relative_to(root_path)
+            except ValueError:
+                continue
+            if any(part in _GUARD_SKIP_DIR_NAMES for part in rel.parts):
+                continue
+            if p.suffix in _GUARD_SKIP_SUFFIXES:
+                continue
+            try:
+                st = p.stat()
+            except OSError:
+                continue
+            entries[str(rel)] = (st.st_size, st.st_mtime_ns)
+        out[str(root_path)] = entries
+    return out
+
+
+def guard_diff(before: dict, after: dict) -> tuple:
+    """比对两次快照，返回 (新增, 改写, 删除) 三组「根::相对路径」。
+
+    Args:
+        before: 会话开始前的快照。
+        after: 会话结束时的快照。
+
+    Returns:
+        (added, changed, removed)，每个元素都是 `根::相对路径` 字符串列表。
+    """
+    added: list = []
+    changed: list = []
+    removed: list = []
+    for root in set(before) | set(after):
+        b = before.get(root, {})
+        a = after.get(root, {})
+        for rel in sorted(set(a) - set(b)):
+            added.append(f"{root}::{rel}")
+        for rel in sorted(set(b) - set(a)):
+            removed.append(f"{root}::{rel}")
+        for rel in sorted(set(a) & set(b)):
+            if a[rel] != b[rel]:
+                changed.append(f"{root}::{rel}")
+    return added, changed, removed
+
+
+def _guard_check() -> tuple:
+    """拍一次快照并与会话基线比对，返回 (新增, 改写, 删除)。"""
+    return guard_diff(_GUARD_BASELINE, guard_snapshot(GUARD_TREES))
+
+
+def _guard_message(added: list, changed: list, removed: list) -> str:
+    """把一次守卫比对结果渲染成可直接读的错误文本。"""
+    return (
+        "[MONEYBAG_WRITE_GUARD] 测试进程改动了受保护目录树 —— 数据目录隔离失效。\n"
+        f"  新增 {len(added)} 项: {added[:20]}\n"
+        f"  改写 {len(changed)} 项: {changed[:20]}\n"
+        f"  删除 {len(removed)} 项: {removed[:20]}\n"
+        "  修法优先序：① 让被测模块走 config.DATA_DIR（conftest 已把它指到临时目录）；"
+        "② 若该模块自己读环境变量定目录，在 conftest 里一并隔离；"
+        "③ 若路径是 Path(__file__) 硬拼出来的，检查 sys.path 里有没有未归一化的 '..'。\n"
+        f"  （受保护目录树: {[str(t) for t in GUARD_TREES]}；"
+        f"设 {_GUARD_ENABLED_ENV}=0 可临时关闭，但那只是把垃圾藏起来）"
+    )
+
+
+GUARD_TREES = _guard_tree_list()
+GUARD_ENABLED = os.environ.get(_GUARD_ENABLED_ENV, "1").strip().lower() not in (
+    "0", "false", "no", "off")
+
+# **就在这里**拍基线：此刻 conftest 刚被 import，还没有任何 test_*.py 被加载，
+# 也还没有任何模块的 import 期 mkdir 发生 —— 这是整个会话最早的干净时刻。
+_GUARD_BASELINE: dict = guard_snapshot(GUARD_TREES) if GUARD_ENABLED else {}
+
+
+@pytest.fixture(scope="session", autouse=True)
+def _repo_write_guard():
+    """会话级守卫：跑完所有用例后核对受保护目录树有没有被动过。
+
+    只在 teardown 做事（setup 无事可做，基线已在 conftest 顶层拍好）。
+    一旦出现新增/改写/删除就抛错 → 该会话 exit code 非 0，不会被
+    "测试本身全绿"掩盖。
+
+    ⚠️ 已知盲区（2026-09-17 实测，pytest 9.1.1）：**会话最后一个用例是
+    xfail / skip 时，本 fixture teardown 抛的错会被 pytest 吞掉。**
+    实测复现：最小会话里 `test_a`（pass）+ `test_b`（non-strict xfail），
+    session 级 autouse fixture 在 teardown 抛 AssertionError，输出是
+    `1 passed, 2 xfailed`、退出码 0 —— 那个 AssertionError 被算成了
+    「第 3 个 xfailed」，守卫彻底静音。原因是 pytest 把 session 级
+    fixture 的 teardown 错误挂在**最后一个 item** 名下，而非严格 xfail
+    标记会连它的 teardown 一起吞。
+    所以真正的判定不在这里，而在下面的 :func:`pytest_sessionfinish`
+     —— 那里改 session.exitstatus，跟用例标记无关，吞不掉。
+    本 fixture 保留是因为它能给出带调用栈的 ERROR 段，正常路径下更好读。
+
+    ⚠️ 故障注入锚点：把 conftest 顶层的
+       ``os.environ["DATA_DIR"] = _PYTEST_DATA_DIR``
+    注释掉再跑 `pytest tests/test_phase3_services.py`，本守卫必须转红并
+    列出真实 data/users/ 下新增的文件。恒绿的守卫等于空转的绿。
+    """
+    yield
+    if not GUARD_ENABLED:
+        print(f"[conftest] ⚠️ {_GUARD_ENABLED_ENV}=0，已跳过仓库写入守卫")
+        return
+
+    added, changed, removed = _guard_check()
+    if not (added or changed or removed):
+        return
+
+    # 注意：这个 raise 有可能被吞（见上面 docstring），兜底在 pytest_sessionfinish。
+    raise AssertionError(_guard_message(added, changed, removed))
+
+
 def pytest_sessionfinish(session, exitstatus):
     """整个测试会话结束后清理临时目录。
 
     **只清理本文件自己创建的目录**（_PYTEST_DATA_DIR_OWNED=True 时）。
     用户通过 MONEYBAG_PYTEST_DATA_DIR 显式指定的目录绝不删除 —— 那是用户
     的数据，不是我们的临时产物。
+
+    ⚠️ 这里还有第二件事，而且是**权威**的那件：仓库写入守卫的最终判定放在
+    这里，而不是只放在上面那个 session fixture 的 teardown。原因见
+    ``_repo_write_guard`` 的 docstring —— pytest 会把 session 级 fixture 的
+    teardown 错误挂在最后一个 item 名下，而 non-strict xfail 会把它一起吞掉，
+    于是"最后一个用例是 xfail"的会话里守卫完全静音、退出码还是 0。
+    pytest_sessionfinish 在所有 item 之后运行，且直接改 session.exitstatus，
+    不受任何用例标记影响。
     """
+    if GUARD_ENABLED:
+        added, changed, removed = _guard_check()
+        if added or changed or removed:
+            # 打到 stderr：stdout 末尾那行 "N passed" 会把人骗过去，
+            # stderr 至少在终端/CI 日志里和它是分开的。
+            sys.stderr.write("\n" + "=" * 72 + "\n"
+                             + _guard_message(added, changed, removed)
+                             + "\n" + "=" * 72 + "\n")
+            session.exitstatus = 1
+
     if _PYTEST_DATA_DIR_OWNED and _PYTEST_DATA_DIR \
             and os.path.isdir(_PYTEST_DATA_DIR):
         shutil.rmtree(_PYTEST_DATA_DIR, ignore_errors=True)

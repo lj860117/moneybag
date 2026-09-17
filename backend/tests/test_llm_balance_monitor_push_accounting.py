@@ -42,7 +42,7 @@ from datetime import date
 
 import pytest
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+sys.path.insert(0, os.path.normpath(os.path.join(os.path.dirname(__file__), "..")))
 
 from services import llm_quota_alert as qa  # noqa: E402
 from services import wxwork_push as wp  # noqa: E402

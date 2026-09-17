@@ -53,7 +53,7 @@ from datetime import date, timedelta
 
 import pytest
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+sys.path.insert(0, os.path.normpath(os.path.join(os.path.dirname(__file__), "..")))
 
 import config  # noqa: E402  - 只用于 test_state_file_lives_under_data_dir
 from services import llm_quota_alert as qa  # noqa: E402
