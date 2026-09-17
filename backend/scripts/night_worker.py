@@ -925,8 +925,6 @@ def _build_rebalance_gap(uid: str, holdings_with_val: list) -> str:
     if not has_gap:
         lines.append("  配置基本均衡，无需调整")
 
-    lines.append("")
-    lines.append("⚠️ 当前持仓以主动混合基金为主，与目标指数基金配置存在结构性差异，建议逐步向目标靠拢。")
     return "\n".join(lines)
 
 
@@ -1678,6 +1676,25 @@ def _fix_stock_names(recs):
     return recs
 
 
+def _overnight_qdii_impact(nq_pct: float, hsi_pct: float) -> str:
+    """v9.5.123: 隔夜市场对 QDII 持仓的影响判语（纯规则，不调 LLM）。
+
+    返回**空串**表示「无实质信息」——调用方此时不得输出该行。
+
+    原 ``else`` 分支写的是「对你的QDII影响有限」，它在任何行情下都成立
+    （恒真句），对读者零决策价值，却每天固定占 ~58 字节，故 v9.9.45 移除。
+    注意：``_reason`` 脱离 impact 会变成「波动不大,方向不明 →」这种残缺句，
+    所以整行一起不输出，而不是只砍 impact。
+    """
+    if nq_pct > 1.0:
+        return "你的QDII科技基金今天大概率跟涨"
+    if nq_pct < -1.0:
+        return "你的QDII科技基金今天可能承压"
+    if hsi_pct < -1.0:
+        return "港股走弱,留意港股相关持仓"
+    return ""
+
+
 def step_generate_products(phase1, phase2, phase3):
     log("📝 04:00 生成分析产物")
 
@@ -1821,16 +1838,10 @@ def step_generate_products(phase1, phase2, phase3):
                     _reason = "市场谨慎"
                 else:
                     _reason = "波动不大,方向不明"
-                # 对你QDII的影响
-                if nq_pct > 1.0:
-                    _impact = "你的QDII科技基金今天大概率跟涨"
-                elif nq_pct < -1.0:
-                    _impact = "你的QDII科技基金今天可能承压"
-                elif hsi_pct < -1.0:
-                    _impact = "港股走弱,留意港股相关持仓"
-                else:
-                    _impact = "对你的QDII影响有限"
-                overnight_markets += f"\n  {_reason} → {_impact}"
+                # 对你QDII的影响（空串=无实质信息，整行不输出）
+                _impact = _overnight_qdii_impact(nq_pct, hsi_pct)
+                if _impact:
+                    overnight_markets += f"\n  {_reason} → {_impact}"
     except Exception as e:
         log(f"  隔夜市场数据获取失败: {e}")
     
