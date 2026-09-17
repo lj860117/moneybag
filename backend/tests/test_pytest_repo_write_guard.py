@@ -177,17 +177,31 @@ def _assert_child_really_ran(proc: subprocess.CompletedProcess) -> None:
 def test_guard_detects_write_into_protected_tree(tmp_path):
     """往受保护目录里写东西 → 会话必须失败，且失败原因可追溯。
 
-    故障注入方向（2026-09-18 更正）：弄坏 conftest 里 `pytest_sessionfinish`
-    的守卫判定 —— 例如把 `session.exitstatus = 1` 那行注释掉，或让
-    `_guard_check()` 恒返回空。本用例必须转红。恒绿的守卫等于空转的绿。
+    故障注入方向（2026-09-18 更正 + **实测**）：弄坏 conftest 里
+    `pytest_sessionfinish` 的守卫判定 —— 把 `session.exitstatus = 1`
+    那行注释掉，本用例必须转红。恒绿的守卫等于空转的绿。
+
+    实测数字（在 `backend/` 的一份 /tmp 副本里做的，**零仓库写入** ——
+    别在共享工作区里注入，那会重演"污染别人正在跑的会话"的事故）：
+        cd <副本>/backend && pytest tests/test_pytest_repo_write_guard.py -q
+        注入前：13 passed，退出码 0
+        注入后：3 failed, 10 passed，退出码 1
+    转红的正是依赖「子进程退出码非 0」的那三条：本条、
+    test_guard_survives_when_last_test_is_xfail、
+    test_cache_exclusion_is_precise_not_a_blind_relaxation。
+    同时对照组 test_guard_stays_green_when_write_is_outside_protected_tree
+    **保持绿** —— 证明这是精准转红，不是"怎么改都红"。
+    另一个常被提到的等效注入（让 `_guard_check()` 恒返回空）**未实测**，
+    别当成已验证的结论用。
 
     ⚠️ 旧说法已失效，别照它做：此前这里写的是「把 conftest 里的
     `_repo_write_guard` 整个删掉（或把 teardown 的 raise 换成 return），
-    本用例必须转红」。2026-09-18 该 fixture 已整体删除（原因是 session 级
-    fixture 的 teardown 期间 stderr 写入会被 pytest 捕获吞掉，那行摘要根本
-    不会输出），判定收敛到 `pytest_sessionfinish` 单点。实测：删掉 fixture
-    后本用例**仍然绿**。所以注入必须打在 sessionfinish 上，打在 fixture 上
-    会得到「守卫失效了」的错误结论，然后在错误的地方浪费半天。
+    本用例必须转红」。2026-09-18 该 fixture 已整体删除，判定收敛到
+    `pytest_sessionfinish` 单点（删除原因：session 级 fixture 的 teardown
+    期间 stderr 写入会被 pytest 捕获吞掉，那行摘要一条都出不来 —— 静默
+    空转）。实测：fixture 删掉之后本文件单独跑**仍然 13 passed**。
+    所以注入必须打在 sessionfinish 上；打在 fixture 上会得到「守卫失效了」
+    的错误结论，然后在错误的地方浪费半天。
     """
     decoy = tmp_path / "decoy_protected"
     decoy.mkdir()
@@ -222,8 +236,16 @@ def test_guard_survives_when_last_test_is_xfail(tmp_path):
     放在 conftest 的 `pytest_sessionfinish`（改 session.exitstatus，不受
     用例标记影响），本用例就是这条兜底的回归测试。
 
-    故障注入方向：把 conftest `pytest_sessionfinish` 里那段守卫代码删掉，
-    只留 fixture 的 raise，本用例转红。
+    故障注入方向（2026-09-18 更正 + **实测**）：把 conftest
+    `pytest_sessionfinish` 里守卫判定的 `session.exitstatus = 1` 注释掉，
+    本用例转红。实测：注入前 13 passed / 退出码 0 → 注入后
+    3 failed, 10 passed / 退出码 1（与 test_guard_detects_write_into_
+    protected_tree 用的是同一次注入，数字与做法详见它的 docstring）。
+
+    ⚠️ 旧说法「把 sessionfinish 那段守卫代码删掉，只留 fixture 的 raise」
+    已不成立：`_repo_write_guard` 已于 2026-09-18 删除（teardown 期间写
+    stderr 会被捕获吞掉 → 静默空转），**现在唯一的判定点就是这里的
+    sessionfinish**，不存在"留 fixture 兜底"这个选项了。
     """
     decoy = tmp_path / "decoy_protected"
     decoy.mkdir()
