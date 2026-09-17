@@ -513,28 +513,25 @@ def _tool_get_briefing_history(user_id: str, days: int = 3, date: str = "") -> s
         if not brief_dir.exists():
             return "晨报目录不存在。"
 
+        # 文件名必须走 steward 的归一化（lower）+ 原样键兜底：cron 预生成写的是
+        # 小写 leijiang_*.json，自己拼 f"{uid}_{date}.json" 会永远读不到。
+        from services.steward import brief_cache_candidates
+
         results = []
-        if date:
-            # 查指定日期
+        targets = [date] if date else [
+            (_dt.now().date() - _td(days=i)).strftime("%Y%m%d") for i in range(days)
+        ]
+        for target in targets:
             for uid in [user_id, "default"]:
-                fp = brief_dir / f"{uid}_{date}.json"
-                if fp.exists():
-                    d = _json.loads(fp.read_text(encoding="utf-8"))
-                    d["date"] = date
-                    results.append(d)
-                    break
-        else:
-            # 查最近 N 天
-            today = _dt.now().date()
-            for i in range(days):
-                target = (today - _td(days=i)).strftime("%Y%m%d")
-                for uid in [user_id, "default"]:
-                    fp = brief_dir / f"{uid}_{target}.json"
+                for fp in brief_cache_candidates(uid, target):
                     if fp.exists():
                         d = _json.loads(fp.read_text(encoding="utf-8"))
                         d["date"] = target
                         results.append(d)
                         break
+                else:
+                    continue
+                break
 
         if not results:
             return f"最近{days}天没有晨报记录。"

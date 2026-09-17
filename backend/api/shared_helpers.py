@@ -799,17 +799,23 @@ def _build_portfolio_context(p=None, user_id: str = "default") -> str:
             pass
 
     # 7. 今日晨报结论 + 上周复盘摘要（让 AI 知道"昨天的判断是什么"）
-    if user_id and user_id != "default":
+    # 归一化后的键用来判断"是不是冒烟用的空用户"，与缓存文件名的归一化保持
+    # 同一个口径（brief_cache_key），避免"Default" 这类大小写绕过跳过逻辑。
+    if user_id and (user_id or "").strip().lower() != "default":
         try:
             import json as _json
             from pathlib import Path as _Path
             from datetime import date as _date
+            from services.steward import brief_cache_candidates
             _data_dir = _Path(config.DATA_DIR)
 
             # 今日晨报（先找 user_id，找不到找 default）
+            # 文件名必须走 steward 的归一化（lower）：cron 预生成写的是小写
+            # leijiang_*.json，自己拼 f"{user_id}_{date}.json" 会永远读不到。
             _today = _date.today().strftime("%Y%m%d")
-            for _bfname in [f"{user_id}_{_today}.json", f"default_{_today}.json"]:
-                _bfp = _data_dir / "briefings" / _bfname
+            _candidates = (brief_cache_candidates(user_id, _today)
+                           + brief_cache_candidates("default", _today))
+            for _bfp in _candidates:
                 if _bfp.exists():
                     _bf = _json.loads(_bfp.read_text(encoding="utf-8"))
                     _regime = _bf.get("regime_description", "")

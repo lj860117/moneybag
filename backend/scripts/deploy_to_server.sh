@@ -414,12 +414,13 @@ check_endpoint "$BASE/api/global/snapshot"              "MB-015 全球快照"
 #   data/briefings/default_YYYYMMDD.json —— 每次部署往生产 data 目录扔一个垃圾文件。
 #   LeiJiang 是真实用户，晨报缓存在真实用户命名空间下是合法数据（chat 上下文也会读它）。
 #
-# ⚠️ 但别以为换成 LeiJiang 就一定能命中缓存，两道坎仍然存在：
-#   1) 缓存文件名是 f"{user_id}_{YYYYMMDD}.json"（services/steward.py），大小写敏感；
-#      而凌晨唯一会现算晨报的定时任务（briefing_hallucination_check.py，cron 07:50，
-#      --user 默认小写 leijiang）写的是小写 leijiang_*.json。所以 LeiJiang 同样读不到。
-#   2) steward.briefing() 的 CACHE_TTL_HOURS=4，07:50 生成的缓存 11:50 后就失效被删除。
-# 结论：MB-018 大概率仍然走「现算」路径，120s 预算 + 3 次重试只是兜底，不是保证命中缓存。
+# ⚠️ 但换成 LeiJiang 也不保证命中缓存，还剩一道坎：
+#   steward.briefing() 的 CACHE_TTL_HOURS=4，凌晨预生成的缓存 11:50 后就失效被删除
+#   （这是有意的数据新鲜度取舍，不要为了提速去动它）。
+#   —— 另一道坎「文件名大小写分裂」（cron 写小写 leijiang_*.json、API 查大写
+#      LeiJiang_*.json，导致预生成的缓存从未被命中）已于 2026-09-17 由
+#      services/steward.py 的 brief_cache_key() 归一化修掉。
+# 结论：11:50 之后部署，MB-018 仍会走「现算」路径；120s 预算 + 3 次重试只是兜底。
 # 实测参考（2026-09-17）：重启后首次现算 59s，服务热起来后 3s —— 不调 LLM（fast 管线 llm_max=0）。
 check_endpoint "$BASE/api/steward/briefing?userId=LeiJiang"        "MB-018 晨报缓存" 120 15
 check_endpoint "$BASE/api/steward/briefing-history?userId=default" "MB-005 往期晨报"

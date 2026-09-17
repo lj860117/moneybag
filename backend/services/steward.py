@@ -37,6 +37,86 @@ MODULE_META = {
 _BRIEF_DIR = Path(config.DATA_DIR) / "briefings"
 
 
+# ============================================================
+# 晨报缓存文件名 —— 全项目唯一权威拼法
+# ============================================================
+# 【2026-09-17 修复：大小写分裂】
+# Linux 文件名大小写敏感，而生产上晨报缓存有两条写入路径用了不同大小写：
+#   · cron briefing_hallucination_check.py（07:50，--user 默认 "leijiang"）
+#     → 写 leijiang_YYYYMMDD.json
+#   · API GET /api/steward/briefing?userId=LeiJiang
+#     → 原来拼 LeiJiang_YYYYMMDD.json
+# 结果：cron 预生成的缓存从来没被 API 命中过，每次访问都现算，
+# 一天还堆出多份内容重复、只有大小写不同的缓存文件。
+#
+# 纪律：所有读写 data/briefings/ 的地方都必须调用这里的函数，
+# 不许再各自拼 f"{user_id}_{date}.json"。本项目为「同一逻辑散落多处导致
+# 分裂」付过学费（fund_name_util.py 就是为此抽出来的），不要再犯第二次。
+
+def brief_cache_key(user_id: str) -> str:
+    """晨报缓存文件名的「用户键」：去首尾空白 + 转小写。
+
+    Args:
+        user_id: 原始用户 ID（可能是 "LeiJiang" 也可能是 "leijiang"）
+
+    Returns:
+        归一化后的键，如 "leijiang"
+    """
+    return (user_id or "").strip().lower()
+
+
+def brief_cache_path(user_id: str, date_str: str) -> Path:
+    """晨报缓存文件的写入路径，也是读取时的首选路径。
+
+    Args:
+        user_id: 原始用户 ID
+        date_str: YYYYMMDD
+
+    Returns:
+        Path — data/briefings/{归一化键}_{YYYYMMDD}.json
+    """
+    return _BRIEF_DIR / f"{brief_cache_key(user_id)}_{date_str}.json"
+
+
+def brief_cache_candidates(user_id: str, date_str: str) -> list[Path]:
+    """读取晨报缓存时的候选路径，按优先级排列。
+
+    顺序：归一化键 → 原样键（存量兼容）。
+    为什么要回退原样键：归一化上线前已经存在一批用原样大小写写成的文件
+    （如 LeiJiang_20260916.json）。只认归一化键会让这些文件一夜之间全部读不到，
+    表现成「往期晨报凭空消失」。回退是只读的——写入永远只用归一化键
+    （见 Steward.briefing()），所以存量文件不会被复活，会随日期自然过期。
+
+    Args:
+        user_id: 原始用户 ID
+        date_str: YYYYMMDD
+
+    Returns:
+        list[Path] — 长度为 1 或 2，按优先级排列
+    """
+    normalized = brief_cache_path(user_id, date_str)
+    raw = _BRIEF_DIR / f"{user_id}_{date_str}.json"
+    if raw == normalized:
+        return [normalized]
+    return [normalized, raw]
+
+
+def brief_cache_key_variants(user_id: str) -> list[str]:
+    """briefing_history() 做 glob 时的用户键候选（归一化键优先，原样键兜底）。
+
+    Args:
+        user_id: 原始用户 ID
+
+    Returns:
+        list[str] — 长度为 1 或 2，按优先级排列
+    """
+    normalized = brief_cache_key(user_id)
+    raw = user_id or ""
+    if raw == normalized:
+        return [normalized]
+    return [normalized, raw]
+
+
 def _check_date_consistency() -> bool:
     """验证系统日期是否在合理范围内"""
     # 注意：不要在函数内部 `from datetime import datetime` 局部导入——
@@ -220,45 +300,56 @@ class Steward:
         - 07:30 night_worker 预生成缓存
         - 07:30-11:30: 使用缓存（数据相对稳定）
         - 11:30+ 重新计算（北向资金/融资可能发生变化）
+        TTL 是产品取舍（拿新鲜度换速度），不要为了提速去动 CACHE_TTL_HOURS。
+
+        【FIX 2026-09-17】缓存文件名统一用归一化键 brief_cache_key()（lower）：
+        否则 cron 预生成的小写 leijiang_*.json 永远不会被 userId=LeiJiang 的
+        API 请求命中，每次都现算、还一天堆出多份只有大小写不同的重复文件。
         """
         # ---- 每日文件缓存（4小时 TTL）----
         today = datetime.now().strftime("%Y%m%d")
-        cache_fp = _BRIEF_DIR / f"{user_id}_{today}.json"
+        # 写入永远只用归一化键；读取先试归一化键、再回退原样键（存量兼容）。
+        # 注意：cache_fp 是"写"路径，循环里命中的候选文件不能覆盖它，
+        # 否则存量兼容读到的老文件名会被当成写入目标，分裂又被写回去。
+        cache_fp = brief_cache_path(user_id, today)
         CACHE_TTL_HOURS = 4  # 【FIX #3】从24h改为4h
-        
-        if cache_fp.exists():
+
+        for candidate_fp in brief_cache_candidates(user_id, today):
+            if not candidate_fp.exists():
+                continue
             try:
-                cached = json.loads(cache_fp.read_text(encoding="utf-8"))
-                cache_date = _extract_cache_date(cache_fp.stem)
-                
+                cached = json.loads(candidate_fp.read_text(encoding="utf-8"))
+                cache_date = _extract_cache_date(candidate_fp.stem)
+
                 # 两个条件都需满足：日期匹配 AND 缓存未超过4小时
-                if cache_date == today:
-                    try:
-                        file_mtime = cache_fp.stat().st_mtime
-                        cache_age_seconds = time.time() - file_mtime
-                        cache_age_hours = cache_age_seconds / 3600
-                        
-                        if cache_age_hours < CACHE_TTL_HOURS:
-                            cached["from_cache"] = True
-                            cached["cache_age_minutes"] = round(cache_age_seconds / 60)
-                            print(f"[STEWARD] ✅ 使用缓存 (生成于 {cache_age_hours:.1f}h前)")
-                            return cached
-                        else:
-                            # 缓存超过4小时，删除重新计算
-                            try:
-                                cache_fp.unlink()
-                                print(f"[STEWARD] 删除过期缓存 (已{cache_age_hours:.1f}h): {cache_fp.name}")
-                            except Exception as e:
-                                print(f"[STEWARD] 删除缓存失败: {e}")
-                    except Exception as e:
-                        print(f"[STEWARD] 检查缓存年龄失败: {e}")
-                else:
+                if cache_date != today:
                     # 日期不匹配，删除过期缓存
                     try:
-                        cache_fp.unlink()
-                        print(f"[STEWARD] 删除过期缓存（日期不符）: {cache_fp.name}")
+                        candidate_fp.unlink()
+                        print(f"[STEWARD] 删除过期缓存（日期不符）: {candidate_fp.name}")
                     except Exception as e:
                         print(f"[STEWARD] 删除缓存失败: {e}")
+                    break
+
+                try:
+                    file_mtime = candidate_fp.stat().st_mtime
+                    cache_age_seconds = time.time() - file_mtime
+                    cache_age_hours = cache_age_seconds / 3600
+
+                    if cache_age_hours < CACHE_TTL_HOURS:
+                        cached["from_cache"] = True
+                        cached["cache_age_minutes"] = round(cache_age_seconds / 60)
+                        print(f"[STEWARD] ✅ 使用缓存 (生成于 {cache_age_hours:.1f}h前)")
+                        return cached
+                    # 缓存超过4小时，删除重新计算
+                    try:
+                        candidate_fp.unlink()
+                        print(f"[STEWARD] 删除过期缓存 (已{cache_age_hours:.1f}h): {candidate_fp.name}")
+                    except Exception as e:
+                        print(f"[STEWARD] 删除缓存失败: {e}")
+                    break
+                except Exception as e:
+                    print(f"[STEWARD] 检查缓存年龄失败: {e}")
             except Exception as e:
                 print(f"[STEWARD] 读晨报缓存失败: {e}")
 
@@ -401,8 +492,19 @@ class Steward:
         """
         if not _BRIEF_DIR.exists():
             return []
-        files = sorted(_BRIEF_DIR.glob(f"{user_id}_*.json"), reverse=True)
+        # 归一化键优先、原样键兜底（存量文件可能是大写写成的），合并去重后按名倒序。
+        # 不用 set(glob 结果) 直接合并，是因为要保证顺序稳定、且两个 pattern
+        # 在大小写不敏感的文件系统上可能命中同一个文件。
+        files: list = []
+        seen: set = set()
+        for key in brief_cache_key_variants(user_id):
+            for fp in _BRIEF_DIR.glob(f"{key}_*.json"):
+                if fp not in seen:
+                    seen.add(fp)
+                    files.append(fp)
+        files = sorted(files, reverse=True)
         result = []
+        seen_dates: set = set()
         
         today_dt = datetime.now().date()
         today_str = today_dt.strftime("%Y%m%d")
@@ -412,8 +514,10 @@ class Steward:
             try:
                 # 关键修复：提取并验证日期
                 data = json.loads(fp.read_text(encoding="utf-8"))
-                # fp.stem 格式：{user_id}_{YYYYMMDD}
-                date_str = fp.stem.replace(f"{user_id}_", "")
+                # fp.stem 格式：{归一化键}_{YYYYMMDD}。
+                # 不能用 replace(f"{user_id}_", "")：命中的文件可能是归一化键写成的
+                # （如 user_id=LeiJiang 但文件是 leijiang_20260917），replace 会漏掉。
+                date_str = _extract_cache_date(fp.stem)
                 
                 # 跳过格式不符的文件
                 if len(date_str) != 8 or not date_str.isdigit():
@@ -427,9 +531,16 @@ class Steward:
                 # 跳过太旧的日期（超过 N 天）
                 if date_str < cutoff_date:
                     break
-                
+
+                # 同一天只保留一份：归一化键和原样键可能同时命中同一天
+                # （存量的 LeiJiang_20260917.json + 新的 leijiang_20260917.json），
+                # 不去重的话往期晨报会把同一天列两次。
+                if date_str in seen_dates:
+                    continue
+
                 data["date"] = date_str
                 result.append(data)
+                seen_dates.add(date_str)
                 
                 if len(result) >= days:
                     break
