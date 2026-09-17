@@ -821,9 +821,17 @@ def _fetch_nav_full(code: str) -> list:
       L2 AKShare 全量           20/20 命中，均 1744 行，0.30s/只 → 30 只 ≈ 10s
       L3 EM f10/lsjz × 15 页      300 行，1.79s/只 → 30 只 ≈ 54s
     """
-    # L1 Tushare（主数据源）。注意：必须走 services.tushare_data 封装，它会把
-    # 代码补成 .OF；Infra 的 tushare_provider._normalize_code 对场外基金没有
-    # .OF 分支（实测命中率仅 5%），本轮不碰它，已在待办里单独立项。
+    # L1 Tushare（主数据源）。仍然必须走 services.tushare_data 封装：它按
+    # `code if "." in code else f"{code}.OF"` 补后缀，对场外裸码和已带后缀的
+    # 场内码（.SH/.SZ）都是幂等的，是本项目唯一的归一化约定。
+    #
+    # ⚠️ 注释勘误（2026-09-22）：此处曾写「Infra 的 tushare_provider.
+    # _normalize_code 对场外基金没有 .OF 分支」，该结论**已不成立** ——
+    # infra/data_source/providers/tushare_provider.py 的 fund 分支现已无条件
+    # 返回 f"{code}.OF"。这条过时注释长期让人误以为「OF 后缀 bug」未修，
+    # 实际残留点在 services/fund_history_returns.py（判据写成
+    # endswith('.OF')，会给场内码拼出双后缀），已于本轮修掉。
+    # 这里不改调用方式：继续走 tushare_data 封装即可。
     try:
         from services.tushare_data import is_configured, get_fund_nav as ts_nav
         if is_configured():

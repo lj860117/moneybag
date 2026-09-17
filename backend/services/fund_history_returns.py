@@ -66,10 +66,13 @@ def _get_from_tushare(code: str) -> dict or None:
     
     try:
         # 转换基金代码格式：000001 -> 000001.OF
-        if not code.endswith('.OF'):
-            ts_code = code + '.OF'
-        else:
-            ts_code = code
+        #
+        # 判据必须是「有没有后缀」而不是「后缀是不是 .OF」：场内 ETF/LOF 传进来的
+        # 是 510300.SH / 161725.SZ，用 endswith('.OF') 判断会被拼成
+        # 510300.SH.OF 这种双后缀，fund_nav 必然查不到，白白降级 AKShare
+        # （历史收益率缺失 + 变慢）。改成与 services.tushare_data.get_fund_nav /
+        # api.fund_detail 同一套约定：已带任何后缀就原样透传，裸码才补 .OF。
+        ts_code = code if "." in code else f"{code}.OF"
         
         # 获取过去3年的数据
         end_date = datetime.now().strftime('%Y%m%d')
