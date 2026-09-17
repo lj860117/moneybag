@@ -177,8 +177,17 @@ def _assert_child_really_ran(proc: subprocess.CompletedProcess) -> None:
 def test_guard_detects_write_into_protected_tree(tmp_path):
     """往受保护目录里写东西 → 会话必须失败，且失败原因可追溯。
 
-    故障注入方向：把 conftest 里的 `_repo_write_guard` 整个删掉（或把
-    teardown 的 raise 换成 return），本用例必须转红。恒绿的守卫等于空转的绿。
+    故障注入方向（2026-09-18 更正）：弄坏 conftest 里 `pytest_sessionfinish`
+    的守卫判定 —— 例如把 `session.exitstatus = 1` 那行注释掉，或让
+    `_guard_check()` 恒返回空。本用例必须转红。恒绿的守卫等于空转的绿。
+
+    ⚠️ 旧说法已失效，别照它做：此前这里写的是「把 conftest 里的
+    `_repo_write_guard` 整个删掉（或把 teardown 的 raise 换成 return），
+    本用例必须转红」。2026-09-18 该 fixture 已整体删除（原因是 session 级
+    fixture 的 teardown 期间 stderr 写入会被 pytest 捕获吞掉，那行摘要根本
+    不会输出），判定收敛到 `pytest_sessionfinish` 单点。实测：删掉 fixture
+    后本用例**仍然绿**。所以注入必须打在 sessionfinish 上，打在 fixture 上
+    会得到「守卫失效了」的错误结论，然后在错误的地方浪费半天。
     """
     decoy = tmp_path / "decoy_protected"
     decoy.mkdir()
