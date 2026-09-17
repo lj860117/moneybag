@@ -289,3 +289,81 @@ def test_overview_fallback_path_matches_legacy_caliber(monkeypatch) -> None:
     assert ov["allocation"] == {
         "equity": 80.0, "bond": 15.0, "cash": 5.0, "gold": 0.0,
     }
+
+
+# ============================================================
+# D. 净值有效性：非正净值必须让**整个** overview 一致退化
+#    （2026-09-18 独立复验反证命中后补的回归锁）
+# ============================================================
+
+
+@pytest.mark.parametrize("bad_nav", ["0.0000", 0, 0.0, -1.0, "N/A", None, ""])
+def test_non_positive_nav_degrades_whole_overview_consistently(monkeypatch, bad_nav) -> None:
+    """
+    停牌/异常返回的非正净值，必须让 fundValue 与四桶**同时**退化到成本口径。
+
+    复验反证（修复前）：`portfolio_overview` 的净值校验只排除 "N/A"/None/""，
+    于是 "0.0000" / 0.0 / 负数**通过**校验把 current_nav 置 0，造成双头分裂：
+      - `fund_total_mv += 0` → 基金市值（fundValue / totalMarketValue）归零；
+      - 分配侧 `classify_and_allocate(nav_current=0)` 见非正数退回**成本**口径，
+        四桶仍按成本 400 算。
+    ⇒ 四桶和 400 与 total_mv 0 相差整只基金市值 —— 口径统一要建立的
+      「分母 == 市值」不变量当场破。真实持仓上实测差 709.19。
+
+    修复后：净值必须 > 0 才被采用，否则退回 cost_nav，两边一致退化。
+    """
+    funds = list(_PROBE_FUNDS)
+    navs = {f["code"]: bad_nav for f in funds}
+    _patch_overview_inputs(monkeypatch, funds, navs)
+    captured = _capture_buckets(monkeypatch)
+
+    ov = portfolio_overview.get_portfolio_overview("caliber_probe_nonpositive_nav")
+
+    # 整体退化：市值字段退回成本值，而不是被除以/归零
+    assert ov["fundValue"] == pytest.approx(400.0), (
+        f"净值={bad_nav!r} 时 fundValue 必须退回成本 400，不得归零"
+    )
+    assert ov["totalMarketValue"] == pytest.approx(400.0)
+
+    # 核心不变量：四桶和 == totalMarketValue（修复前这里差一整只基金市值）
+    bucket_sum = sum(captured.values())
+    assert bucket_sum == pytest.approx(
+        ov["totalMarketValue"], abs=0.01 * ov["fundCount"]
+    ), (
+        f"净值={bad_nav!r} 时分母与市值分裂：四桶 {bucket_sum} vs 市值 {ov['totalMarketValue']}"
+    )
+
+    # 占比回到旧口径（80/15/5/0），而非「某只基金凭空消失」后的畸形值
+    assert ov["allocation"] == {
+        "equity": 80.0, "bond": 15.0, "cash": 5.0, "gold": 0.0,
+    }
+
+
+def test_zero_nav_on_one_fund_does_not_zero_whole_portfolio(monkeypatch) -> None:
+    """
+    更贴近现实的场景：**只有一只**基金停牌返回 0，另一只净值正常。
+
+    停牌那只必须单独退化为成本（200），不能被当成 0 市值 ——
+    否则用户看到的总资产会凭空少掉一只基金。
+    """
+    funds = list(_PROBE_FUNDS)
+    navs = {"510300": "0.0000", "002163": 1.4}  # 510300 停牌、002163 正常
+    _patch_overview_inputs(monkeypatch, funds, navs)
+    captured = _capture_buckets(monkeypatch)
+
+    ov = portfolio_overview.get_portfolio_overview("caliber_probe_partial_nav")
+
+    # 510300 退化成本 200；002163 走市值 140 → 合计 340
+    assert ov["fundValue"] == pytest.approx(340.0)
+    assert ov["totalMarketValue"] == pytest.approx(340.0)
+    bucket_sum = sum(captured.values())
+    assert bucket_sum == pytest.approx(
+        ov["totalMarketValue"], abs=0.01 * ov["fundCount"]
+    )
+
+    # equity = 200(510300 全额) + 140×0.6 = 284；bond = 42；cash = 14；分母 340
+    alloc = ov["allocation"]
+    assert alloc["equity"] == pytest.approx(83.5, abs=0.15)
+    assert alloc["bond"] == pytest.approx(12.4, abs=0.15)
+    assert alloc["cash"] == pytest.approx(4.1, abs=0.15)
+    assert alloc["gold"] == 0.0

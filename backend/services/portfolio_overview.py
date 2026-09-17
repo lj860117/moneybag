@@ -89,8 +89,26 @@ def get_portfolio_overview(user_id: str = "default") -> dict:
             try:
                 from services.market_data import get_fund_nav as _get_nav
                 nav_info = _get_nav(code)
-                if nav_info and nav_info.get("nav") not in ("N/A", None, ""):
-                    current_nav = float(nav_info["nav"])
+                _raw_nav = nav_info.get("nav") if nav_info else None
+                # 净值有效性校验：必须能解析成**正数**。
+                # FIX 2026-09-18（独立复验反证命中）: 原先只排除 "N/A"/None/""，
+                #   于是停牌或异常返回的 "0.0000"/0.0 会**通过**校验，把
+                #   current_nav 置 0。后果是双头不一致：
+                #     - 本行下方 fund_total_mv += 0 → 基金市值整体归零；
+                #     - 而 classify_and_allocate 见 nav_current<=0 会退回成本口径
+                #       （use_market=False），配置占比仍按成本算。
+                #   两边一个归零一个照旧 → total_for_alloc 与 total_mv 相差
+                #   整只基金市值（实测差 709.19）。负数同理。
+                #   改为要求 > 0：无效净值一律退回 cost_nav，让「市值」与「分配」
+                #   两个口径**同时**退化到成本、保持自洽（这正是本次口径统一
+                #   想建立的不变量）。
+                # 已知限制（刻意不加上界）: 分红/拆分会造成合法的大幅净值变动，
+                #   硬上界会误杀真数据；故若上游返回**偏大但为正**的错值，
+                #   配置占比会随之偏 —— 属净值数据质量的暴露面，非本函数可闭合。
+                if _raw_nav not in ("N/A", None, ""):
+                    _nav_f = float(_raw_nav)
+                    if _nav_f > 0:
+                        current_nav = _nav_f
             except Exception:
                 pass
         fund_total_mv += current_nav * shares
