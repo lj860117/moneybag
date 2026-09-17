@@ -38,8 +38,7 @@ get_fund_manager / get_fund_portfolio，以及 `api/fund_detail.py` 的两处，
 3. **断言调用次数**：`fund_nav` 必须被调用恰好 1 次。少了这一条，"压根没调
    用"会伪装成绿（本项目最忌讳的闸门空转仍显绿）。
 4. **幂等 f(f(x)) == f(x)** 与**单后缀不变式 count('.') == 1** 一起钉住。
-   注意：幂等单看一条在注入场景下**不一定红**（见下方 FI-1 的实测数字），
-   真正兜底的是"510300.SH 必须原样透传"这条等值断言 + 单后缀不变式。
+   注意二者在注入下的表现不同，见下方 FI-1 的实测说明 —— 别把幂等单条当判据。
 
 故障注入指纹（FI-1）
 --------------------
@@ -50,21 +49,38 @@ get_fund_manager / get_fund_portfolio，以及 `api/fund_detail.py` 的两处，
     else:
         ts_code = code
 
-再跑本文件，预期**至少 6 条红**：
-  * `test_ts_code_sent_to_fund_nav[...]` 中 510300.SH / 161725.SZ / 512880.SH
-    三例 → 实际送出 `510300.SH.OF` 等
-  * `test_exchange_suffixed_code_has_no_double_suffix[...]` 三例
-  * `test_public_entry_reaches_tushare_with_normalized_code[510300.SH]` 一例
-    （且会因降级而触发 `degraded` 非空断言）
+再跑本文件（命令见下）。**实测（2026-09-22）**::
 
-实测数字见「交付报告」，注入前/后的 passed/failed 计数以
-`pytest backend/tests/test_fund_history_returns_of_suffix.py -q` 为准。
+    注入前：25 passed, 0 failed
+    注入后：11 failed, 14 passed
 
-⚠️ 已知注意点：`test_normalization_is_idempotent` 在 FI-1 下**仍是绿的** ——
-因为 `endswith('.OF')` 版本对 `510300.SH.OF` 也满足 endswith，第二次不再追加。
-所以幂等这一条**不能单独作为本 bug 的判据**，它防的是另一类退化
-（比如把判据写成 `if True` 导致无限追加）。这一点必须写清楚，否则后人会误判
-"注入后没全红 = 测试没用"。
+红的 11 条分布：
+  * `test_ts_code_sent_to_fund_nav`            3 条（510300.SH / 161725.SZ / 512880.SH）
+  * `test_exchange_suffixed_code_has_no_double_suffix`  3 条（同上三个码）
+  * `test_normalization_is_idempotent`         3 条（同上三个码）
+  * `test_public_entry_reaches_tushare_with_normalized_code` 1 条（510300.SH）
+  * `test_no_silent_code_rewrite_of_exchange_codes`     1 条
+
+⚠️ 精确说明（别被"幂等 3 条红"误导）：`test_normalization_is_idempotent`
+在 FI-1 下红的**不是** `twice == once` 那一行，而是末尾附带的
+`once == expected` 那一行。实测报错原文是::
+
+    AssertionError: 510300.SH 首次归一化即为 510300.SH.OF，期望 510300.SH
+
+原因：`endswith('.OF')` 版本对 `510300.SH.OF` 也满足 endswith，第二次**不再**
+追加，所以纯 `f(f(x)) == f(x)` 命题在注入下**依然成立**（不改变这一点的话，
+它是一条恒绿断言）。因此幂等**不能单独作为本 bug 的判据**，它防的是另一类
+退化：判据被写成恒真导致 `X.OF.OF.OF...` 无限追加。真正兜底的是
+"510300.SH 必须原样透传"这条等值断言 + 单后缀不变式 `count('.') == 1`
+（后者在注入下必然红，且不依赖期望值表）。
+
+复现命令::
+
+    cd /Users/leijiang/WorkBuddy/moneybag-for-claudecode
+    env -u PYTHONPATH /Users/leijiang/.workbuddy/binaries/python/envs/default/bin/python \\
+        -m pytest backend/tests/test_fund_history_returns_of_suffix.py -q -rfEX
+
+注入后还原：`git checkout -- backend/services/fund_history_returns.py`。
 """
 from __future__ import annotations
 
@@ -204,8 +220,12 @@ def test_normalization_is_idempotent(
 ) -> None:
     """归一化结果再喂一次，必须得到同样的结果（不得无限追加后缀）。
 
-    ⚠️ 这一条**单独**不足以抓住本次 bug（FI-1 下它仍绿，原因见模块 docstring），
-    它防的是另一类退化：判据被改成恒真导致的 `X.OF.OF.OF...`。
+    ⚠️ 诚实的边界说明（见模块 docstring 的 FI-1）：本用例在注入下**确实会红**，
+    但红的是末尾附带的 `once == expected`，**不是** `twice == once`。
+    因为 `endswith('.OF')` 版本对 `510300.SH.OF` 也不再追加 —— 也就是说
+    纯 `f(f(x)) == f(x)` 命题对本次 bug **恒真**，抓不到它（数学上那个坏函数
+    本身就是幂等的）。它防止的是另一类退化：判据被写成恒真导致
+    `X.OF.OF.OF...` 无限追加。别把这一条当成本 bug 的判据。
     """
     once = _seen_ts_code(recording_pro, code)
     twice = _seen_ts_code(recording_pro, once)
