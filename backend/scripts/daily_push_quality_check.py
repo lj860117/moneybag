@@ -301,8 +301,23 @@ def check_push_format(push_file: str) -> list:
     split_note = f"将按 {chunk_budget} 字节预算无损拆分为 ≥{parts} 条"
 
     if sent_bytes > channel_limit:
+        # 2026-09-17：这一级**刻意是 ⚠️ 而不是 ❌**，别改回去。
+        #
+        # send_markdown 会按 chunk_budget 无损分片，每一片都 < channel_limit，
+        # 所以「总量超通道上限」**只意味着会拆成多条，内容一个字节都不丢**。
+        # 生产已定局走 text 通道（WXWORK_FORCE_MARKDOWN 未设，上限 2048），
+        # 09-17 晨报 3472 字节必然拆 2 条 —— 这是**预期结果**，不需要任何人
+        # 处理。天天报 ❌ 却无需处理 = 训练人忽略告警（告警疲劳），等真出事
+        # （内容被硬截断）时反而看不见。❌ 留给真事故。
+        #
+        # 真被截断时 `_record_event` 会落 truncation 事件，那是另一条发现
+        # 路径，**不靠这条告警兜底** —— 所以下面那句「必须排查」只是提示，
+        # 不构成把级别留在 ❌ 的理由。
+        #
+        # ⚠️ 降级的是**级别**，不是**是否上报**：这一级仍然必须产 issue。
+        # 它曾经整段静默过（2049~3600 三阈值全不命中），那是更严重的事故。
         issues.append(
-            f"❌ 消息超长：{sent_bytes} 字节（body {body_bytes}B + 信封 "
+            f"⚠️ 消息超长：{sent_bytes} 字节（body {body_bytes}B + 信封 "
             f"{PUSH_ENVELOPE_OVERHEAD_BYTES}B）> 企微 {channel} 通道上限 "
             f"{channel_limit} 字节 —— send_markdown 会按字节无损分段，"
             f"{split_note}（内容不丢，但用户会收到多条）；"

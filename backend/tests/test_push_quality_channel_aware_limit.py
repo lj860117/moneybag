@@ -141,6 +141,52 @@ def test_text_channel_2100_reports_text_limit_2048_not_4096(tmp_path, text_chann
     assert "text" in joined, f"必须点名实际通道，实际：{joined}"
 
 
+def test_text_channel_3472_is_warned_but_never_silent_and_never_fatal(tmp_path, text_channel):
+    """★ 底线中的底线：降级 ≠ 静默，也 ≠ 仍按事故级报。
+
+    2026-09-17 那次事故的根是「text 通道 2049~3600 三阈值全不命中 → 完全
+    静默」。把 ❌ 降级成 ⚠️ 时，最大的风险就是有人顺手把这一级改成「不报」。
+    所以本用例**两头都钉**：
+
+      - 必须有 issue（静默 = 漏报回归）
+      - 必须是 ⚠️，不得再是 ❌（send_markdown 会无损分片，内容不丢，
+        天天报 ❌ 会训练人忽略告警）
+    """
+    issues = length_issues(tmp_path, 3472)
+    joined = " | ".join(issues)
+
+    assert issues, "3472 字节在 text 通道下必须报出来 —— 静默就是漏报回归"
+    assert "⚠️" in joined, f"必须是 ⚠️ 级：{joined}"
+    assert "❌" not in joined, f"超上限已降级，不得再是 ❌：{joined}"
+    # 降解级的同时，上一轮加的分片条数信息不能丢
+    assert "≥2 条" in joined, f"分片条数信息不得丢失：{joined}"
+
+
+def test_over_limit_branch_is_warn_not_fatal_by_source():
+    """源码护栏：超通道上限那一级的 emoji 必须是 ⚠️，不是 ❌。
+
+    行为级用例能证明"当前报 ⚠️"，但拦不住后人在别的字节数上再开一个 ❌。
+    这条直接检查 `if sent_bytes > channel_limit:` 分支的文案字面量。
+    """
+    src = inspect.getsource(qc.check_push_format)
+
+    head, rest = src.split("if sent_bytes > channel_limit:", 1)
+    over_limit_branch = rest.split("elif sent_bytes > chunk_budget:", 1)[0]
+
+    # 必须剥掉注释再判：注释里为了说明"为什么不是 ❌"必然要写出 ❌ 这个字，
+    # 不剥掉的话这条护栏会被自己的说明文字打红（假红）。
+    branch_code = "\n".join(
+        ln for ln in over_limit_branch.splitlines()
+        if not ln.strip().startswith("#")
+    )
+
+    assert "⚠️" in branch_code, "超上限分支必须是 ⚠️ 级"
+    assert "❌" not in branch_code, (
+        "超上限分支不得再是 ❌ —— 分片是无损的，内容一个字节都不丢，"
+        "天天报 ❌ 会训练人忽略告警（告警疲劳）"
+    )
+
+
 def test_markdown_channel_2100_stays_silent(tmp_path, markdown_channel):
     """负面控制：markdown 通道下 2100 字节完全安全，必须**静默**。
 
@@ -228,17 +274,18 @@ def test_markdown_channel_boundaries(tmp_path, markdown_channel,
 # 通道感知修复之后：text 通道要进那一层需 sent_bytes > 3600，可 text 上限
 # 只有 2048 ⇒ 恒不成立；markdown 通道下又因为 `channel != "text"` 恒为空串。
 # 也就是说那段代码 100% 不可达 —— 留着会让下一个人以为「超上限会提示分片」
-# 是已实现的功能。现在挪到真正会触发的 ❌ / ⚠️ 两级。
+# 是已实现的功能。现在挪到真正会触发的「超上限 / 超分段预算」两级
+# （两级均为 ⚠️，见下方 `test_over_limit_branch_is_warn_not_fatal_by_source`）。
 # ------------------------------------------------------------------
 
 @pytest.mark.parametrize(
     "channel, sent_bytes, expect_parts, budget",
     [
         ("text", 2048, 2, 1800),    # ⚠️ 仅超分段预算：ceil(2048/1800)=2
-        ("text", 3472, 2, 1800),    # ❌ 超硬上限（09-17 真值）：ceil=2
-        ("text", 5600, 4, 1800),    # ❌ 更极端：ceil(5600/1800)=4
-        ("markdown", 4097, 2, 3900),  # ❌ 超 markdown 硬上限
-        ("markdown", 8000, 3, 3900),  # ❌ ceil(8000/3900)=3
+        ("text", 3472, 2, 1800),    # ⚠️ 超硬上限（09-17 真值）：ceil=2
+        ("text", 5600, 4, 1800),    # ⚠️ 更极端：ceil(5600/1800)=4
+        ("markdown", 4097, 2, 3900),  # ⚠️ 超 markdown 硬上限
+        ("markdown", 8000, 3, 3900),  # ⚠️ ceil(8000/3900)=3
     ],
 )
 def test_over_limit_issue_always_carries_split_count(
@@ -263,6 +310,9 @@ def test_over_limit_issue_always_carries_split_count(
         f"{channel} sent={sent_bytes} 应拆 ≥{expect_parts} 条，实际：{joined}"
     )
     assert "拆分为" in joined, f"必须明说拆分条数，实际：{joined}"
+    # 超上限这一级已降级为 ⚠️（分片无损、内容不丢），不得再是事故级 ❌
+    assert "⚠️" in joined, f"必须是 ⚠️ 级：{joined}"
+    assert "❌" not in joined, f"不得再是 ❌ 级：{joined}"
 
 
 def test_split_count_uses_effective_budget_not_hardcoded_1800(tmp_path, monkeypatch):

@@ -447,7 +447,12 @@ def test_quality_check_counts_envelope_overhead(tmp_path):
 
     body = 4050B：
       不补信封 → 4050 < 4096，放行（错）
-      补上信封 → 4102 > 4096，必须报 ❌
+      补上信封 → 4102 > 4096，必须报出来
+
+    v9.9.47：超通道上限这一级从 ❌ 降级为 ⚠️（分片无损、属预期行为，
+    天天报 ❌ 会训练人忽略告警），但**必须仍然报** —— 所以这里只断言
+    「有带字节数的 issue」，不断言级别。级别由
+    test_push_quality_channel_aware_limit.py 的用例专门钉。
     """
     qc = _import_quality_check()
     body = make_text(4050)
@@ -457,7 +462,7 @@ def test_quality_check_counts_envelope_overhead(tmp_path):
     f = tmp_path / "2026-09-20_briefing_LeiJiang.txt"
     f.write_text(body, encoding="utf-8")
     issues = qc.check_push_format(str(f))
-    assert any(("❌" in i and "字节" in i) for i in issues), f"issues={issues}"
+    assert any("字节" in i for i in issues), f"issues={issues}"
 
 
 def test_quality_check_flags_multi_message_split(tmp_path, monkeypatch):
@@ -465,7 +470,7 @@ def test_quality_check_flags_multi_message_split(tmp_path, monkeypatch):
 
     v9.9.47 起必须**锁 markdown 通道**：分段预算现在是 `effective_channel()`
     给的，text 通道的预算是 1800，3902 字节在 text 下属于「已超上限 2048」，
-    会走 ❌ 分支（那时该测的是超长，不是分段）。本用例测的是「超分段预算
+    会走「超长」分支（那时该测的是超长，不是分段）。本用例测的是「超分段预算
     但没超上限」这一档，只有在 markdown（4096/3900）下才存在。
     text 通道对应的「会分段」档（1801~2048）见
     test_push_quality_channel_aware_limit.py 的边界用例。
@@ -485,7 +490,7 @@ def test_quality_check_warns_before_hard_limit(tmp_path, monkeypatch):
 
     v9.9.47 起同样必须**锁 markdown 通道**：3600 这条预警线是**与通道无关**
     的，但 text 通道上限只有 2048，3702 字节在 text 下早就超上限、会被
-    ❌ 分支先吃掉，走不到告警线这一级。告警线这一档（3601~3900）只在
+    「超长」分支先吃掉，走不到告警线这一级。告警线这一档（3601~3900）只在
     markdown 下存在 —— 这是正确的判定顺序，不要为了让它活着而调序。
     """
     monkeypatch.setenv("WXWORK_FORCE_MARKDOWN", "1")
@@ -499,11 +504,15 @@ def test_quality_check_warns_before_hard_limit(tmp_path, monkeypatch):
 
 
 def test_quality_check_text_channel_over_limit_is_not_silent(tmp_path, monkeypatch):
-    """text 通道下 3702 字节必须报 ❌ 超长，且基准是 2048（不是 4096）。
+    """text 通道下 3702 字节必须报「超长」，级别 ⚠️，基准是 2048（不是 4096）。
 
     v9.9.47 补：同一份 3702 字节，在 text 通道下走的是「超上限」分支 ——
     修复前这里三个阈值（>4096 / >3900 / >3600）全不成立，质检**一行都不报**，
     是 2026-09-17 那次漏报的同款形态。本用例把它钉死。
+
+    v9.9.47 二次调整：超上限从 ❌ 降级为 ⚠️（send_markdown 会无损分片，
+    内容不丢，属预期行为），所以这里断言 **⚠️ 且不得再出现 ❌**。
+    ⚠️ 降级的是级别、不是是否上报 —— `assert issues` 这条底线不能退。
     """
     monkeypatch.delenv("WXWORK_FORCE_MARKDOWN", raising=False)
     qc = _import_quality_check()
@@ -514,7 +523,8 @@ def test_quality_check_text_channel_over_limit_is_not_silent(tmp_path, monkeypat
 
     assert issues, "3702 字节在 text 通道（上限 2048）下绝不能静默"
     joined = " | ".join(issues)
-    assert "❌" in joined, joined
+    assert "⚠️" in joined, joined
+    assert "❌" not in joined, f"超上限已降级为 ⚠️，不得再是 ❌：{joined}"
     assert "2048" in joined, f"必须报 text 通道上限 2048：{joined}"
     assert "4096" not in joined, f"绝不能再出现 markdown 的 4096：{joined}"
 
