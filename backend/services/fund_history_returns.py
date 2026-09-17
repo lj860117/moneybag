@@ -136,6 +136,48 @@ def _get_nav_by_date(df, delta: timedelta) -> float or None:
     
     return df_filtered.iloc[-1]['unit_nav']
 
+class AkNavApiUnavailable(RuntimeError):
+    """AKShare 上没有任何可用的基金历史净值接口。
+
+    单独定义异常类型，是为了让「接口被改名/移除」与「网络抖动」「数据为空」
+    在日志里可区分，而不是混在同一条 ⚠️ 里变成 27 次静默失败。
+    """
+
+
+# 候选接口，按优先级排列。AKShare 1.18.60 已移除 fund_open_fund_hist_em，
+# 现役接口是 fund_open_fund_info_em；两者返回列完全一致
+# （净值日期 / 单位净值 / 日增长率），所以可以直接替换、下游无需改动。
+_AK_NAV_CANDIDATES = (
+    ("fund_open_fund_info_em", {"indicator": "单位净值走势", "period": "成立来"}),
+    ("fund_open_fund_hist_em", {"period": "历史净值"}),
+)
+
+
+def _ak_nav_history(ak, code: str):
+    """取单只开放式基金的历史净值，返回 (DataFrame, 命中的接口名)。
+
+    hasattr 守卫的意义：AKShare 改过一次名就会有第二次。守卫把「接口消失」
+    从 AttributeError 变成一条明确、可检索的 AkNavApiUnavailable，
+    让上游能立刻判断是接口改名而不是偶发故障——绝不是静默 pass。
+    """
+    tried = []
+    for name, extra_kwargs in _AK_NAV_CANDIDATES:
+        fn = getattr(ak, name, None)
+        if fn is None:
+            tried.append(f"{name}=MISSING")
+            continue
+        kwargs = dict(extra_kwargs)
+        # 两个接口的基金代码参数名不同
+        kwargs["symbol" if name == "fund_open_fund_info_em" else "fund"] = code
+        try:
+            return fn(**kwargs), name
+        except Exception as e:
+            tried.append(f"{name}={type(e).__name__}: {e}")
+    raise AkNavApiUnavailable(
+        "AKSHARE_API_MISSING 无可用历史净值接口, tried=" + "; ".join(tried)
+    )
+
+
 def _get_from_akshare(code: str) -> dict:
     """
     从 AKShare 获取基金历史净值并计算收益率（降级方案）
@@ -143,11 +185,10 @@ def _get_from_akshare(code: str) -> dict:
     try:
         import akshare as ak
         print(f"  📊 AKShare 获取基金历史净值: {code}")
-        
-        # AKShare 获取基金历史净值
-        # 注意：fund_open_fund_hist_em 可能需要调整参数
-        df = ak.fund_open_fund_hist_em(fund=code, period="历史净值")
-        
+
+        # AKShare 获取基金历史净值（带接口改名守卫）
+        df, api_name = _ak_nav_history(ak, code)
+
         if df is None or df.empty:
             print(f"  ⚠️ AKShare 无数据: {code}")
             return None
@@ -182,9 +223,13 @@ def _get_from_akshare(code: str) -> dict:
         nav_3y = _get_ak_nav_by_date(df, timedelta(days=3*365))
         result['3y'] = round((latest_nav / nav_3y - 1) * 100, 2) if nav_3y else None
         
-        print(f"  ✅ AKShare 计算完成: {code}")
+        print(f"  ✅ AKShare 计算完成: {code} (via {api_name})")
         return result
-        
+
+    except AkNavApiUnavailable as e:
+        # 接口整体消失：必须显式告警，不能混在普通 ⚠️ 里
+        print(f"  🚨 AKSHARE_API_MISSING(code={code}): {e}")
+        return None
     except Exception as e:
         print(f"  ⚠️ AKShare 错误: {type(e).__name__}: {e}")
         return None
