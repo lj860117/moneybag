@@ -10,7 +10,9 @@ P3 高耦合路由 — 依赖 shared_helpers, agent_memory, steward, httpx
 import config
 import os
 import json
+import asyncio
 from datetime import datetime
+from typing import Any, AsyncIterator, Iterator
 
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import StreamingResponse
@@ -23,6 +25,33 @@ from api.shared_helpers import (
 )
 
 router = APIRouter()
+
+
+async def _aiter_blocking(gen: Iterator[Any]) -> AsyncIterator[Any]:
+    """把同步生成器的迭代搬到工作线程，避免它阻塞 event loop。
+
+    背景：``LLMGateway.stream_sync()`` 与 ``run_fc_agent_stream()`` 都是**同步**
+    生成器，内部走同步 ``httpx.Client``。若在 async 上下文里直接 ``for`` 消费，
+    每次 ``next()`` 都会同步阻塞整个事件循环 —— 一个用户的流式对话进行期间，
+    同进程其它请求（健康检查、cron 打进 API 的调用等）全部被卡住。
+
+    做法：每个元素用 ``asyncio.to_thread(next, it, _SENTINEL)`` 到默认线程池取一次。
+    网络 read 阻塞的是工作线程，event loop 全程可调度其它任务。语义与直接 for
+    完全一致：StopIteration 用哨兵对象判定，生成器内抛出的异常按原样透传。
+
+    取舍（已知代价，勿盲目照搬）：
+    ① 每次取一个 chunk 会占用一个线程池线程（默认池 min(32, cpu+4)），
+       单进程并发流式路数超过该上限时新 chunk 需排队 —— 家用规模足够。
+    ② 客户端断开时当前这次 ``next()`` 无法强杀线程，会跑完本次 read
+       （httpx 超时 60s 为上界）后自然退出，生成器随后被 GC。
+    """
+    it = iter(gen)
+    _sentinel = object()
+    while True:
+        item = await asyncio.to_thread(next, it, _sentinel)
+        if item is _sentinel:
+            return
+        yield item
 
 
 def _resolve_chat_model(requested_model: str | None, *, model_tier: str = "llm_light", module: str = "chat") -> str:
@@ -69,7 +98,7 @@ async def _fallback_chat_stream(user_msg: str, system_prompt: str, market_ctx: s
         return
     _full = []
     try:
-        for chunk in gw.stream_sync(
+        async for chunk in _aiter_blocking(gw.stream_sync(
             user_msg,
             system=system_prompt,
             model_tier="llm_light" if "reasoner" not in model else "llm_heavy",
@@ -78,7 +107,7 @@ async def _fallback_chat_stream(user_msg: str, system_prompt: str, market_ctx: s
             max_tokens=1200,
             history=[h.dict() for h in req.history] if req.history else None,
             explicit_model=explicit,
-        ):
+        )):
             if chunk.get("fallback"):
                 reply = _rule_based_reply(user_msg, market_ctx, portfolio_ctx)
                 yield f"data: {json.dumps({'delta': reply, 'source': 'rules', 'done': True}, ensure_ascii=False)}\n\n"
@@ -557,13 +586,13 @@ async def chat_analysis_stream(req: ChatRequest):
             async def fc_stream_gen():
                 default_model = _normalize_explicit_model(req.model)
                 fc_failed = False
-                for chunk in run_fc_agent_stream(
+                async for chunk in _aiter_blocking(run_fc_agent_stream(
                     user_msg,
                     system_prompt=system_prompt,
                     user_id=uid,
                     model=default_model,
                     history=history_dicts,
-                ):
+                )):
                     if chunk.get("source") == "error" and chunk.get("done"):
                         print(f"[FC_AGENT] 硬失败回退普通聊天: {str(chunk.get('delta', ''))[:40]}")
                         fc_failed = True
@@ -619,14 +648,14 @@ async def chat_analysis_stream(req: ChatRequest):
                 try:
                     from infra.llm.gateway import LLMGateway
                     gw = LLMGateway.instance()
-                    for chunk in gw.stream_sync(
+                    async for chunk in _aiter_blocking(gw.stream_sync(
                         user_msg,
                         system=synthesis_prompt,
                         model_tier="llm_light",
                         user_id=uid,
                         module="panel_synthesis",
                         max_tokens=300,
-                    ):
+                    )):
                         if chunk.get("fallback"):
                             # LLM 不可用，用简单结论
                             direction = panel.get("data_summary", "")
@@ -837,15 +866,20 @@ async def chat_analysis_stream(req: ChatRequest):
             # 如果有搜索来源，先推一条 banner 让用户知道搜到了什么
             if _search_banner:
                 yield f"data: {json.dumps({'delta': _search_banner, 'source': 'search_banner', 'done': False, 'phase': 'answering'}, ensure_ascii=False)}\n\n"
-            # ⚠️ 已知限制（2026-09-18 登记，本轮刻意不修）：
-            # gw.stream_sync() 是**同步**生成器（infra/llm/gateway.py，内部走同步 httpx.Client），
-            # 被直接 for 在 async generator 里消费 → 整个 LLM 请求期间堵死 event loop，
-            # 期间既发不出 SSE 心跳，也感知不到客户端断开。同类调用点：本文件 :72（FC Agent）、
-            # :622（投资会诊综合）。根治需把 stream_sync 改 async 或丢进 executor（侵入性改动，
-            # 未做真机长请求实测前不动）。当前兜底是 pages/chat.js 的「不活跃看门狗」
-            # （首字节 60s / chunk 间隔 45s）—— 它只保证最坏情况有界并给用户超时反馈，
-            # 属兜底而非根治。
-            for chunk in gw.stream_sync(
+            # ✅ 已根治（2026-09-18 第二轮）：gw.stream_sync() 是**同步**生成器
+            # （infra/llm/gateway.py，内部走同步 httpx.Client）。过去直接在 async
+            # generator 里 for 它 → 整个 LLM 请求期间（首字节等待 + 每个 chunk 的
+            # read）同步阻塞 event loop，既发不出 SSE 心跳，也感知不到客户端断开。
+            # 现改为 async for + _aiter_blocking()：把 next() 丢进默认线程池，
+            # event loop 全程可调度。同类调用点（同批修）：:72 _fallback_chat_stream
+            # （FC 硬失败回退）、:~620 投资会诊综合 _panel_stream、:~555 FC Agent
+            # run_fc_agent_stream。
+            # 真机实测（本地 uvicorn + 本地慢速 mock LLM，3s 首字节延迟）：
+            #   改动前：流式期间并发 /api/health 最大耗时 ≈ 3000 ms（被堵死）
+            #   改动后：同场景最大耗时 ≈ 5 ms
+            # 仍存在的限制：默认线程池 min(32, cpu+4)，单进程 >30 路并发流式时
+            # chunk 会排队；客户端断开时当次 read 无法强杀线程（httpx 60s 上界）。
+            async for chunk in _aiter_blocking(gw.stream_sync(
                 user_msg,
                 system=system_prompt,
                 model_tier="llm_light" if "reasoner" not in model else "llm_heavy",
@@ -854,7 +888,7 @@ async def chat_analysis_stream(req: ChatRequest):
                 max_tokens=1200,
                 history=[h.dict() for h in req.history] if req.history else None,
                 explicit_model=_normalize_explicit_model(req.model),  # 用户主动选择的模型，auto 哨兵交给峰谷调度
-            ):
+            )):
                 if chunk.get("fallback"):
                     # gateway 限流/错误 → 降级规则引擎
                     reply = _rule_based_reply(user_msg, market_ctx, portfolio_ctx)
