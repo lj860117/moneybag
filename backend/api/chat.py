@@ -837,6 +837,14 @@ async def chat_analysis_stream(req: ChatRequest):
             # 如果有搜索来源，先推一条 banner 让用户知道搜到了什么
             if _search_banner:
                 yield f"data: {json.dumps({'delta': _search_banner, 'source': 'search_banner', 'done': False, 'phase': 'answering'}, ensure_ascii=False)}\n\n"
+            # ⚠️ 已知限制（2026-09-18 登记，本轮刻意不修）：
+            # gw.stream_sync() 是**同步**生成器（infra/llm/gateway.py，内部走同步 httpx.Client），
+            # 被直接 for 在 async generator 里消费 → 整个 LLM 请求期间堵死 event loop，
+            # 期间既发不出 SSE 心跳，也感知不到客户端断开。同类调用点：本文件 :72（FC Agent）、
+            # :622（投资会诊综合）。根治需把 stream_sync 改 async 或丢进 executor（侵入性改动，
+            # 未做真机长请求实测前不动）。当前兜底是 pages/chat.js 的「不活跃看门狗」
+            # （首字节 60s / chunk 间隔 45s）—— 它只保证最坏情况有界并给用户超时反馈，
+            # 属兜底而非根治。
             for chunk in gw.stream_sync(
                 user_msg,
                 system=system_prompt,
