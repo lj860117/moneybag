@@ -101,12 +101,45 @@ MONEYBAG_PYTEST_DATA_DIR（不复用 DATA_DIR，理由见下方代码注释）�
   共同点：**防护机制本身正确，却被另一处看似无害的逻辑悄悄绕过**。
   以后凡是"默认值安全、但允许被环境变量覆盖"的防护，都要先想清楚：
   覆盖它的那个人，是不是正是会踩坑的那个人。
+
+背景（FIX 2026-09-17，任务：把「测试不写仓库」从惯例变成断言）：
+上面三层隔离（`DATA_DIR` / `LOG_DIR` / `MONITOR_DIR`）全都只管得住
+**愿意读环境变量的模块**。实测仍有多条通道绕过它们直写仓库（硬编码
+`Path(__file__)...`、sys.path 里未归一化的 `".."` 等）。所以这里再加一层
+**量结局**的守卫：会话开始前给受保护目录树拍快照，会话结束再拍一次，
+出现新增/改写/删除就让整个会话失败。
+
+守卫相关的两个环境变量（都是**测试专用**，与业务变量不复用）：
+
+  ``MONEYBAG_PYTEST_GUARD_TREES``
+      用给定清单**替换**（不是合并）默认受保护目录树，多个路径用
+      `os.pathsep`（同 `PATH`，macOS/Linux 是 `:`）分隔，相对路径会按
+      当前工作目录 `resolve()`。主要用于守卫自测：把守卫指向 tmp_path
+      下的诱饵目录，就能在不碰真实仓库的前提下验证它"该红时红"。
+      例::
+
+          MONEYBAG_PYTEST_GUARD_TREES=/tmp/decoy \
+              python -m pytest tests/test_conftest_data_dir_isolation.py -q
+
+      留空 / 不设 → 回到 `_DEFAULT_GUARD_TREES`（真实 data 目录等）。
+
+  ``MONEYBAG_PYTEST_WRITE_GUARD=0``
+      整个关掉守卫。**只在一种场合合理**：实时生产机上跑测试，线上进程
+      本身就在同时写这些目录，快照对比必然误报。日常开发**不要**设它——
+      那不是"关掉一个烦人的报警"，而是把垃圾藏起来。
+
+守卫报错里每一项都带 **mtime**（改写项还带基线 mtime）。因为"哪个文件
+被动了"只告诉你去哪儿找，"它是什么时候落的"才指向**是谁**干的 ——
+mtime 落在本次会话时段内 vs 落在三个月前，排查方向完全不同。
 """
+import datetime
 import os
 import sys
 import tempfile
+import time
 import shutil
 from pathlib import Path
+from typing import NamedTuple
 
 import pytest
 
@@ -240,6 +273,8 @@ _DEFAULT_GUARD_TREES = (
 
 # 逃生/测试阀：设了就用它**替换**默认清单（不合并），供守卫自测用诱饵目录。
 # 与 MONEYBAG_PYTEST_DATA_DIR 同理，不复用业务变量。
+# 用法（`os.pathsep` 分隔、替换默认清单、示例与注意点）见
+# :func:`_guard_tree_list` 的 docstring 和本文件顶部模块 docstring。
 _GUARD_TREES_ENV = "MONEYBAG_PYTEST_GUARD_TREES"
 # 开关：实时生产机上跑测试时，data/ 会被线上进程同时写入，快照对比会误报。
 # 这种场景显式关掉守卫（MONEYBAG_PYTEST_WRITE_GUARD=0），不要改成"只警告"。
@@ -258,7 +293,21 @@ GUARD_ENABLED: bool = True
 
 
 def _guard_tree_list() -> tuple:
-    """解析受保护目录树清单（可被 MONEYBAG_PYTEST_GUARD_TREES 覆盖）。"""
+    """解析受保护目录树清单（可被 MONEYBAG_PYTEST_GUARD_TREES 覆盖）。
+
+    环境变量用法（**替换**默认清单，不合并）::
+
+        MONEYBAG_PYTEST_GUARD_TREES=/tmp/decoy_a:/tmp/decoy_b \
+            python -m pytest tests/test_conftest_data_dir_isolation.py -q
+
+    多个路径用 `os.pathsep`（Linux/macOS 为 `:`）分隔；空片段被忽略；
+    未设或全空则回落到 :data:`_DEFAULT_GUARD_TREES`。
+    设计上只用于守卫自测（诱饵目录）与"线上进程同时在写"的临时豁免，
+    **日常跑测试不要设它**。
+
+    Returns:
+        已 `resolve()` 的目录路径元组。
+    """
     raw = os.environ.get(_GUARD_TREES_ENV, "").strip()
     if raw:
         return tuple(Path(part).resolve() for part in raw.split(os.pathsep) if part.strip())
@@ -275,6 +324,12 @@ def guard_snapshot(roots=_DEFAULT_GUARD_TREES) -> dict:
         {根目录字符串: {相对路径: (大小, mtime_ns)}}。目录与文件都记，
         这样"只建了个空目录"这种污染也能被发现——服务器上的
         /opt/moneybag/backend/data 就是这种形态（8KB、0 个文件的空目录树）。
+
+    ⚠️ 第二个元素 `mtime_ns` 不是可有可无的装饰：它既是 diff 判定"改写"
+    的一半依据（另一个是 size），也是 :func:`guard_diff` 产出
+    :class:`GuardEntry` 的 mtime 来源 —— 报错文本里那句"多久之前落的"
+    全靠它。改成只存 size 会让 `_guard_message` 静默退化成 `mtime=未知`
+    （不会报错，只会让守卫少一半线索），所以别动这个元组形状。
     """
     out: dict = {}
     for root in roots:
@@ -300,29 +355,103 @@ def guard_snapshot(roots=_DEFAULT_GUARD_TREES) -> dict:
     return out
 
 
+class GuardEntry(NamedTuple):
+    """守卫 diff 结果里的一项。
+
+    Attributes:
+        path: `根::相对路径`，与加入 mtime 之前的显示格式完全一致。
+        mtime_ns: 该项的 mtime（纳秒）。新增/改写取**当前**快照；删除取
+            **基线**快照 —— 文件已经没了，基线里那个是它留下的唯一痕迹。
+        baseline_mtime_ns: 基线快照里的 mtime。改写项才有值，新增项没有
+            基线（填 None），删除项的它等于 `mtime_ns`。
+    """
+
+    path: str
+    mtime_ns: int = 0
+    baseline_mtime_ns: int | None = None
+
+
+# 报错里最多列这么多条，超出的只报数量 —— 一次污染几十个文件时，
+# 全列出来反而看不清（实测一轮能写十几个）。
+_GUARD_MAX_LISTED = 20
+
+
+def _guard_mtime_of(snapshot_value) -> int:
+    """从快照条目 `(size, mtime_ns)` 里取 mtime；拿不到就返回 0。
+
+    拿不到只可能说明快照结构被改过，此时宁可报 `未知` 也不能让守卫
+    自己抛异常 —— 守卫一崩，污染就没人拦了。
+    """
+    try:
+        return int(snapshot_value[1])
+    except (TypeError, IndexError, ValueError):
+        return 0
+
+
+def _guard_format_delta(seconds: float) -> str:
+    """把秒数渲染成人类可读的量级（s / min / h / d）。"""
+    sign = "-" if seconds < 0 else ""
+    sec = abs(float(seconds))
+    if sec < 90:
+        return f"{sign}{sec:.1f}s"
+    if sec < 5400:
+        return f"{sign}{sec / 60:.1f}min"
+    if sec < 172800:
+        return f"{sign}{sec / 3600:.1f}h"
+    return f"{sign}{sec / 86400:.1f}d"
+
+
+def _guard_format_mtime(mtime_ns: int, now_ns: int) -> str:
+    """把 mtime 渲染成「本地时刻（距今 X）」。
+
+    Args:
+        mtime_ns: 纳秒时间戳；<=0 视为未知（拿不到 mtime 时的兜底值）。
+        now_ns: 「现在」的纳秒时间戳，用来算距今多久。
+
+    Returns:
+        形如 `2026-09-17 23:04:05（距今 3.2s）` 的文本。
+    """
+    if not mtime_ns or mtime_ns <= 0:
+        return "未知"
+    try:
+        stamp = datetime.datetime.fromtimestamp(mtime_ns / 1e9)
+        text = stamp.strftime("%Y-%m-%d %H:%M:%S")
+    except (OSError, OverflowError, ValueError):
+        return "未知"
+    return f"{text}（距今 {_guard_format_delta((now_ns - mtime_ns) / 1e9)}）"
+
+
 def guard_diff(before: dict, after: dict) -> tuple:
-    """比对两次快照，返回 (新增, 改写, 删除) 三组「根::相对路径」。
+    """比对两次快照，返回 (新增, 改写, 删除) 三组 :class:`GuardEntry`。
+
+    判定依据与加入 mtime 之前完全一致（键集合做差 + `(size, mtime_ns)`
+    是否相等），只是每项额外带上 mtime，好让报错能回答"多久之前落的"。
 
     Args:
         before: 会话开始前的快照。
         after: 会话结束时的快照。
 
     Returns:
-        (added, changed, removed)，每个元素都是 `根::相对路径` 字符串列表。
+        (added, changed, removed)，每个元素都是 :class:`GuardEntry` 列表。
     """
     added: list = []
     changed: list = []
     removed: list = []
-    for root in set(before) | set(after):
+    # 用 sorted 而不是直接迭代 set：str 的 hash 带随机种子，直接迭代会让
+    # 报错清单的行序在两次运行之间变化，日志没法对照。排序只影响展示顺序，
+    # 不影响"哪些项算变化"这个判定。
+    for root in sorted(set(before) | set(after)):
         b = before.get(root, {})
         a = after.get(root, {})
         for rel in sorted(set(a) - set(b)):
-            added.append(f"{root}::{rel}")
+            added.append(GuardEntry(f"{root}::{rel}", _guard_mtime_of(a[rel])))
         for rel in sorted(set(b) - set(a)):
-            removed.append(f"{root}::{rel}")
+            removed.append(GuardEntry(f"{root}::{rel}", _guard_mtime_of(b[rel])))
         for rel in sorted(set(a) & set(b)):
             if a[rel] != b[rel]:
-                changed.append(f"{root}::{rel}")
+                changed.append(GuardEntry(f"{root}::{rel}",
+                                          _guard_mtime_of(a[rel]),
+                                          _guard_mtime_of(b[rel])))
     return added, changed, removed
 
 
@@ -331,19 +460,64 @@ def _guard_check() -> tuple:
     return guard_diff(_GUARD_BASELINE, guard_snapshot(GUARD_TREES))
 
 
-def _guard_message(added: list, changed: list, removed: list) -> str:
-    """把一次守卫比对结果渲染成可直接读的错误文本。"""
-    return (
-        "[MONEYBAG_WRITE_GUARD] 测试进程改动了受保护目录树 —— 数据目录隔离失效。\n"
-        f"  新增 {len(added)} 项: {added[:20]}\n"
-        f"  改写 {len(changed)} 项: {changed[:20]}\n"
-        f"  删除 {len(removed)} 项: {removed[:20]}\n"
+def _guard_render_group(label: str, entries: list, now_ns: int,
+                        with_baseline: bool) -> list:
+    """把一组 diff 结果渲染成若干行文本。
+
+    Args:
+        label: 组名（新增 / 改写 / 删除）。
+        entries: :class:`GuardEntry` 列表。
+        now_ns: 「现在」的纳秒时间戳。
+        with_baseline: 是否额外给出基线 mtime（改写组为 True）。
+
+    Returns:
+        文本行列表（不含末尾换行）。
+    """
+    lines = [f"  {label} {len(entries)} 项:"]
+    for entry in entries[:_GUARD_MAX_LISTED]:
+        line = f"    {entry.path}\n        mtime={_guard_format_mtime(entry.mtime_ns, now_ns)}"
+        if with_baseline:
+            line += (f"  基线 mtime="
+                     f"{_guard_format_mtime(entry.baseline_mtime_ns or 0, now_ns)}")
+        lines.append(line)
+    rest = len(entries) - _GUARD_MAX_LISTED
+    if rest > 0:
+        lines.append(f"    ...另有 {rest} 项未列出")
+    return lines
+
+
+def _guard_message(added: list, changed: list, removed: list,
+                   now_ns: int | None = None) -> str:
+    """把一次守卫比对结果渲染成可直接读的错误文本。
+
+    每一项都带 mtime，改写项额外带基线 mtime —— 光知道"哪个文件被动了"
+    只能定位到目录，"它是什么时候落的"才能定位到**谁**：落在本次会话时段
+    内说明是刚被测试写的，落在很久以前说明是历史残留被本次会话改写。
+
+    Args:
+        added: 新增项（:class:`GuardEntry`）。
+        changed: 改写项（:class:`GuardEntry`，带基线 mtime）。
+        removed: 删除项（:class:`GuardEntry`，mtime 取自基线快照）。
+        now_ns: 「现在」的纳秒时间戳，用来算"距今多久"；None 则现取。
+
+    Returns:
+        多行错误文本。
+    """
+    now = int(time.time_ns()) if now_ns is None else int(now_ns)
+    lines = [
+        "[MONEYBAG_WRITE_GUARD] 测试进程改动了受保护目录树 —— 数据目录隔离失效。",
+    ]
+    lines.extend(_guard_render_group("新增", added, now, with_baseline=False))
+    lines.extend(_guard_render_group("改写", changed, now, with_baseline=True))
+    lines.extend(_guard_render_group("删除", removed, now, with_baseline=False))
+    lines.append(
         "  修法优先序：① 让被测模块走 config.DATA_DIR（conftest 已把它指到临时目录）；"
         "② 若该模块自己读环境变量定目录，在 conftest 里一并隔离；"
-        "③ 若路径是 Path(__file__) 硬拼出来的，检查 sys.path 里有没有未归一化的 '..'。\n"
+        "③ 若路径是 Path(__file__) 硬拼出来的，检查 sys.path 里有没有未归一化的 '..'。")
+    lines.append(
         f"  （受保护目录树: {[str(t) for t in GUARD_TREES]}；"
-        f"设 {_GUARD_ENABLED_ENV}=0 可临时关闭，但那只是把垃圾藏起来）"
-    )
+        f"设 {_GUARD_ENABLED_ENV}=0 可临时关闭，但那只是把垃圾藏起来）")
+    return "\n".join(lines)
 
 
 GUARD_TREES = _guard_tree_list()

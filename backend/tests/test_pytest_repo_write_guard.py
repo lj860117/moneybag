@@ -64,10 +64,12 @@ test_conftest_data_dir_isolation.py 的做法一致），零风险且完全等�
         -m pytest tests/test_pytest_repo_write_guard.py -v
 """
 import ast
+import datetime
 import os
 import subprocess
 import sys
 import tempfile
+import time
 from pathlib import Path
 
 import pytest
@@ -260,6 +262,11 @@ def test_guard_diff_reports_added_changed_removed(tmp_path):
     """守卫的 diff 逻辑单元级自测：新增 / 改写 / 删除三种变化都要被识别。
 
     纯函数级，不依赖任何 fixture 顺序。
+
+    ⚠️ 2026-09-17 起 `guard_diff` 的返回元素从「路径字符串」改成
+    :class:`GuardEntry`（带 mtime）。所以下面三处断言取的是 `.path` ——
+    直接 `in p` 会静默返回 False（NamedTuple 上做 `in` 是逐字段 == 比较，
+    不报错），那正是最难发现的一种"假绿"。
     """
     from conftest import guard_diff, guard_snapshot  # noqa: PLC0415
 
@@ -272,21 +279,122 @@ def test_guard_diff_reports_added_changed_removed(tmp_path):
     before = guard_snapshot([root])
     assert before, "快照为空，用例前提失效"
 
+    # 改动前的真实 mtime —— 下面用来钉住"基线 mtime 真的来自基线快照"，
+    # 而不是随便填的一个数。
+    base_change_ns = (root / "will_change.txt").stat().st_mtime_ns
+    base_delete_ns = (root / "will_delete.txt").stat().st_mtime_ns
+
     (root / "added.txt").write_text("new", encoding="utf-8")
     (root / "will_change.txt").write_text("v2", encoding="utf-8")
     (root / "will_delete.txt").unlink()
 
     added, changed, removed = guard_diff(before, guard_snapshot([root]))
 
-    assert any("added.txt" in p for p in added), f"新增未被识别: {added}"
-    assert any("will_change.txt" in p for p in changed), f"改写未被识别: {changed}"
-    assert any("will_delete.txt" in p for p in removed), f"删除未被识别: {removed}"
-    assert not any("keep.txt" in p for p in added + changed + removed), (
+    assert any("added.txt" in e.path for e in added), f"新增未被识别: {added}"
+    assert any("will_change.txt" in e.path for e in changed), f"改写未被识别: {changed}"
+    assert any("will_delete.txt" in e.path for e in removed), f"删除未被识别: {removed}"
+    assert not any("keep.txt" in e.path for e in added + changed + removed), (
         "未变动的文件被误报了")
+
+    # ---- mtime：报错里"多久之前落的"必须有真实来源 ----
+    added_entry = next(e for e in added if "added.txt" in e.path)
+    assert added_entry.mtime_ns > 0, f"新增项没有 mtime: {added_entry}"
+    assert added_entry.baseline_mtime_ns is None, (
+        f"新增项不该有基线 mtime: {added_entry}")
+
+    changed_entry = next(e for e in changed if "will_change.txt" in e.path)
+    assert changed_entry.mtime_ns > 0, f"改写项没有当前 mtime: {changed_entry}"
+    assert changed_entry.baseline_mtime_ns == base_change_ns, (
+        f"改写项的基线 mtime 不是基线快照里的值（{base_change_ns}）: {changed_entry}")
+
+    removed_entry = next(e for e in removed if "will_delete.txt" in e.path)
+    assert removed_entry.mtime_ns == base_delete_ns, (
+        f"删除项的 mtime 应取自基线快照（文件已经没了）: {removed_entry}")
+
+
+def test_guard_message_carries_mtime_for_every_item(tmp_path):
+    """报错文本里每一项都要带 mtime，改写项还要带基线 mtime。
+
+    这不是"文本更好看"的问题：mtime 是判断"这次污染是本次会话造的，还是
+    历史残留被改写"的**唯一**线索 —— 两者修法完全不同。
+
+    故障注入方向：把 conftest 里 :class:`GuardEntry` 的 `mtime_ns` 默认值
+    改成 0，或让 `_guard_message` 不再渲染它，本用例立刻转红。
+    """
+    from conftest import GuardEntry, _guard_message  # noqa: PLC0415
+
+    now_ns = time.time_ns()
+    fresh_ns = now_ns - 2 * 10 ** 9        # 2 秒前：本次会话刚写的
+    old_ns = now_ns - 3 * 86400 * 10 ** 9  # 3 天前：历史残留
+
+    text = _guard_message(
+        [GuardEntry("/tree::new.txt", fresh_ns)],
+        [GuardEntry("/tree::hit.txt", fresh_ns, old_ns)],
+        [GuardEntry("/tree::gone.txt", old_ns)],
+        now_ns=now_ns,
+    )
+
+    def _stamp(ns: int) -> str:
+        return datetime.datetime.fromtimestamp(ns / 1e9).strftime(
+            "%Y-%m-%d %H:%M:%S")
+
+    # 三组各自的时间点都必须出现在文本里（缺哪组就少哪组的线索）
+    for ns in (fresh_ns, old_ns):
+        assert _stamp(ns) in text, f"报错里缺 mtime {_stamp(ns)}:\n{text}"
+
+    # "距今多久"的量级：2 秒 → s，3 天 → d（写死量级是防止单位换算写错）
+    assert "距今 2.0s" in text, f"新增项没有'距今多久':\n{text}"
+    assert "距今 3.0d" in text, f"删除项没有'距今多久':\n{text}"
+
+    # 基线 mtime 只应出现在改写组：新增项没有基线，多出来说明渲染串组了
+    assert "基线 mtime=" in text, f"改写项没给基线 mtime:\n{text}"
+    assert text.count("基线 mtime=") == 1, (
+        f"基线 mtime 只应出现 1 次，实际 {text.count('基线 mtime=')} 次:\n{text}")
+
+    # 对照组：mtime 拿不到时必须显式说"未知"，不能悄悄显示成 1970
+    unknown = _guard_message([GuardEntry("/tree::x.txt", 0)], [], [],
+                             now_ns=now_ns)
+    assert "mtime=未知" in unknown, (
+        f"mtime 缺失时应显式渲染成'未知'，而不是 1970 时间戳:\n{unknown}")
+
+    # ---- 接线层：上面是直接构造 GuardEntry，钉不住 guard_diff →
+    #      _guard_message 这条真实链路。这里用真实文件再走一遍。
+    from conftest import guard_diff, guard_snapshot  # noqa: PLC0415
+
+    root = tmp_path / "tree"
+    root.mkdir(parents=True, exist_ok=True)
+    (root / "hit.txt").write_text("v1", encoding="utf-8")
+    (root / "gone.txt").write_text("bye", encoding="utf-8")
+    before = guard_snapshot([root])
+    (root / "hit.txt").write_text("v2", encoding="utf-8")
+    (root / "new.txt").write_text("new", encoding="utf-8")
+    (root / "gone.txt").unlink()
+
+    a, c, r = guard_diff(before, guard_snapshot([root]))
+    wired = _guard_message(a, c, r, now_ns=time.time_ns())
+
+    for name in ("new.txt", "hit.txt", "gone.txt"):
+        matched = [ln for ln in wired.splitlines() if name in ln]
+        assert matched, (
+            f"真实链路下 {name} 没出现在报错里（三组缺一就少一组线索）:\n{wired}")
+    assert _stamp((root / "new.txt").stat().st_mtime_ns) in wired, (
+        f"真实链路下新增项没渲染出真实 mtime:\n{wired}")
+    assert "基线 mtime=" in wired, (
+        f"真实链路下改写项没给基线 mtime:\n{wired}")
+    # 光有"基线 mtime="这个标签不够：基线丢了会渲染成"未知"，
+    # 标签还在、值没了 —— 那正是最难发现的一种半失效。
+    assert "基线 mtime=未知" not in wired, (
+        f"真实链路下基线 mtime 丢了（渲染成'未知'）:\n{wired}")
 
 
 def test_guard_snapshot_ignores_interpreter_caches(tmp_path):
-    """__pycache__ / .pyc 必须被排除，否则守卫每次都"变了"，立刻退化成噪音。"""
+    """__pycache__ / .pyc 必须被排除，否则守卫每次都"变了"，立刻退化成噪音。
+
+    顺带钉住快照值的形状：必须是 `(size, mtime_ns)`。第二个元素是
+    `guard_diff` 产出 :class:`GuardEntry` 的 mtime **唯一来源** —— 只存
+    size 的话守卫不会报错，只会静默退化成 `mtime=未知`，属于最难发现的
+    "半失效"，所以这里必须断言。
+    """
     from conftest import guard_snapshot  # noqa: PLC0415
 
     root = tmp_path / "tree"
@@ -301,6 +409,12 @@ def test_guard_snapshot_ignores_interpreter_caches(tmp_path):
     assert not any("__pycache__" in k for k in entries), (
         f"__pycache__ 没被排除，守卫会恒红: {entries}")
     assert not any(k.endswith(".pyc") for k in entries), f".pyc 没被排除: {entries}"
+
+    size, mtime_ns = entries["real.txt"]
+    assert size == len("hi"), f"快照第一个元素不是文件大小: {entries['real.txt']}"
+    assert mtime_ns == (root / "real.txt").stat().st_mtime_ns, (
+        f"快照第二个元素不是真实 mtime_ns，守卫的 mtime 就没有来源: "
+        f"{entries['real.txt']}")
 
 
 def test_default_guard_trees_cover_both_real_data_dirs():

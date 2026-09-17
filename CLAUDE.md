@@ -123,6 +123,39 @@ cd backend && python -m pytest tests/ -q -p no:cacheprovider
 `MONEYBAG_PYTEST_DATA_DIR=<目录>`（不复用 `DATA_DIR`——那会把「模拟生产
 环境」和「允许写生产数据」两件事耦合起来，前者合理，后者是灾难）。
 
+#### 仓库写入守卫（2026-09-17 起：环境变量不够，还得量结局）
+
+上面那套只管得住**愿意读环境变量的模块**。实测仍有模块绕过它直写仓库
+（硬编码 `Path(__file__)...`、sys.path 里未归一化的 `".."` 让
+`.parent.parent.parent` 算错目录）。所以 `backend/tests/conftest.py` 另加
+一层守卫：会话开始前给受保护目录树拍快照（文件大小 + mtime），会话结束再
+拍一次，出现新增/改写/删除就**让整个会话失败**。
+
+两个测试专用环境变量：
+
+| 变量 | 作用 |
+| --- | --- |
+| `MONEYBAG_PYTEST_GUARD_TREES=<路径A>:<路径B>` | 用给定清单**替换**（不是合并）默认受保护目录树，多个路径用 `os.pathsep`（Linux/macOS 为 `:`）分隔。主要用于守卫自测：指向 tmp_path 下的诱饵目录，就能在不碰真实仓库的前提下验证它"该红时红"。留空/不设则回落到默认清单。 |
+| `MONEYBAG_PYTEST_WRITE_GUARD=0` | 整个关掉守卫。**只在一种场合合理**：实时生产机上跑测试，线上进程本身就在同时写这些目录，快照对比必然误报。日常开发不要设——那不是"关掉烦人的报警"，是把垃圾藏起来。 |
+
+守卫自测示例（诱饵目录）：
+
+```bash
+MONEYBAG_PYTEST_GUARD_TREES=/tmp/decoy \
+    python -m pytest tests/test_conftest_data_dir_isolation.py -q
+```
+
+⚠️ 报错里每一项都带 **mtime**（改写项还带基线 mtime），形如
+`mtime=2026-09-17 23:04:05（距今 3.2s）  基线 mtime=...（距今 12.4d）`。
+这不是装饰：光知道"哪个文件被动了"只能定位到目录，"它是什么时候落的"
+才指向**是谁**干的 —— 落在本次会话时段内说明是刚被测试写的，落在很久
+以前说明是历史残留被改写，两者修法完全不同。看到 `mtime=未知` 说明
+`guard_snapshot` 的 `(size, mtime_ns)` 元组形状被改过，守卫已半失效。
+
+守卫自身的可证伪性由 `backend/tests/test_pytest_repo_write_guard.py` 钉住
+（真起子进程写文件 / 最后一个用例是 xfail / 写在受保护树之外的对照组 /
+mtime 来源）。**改守卫逻辑必须连这个文件一起改，并保证故障注入时它会红。**
+
 #### 根 tests/ 的数据隔离（2026-09-05 补上）
 
 - **历史问题**：根 `tests/conftest.py` 原本没有任何数据隔离。在服务器跑
