@@ -52,17 +52,30 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 from scripts import daily_push_quality_check as qc  # noqa: E402
 
 
-# 真实晨报 fixture（服务器原样拷贝，3610 字节）
+# 真实晨报 fixture（服务器 /opt/moneybag/data/logs/pushes/ 原样拷贝，未裁剪）
 REAL_SAMPLE = os.path.join(
     os.path.dirname(__file__), "fixtures", "2026-09-17_briefing_LeiJiang.txt"
 )
 REAL_CONTENT = pathlib.Path(REAL_SAMPLE).read_text(encoding="utf-8")
 
+# 09-16 是**天然**同时命中两类 issue 的真实存档（无需人工构造）：
+#   长度类（3759B 超 text 上限）+ 非长度类（括号不匹配 30 vs 28）。
+# 生产日志里这一天确实是 FAIL/90 —— 它是最好的「放行不过头」标尺。
+MIXED_SAMPLE = os.path.join(
+    os.path.dirname(__file__), "fixtures", "2026-09-16_briefing_LeiJiang.txt"
+)
+MIXED_CONTENT = pathlib.Path(MIXED_SAMPLE).read_text(encoding="utf-8")
+
 QDII_ISSUE = "⚠️ QDII 基金未标注 T+2 披露延迟"
 EMPTY_NAME_ISSUE = "❌ 基金名称显示为空"
 
 
-def _run(tmp_path, content: str, name: str = "2026-09-17_briefing_LeiJiang.txt") -> dict:
+def _run(
+    tmp_path,
+    content: str,
+    name: str = "2026-09-17_briefing_LeiJiang.txt",
+    date: str = "2026-09-17",
+) -> dict:
     """把 content 当成一份真实存档，跑完整的 evaluate_push_quality()。
 
     走的是**真实代码路径**（不是 mock 掉某个检查）：唯一被替换的是存档
@@ -73,7 +86,7 @@ def _run(tmp_path, content: str, name: str = "2026-09-17_briefing_LeiJiang.txt")
     original_dir = qc.PUSH_ARCHIVE_DIR
     qc.PUSH_ARCHIVE_DIR = str(tmp_path)
     try:
-        return qc.evaluate_push_quality("2026-09-17", "LeiJiang")
+        return qc.evaluate_push_quality(date, "LeiJiang")
     finally:
         qc.PUSH_ARCHIVE_DIR = original_dir
 
@@ -151,6 +164,37 @@ def test_length_plus_qdii_still_fails(tmp_path):
     assert QDII_ISSUE in issues, issues
     assert any("消息超长" in i for i in issues), issues
     # 2 条 issue：1 条预期（长度）+ 1 条阻塞（QDII）
+    assert results["total_issues"] == 2
+    assert results["expected_issues"] == 1
+    assert results["blocking_issues"] == 1
+    assert results["score"] == 90
+
+
+def test_real_0916_briefing_length_plus_bracket_mismatch_still_fails(tmp_path):
+    """★ 真实存档、两类 issue 天然共存 → 必须 FAIL（零人工构造）。
+
+    09-16 真实晨报（3707B）同时命中：
+      - 长度类：3759 字节 > text 上限 2048（会无损分片，放行）
+      - 非长度类：括号不匹配（开放 30 / 闭合 28 ← **真问题**）
+
+    生产日志里这一天的结果就是 `FAIL / 90 分 / 2 处问题`。修复后它**必须
+    仍然是 FAIL/90** —— 因为剩下那 1 条阻塞是真问题。
+
+    这条比 `test_length_plus_qdii_still_fails` 更硬：那一条的 QDII 是我手工
+    改出来的回归，这一条两类 issue 都是线上原样、一个字没动。
+    """
+    results = _run(
+        tmp_path, MIXED_CONTENT,
+        name="2026-09-16_briefing_LeiJiang.txt", date="2026-09-16",
+    )
+
+    assert results["status"] == "FAIL", (
+        f"真实 09-16 有括号不匹配（真问题），不得因长度被放行：{results}"
+    )
+    issues = _all_issues(results)
+    assert any("括号不匹配" in i for i in issues), issues
+    assert any("消息超长" in i for i in issues), issues
+    # 长度那条被放行，括号那条没被放行
     assert results["total_issues"] == 2
     assert results["expected_issues"] == 1
     assert results["blocking_issues"] == 1
