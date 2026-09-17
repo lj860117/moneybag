@@ -24,6 +24,16 @@
      此时新旧口径结果**数值等价** —— 防止"改口径顺手改坏了退化路径"；
   C. `get_portfolio_overview` 的配置分母与市值口径自洽：
      基金四桶之和 ≈ 基金市值之和（不再恒等于基金成本之和）。
+
+2026-09-18 追加（现金口径统一）后，不变量 C 的一般形式更新为::
+
+    total_for_alloc == totalMarketValue + 账户现金(accountCash)
+
+本文件的用例都**不注入账户现金**（load_cash_assets 桩成空列表），故退化回
+`total_for_alloc == totalMarketValue` —— 即下面 `bucket_sum == totalMarketValue`
+的断言在无现金时依然成立、原样保留。「账户有现金时 cash 桶与分母同步增加」
+以及「fund_money 与账户现金按 code 去重不双算」由
+`test_portfolio_overview_account_cash.py` 守卫。
 """
 
 from __future__ import annotations
@@ -192,8 +202,9 @@ def test_fallback_nav_equal_to_cost_is_equivalent(code: str, name: str) -> None:
 # ============================================================
 
 
-def _patch_overview_inputs(monkeypatch, funds, navs):
-    """把 overview 的两个持仓加载器与行情源替换成固定输入（不触真实数据/网络）。"""
+def _patch_overview_inputs(monkeypatch, funds, navs, cash_assets=None):
+    """把 overview 的两个持仓加载器、行情源、以及账户现金加载器替换成固定输入
+    （不触真实数据/网络）。"""
     monkeypatch.setattr(
         portfolio_overview, "unified_load_stock_holdings",
         lambda user_id="default": [],
@@ -201,6 +212,13 @@ def _patch_overview_inputs(monkeypatch, funds, navs):
     monkeypatch.setattr(
         portfolio_overview, "unified_load_fund_holdings",
         lambda user_id="default": list(funds),
+    )
+    # FIX 2026-09-18（现金口径）: 账户现金现已并入 cash 桶与配置分母，测试必须
+    #   显式桩掉，否则会去读真实 data/ 目录下的用户资产（既不确定也不该发生）。
+    #   默认空列表 ⇒ 本文件既有的「分母 == 市值」不变量在无账户现金时继续成立。
+    monkeypatch.setattr(
+        portfolio_overview, "load_cash_assets",
+        lambda user_id="default": [dict(a) for a in (cash_assets or [])],
     )
 
     def _fake_get_fund_nav(code, *args, **kwargs):
@@ -258,7 +276,8 @@ def test_overview_denominator_equals_fund_market_value(monkeypatch) -> None:
     assert ov["totalMarketValue"] == pytest.approx(440.0)
     assert ov["totalCost"] == pytest.approx(400.0), "成本口径字段应保持成本值不变"
 
-    # 核心不变量：配置分母 == 基金市值之和（而非成本之和 400）
+    # 核心不变量：配置分母 == 基金市值之和（本用例无账户现金 ⇒ 退化为
+    # total_for_alloc == totalMarketValue；一般式见模块 docstring 不变量 C）
     bucket_sum = sum(captured.values())
     assert bucket_sum == pytest.approx(ov["totalMarketValue"], abs=0.01 * ov["fundCount"])
     assert bucket_sum != pytest.approx(ov["totalCost"], abs=0.01), (

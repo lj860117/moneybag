@@ -788,10 +788,30 @@ def get_risk_actions_get(userId: str = ""):
 def get_allocation_advice_api(req: dict):
     """大类资产配置建议（股/债/现金目标比例+偏离度）
 
-    优先从 unified-networth + stock/fund holdings 获取真实资产分布，
-    旧 transactions 作为降级方案。
+    FIX 2026-09-18（口径分裂）: 主路径改为复用 ``get_portfolio_overview()`` 的
+    ``allocation``（四档 equity/bond/cash/gold，与「持仓页」完全同源），
+    不再用 ``calc_unified_networth`` 的粗分自己算一套。
+
+    旧实现的两处硬伤：
+      1. 把**全部投资**（股票+基金）整体当成 ``stock``、``bond`` 硬编码 0，
+         字段名也是 ``stock`` 而非 ``equity`` —— 于是同一个用户在「持仓页」
+         看到股/债/现分档，在本端点看到「股票 100% · 债券 0%」，两套互相
+         矛盾的答案。
+      2. 只并入账户现金、不穿透基金内部股债，bond 恒为 0。
+    改后 current 的 stock/bond/cash 与 overview 的 equity/bond/cash 逐项相等
+    （见 backend/tests/test_allocation_advice_unified_caliber.py）。
+
+    前端字段名兼容：``pages/portfolio.js`` 与 ``pages/landing.js`` 读的是
+    ``current.stock`` / ``.bond`` / ``.cash``（及 target / deviation 同名键），
+    故这里**保持**这三个键名（``stock`` 的值取 overview 的 ``equity``），
+    并额外补一个 ``gold`` 键。target/deviation 仍沿用本端点的「估值三档动态
+    目标」（40/35/25 | 55/30/15 | 70/20/10）—— 这是刻意保留的产品逻辑，
+    与 overview 的静态 45/30/20/5 目标**不同源**，本次不统一（见报告）。
     """
-    user_id = req.get("userId", "")
+    # FIX 2026-09-18: landing.js:595 用 `{user_id: ...}`（snake_case）调用本端点，
+    # 而旧实现只读 `userId` —— 首页那张配置卡因此一直落到 txs 降级路径。
+    # 两种键名都认，让首页真正吃到统一口径。
+    user_id = req.get("userId") or req.get("user_id") or ""
 
     try:
         vp = get_valuation_percentile()
@@ -804,7 +824,76 @@ def get_allocation_advice_api(req: dict):
     except Exception:
         fg_val = 50
 
-    # 尝试从真实 holdings/assets 计算配置
+    # ── 主路径：复用 portfolio_overview 的统一 allocation 口径 ──
+    if user_id:
+        try:
+            from services.portfolio_overview import get_portfolio_overview
+            ov = get_portfolio_overview(user_id) or {}
+            alloc = ov.get("allocation") or {}
+            total_alloc = float(ov.get("totalForAllocation") or 0)
+            has_alloc = any(
+                float(alloc.get(k, 0) or 0) for k in ("equity", "bond", "cash", "gold")
+            )
+            if total_alloc > 0 and has_alloc:
+                # stock ← overview.equity（字段名兼容），并补 gold。
+                current_pct = {
+                    "stock": round(float(alloc.get("equity", 0) or 0), 1),
+                    "bond": round(float(alloc.get("bond", 0) or 0), 1),
+                    "cash": round(float(alloc.get("cash", 0) or 0), 1),
+                    "gold": round(float(alloc.get("gold", 0) or 0), 1),
+                }
+                # 动态目标（估值三档）
+                if val_pct > 70:
+                    target = {"stock": 40, "bond": 35, "cash": 25}
+                    zone = "高估"
+                elif val_pct < 30:
+                    target = {"stock": 70, "bond": 20, "cash": 10}
+                    zone = "低估"
+                else:
+                    target = {"stock": 55, "bond": 30, "cash": 15}
+                    zone = "适中"
+
+                deviation = {
+                    "stock": round(current_pct["stock"] - target["stock"], 1),
+                    "bond": round(current_pct["bond"] - target["bond"], 1),
+                    "cash": round(current_pct["cash"] - target["cash"], 1),
+                }
+
+                advice = []
+                for asset, label in [("stock", "股票类"), ("bond", "债券类"), ("cash", "现金类")]:
+                    d = deviation[asset]
+                    if abs(d) > 10:
+                        if d > 0:
+                            advice.append({"asset": asset, "direction": "reduce",
+                                "message": f"📉 {label}超配{d:.0f}%，建议减持至{target[asset]}%"})
+                        else:
+                            advice.append({"asset": asset, "direction": "increase",
+                                "message": f"📈 {label}欠配{abs(d):.0f}%，可增持至{target[asset]}%"})
+
+                result = {
+                    "target": target,
+                    "current": current_pct,
+                    "deviation": deviation,
+                    "advice": advice,
+                    "valuation_zone": zone,
+                    "valuation_pct": round(val_pct, 1),
+                    "fear_greed": round(fg_val, 1),
+                    # 分母 = allocation 口径的总资产（投资市值 + 账户现金）。
+                    # 前端（portfolio.js / landing.js）不消费此字段，改口径安全。
+                    "total_market": round(total_alloc, 2),
+                    # 来源标记：便于核对「本端点与 /api/portfolio/overview 同源」。
+                    "allocation_source": "portfolio_overview",
+                    "summary": f"✅ 资产配置分析（估值{zone} {val_pct:.0f}%）" if not advice else f"⚠️ 有{len(advice)}项需调整",
+                }
+                market_ctx = _build_market_context()
+                result = enhance_allocation_advice(result, market_ctx=market_ctx)
+                return result
+        except Exception as e:
+            print(f"[ALLOC] portfolio_overview approach failed: {e}")
+
+    # ── 降级 1：unified_networth 粗分 ──
+    # 仅在 overview 拿不到有效配置分母时使用（例如用户只录了房产/车辆等
+    # 非投资资产 —— 这些不计入 overview 的股债现金分母，但 networth 口径有意义）。
     if user_id:
         try:
             from services.unified_networth import calc_unified_networth
@@ -860,6 +949,7 @@ def get_allocation_advice_api(req: dict):
                         "valuation_pct": round(val_pct, 1),
                         "fear_greed": round(fg_val, 1),
                         "total_market": round(total, 2),
+                        "allocation_source": "unified_networth_fallback",
                         "summary": f"✅ 资产配置分析（估值{zone} {val_pct:.0f}%）" if not advice else f"⚠️ 有{len(advice)}项需调整",
                     }
                     market_ctx = _build_market_context()
@@ -867,6 +957,7 @@ def get_allocation_advice_api(req: dict):
                     return result
         except Exception as e:
             print(f"[ALLOC] unified-networth approach failed: {e}")
+
 
     # 降级：旧 transactions 方式
     txs = []

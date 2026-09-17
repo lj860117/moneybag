@@ -63,6 +63,46 @@ def _get_asset_value(asset: dict) -> float:
     return val if val != 0 else bal
 
 
+def asset_amount(asset: dict) -> float:
+    """统一读取资产金额（**公开**口径）：`value` 优先，回落 `balance`。
+
+    FIX 2026-09-18：`value` / `balance` 兼容逻辑此前在至少三处各写一遍
+    （本模块 `_get_asset_value`、`api/portfolio.py` 的 /api/portfolio/networth
+    内联 `_av`、以及前端 assets.js）。这里把它提升为公开函数供跨模块复用，
+    避免「同一个金额字段」在不同消费点再次漂移成不同口径。
+
+    Args:
+        asset: 资产 dict（portfolio.assets[] 中一项）。
+
+    Returns:
+        金额（float）。`value` 为 0/缺失时回落 `balance`，都没有则 0。
+
+    Note:
+        与旧内联写法 `a.get("value", 0) or a.get("balance", 0) or 0` 语义等价：
+        仅在 `value` 为「假值」(0 / None / "") 时才回落 balance。
+    """
+    return _get_asset_value(asset)
+
+
+def load_cash_assets(user_id: str) -> list:
+    """加载用户**账户现金类**资产（portfolio.assets[] 中 `type == "cash"`）。
+
+    这些是用户在「资产页」录入的真实存款/活期/余额宝等，**不属于投资持仓**，
+    但属于资产配置里的「现金桶」。返回原始 asset dict 列表，金额口径由
+    :func:`asset_amount` 统一解析（不要在这里再写一套 value/balance 判断）。
+
+    Args:
+        user_id: 用户 ID。
+
+    Returns:
+        现金类资产 dict 列表（可能为空）。
+    """
+    user_data = _load_user_data(user_id)
+    portfolio = user_data.get("portfolio") or {}
+    assets = portfolio.get("assets") or []
+    return [a for a in assets if a.get("type") == "cash"]
+
+
 def calc_unified_networth(user_id: str, force: bool = False) -> dict:
     """计算统一净资产（所有数据源合并）
 

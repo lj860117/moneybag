@@ -30,6 +30,62 @@ from services.stock_monitor import scan_all_holdings
 from services.fund_monitor import scan_all_fund_holdings
 # FIX 2026-05-20 MB-008: 导入统一的基金分类器，避免代码重复
 from services.fund_classifier import classify_and_allocate
+# FIX 2026-09-18（现金漏计）: 复用 unified_networth 的资产金额口径与账户现金分桶，
+#   避免在 overview 里再写第三套 value/balance 解析。
+from services.unified_networth import asset_amount, load_cash_assets
+
+
+# ---- 账户现金去重（防"基金内货币份额"与"账户现金"双算）----
+
+# 名称包含匹配时，较短一方必须达到的最小长度。
+#   阈值取 3 是权衡后的结果：
+#     - 「余额宝」(3) ⊂ 「天弘余额宝货币」 → 命中，正确去重；
+#     - 「现金」/「活期」/「存款」(均 2 字) 这类**通用**现金名会被放过 ——
+#       否则「现金」⊂「华夏现金增利货币」会把一笔真实存款误判为重复而吞掉。
+#   这是一个**名称启发式**，不是精确键：Asset schema 里没有 code 字段
+#   （见 models/schemas.py:46 与 pages/assets.js:246），无法按基金代码对齐。
+_MIN_DEDUP_NAME_LEN = 3
+
+
+def _normalize_name(name) -> str:
+    """归一化名称用于去重比较：去掉所有空白 + 转小写。"""
+    return "".join(str(name or "").split()).lower()
+
+
+def _is_duplicate_account_cash(asset: dict, money_fund_codes: set,
+                               money_fund_names: set) -> bool:
+    """判断一笔账户现金是否已被基金持仓的货币类份额统计过（防双算）。
+
+    背景：`fund_money` 是**基金持仓内部**的货币类份额（含纯货基与混合基的
+    现金比例）；而账户现金（assets[type=cash]）常常记录的就是同一只货基
+    （如余额宝）。两处都录会造成双算。
+
+    去重键（按可靠性降序）：
+      1. `code`（精确）：若资产带 code（未来 schema 扩展）直接比对基金代码；
+      2. 归一化名称：相等，或一方包含另一方且**较短方 >= _MIN_DEDUP_NAME_LEN**。
+
+    Args:
+        asset: 一笔账户现金资产 dict。
+        money_fund_codes: 已计入 fund_money 的基金代码集合。
+        money_fund_names: 已计入 fund_money 的基金归一化名称集合。
+
+    Returns:
+        True 表示该资产视为重复，不应再计入账户现金。
+    """
+    code = str(asset.get("code") or "").strip()
+    if code and code in money_fund_codes:
+        return True
+
+    nm = _normalize_name(asset.get("name"))
+    if len(nm) < _MIN_DEDUP_NAME_LEN:
+        return False
+    for mn in money_fund_names:
+        if len(mn) < _MIN_DEDUP_NAME_LEN:
+            continue
+        if nm == mn or nm in mn or mn in nm:
+            return True
+    return False
+
 
 
 def get_portfolio_overview(user_id: str = "default") -> dict:
@@ -76,6 +132,10 @@ def get_portfolio_overview(user_id: str = "default") -> dict:
     fund_bond = 0        # 基金中的债券类占比
     fund_money = 0       # 基金中的现金类占比
     fund_gold = 0        # 基金中的黄金占比
+    # FIX 2026-09-18（现金漏计）: 记录「已计入 fund_money 的持仓」身份，
+    #   用于与账户现金去重（见模块顶部 _is_duplicate_account_cash）。
+    money_fund_codes: set = set()
+    money_fund_names: set = set()
 
     for h in fund_holdings:
         cost_nav = h.get("costNav", 0) or 0
@@ -130,6 +190,35 @@ def get_portfolio_overview(user_id: str = "default") -> dict:
         fund_bond += allocation["bond"]
         fund_money += allocation["money"]
         fund_gold += allocation["gold"]
+        # 记录贡献了 fund_money 的持仓身份（纯货基 + 混合基的现金比例），
+        # 供账户现金去重时使用。
+        if allocation["money"] > 0:
+            _mc = str(h.get("code", "") or "").strip()
+            if _mc:
+                money_fund_codes.add(_mc)
+            _mn = _normalize_name(h.get("name"))
+            if _mn:
+                money_fund_names.add(_mn)
+
+    # 2b. 账户现金（资产管理页录入的存款/活期/余额宝等）
+    # FIX 2026-09-18（现金漏计）：闭环此前挂在第 4 节注释里的遗留 TODO ——
+    #   此前 `cash = fund_money` 只统计**基金持仓内部**的货币类份额，账户里
+    #   真正的现金余额（user.portfolio.assets[] 中 type == "cash"）完全没进
+    #   allocation —— 后果是现金被系统性低估、误报「现金欠配」并给出错误的
+    #   增持建议。
+    #   ⚠️ 口径一致性（本项目刚踩过的坑）: 加了现金进 cash 桶**必须同步计入
+    #   分母** total_for_alloc。只改分子不改分母就是又一次「分子分母口径分裂」
+    #   （参见 2026-09-18 基金分配成本/市值口径混用那处修复）。
+    #   ⚠️ 双算风险: fund_money 可能已含同一只货基（余额宝既是基金持仓又可能
+    #   被录成现金资产），故按代码/名称去重（_is_duplicate_account_cash）。
+    account_cash = 0.0
+    account_cash_deduped = 0.0
+    for _a in load_cash_assets(user_id):
+        _amt = asset_amount(_a)
+        if _is_duplicate_account_cash(_a, money_fund_codes, money_fund_names):
+            account_cash_deduped += _amt
+            continue
+        account_cash += _amt
 
     # 3. 总资产
     total_mv = stock_total_mv + fund_total_mv
@@ -148,7 +237,7 @@ def get_portfolio_overview(user_id: str = "default") -> dict:
     #   直接矛盾 —— 风控侧把黄金当权益的**对冲资产**，这里却把它当**权益本身**。
     #   二者不可能同时成立，故判定为 bug：归入 equity 是错的。
     #
-    # FIX 2026-09-18 (口径统一，闭环原 TODO): 此前 fund_equity/bond/money/gold 走**成本**口径
+    # FIX 2026-09-18（口径统一，闭环原 TODO): 此前 fund_equity/bond/money/gold 走**成本**口径
     #   （fund_classifier.classify_and_allocate 的基数 `total_cost = nav_cost * shares`），
     #   而 stock_total_mv 走的是**市值**口径（本文件上方 :67 用实时价），两者却被加进同一个
     #   total_for_alloc —— 结果是「资产涨了，基金那部分仍按买入成本计价」，配置占比被系统性
@@ -172,14 +261,25 @@ def get_portfolio_overview(user_id: str = "default") -> dict:
     #   金额与 direction 会随之变化（分母由成本变为市值）；healthScore 仅在偏离跨过
     #   10/20 阈值时才可能变动。
     #
-    #   仍**未解决**（独立缺陷，另行立项）：`cash = fund_money` 只统计基金内的货币类份额，
-    #   账户真实现金余额未进 allocation —— 详见 docs/design 中「现金漏计」条目。
+    #   （原 TODO「cash 只统计基金内货币份额」已于 2026-09-18 闭环：见上方 2b 段
+    #    与下方 cash 桶 / total_for_alloc 的 FIX 注释。）
     equity = stock_total_mv + fund_equity
     bond = fund_bond
-    cash = fund_money
+    # FIX 2026-09-18（现金漏计已闭环）: cash 桶 = 基金内货币类份额 + 账户真实现金。
+    #   账户现金已在上方 2b 段按代码/名称与基金持仓去重，避免余额宝双算。
+    cash = fund_money + account_cash
     gold = fund_gold
-    # 分母保持不变：gold 只是从 equity 挪出来单列，仍计入总配置口径。
-    # 由此产生的不变量：equity% 的降幅恰好等于黄金占比，bond%/cash% 不变。
+    # 分母口径：
+    #   - 2026-09-15（gold 拆桶）时分母不变 —— gold 只是从 equity 挪出来单列，
+    #     仍计入总配置口径，故当时的整体市值分母不变。
+    #   - FIX 2026-09-18（现金口径统一）: 账户现金并入 cash 后，分母也必须
+    #     + 账户现金，否则「分子含现金、分母不含」= 口径分裂。新的不变量
+    #     （取代旧的 total_for_alloc == total_mv，仅在无账户现金时两者才相等）：
+    #         total_for_alloc == totalMarketValue + 账户现金(accountCash)
+    #   语义决策：totalMarketValue **保持**「投资持仓市值（股票+基金）」不变 ——
+    #   前端 pages/stocks.js:42 明确把它标注为「总持仓资产 仅股票+基金」，
+    #   monthly_rebalance_cron 也按它是投资市值来用。账户现金只通过 cash 桶、
+    #   分母、以及新增字段 accountCash 暴露，不污染 totalMarketValue。
     total_for_alloc = equity + bond + cash + gold
 
     allocation = {
@@ -254,7 +354,16 @@ def get_portfolio_overview(user_id: str = "default") -> dict:
                 })
 
     return {
+        # totalMarketValue 语义 = 投资持仓市值（股票 + 基金），**不含**账户现金与
+        # 房产/车辆等其他资产。前端 pages/stocks.js 据此展示「总持仓资产 仅股票+基金」。
         "totalMarketValue": round(total_mv, 2),
+        # 配置分母 = totalMarketValue + accountCash（账户现金）。等价于
+        # allocation 四桶金额之和，供调用方复用统一口径（如 /api/allocation）时取用。
+        "totalForAllocation": round(total_for_alloc, 2),
+        # 本次计入 cash 桶的账户真实现金（已与基金内货币份额去重）。
+        "accountCash": round(account_cash, 2),
+        # 因与基金持仓货币份额重名/同代码而被去重、**未**计入的账户现金（透明度用）。
+        "accountCashDeduped": round(account_cash_deduped, 2),
         "totalCost": round(total_cost, 2),
         "totalPnl": round(total_pnl, 2),
         "totalPnlPct": round(total_pnl_pct, 2),
