@@ -368,6 +368,174 @@ def test_known_unfixed_repo_write_channel_is_documented():
         f"  文件: {flows_path}")
 
 
+# ===========================================================================
+# 「排除运行产物」必须是**精准**的，不是放宽（2026-09-17 补）
+# ===========================================================================
+# 背景：全量首次跑出现过一次守卫报红（「新增 1 项」），紧接着原样重跑就绿了。
+# 一度被归因于「guard_snapshot 没排除 __pycache__ / *.pyc」——**该归因已被
+# 实测推翻**：守卫自 f4a4c64 起就有 _GUARD_SKIP_DIR_NAMES /
+# _GUARD_SKIP_SUFFIXES（见 conftest.py:250-254 与 290-292），且实测让
+# pytest 在守卫树内**真的**生成 .pyc 之后，会话照样退出 0。
+#
+# 但那次报红是真实发生的，所以这里补的是**行为级**钉子。现有那条
+# test_guard_snapshot_ignores_interpreter_caches 是单元级、往 tmp_path 写
+# 一个**假的** .pyc —— 它钉不住「解释器在真实 pytest 会话里现场生成 .pyc」
+# 这条路径，而那正是出问题的路径。
+#
+# 两条必须**成对**存在：少了下面 B 段，一个「把所有文件统统排除掉」的
+# 实现同样能让 A 段绿 —— 那就是把守卫彻底放宽，比假红更糟。
+_PYC_PROBE_PLUGIN = '''
+"""让解释器在受保护目录里**真的**生成 .pyc。
+
+⚠️ 这里**不能**自己写 .py 源文件：在受保护树里新建一个 .py 本身就是
+「真实新增文件」，守卫报它是**对的**（第一版探针就是这么写错的，报红了
+才发现）。真实场景是「.py 已提交、只有 .pyc 是新的」，所以 .py 由父进程
+在子进程启动**之前**建好（这样它进的是基线），本插件只负责 import。
+"""
+import os
+import pathlib
+import sys
+
+
+def pytest_configure(config):
+    target = pathlib.Path(os.environ["{env_var}"])
+
+    # 顶层裸 .pyc：单独验证 _GUARD_SKIP_SUFFIXES 分支（与 __pycache__
+    # 分支是两条不同的代码路径，不能只测一条）
+    (target / "top_level_artifact.pyc").write_bytes(b"\\x00\\x01\\x02")
+
+    # 真实字节码生成：验证 _GUARD_SKIP_DIR_NAMES 的 __pycache__ 分支
+    sys.path.insert(0, str(target))
+    import mod_zz_probe  # noqa: F401  触发真实字节码写入
+'''
+
+
+def _run_child_with_pyc_probe(
+    tmp_path: Path,
+    probe_target: Path,
+    guard_trees: str,
+    timeout: int = 180,
+) -> subprocess.CompletedProcess:
+    """起子进程跑 pytest，并让解释器在受保护目录里真生成 .pyc。
+
+    Args:
+        tmp_path: 放探针插件的目录（不在受保护树内，避免自我污染）。
+        probe_target: 受保护目录（.pyc 会生成在这里）。
+        guard_trees: 传给子进程的 MONEYBAG_PYTEST_GUARD_TREES。
+        timeout: 子进程超时秒数。
+
+    Returns:
+        subprocess.CompletedProcess。
+    """
+    # .py 源文件必须在子进程启动**之前**建好：这样它会被算进守卫基线，
+    # 会话内真正新增的就只有 .pyc —— 这才是要测的东西。
+    (probe_target / "mod_zz_probe.py").write_text(
+        "VALUE = 1\n", encoding="utf-8")
+
+    (tmp_path / "mbguard_pyc_probe.py").write_text(
+        _PYC_PROBE_PLUGIN.format(env_var=_PROBE_TARGET_ENV), encoding="utf-8")
+
+    env = os.environ.copy()
+    env.pop("DATA_DIR", None)
+    env.pop("MONEYBAG_PYTEST_DATA_DIR", None)
+    env[_GUARD_TREES_ENV] = guard_trees
+    env[_PROBE_TARGET_ENV] = str(probe_target)
+    env["PYTHONPATH"] = str(tmp_path)
+    env.pop(_GUARD_ENABLED_ENV, None)
+    # 关键：本机 shell 里 PYTHONDONTWRITEBYTECODE=1，不清掉的话解释器
+    # 一个 .pyc 都不会写，本用例会变成"什么都没测到"的假绿。
+    env.pop("PYTHONDONTWRITEBYTECODE", None)
+
+    return subprocess.run(
+        [sys.executable, "-m", "pytest", _PROBE_TEST,
+         "-q", "-p", "mbguard_pyc_probe", "-p", "no:cacheprovider"],
+        cwd=str(_BACKEND_DIR),
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=timeout,
+    )
+
+
+def test_guard_survives_real_interpreter_bytecode_in_protected_tree(tmp_path):
+    """A 段：解释器在受保护树里**真生成** .pyc → 守卫必须仍然绿。
+
+    这是对「pytest 为新测试文件生成 .pyc 导致首次跑假红」这一归因的
+    直接证伪实验的行为级固化：只要这条绿，那个归因就不成立。
+
+    ⚠️ 前提校验不可省：如果 PYTHONDONTWRITEBYTECODE 把字节码关掉了，
+    子进程根本不会写 .pyc，本用例就会变成恒绿的空转。所以下面先断言
+    .pyc 确实生成了，再断言守卫没报。
+    """
+    decoy = tmp_path / "decoy_protected"
+    decoy.mkdir()
+
+    proc = _run_child_with_pyc_probe(
+        tmp_path, probe_target=decoy, guard_trees=str(decoy))
+
+    generated = sorted(decoy.glob("__pycache__/*.pyc"))
+    assert generated, (
+        "子进程没有真的生成 .pyc —— 本用例会空转（多半是 "
+        "PYTHONDONTWRITEBYTECODE 又混进子进程环境了）。\n"
+        f"  stdout 尾部:\n{proc.stdout[-1200:]}")
+
+    combined = (proc.stdout or "") + (proc.stderr or "")
+    assert proc.returncode == 0, (
+        f"解释器正常生成的 .pyc 让守卫报红了（假红）：{generated}\n"
+        f"  stdout 尾部:\n{proc.stdout[-1500:]}\n"
+        f"  stderr 尾部:\n{proc.stderr[-800:]}")
+    assert "MONEYBAG_WRITE_GUARD" not in combined
+
+
+def test_cache_exclusion_is_precise_not_a_blind_relaxation(tmp_path):
+    """A+B 成对：产物不报，真实垃圾照报 —— 证明是精准排除而非放宽。
+
+    两个方向缺一不可：
+      * 只有 A：一个「排除一切」的实现也能绿，守卫等于被废掉；
+      * 只有 B：一个「什么都不排除」的实现也能红，但会带回 .pyc 假红。
+    """
+    # ---- A 段：产物（真 .pyc + 顶层裸 .pyc）→ 必须绿 ----
+    decoy_a = tmp_path / "decoy_a"
+    decoy_a.mkdir()
+    proc_a = _run_child_with_pyc_probe(
+        tmp_path, probe_target=decoy_a, guard_trees=str(decoy_a))
+    assert sorted(decoy_a.glob("__pycache__/*.pyc")), "A 段前提失效：没生成 .pyc"
+    assert (decoy_a / "top_level_artifact.pyc").exists(), (
+        "A 段前提失效：顶层裸 .pyc 没写进去，_GUARD_SKIP_SUFFIXES 这条分支"
+        "就没被覆盖到")
+    assert proc_a.returncode == 0, (
+        f"产物让守卫报红了（假红）:\n{proc_a.stdout[-1200:]}")
+
+    # ---- B 段：真实垃圾文件 → 必须红 ----
+    decoy_b = tmp_path / "decoy_b"
+    decoy_b.mkdir()
+    (decoy_b / "sentinel.txt").write_text("keep me", encoding="utf-8")
+
+    proc_b = _run_child_pytest(
+        tmp_path, probe_target=decoy_b, guard_trees=str(decoy_b))
+
+    combined_b = (proc_b.stdout or "") + (proc_b.stderr or "")
+    assert proc_b.returncode != 0, (
+        "真实垃圾文件没让守卫报红 —— 排除逻辑被写成了放宽，"
+        "守卫已经失去意义。")
+    assert "MONEYBAG_WRITE_GUARD" in combined_b, (
+        "会话确实失败了，但不是守卫报的，B 段断言是假的。\n"
+        f"  stdout 尾部:\n{proc_b.stdout[-1200:]}")
+
+
+def test_backend_logs_is_still_a_protected_tree():
+    """`backend/logs/` 必须仍在受保护清单里 —— 不许借"排除产物"顺手放宽。
+
+    `backend/logs/llm_balance_monitor.log` 是历史上真实被写脏过的文件
+    （645KB），把它排除掉等于把守卫的战果退回去。
+    """
+    from conftest import _DEFAULT_GUARD_TREES  # noqa: PLC0415
+
+    resolved = {str(Path(p).resolve()) for p in _DEFAULT_GUARD_TREES}
+    assert str((_BACKEND_DIR / "logs").resolve()) in resolved, (
+        f"backend/logs 不在受保护清单里了: {resolved}")
+
+
 def test_unnormalized_dotdot_is_the_monitor_dir_root_cause():
     """sys.path 里未归一化的 ".." 会让 Path(__file__).parent.* 算错目录。
 
