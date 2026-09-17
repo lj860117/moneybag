@@ -558,7 +558,9 @@ check_endpoint "$BASE/api/steward/briefing?userId=LeiJiang"        "MB-018 晨�
 check_endpoint "$BASE/api/steward/briefing-history?userId=default" "MB-005 往期晨报"
 
 # 验证新闻条数
-NEWS_COUNT=$(curl -s "$BASE/api/news?limit=20" | python3 -c "import sys,json;d=json.load(sys.stdin);print(len(d.get('news',[])))" 2>/dev/null || echo "?")
+# 这行不参与 SMOKE_FAIL 判定，但要给 --max-time：否则端点挂死时整次部署会卡在
+# 这里（curl 没有默认超时），而屏幕上的表现和"部署卡住"一模一样。
+NEWS_COUNT=$(curl -s --noproxy "${SMOKE_NOPROXY:-*}" --max-time 30 "$BASE/api/news?limit=20" | python3 -c "import sys,json;d=json.load(sys.stdin);print(len(d.get('news',[])))" 2>/dev/null || echo "?")
 echo "  📰 新闻条数: $NEWS_COUNT (期望 ≥15)"
 
 # 措辞避免 $SMOKE_FAIL/$SMOKE_TOTAL 这种分数式写法：「1/8 项失败」容易被读成
