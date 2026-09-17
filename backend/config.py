@@ -26,16 +26,50 @@ PUSH_ARCHIVE_DIR = DATA_DIR / "logs" / "pushes"
 #
 # ⚠️ 生产（systemd 注入 DATA_DIR 的 API 进程）**不设**这个变量，
 #    因此生产行为与改动前逐字节一致 —— 这是能直接发版的前提。
-#    需要它们的服务在启动时自己 ensure 一次即可（第二步的 ensure_dirs()
-#    会把这件事收敛成显式调用，届时本开关即可退役）。
+#    需要它们的服务在启动时自己 ensure 一次即可（见下方 ensure_dirs()）。
+#
+# ---- 第二步（v9.9.51）的评估结论：**不退役 import 期 mkdir** ----
+# 原计划是"把建目录收敛成显式调用，届时本开关即可退役"。穷举入口后判定不划算，
+# 结论落盘于此，请勿当成未完成的承诺反复捡起：
+#   本仓有 **30 个进程入口**（main.py + services/ 下 2 个带 __main__ 的 +
+#   scripts/ 下 27 个 cron/工具脚本）。改成逐个显式调用，意味着**漏一个就有
+#   一个入口起不来**，而收益仅是"消除 import 副作用"——该副作用当前已被三道
+#   防线覆盖：①本开关（测试侧 conftest 用它 + 指向 tmp 的 DATA_DIR）；
+#   ②生产 systemd 注入 DATA_DIR；③下方启动期路径自检（打印 source=env/default
+#   并在缺失时显式告警）。2026-09-18 的干净 checkout 全量实测（clone 到 /tmp、
+#   不含任何 gitignore 产物）也是全绿、未凭空建出任何受保护目录。
+#   故：保留 import 期 mkdir 以保证 30 个入口的零风险；把风险敞口换成
+#   **可观测性**——即下面这行"新建目录"告警，让副作用显形而非静默发生。
 _SKIP_DIR_BOOTSTRAP = os.environ.get(
     "MONEYBAG_SKIP_DIR_BOOTSTRAP", "").strip().lower() in ("1", "true", "yes", "on")
 
+# 需要保证存在的持久化目录。顺序：父目录在前（ensure_dirs 内部亦用 parents=True）。
+_BOOTSTRAP_DIRS = (DATA_DIR, USERS_DIR, RECEIPTS_DIR, PUSH_ARCHIVE_DIR)
+
+
+def ensure_dirs() -> list:
+    """显式确保持久化目录存在，返回**本次新建**的目录列表。
+
+    供"将来想收窄 import 副作用的进程入口"显式调用（当前 import 期仍会调它，
+    行为与本函数引入前逐字节一致）。返回值只用于日志/诊断——正常存在的目录
+    不会出现在返回列表里，所以"凭空造出一棵树"这件事可以被一眼看见。
+    """
+    created = []
+    for _d in _BOOTSTRAP_DIRS:
+        if not _d.exists():
+            created.append(_d)
+        _d.mkdir(parents=True, exist_ok=True)
+    return created
+
+
 if not _SKIP_DIR_BOOTSTRAP:
-    DATA_DIR.mkdir(parents=True, exist_ok=True)
-    USERS_DIR.mkdir(exist_ok=True)
-    RECEIPTS_DIR.mkdir(exist_ok=True)
-    PUSH_ARCHIVE_DIR.mkdir(parents=True, exist_ok=True)
+    _created_now = ensure_dirs()
+    if _created_now:
+        # 显形：`import config` 这种"顺手"的动作不该静默造出一整棵目录树。
+        # 服务器上 /opt/moneybag 那棵 **8KB、0 个文件**、从未被使用的 backend/data
+        # 就是这么来的 —— 它不是 bug 的症状，它本身就是 bug。
+        print(f"[CONFIG] ⚠️ import config 新建了 {len(_created_now)} 个目录："
+              f"{', '.join(str(_p) for _p in _created_now)}", flush=True)
 else:
     print(f"[CONFIG] MONEYBAG_SKIP_DIR_BOOTSTRAP=1，已跳过 import 期建目录；"
           f"DATA_DIR={DATA_DIR}（目录未创建，调用方需自行确保）", flush=True)

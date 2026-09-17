@@ -35,9 +35,13 @@ async def _aiter_blocking(gen: Iterator[Any]) -> AsyncIterator[Any]:
     每次 ``next()`` 都会同步阻塞整个事件循环 —— 一个用户的流式对话进行期间，
     同进程其它请求（健康检查、cron 打进 API 的调用等）全部被卡住。
 
-    做法：每个元素用 ``asyncio.to_thread(next, it, _SENTINEL)`` 到默认线程池取一次。
+    做法：每个元素用 ``asyncio.to_thread(next, it, _sentinel)`` 到默认线程池取一次。
     网络 read 阻塞的是工作线程，event loop 全程可调度其它任务。语义与直接 for
     完全一致：StopIteration 用哨兵对象判定，生成器内抛出的异常按原样透传。
+
+    ⚠️ 为什么必须用哨兵而不是 ``next(it)``：``StopIteration`` 一旦在 coroutine
+    里被抛出会被解释器转成 ``RuntimeError``（PEP 479），``await to_thread(next, it)``
+    在生成器正常结束时必然踩中。哨兵是让"正常结束"从返回值而非异常通道传出。
 
     取舍（已知代价，勿盲目照搬）：
     ① 每次取一个 chunk 会占用一个线程池线程（默认池 min(32, cpu+4)），
