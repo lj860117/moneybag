@@ -466,6 +466,34 @@ function _mergeDecisionPayload(base, dec) {
   return merged;
 }
 
+// v9.9.48: 场内/场外判据 —— **数据驱动**，不再猜基金代码数字段。
+const _FUND_CHANNEL_LOF_MARKER_RE = /[(（][^)）]*LOF[^)）]*[)）]/;
+
+function _classifyFundChannel(d) {
+  const item = d || {};
+  const name = String(item.name || '');
+  const purchase = item.purchase || {};
+  // ① 天天基金「申购状态」（后端 /api/fund/detail 与 /api/fund-holdings/detail 均下发）。
+  //    实测 38 只生产样本：ETF 10/10 为「场内交易」，非场内 28/28 均不是 —— 精度/召回 100%。
+  //    场外基金的状态是「开放申购/限大额/暂停申购」，LOF 也走场外状态（两种渠道都能买），
+  //    所以这一条只用于识别「只能场内买卖」的 ETF。
+  const status = String(purchase.purchase_status || '');
+  const exchangeOnly = status === '场内交易';
+  // ② 法定名称里的 ETF 标记。排除「联接」：ETF 联接是**场外** feeder 基金
+  //    （实测 000051 / 110020 的 purchase_status 都是「开放申购」）。
+  const isETFName = name.indexOf('ETF') >= 0 && name.indexOf('联接') < 0;
+  // ③ 法定名称里的括号 LOF 标记，含 (QDII-LOF) / (QDII-LOF-FOF) 这类复合后缀。
+  const isLOFName = _FUND_CHANNEL_LOF_MARKER_RE.test(name);
+  const isExchange = exchangeOnly || isETFName || isLOFName;
+  return {
+    isExchange: isExchange,
+    isETF: isETFName || (exchangeOnly && !isLOFName),
+    isLOF: isLOFName,
+    exchangeOnly: exchangeOnly,
+    basis: exchangeOnly ? 'purchase_status' : (isETFName ? 'name_etf' : (isLOFName ? 'name_lof' : 'otc')),
+  };
+}
+
 window._prefetchFundDetail = async function(code, name, opts={}) {
   try {
     return await _fetchFundDetailPayload(code, getProfileId(), { timeoutMs: opts.timeoutMs || 20000, force: opts.force });
@@ -743,13 +771,10 @@ window.showFundDetailModal = async function(code, name) {
 
     // v9.5.128: 场内/场外标识 + 购买渠道引导
     {
-      const name = d.name || '';
       const code = d.code || '';
-      const fundType = (d.fund_type || '').toLowerCase();
-      // 判断场内基金：LOF/ETF/ETF联接(LOF后缀) / 代码5开头(部分沪市LOF) / 基金类型含ETF
-      const isLOF = name.includes('(LOF)') || name.includes('（LOF）') || code.startsWith('5');
-      const isETF = name.includes('ETF') && !name.includes('联接');
-      const isExchange = isLOF || isETF;
+      const ch = _classifyFundChannel(d);
+      const isETF = ch.isETF;
+      const isExchange = ch.isExchange;
 
       if(isExchange) {
         // 场内基金
