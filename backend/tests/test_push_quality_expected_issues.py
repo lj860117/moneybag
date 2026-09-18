@@ -101,6 +101,19 @@ def _text_channel(monkeypatch):
     monkeypatch.delenv("WXWORK_FORCE_MARKDOWN", raising=False)
 
 
+@pytest.fixture(autouse=True)
+def _no_network_nav(monkeypatch):
+    """本文件只关心「预期类 issue 分类」，不关心净值核对。
+
+    v9.9.54 起 evaluate_push_quality 会真的去取净值（_build_actual_data）——
+    单测**绝不允许**打真实数据源。这里把取数换成空实现（等价于「全部取不到
+    净值 → 进 checks_skipped」），issue 计数不受影响（skipped 不产生 issue）。
+    净值核对本身的行为由 test_push_quality_hallucination_nav.py 覆盖。
+    """
+    monkeypatch.setattr(qc, "_build_actual_data", lambda push_date, codes: {})
+
+
+
 # ------------------------------------------------------------------
 # ① 只有长度类 → PASS，但信息必须还在
 # ------------------------------------------------------------------

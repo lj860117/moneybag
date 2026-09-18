@@ -126,46 +126,298 @@ def check_truncation(content: str) -> list:
     return issues
 
 
-def check_hallucination(push_file: str, actual_data: dict) -> list:
+# ===========================================================================
+# 净值核对 / 内部一致性检查（v9.9.54：原「幻觉检查」空转根治）
+# ===========================================================================
+#
+# 背景（2026-09-18 深挖）：`check_hallucination()` 从上线起**每天空转**。
+# 调用处 `evaluate_push_quality` 里 `actual_data = {}` 恒空，于是
+# `actual_data.get("funds", ...).get(code, {}).get("change_pct")` 恒为 None、
+# `actual_pct is not None` 永不成立 —— 所有分支都进不去，只被如实记进
+# `checks_skipped`。这个「看起来在监工、其实没在监工」的环节本次根治。
+#
+# 原「检查1（基金涨跌幅）」的语义本身也是错的：它用正则抓晨报「持仓明细」行
+# 的百分比，而那一列是**持仓浮盈亏率** ((现净值-加权成本)/加权成本)，**不是
+# 当日涨跌幅**。`actual_data["funds"][code]["change_pct"]` 的契约是当日涨跌幅
+# （±3% 量级），拿 55.4% 去比 0.5% 必然每条都报错。所以本轮把「检查1」整体
+# 换成**净值核对**。
+#
+# 净值口径实测（生产 get_fund_nav_history，累计净值口径，与晨报同源）：
+#   铁律：晨报日期 D 的「现净值」= **严格早于 D 的最后一个交易日**的净值。
+#   晨报 08:30 生成，那时能拿到的最新净值就是前一交易日的。
+#   002163: 9-15=4.0314  9-16=4.1639  9-17=4.1558
+#   ⇒ 9-16 晨报「现4.031」= 9-15 净值；9-17「现4.164」= 9-16 净值；…
+#
+# 原「检查2（板块涨跌幅）」的正则（匹配「某某板块 … 数字%」的写法）
+# 实测在 5 天真实晨报里**全部 0 命中**：晨报里「板块」只出现在 AI 研判的自由
+# 文本（"AI/芯片板块强势"、"…等板块有热点"）后面都没有「数字%」；真正带涨跌幅
+# 的行业行是「🏭 【行业热点】(前日)」段的另一种格式（且是「前日」数据，本轮
+# 无当日数据源可核对）。留着一个永远匹配不上的正则在代码里充当「检查」，会让
+# 下一个人误以为它在工作 —— 本轮**直接删除**，替换为下面这套**纯内部一致性**
+# 检查（不需要任何外部数据源，不会因数据源抖动而误报）。
+#
+# ⚠️ 本脚本被 cron 每天 22:00 跑（`--date today --user LeiJiang --alert`），
+#    误报会真发企微告警打扰用户 → 容差宁可放宽，也不要造出天天误报的检查。
+
+# 持仓明细行（净值正常）：
+#   • 东方惠新灵活配置混合C(002163)  买入2.594 → 现4.156  ▲60.2%  ¥160.2
+# 名称用惰性匹配 `[^\n]*?`（不跨行）+ 6 位代码锚点，兼容历史上出现过的
+# 「浦银安盛全球智能科技(Q(006555)」这种**名称被括号吐到一半**的旧存档
+# （名称里带未闭合 `(` 时，仍能正确捕获代码 006555）。
+_POSITION_ROW_RE = re.compile(
+    r"•\s*(?P<name>[^\n]*?)\((?P<code>\d{6})\)\s*"
+    r"买入\s*(?P<buy>\d+(?:\.\d+)?)\s*→\s*"
+    r"现\s*(?P<cur>\d+(?:\.\d+)?)\s+"
+    r"(?P<arrow>[▲▼])\s*(?P<pct>\d+(?:\.\d+)?)\s*%\s*"
+    r"¥\s*(?P<val>\d+(?:\.\d+)?)"
+)
+
+# 持仓明细行（净值缺失）：
+#   • 华夏全球科技先锋混合(005698)  买入3.530 → 现净值缺失 ⚠️  ¥75.0（按成本计）
+# 这类行**没有「现Y」可核对**，但它的 ¥V（按成本计）仍要计入块级市值合计 ——
+# 漏掉它会让「当前市值 ≈ Σ¥V」的块级检查误报。
+_POSITION_ROW_MISSING_RE = re.compile(
+    r"•\s*(?P<name>[^\n]*?)\((?P<code>\d{6})\)\s*"
+    r"买入\s*(?P<buy>\d+(?:\.\d+)?)\s*→\s*现净值缺失"
+    r"[^\n]*?¥\s*(?P<val>\d+(?:\.\d+)?)"
+)
+
+# 组合温度计汇总行：  总投入 ¥709  当前市值 ¥743  整体浮盈 📈 +4.8%
+_SUMMARY_RE = re.compile(
+    r"总投入\s*¥\s*(?P<cost>\d+(?:\.\d+)?)\s+"
+    r"当前市值\s*¥\s*(?P<val>\d+(?:\.\d+)?)\s+"
+    r"整体浮盈\s*(?:📈|📉)?\s*(?P<pct>[+-]?\d+(?:\.\d+)?)\s*%"
+)
+
+# 容差常量（集中放这里，便于复核与故障注入）
+NAV_TOLERANCE = 0.001          # 净值：晨报用 .3f 显示（四舍五入）
+ROW_PCT_TOLERANCE = 0.15       # 行浮盈率：晨报用 .1f；加权成本另有 .3f 显示损失
+SUMMARY_VALUE_TOLERANCE = 1.0  # 当前市值 ¥..（.0f）≈ Σ 各行 ¥V（.1f）
+SUMMARY_PCT_TOLERANCE = 1.0    # 整体浮盈%（由 .0f 的投入/市值反推，round 损失大）
+
+_DATE_ANY_RE = re.compile(r"(\d{4})[-/]?(\d{2})[-/]?(\d{2})")
+
+
+def _norm_date(raw) -> str:
+    """把各种净值日期写法归一到 YYYY-MM-DD（供字符串比较即日期比较）。
+
+    兼容 akshare 可能返回的 "2026-09-17" / "2026-09-17 00:00:00" /
+    "20260917" / "2026/09/17"。归一后字典序比较即日期序比较。
     """
-    检查推送内容是否有幻觉（AI生成的数字 vs 实际数据）
-    
+    if raw is None:
+        return ""
+    m = _DATE_ANY_RE.search(str(raw).strip())
+    if not m:
+        return ""
+    return f"{m.group(1)}-{m.group(2)}-{m.group(3)}"
+
+
+def _nav_strictly_before(history: list, push_date: str):
+    """从净值序列里取**严格早于 push_date 的最后一个交易日**的净值。
+
     Args:
-        push_file: 推送存档文件路径
-        actual_data: 实际数据（从API获取）
-    
+        history: ``get_fund_nav_history`` 的返回，元素形如
+            ``{"date": "YYYY-MM-DD", "nav": float, "rate": None}``。
+        push_date: 晨报日期（YYYY-MM-DD）。
+
     Returns:
-        list: 检测到的问题列表
+        float 净值；取不到返回 None（**绝不编 0、绝不拿成本顶替**）。
     """
-    issues = []
-    
+    if not history or not push_date:
+        return None
+    best_date = ""
+    best_nav = None
+    for row in history:
+        d = _norm_date(row.get("date"))
+        if not d or d >= push_date:      # 必须**严格早于**，等于/晚于都排除
+            continue
+        try:
+            nav = float(row.get("nav"))
+        except (TypeError, ValueError):
+            continue
+        if nav <= 0:                     # 0 / 负值一律视为无效
+            continue
+        if d > best_date:
+            best_date = d
+            best_nav = nav
+    return best_nav
+
+
+def _build_actual_data(push_date: str, codes: list) -> dict:
+    """构建「真实净值」字典 ``{code: nav}`` 供净值核对使用。
+
+    Args:
+        push_date: 晨报日期（YYYY-MM-DD）。
+        codes: 需要核对的基金代码列表。
+
+    Returns:
+        dict: ``{code: 严格早于 push_date 的最后交易日净值}``。
+            **取不到的 code 不会出现在字典里**（绝不编 0 或拿成本顶替），
+            由调用方如实记入 skipped / 告警 —— 本项目铁律：不允许静默失效。
+    """
+    from services.fund_monitor import get_fund_nav_history
+
+    actual: dict = {}
+    for code in codes:
+        try:
+            history = get_fund_nav_history(code, days=30)
+        except Exception as e:           # 数据源异常 → 当作取不到，不编数
+            print(f"[QUALITY] 取 {code} 净值历史失败：{e}")
+            history = None
+        nav = _nav_strictly_before(history, push_date)
+        if nav is None:
+            print(f"[QUALITY] {code} 无严格早于 {push_date} 的净值，跳过核对")
+            continue
+        actual[code] = nav
+    return actual
+
+
+def _parse_position_rows(content: str) -> list:
+    """解析晨报「持仓明细」行为结构化数据。
+
+    Returns:
+        list[dict]: 每行含 name/code/buy/cur/pct/value/navMissing。
+            净值缺失行的 cur/pct 为 None，value 为「按成本计」的市值。
+    """
+    rows: list = []
+    for m in _POSITION_ROW_RE.finditer(content):
+        rows.append({
+            "name": m.group("name").strip(),
+            "code": m.group("code"),
+            "buy": float(m.group("buy")),
+            "cur": float(m.group("cur")),
+            "pct": float(m.group("pct")),   # 显示的**绝对值**；方向看 arrow
+            "arrow": m.group("arrow"),      # ▲ / ▼
+            "value": float(m.group("val")),
+            "navMissing": False,
+        })
+    for m in _POSITION_ROW_MISSING_RE.finditer(content):
+        rows.append({
+            "name": m.group("name").strip(),
+            "code": m.group("code"),
+            "buy": float(m.group("buy")),
+            "cur": None,
+            "pct": None,
+            "arrow": "",
+            "value": float(m.group("val")),
+            "navMissing": True,
+        })
+    return rows
+
+
+def _extract_push_date(push_file: str, content: str = "") -> str:
+    """从存档文件名（优先）或正文头取晨报日期 YYYY-MM-DD。取不到返回空串。"""
+    m = _DATE_ANY_RE.search(os.path.basename(push_file))
+    if m:
+        return f"{m.group(1)}-{m.group(2)}-{m.group(3)}"
+    m = _DATE_ANY_RE.search(content or "")
+    if m:
+        return f"{m.group(1)}-{m.group(2)}-{m.group(3)}"
+    return ""
+
+
+def check_hallucination_classified(push_file: str, actual_data: dict) -> tuple:
+    """核对晨报里的数字，返回 ``(issues, skipped)``。
+
+    三块检查：
+
+      1) **净值核对**：晨报「现Y」vs 真实净值，容差 ``NAV_TOLERANCE``=0.001。
+         code 取不到净值 → 进 ``skipped``（**不得当作通过**）。
+      2) **逐行内部一致性**：``round((Y-X)/X*100, 1)`` 应等于显示的 Z，
+         容差 ``ROW_PCT_TOLERANCE``=0.15。
+      3) **逐块内部一致性**：当前市值 ≈ Σ各行 ¥V（容差 1）；
+         整体浮盈% ≈ ``(市值-投入)/投入*100``（容差 1.0，因投入/市值是 .0f）。
+
+    ⚠️ 本函数**不做任何外部取数** —— 真实净值由 ``actual_data`` 注入，取数在
+    ``_build_actual_data`` 里，职责分离，便于测试。
+
+    Returns:
+        tuple: ``(issues, skipped)``。issues 是真问题；skipped 是「未能核对」的
+            如实记录（进 ``results["checks_skipped"]``，绝不静默通过）。
+    """
+    issues: list = []
+    skipped: list = []
+
     with open(push_file, "r", encoding="utf-8") as f:
         content = f.read()
-    
-    # 检查1：基金涨跌幅是否准确
-    fund_mentions = re.findall(r'([^\n\s]+)\((\d{6})\)[^\n]*?([+-]?\d+\.\d+)%', content)
-    for fund_name, fund_code, mentioned_pct in fund_mentions:
-        actual_pct = actual_data.get("funds", {}).get(fund_code, {}).get("change_pct")
-        if actual_pct is not None:
-            diff = abs(float(mentioned_pct) - actual_pct)
-            if diff > 0.5:  # 误差超过 0.5%
+
+    rows = _parse_position_rows(content)
+
+    for r in rows:
+        code = r["code"]
+        label = f"{r['name']}({code})"
+
+        # --- 2) 逐行内部一致性：显示浮盈率 == 由买入/现价反推的浮盈率 ---
+        # ⚠️ 晨报把涨跌**方向**放在 ▲/▼ 里、数字本身是**绝对值**
+        #    （night_worker 渲染 `{arrow}{abs(float_pct):.1f}%`）。所以要先把
+        #    ▼ 还原成负号再比，否则每一行都"差 2×|浮盈率|"、必然全量误报。
+        if r["buy"] > 0 and r["cur"] is not None:
+            calc_pct = round((r["cur"] - r["buy"]) / r["buy"] * 100, 1)
+            shown_pct = r["pct"] if r["arrow"] == "▲" else -r["pct"]
+            if abs(calc_pct - shown_pct) > ROW_PCT_TOLERANCE:
                 issues.append(
-                    f"⚠️ 涨跌幅不匹配：AI 说 {fund_name} {mentioned_pct}%，"
-                    f"实际 {actual_pct:.2f}%（差 {diff:.2f}%）"
+                    f"⚠️ 内部不一致：{label} 买入{r['buy']:.3f} → 现{r['cur']:.3f} "
+                    f"应显示 {calc_pct:+.1f}%，晨报显示 {shown_pct:+.1f}%（差 "
+                    f"{abs(calc_pct - shown_pct):.1f}%）"
                 )
-    
-    # 检查2：板块描述是否准确
-    sector_mentions = re.findall(r'(科技|消费|医药|金融|地产|新能源)板块[^\n]*?([+-]?\d+\.\d+)%', content)
-    for sector_name, mentioned_pct in sector_mentions:
-        actual_pct = actual_data.get("sectors", {}).get(sector_name, {}).get("change_pct")
-        if actual_pct is not None:
-            diff = abs(float(mentioned_pct) - actual_pct)
-            if diff > 1.0:  # 误差超过 1%
+
+        # --- 1) 净值核对 ---
+        if r["navMissing"]:
+            # 晨报自己已标注「现净值缺失」，无从核对 → 如实记 skipped
+            skipped.append(f"hallucination_nav_missing:{code}")
+            continue
+        actual_nav = actual_data.get(code)
+        if actual_nav is None:
+            skipped.append(f"hallucination_nav_missing:{code}")
+            continue
+        diff = abs(r["cur"] - actual_nav)
+        if diff > NAV_TOLERANCE:
+            issues.append(
+                f"⚠️ 净值不符：{label} 晨报 {r['cur']:.3f}，实际 "
+                f"{actual_nav:.4f}（差 {diff:.4f}）"
+            )
+
+    # --- 3) 逐块（组合温度计）内部一致性 ---
+    m = _SUMMARY_RE.search(content)
+    if m:
+        cost = float(m.group("cost"))
+        total_val = float(m.group("val"))
+        overall_pct = float(m.group("pct"))
+
+        values = [r["value"] for r in rows if r["value"] is not None]
+        if values:
+            row_sum = sum(values)
+            if abs(row_sum - total_val) > SUMMARY_VALUE_TOLERANCE:
                 issues.append(
-                    f"⚠️ 板块涨跌幅不匹配：AI 说 {sector_name} 板块 {mentioned_pct}%，"
-                    f"实际 {actual_pct:.2f}%（差 {diff:.2f}%）"
+                    f"⚠️ 内部不一致：持仓各行市值合计 ¥{row_sum:.1f} 与"
+                    f"「当前市值 ¥{total_val:.0f}」不符"
+                    f"（差 {abs(row_sum - total_val):.1f}）"
                 )
-    
+        if cost > 0:
+            calc_overall = (total_val - cost) / cost * 100
+            if abs(calc_overall - overall_pct) > SUMMARY_PCT_TOLERANCE:
+                issues.append(
+                    f"⚠️ 内部不一致：整体浮盈应为 {calc_overall:+.1f}%，"
+                    f"晨报显示 {overall_pct:+.1f}%"
+                )
+
+    return issues, skipped
+
+
+def check_hallucination(push_file: str, actual_data: dict) -> list:
+    """核对晨报数字（向后兼容壳，只返回 issues）。
+
+    真正的判定在 ``check_hallucination_classified``（它多返回一个 skipped
+    列表）。保持本函数签名与返回类型不变，既有调用方 / 测试不受影响。
+
+    Args:
+        push_file: 推送存档文件路径。
+        actual_data: ``{code: nav}``，由 ``_build_actual_data`` 构建。
+
+    Returns:
+        list: 检测到的问题列表。
+    """
+    issues, _skipped = check_hallucination_classified(push_file, actual_data)
     return issues
 
 
@@ -444,14 +696,18 @@ def resolve_date_arg(date_arg) -> str:
     )
 
 
-def evaluate_push_quality(date_str: str, user_id: str = "LeiJiang") -> dict:
+def evaluate_push_quality(date_str: str, user_id: str = "LeiJiang",
+                          actual_data_provider=None) -> dict:
     """
     评估指定日期的推送质量
-    
+
     Args:
         date_str: 日期字符串（如 "2026-06-16"）
         user_id: 用户ID
-    
+        actual_data_provider: 可选，``provider(push_date, codes) -> {code: nav}``。
+            默认 None 时用真实取数 ``_build_actual_data``（生产路径）。测试可注入
+            假 provider 以保持**无网络**（本仓铁律：单测不得打真实数据源）。
+
     Returns:
         dict: 评估结果
     """
@@ -504,17 +760,27 @@ def evaluate_push_quality(date_str: str, user_id: str = "LeiJiang") -> dict:
         issues = []
         expected: list = []
         issues.extend(check_truncation(content))
-        
-        # 获取实际数据（用于幻觉检查）
-        # TODO(v9.9.24 P0-2)：actual_data 恒为空 → check_hallucination 里的
-        # `actual_pct is not None` 永远不成立，幻觉检查同样是空跑。这里先如实
-        # 记进 checks_skipped（不上报成 issue，避免 P0-2 落地前天天刷告警），
-        # 由 P0-2 接真实数据源后消除。
-        actual_data = {}
-        if not actual_data:
+
+        # 净值核对（v9.9.54）：取「严格早于晨报日期 D 的最后一个交易日」的真实
+        # 净值，核对晨报「持仓明细」里的「现净值」，并做逐行/逐块内部一致性检查。
+        #
+        # 原来这里是 `actual_data = {}` 恒空 → 幻觉检查每天空转，只被记进
+        # checks_skipped。现在真正取数。**取不到的 code 如实进 skipped**
+        # （本项目铁律：不允许静默失效，也不允许把「没核对」当「通过」）。
+        push_date = _extract_push_date(str(push_file), content)
+        position_rows = _parse_position_rows(content)
+        codes = [r["code"] for r in position_rows if not r["navMissing"]]
+        provider = actual_data_provider or _build_actual_data
+        actual_data = provider(push_date, codes) if codes else {}
+        hall_issues, hall_skipped = check_hallucination_classified(
+            str(push_file), actual_data
+        )
+        issues.extend(hall_issues)
+        results["checks_skipped"].extend(hall_skipped)
+        if codes and not actual_data:
+            # 有需要核对的持仓、却一条净值都没取到 → 本检查整体不可用，如实记录
             results["checks_skipped"].append("hallucination")
-        issues.extend(check_hallucination(str(push_file), actual_data))
-        
+
         issues.extend(check_data_source(str(push_file)))
         issues.extend(check_ai_quality(str(push_file)))
 
