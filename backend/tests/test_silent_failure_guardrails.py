@@ -527,8 +527,20 @@ def _thermometer_with_txns(txns: list, nav_by_code: dict, tmp_path: Path) -> str
         return [{"date": "2026-09-07", "nav": nv, "rate": 0.0},
                 {"date": "2026-09-04", "nav": nv, "rate": 0.0}]
 
+    # v9.9.x 晨报口径 P0：温度计的现净值改取**单位净值**（market_data.get_fund_nav，
+    # 优先 official_nav）。这里提供同值替身，让本文件的既有用例继续以「单位净值=
+    # 现净值」的语义驱动温度计；get_fund_nav_history 的替身保留，用于反向证明
+    # 温度计不再采信累计口径。
+    def _fake_unit_nav(code):
+        nv = nav_by_code.get(code)
+        if not nv:
+            return {"code": code, "nav": "N/A", "date": "N/A", "change": "0"}
+        return {"code": code, "nav": str(nv), "official_nav": str(nv),
+                "date": "2026-09-07", "change": "0"}
+
     with mock.patch.dict("os.environ", {"USERS_DIR": str(users_dir)}), \
          mock.patch.object(nw, "config", config), \
+         mock.patch("services.market_data.get_fund_nav", side_effect=_fake_unit_nav), \
          mock.patch("services.fund_monitor.get_fund_nav_history", side_effect=_fake_hist):
         return nw._build_portfolio_thermometer(uid)
 

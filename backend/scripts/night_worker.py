@@ -952,10 +952,59 @@ from services.fund_name_util import balanced_bracket_prefix_len as _balanced_bra
 from services.fund_name_util import shorten_fund_name as _shorten_fund_name  # noqa: E402
 
 
+def _fetch_unit_nav(code: str) -> tuple:
+    """取单只基金的**单位净值**（持仓对账口径），返回 ``(净值, 净值日期)``。
+
+    为什么必须是**单位净值**、而不是累计净值
+    ----------------------------------------
+    组合温度计的「市值 / 浮盈」必须与「成本净值」同口径：
+      - 成本净值 ``costNav`` 是**单位净值**口径 —— 用户按「金额 / 份额」录入，
+        例：200 / 45.23 = 4.4218；
+      - 市值       = 单位净值 × 持有份额；
+      - 浮动盈亏率 = (单位净值 − 加权买入净值) / 加权买入净值。
+
+    ``services.fund_monitor.get_fund_nav_history`` 用的是**累计净值走势**
+    （含分红再投资），那个口径对「回撤 / 波动率 / 回测」是正确的，但**不能**
+    当"现净值"去算市值 —— 有分红历史的基金累计净值远高于单位净值（实测
+    163406 兴全合润混合A accum/unit≈3.803×），拿它算市值会**虚增 accum/unit
+    倍**的市值与浮盈。真实事故：某组合真实 −7.58%，晨报却显示 +118.6%，
+    虚增 ¥769.58。
+
+    本函数走 ``services.market_data.get_fund_nav``（fundgz 的 ``dwjz`` 单位
+    净值，与 Web 端 ``unified_networth`` / ``portfolio_overview`` 同口径），
+    优先取 ``official_nav``（T-1 官方单位净值），回落 ``nav``。
+
+    Args:
+        code: 基金代码（6 位）。
+
+    Returns:
+        ``(cur_nav, nav_date)``。净值取不到 / 为 ``"N/A"`` / 解析失败 →
+        ``(0.0, "")``，交由调用方按「净值缺失」处理（**不**静默用成本顶替）。
+    """
+    try:
+        from services.market_data import get_fund_nav
+        data = get_fund_nav(code) or {}
+    except Exception as e:  # noqa: BLE001 - 任何数据源异常都视为"取不到"
+        print(f"[HOLDINGS] ⚠️ {code} 单位净值获取异常: {e}")
+        return 0.0, ""
+    # 优先 official_nav（dwjz，T-1 官方单位净值）；回落 nav（同为单值口径）。
+    raw = data.get("official_nav")
+    if raw in (None, "", "N/A"):
+        raw = data.get("nav")
+    try:
+        val = float(raw)
+    except (TypeError, ValueError):
+        return 0.0, ""
+    if val <= 0:
+        return 0.0, ""
+    return val, str(data.get("date") or "")
+
+
 def _build_portfolio_thermometer(uid: str) -> str:
     """计算持仓浮盈/仓位快照，返回格式化文本供晨报和诊断使用。
 
-    从 V4 transactions 读成本，从 fund_nav_history 读最新净值，纯算术，无 LLM。
+    从 V4 transactions 读成本，用 **_fetch_unit_nav 的单位净值**（与成本净值同
+    口径；**不是** get_fund_nav_history 的累计净值），纯算术，无 LLM。
     输出示例：
     📊 组合温度计（截至昨日收盘）
     总投入 ¥709  当前市值 ¥758  整体浮盈 +6.9%
@@ -1052,9 +1101,7 @@ def _build_portfolio_thermometer(uid: str) -> str:
         if not active_holdings:
             return ""
 
-        # 拉最新净值
-        from services.fund_monitor import get_fund_nav_history
-
+        # 拉最新净值（**单位净值**口径，见 _fetch_unit_nav 的口径说明）
         total_cost = 0.0
         total_val = 0.0
         nav_missing_codes = []
@@ -1068,8 +1115,10 @@ def _build_portfolio_thermometer(uid: str) -> str:
             else:
                 wt_nav = 0.0
 
-            navs = get_fund_nav_history(code, days=3)
-            cur_nav = navs[-1]["nav"] if navs and navs[-1].get("nav") else 0.0
+            # v9.9.x FIX（晨报口径 P0）：现净值必须取**单位净值**，不能用
+            # get_fund_nav_history 的累计净值 —— 市值 = 单位净值 × 份额，
+            # 用累计净值会把市值虚增 accum/unit 倍（详见 _fetch_unit_nav 注释）。
+            cur_nav, _nav_date = _fetch_unit_nav(code)
 
             # v9.9.12 FIX-H2：净值取不到时**不再静默用成本顶替**。
             # 旧写法 `cur_val = cur_nav * shares if cur_nav > 0 else cost_amount`
