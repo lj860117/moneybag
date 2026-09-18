@@ -411,7 +411,18 @@ class AkshareProvider:
         AKShare v1.18+ API: fund_open_fund_info_em(symbol=code, indicator='单位净值走势')
         返回 DataFrame: [净值日期, 单位净值, 累计净值] 或 [净值日期, 单位净值, 日增长率]
         """
-        cache_key = f"ak_fund_nav_{symbol}"
+        # ⚠️ 缓存键必须纳入 indicator（2026-09-18 P0，勿改回 f"ak_fund_nav_{symbol}"）。
+        #
+        # 两种走势返回**不同列名、不同数值**，共用一个键会让口径随调用顺序漂移：
+        #   "单位净值走势" → [净值日期, 单位净值, 日增长率]（单位净值，如 2.2401）
+        #   "累计净值走势" → [净值日期, 累计净值]           （累计净值，如 8.5191）
+        # 先到的那个把帧写进 _macro_cache，后到的直接命中、拿到**错误口径**的帧。
+        # 生产实测（全新进程 × 2，同进程调用顺序不同）：
+        #   直接 get_fund_nav(163406)                  → nav='2.2401'（单位）✅
+        #   先 get_fund_nav_history(163406, 累计) 再调 → nav='8.5191'（累计）❌
+        # 详见 services/market_data.py 的口径兜底修复与
+        # tests/test_fund_nav_cache_caliber.py。
+        cache_key = f"ak_fund_nav_{symbol}_{indicator}"
         cached = _macro_cache.get(cache_key)
         if cached is not None:
             return cached

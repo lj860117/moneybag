@@ -118,18 +118,47 @@ def get_fund_nav(code: str) -> dict:
             cols = list(df.columns)
             import pandas as _pd
 
-            # 找净值列
+            # 找净值列 —— **口径必须显式判定：宁可不给，也不给错**
+            #
+            # 2026-09-18 P0（"时对时错"事故的第二层根因）：AKShare 累计帧的列名
+            # 是「累计净值」，下面三个**单位口径**候选都不匹配 → 旧代码落到
+            # `num_cols[0]` = 累计净值，**不报错、不告警**地把它当单位净值返回。
+            # 有分红历史的基金累计净值远高于单位净值（163406：8.5191 vs 2.2401，
+            # 3.803×），拿它乘份额算市值会虚增，晨报因此每天显示 +118.6%
+            # （真实 −7.6%）。同进程调用顺序决定命中哪个帧，故表现为"时对时错"。
+            #
+            # 因此：
+            #   · 列名**明确**是累计/复权口径的一律**拒绝** —— 那是显式错误，
+            #     不是兜底场景；拒绝后走降级链（Tushare 返回单位口径 unit_nav），
+            #     仍失败则返回 "N/A"，让上游按"净值缺失"处理；
+            #   · 只有列名完全**无法判口径**（列数少、列名异常）时才允许退回第一
+            #     个非累计数值列，且必须打一条明确警告留痕；
+            #   · 绝不返回一个可能错口径的数。
+            _ACCUM_MARKERS = ("累计净值", "累计", "accum_nav", "accum",
+                              "adj_nav", "adj")
+
+            def _looks_accum(name) -> bool:
+                s = str(name)
+                return any(m in s for m in _ACCUM_MARKERS)
+
             nav_col = None
             for cand in ["unit_nav", "单位净值", "nav"]:
-                if cand in cols:
+                if cand in cols and not _looks_accum(cand):
                     nav_col = cand
                     break
             if nav_col is None:
                 num_cols = df.select_dtypes(include="number").columns.tolist()
-                if num_cols:
-                    nav_col = num_cols[0]
-                else:
+                if not num_cols:
                     raise ValueError(f"fund {code}: no nav column")
+                qual_cols = [c for c in num_cols if not _looks_accum(c)]
+                if not qual_cols:
+                    # 所有数值列都带累计口径标记 → 明确拒绝（宁可不给也不给错）
+                    raise ValueError(
+                        f"fund {code}: 净值列全为累计口径 {num_cols}，"
+                        f"拒绝当单位净值使用")
+                nav_col = qual_cols[0]
+                print(f"[NAV] ⚠️ {code}: 列名无法判定口径（数值列={num_cols}），"
+                      f"已按第一个非累计数值列 '{nav_col}' 取值")
 
             # 找日期列
             date_col = None
