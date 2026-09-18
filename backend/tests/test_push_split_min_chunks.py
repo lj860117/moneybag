@@ -8,17 +8,36 @@
 ``services/wxwork_push._find_cut`` 旧实现只要求「本段至少装 30% 预算」，
 于是 **1520 字节处的「持仓明细」标记**会被优先采用：
 
-    第 1 条只装 1520B → 剩余 2060B > 1800 → 被迫再切一刀 → 一共 3 条
+    第 1 条只装 1520B → 剩余 > 1800B → 被迫再切一刀 → 一共 3 条
 
-可 09-17 LeiJiang 晨报 body = 3580B，理论最少只要 ``ceil(3580/1800) = 2`` 条。
-**为了切得整齐反而多切出一条**，第 3 条还把「持仓速览」从中间劈开。
+可 09-17 LeiJiang 晨报的**生产入参**（``send_daily_report_to`` 拼的
+「title + 正文 + 时间戳」信封 + 生成期压缩后的正文）= 3532B，理论最少只要
+``ceil(3532/1800) = 2`` 条。
+**为了切得整齐反而多切出一条**，切点还把「持仓明细」一行基金数据劈成两半。
 （生产实测：用户每天早上收到 3 条企微消息。）
+
+> ⚠️ 口径（qa-v9953-verify 2026-09-18 复核）：**存档正文**（3580B）**不是**生产
+> 入参 —— 它**没有** 52B 信封、也**没有**生成期文案压缩。真实晨报用例一律走
+> ``_production_split_input()``（= 信封 + 压缩正文 = 3532B）；若退回用裸存档正文，
+> 会少算信封，得到「脱离生产的假绿」。
 
 ## 修复
 
-``_find_cut`` 里把「最少条数」写进门槛：本段至少要装
-``floor_bytes = R - (k-1)*budget``（``k = ceil(R/budget)``），否则剩余部分
-必然多出一条。低于此值的整齐标记一律跳过，切点自动落到预算内最后一个空行。
+两处，缺一不可（单独任一半都无法把 09-17 压回 2 条）：
+
+  1. **最少条数约束**（2bcabff）：``_find_cut`` 把「最少条数」写进门槛 —— 本段至少
+     要装 ``floor_bytes = R - (k-1)*budget``（``k = ceil(R/budget)``），否则剩余必然
+     多出一条。低于此值的整齐标记一律跳过。
+  2. **行边界偏好**（0f162ab）：跳过标记后，切点优先落到预算内最后一个换行（不劈行）；
+     仅当用该换行会让条数 +1 时才退化为硬切。
+
+  另配生成期**固定文案压缩**（night_worker.py，省 100B）：把生产入参从 3632B
+  压到 3532B ≤ 3600，才让「算法 + 压缩」共同把 09-17/09-18 从 3 条降到 2 条。
+
+> 实测（跨版本）：RAW 正文只加信封（3632B）时 OLD=MID=NEW 都是 3 条 → 算法单独
+> 不可见；压缩后（3532B）OLD=3 条、MID=NEW=2 条 → 算法 + 压缩共同见效。
+> 且信封的 30B 前缀把「¥97.7 行尾」这个换行推到了 floor 之上，行边界才可用 ——
+> 裸存档正文反而会硬切劈行（见 ``test_production_input_includes_envelope_and_shaves``）。
 
 ## 为什么每条用例都能因旧行为转红（非空转绿）
 
@@ -103,12 +122,14 @@ def make_text(target_bytes: int, unit: str = "中文字符测试内容，") -> s
     return text
 
 
-def _fixture_body() -> str:
-    """从服务器真实存档 fixture 里取出**推送正文 body**。
+def _archive_body() -> str:
+    """从服务器真实存档 fixture 里取出**存档正文**（未套信封、未压文案）。
 
-    存档文件格式是 ``=== {时间戳} ===\\n`` + body + ``\\n\\n``（见
-    ``wxwork_push.archive_push``）。真正被 ``_split_message`` 分割的是
-    body（再套上 title/时间戳信封），所以这里把存档头尾剥掉。
+    存档文件格式是 ``=== {时间戳} ===\\n`` + content + ``\\n\\n``（见
+    ``wxwork_push.archive_push``）。⚠️ 这里拿到的是**历史存档里的原始文本**：
+      * 它**不含** ``send_daily_report_to`` 拼的 title/时间戳信封（+52B）；
+      * 它也**还没**应用本仓库那批固定文案压缩（生成期改动，历史存档里没有）。
+    所以它**不是**真正的分片入参 —— 分片入参见 ``_production_split_input()``。
     """
     raw = FIXTURE.read_text(encoding="utf-8")
     nl = raw.index("\n")
@@ -116,6 +137,23 @@ def _fixture_body() -> str:
     if body.endswith("\n\n"):
         body = body[:-2]
     return body
+
+
+def _production_split_input(body: str = None) -> str:
+    """构造**当前源码在生产上真正喂给 ``_split_message`` 的字符串**。
+
+    = ``f"☀️ 钱袋子早安简报\\n\\n{body}\\n\\n⏰ {date} 08:30"``（信封 +52B），
+    且 body 已应用 ``FIXED_COPY_SHAVES``（生成期压缩）。信封 52B =
+    title(28) + ``\\n\\n``(2) + ``\\n\\n``(2) + ``⏰ ``(4) + ``YYYY-MM-DD HH:MM``(16)。
+
+    ⚠️ 口径教训（qa-v9953-verify 2026-09-18 指出）：若只测 ``_archive_body()``
+    （存档正文、无信封），会系统性**少算 52 字节**，把「生产其实 3 条」测成
+    「2 条」—— 一道看着自洽、其实脱离生产的绿。**本文件所有「真实晨报」用例
+    一律走本函数**，不得直接拿 ``_archive_body()`` 当分片入参。
+    """
+    if body is None:
+        body = _archive_body()
+    return f"{TITLE}\n\n{_apply_fixed_copy_shaves(body)}\n\n{TIMESTAMP}"
 
 
 def _assert_minimal_split(text: str, budget: int = wp.TEXT_CHUNK_BUDGET) -> list:
@@ -137,16 +175,20 @@ def _assert_minimal_split(text: str, budget: int = wp.TEXT_CHUNK_BUDGET) -> list
 # ------------------------------------------------------------------
 
 def test_real_0917_briefing_body_splits_into_two_chunks():
-    """真实 09-17 晨报 body（3580B）必须切成 **2 条**，不是 3 条。
+    """真实 09-17 晨报（**生产信封** + 生成期压缩）必须切成 **2 条**，不是 3 条。
 
-    这正是生产事故的复现：旧逻辑在 1302B 处的「持仓明细」标记切一刀，
-    剩余 2278B 再切一刀 → 3 条，用户早上收到 3 条消息。
+    这正是生产事故的复现：旧逻辑在 1520B 处的「持仓明细」标记切一刀，
+    剩余 > 1800B 再切一刀 → 3 条，用户早上收到 3 条消息。
+
+    ⚠️ 入参必须是 ``_production_split_input()``：存档正文（3580B）**没有** 52B
+    信封、也**没有**生成期文案压缩。只有「信封 + 压缩后的正文」才是生产上真正
+    喂给 ``_split_message`` 的字符串（3532B，恰好落回 2 个预算）。
     """
-    body = _fixture_body()
-    assert 1800 < wp.byte_len(body) <= 3600, (
-        f"前提：body 应落在 (1,2] 个预算内，实测 {wp.byte_len(body)}B")
+    text = _production_split_input()
+    assert 1800 < wp.byte_len(text) <= 3600, (
+        f"前提：生产分片入参应落在 (1,2] 个预算内，实测 {wp.byte_len(text)}B")
 
-    chunks = _assert_minimal_split(body)
+    chunks = _assert_minimal_split(text)
     assert len(chunks) == 2, f"必须 2 条，实际 {len(chunks)} 条"
 
 
@@ -157,12 +199,12 @@ def test_real_0917_briefing_holdings_block_stays_in_one_chunk():
     旧行为的现场：第 2 条结尾是「…需警惕集中风险。」，第 3 条开头是
     「建议：华夏先进制造龙头混合A…」—— 总评与建议被拆到两条，极难读。
     """
-    body = _fixture_body()
-    chunks = _assert_minimal_split(body)
+    text = _production_split_input()
+    chunks = _assert_minimal_split(text)
 
-    start = body.index("📋 【LeiJiang 持仓速览】")
-    end = body.rindex(DISCLAIMER) + len(DISCLAIMER)
-    block = body[start:end]
+    start = text.index("📋 【LeiJiang 持仓速览】")
+    end = text.rindex(DISCLAIMER) + len(DISCLAIMER)
+    block = text[start:end]
     assert block, "持仓速览块不应为空（fixture 前提）"
 
     holders = [i for i, c in enumerate(chunks) if block in c]
@@ -294,23 +336,22 @@ def test_rebalance_other_bucket_note_shortened():
 
 
 def test_fixed_copy_saving_reaches_the_two_chunk_budget():
-    """量化：七处固定文案合计省 ≥ 100 字节，才能把投影信封压回 ≤ 3600B（2 条）。"""
-    body = _fixture_body()
+    """量化：七处固定文案合计省 ≥ 60 字节，才能把**生产入参**压回 ≤ 3600B（2 条）。"""
+    body = _archive_body()
     projected = _apply_fixed_copy_shaves(body)
     saved = wp.byte_len(body) - wp.byte_len(projected)
     assert saved >= 60, f"固定文案只省了 {saved} 字节，不足以压回 2 条"
 
-    envelope = f"{TITLE}\n\n{projected}\n\n{TIMESTAMP}"
-    assert wp.byte_len(envelope) <= 3600, (
-        f"投影信封 {wp.byte_len(envelope)}B 仍 > 3600，会溢出到 3 条")
-    chunks = _assert_minimal_split(envelope)
-    assert len(chunks) == 2, f"投影信封必须 2 条，实际 {len(chunks)} 条"
+    text = _production_split_input(body)  # = 信封 + projected
+    assert wp.byte_len(text) <= 3600, (
+        f"生产入参 {wp.byte_len(text)}B 仍 > 3600，会溢出到 3 条")
+    chunks = _assert_minimal_split(text)
+    assert len(chunks) == 2, f"生产入参必须 2 条，实际 {len(chunks)} 条"
 
 
 # ------------------------------------------------------------------
-# ⑤ 行边界偏好：切点必须落在换行边界（不把一行基金数据劈开）
+# ④ 行边界偏好：切点必须落在换行边界（不把一行基金数据劈开）
 # ------------------------------------------------------------------
-
 def test_briefing_cut_lands_on_a_line_boundary():
     """晨报切点必须落在**换行边界**：第 1 条尾部是完整的一行，以 ¥金额 收尾。
 
@@ -322,11 +363,9 @@ def test_briefing_cut_lands_on_a_line_boundary():
     故障注入有效：删掉 ``_find_cut`` 的换行回退（改为直接 ``return hi`` 硬切），
     本用例立刻转红（第 1 条不再以换行结尾）。
     """
-    body = _fixture_body()
-    projected = _apply_fixed_copy_shaves(body)
-    envelope = f"{TITLE}\n\n{projected}\n\n{TIMESTAMP}"
+    text = _production_split_input()
 
-    chunks = _assert_minimal_split(envelope)
+    chunks = _assert_minimal_split(text)
     assert len(chunks) == 2, f"必须 2 条，实际 {len(chunks)} 条"
 
     first = chunks[0]
@@ -408,11 +447,45 @@ def test_late_region_shaves_reach_current_source():
 
 
 # ------------------------------------------------------------------
-# ④ 不变量：免责声明一个字都不能动
+# ⑤ 口径护栏：真实晨报用例必须用「信封 + 压缩正文」，不得退回存档正文
+# ------------------------------------------------------------------
+
+def test_production_input_includes_envelope_and_shaves():
+    """口径护栏（qa-v9953-verify 2026-09-18 指出）。
+
+    ``archive_push`` 存的是**裸正文**（无 title/时间戳），而生产真正分片的入参由
+    ``send_daily_report_to`` 拼成 ``f"{title}\\n\\n{report}\\n\\n⏰ {now}"``（+52B）。
+    若真实晨报用例退回用 ``_archive_body()``（3580B ≤ 3600），会系统性**少算
+    信封** —— 一道看着自洽、其实脱离生产的「假绿」。
+
+    本护栏把两个口径的差钉死：
+      * ``_production_split_input()`` − 压缩正文 == ``PUSH_ENVELOPE_OVERHEAD_BYTES``；
+      * 存档正文**套上信封但未压缩** (3580+52=3632) 必须 > 3600 —— 若哪天它 ≤ 3600，
+        说明这条「信封会溢出」的前提失效，本护栏会提醒复核。
+    """
+    archive = _archive_body()
+    shaved = _apply_fixed_copy_shaves(archive)
+    prod = _production_split_input()
+
+    gap = wp.byte_len(prod) - wp.byte_len(shaved)
+    assert gap == wp.PUSH_ENVELOPE_OVERHEAD_BYTES, (
+        f"生产入参与压缩正文应只差信封 {wp.PUSH_ENVELOPE_OVERHEAD_BYTES}B，实际 {gap}B")
+
+    bare_with_envelope = f"{TITLE}\n\n{archive}\n\n{TIMESTAMP}"
+    assert wp.byte_len(bare_with_envelope) > 3600, (
+        "护栏前提失效：存档正文套信封后应 > 3600（>2 条），"
+        f"实际 {wp.byte_len(bare_with_envelope)}B —— 请复核 fixture/预算")
+
+
+# ------------------------------------------------------------------
+# ⑥ 不变量：免责声明一个字都不能动
 # ------------------------------------------------------------------
 
 def test_disclaimer_untouched_in_real_briefing():
-    """合规要素：免责声明在真实 fixture 里原样存在（本文件绝不修改它）。"""
-    body = _fixture_body()
+    """合规要素：免责声明在真实存档正文里原样存在（本文件绝不修改它）。
+
+    这里用 ``_archive_body()``（存档原文）核对最直接 —— 免责声明不随信封/压缩变化。
+    """
+    body = _archive_body()
     assert body.count(DISCLAIMER) >= 2, "真实晨报应含两处免责声明"
     assert body.rstrip().endswith(DISCLAIMER), "整篇必须以免责声明收尾"
