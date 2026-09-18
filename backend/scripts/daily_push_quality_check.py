@@ -192,8 +192,21 @@ _SUMMARY_RE = re.compile(
 # 容差常量（集中放这里，便于复核与故障注入）
 NAV_TOLERANCE = 0.001          # 净值：晨报用 .3f 显示（四舍五入）
 ROW_PCT_TOLERANCE = 0.15       # 行浮盈率：晨报用 .1f；加权成本另有 .3f 显示损失
-SUMMARY_VALUE_TOLERANCE = 1.0  # 当前市值 ¥..（.0f）≈ Σ 各行 ¥V（.1f）
+SUMMARY_VALUE_TOLERANCE = 1.0  # 当前市值 ≈ Σ¥V 的**下限**（见下动态容差）
 SUMMARY_PCT_TOLERANCE = 1.0    # 整体浮盈%（由 .0f 的投入/市值反推，round 损失大）
+
+# 块级「当前市值 ≈ Σ¥V」**动态**容差（2026-09-18 QA 复核后改）：
+#   误差上界 = 0.5（当前市值 .0f 的舍入）+ 0.05×行数（每行 ¥V 是 .1f 的舍入）。
+#   8 行即 0.90 —— 用固定 1.0 只剩 10% 余量，行数 ≥11 必破 → 天天误报。
+#   取 `0.5 + 0.05×行数 + 0.5(余量)` 与下限 SUMMARY_VALUE_TOLERANCE 的较大者。
+SUMMARY_VALUE_TOLERANCE_MARGIN = 0.5
+
+# 「严格早于 D 的最后 K 个交易日」窗口。
+# 用途：识别**真实但时点不同**的净值 —— 典型是 QDII（T+2）：晨报 08:30 生成时
+# 最新可见的是 D-2 的净值，而质检在 22:00 跑、能拿到 D-1 的，拿 D-1 去比必然
+# 差一档（2026-09-18 QA 实测 9-16/9-17 两只 QDII 各差 0.008~0.068）。
+# 窗口内命中 → 判「时点差」→ 记 skipped（非 issue）：既不误报，也不静默通过。
+RECENT_NAV_WINDOW = 5
 
 _DATE_ANY_RE = re.compile(r"(\d{4})[-/]?(\d{2})[-/]?(\d{2})")
 
@@ -243,15 +256,42 @@ def _nav_strictly_before(history: list, push_date: str):
     return best_nav
 
 
+def _recent_navs(history: list, push_date: str, k: int = RECENT_NAV_WINDOW) -> list:
+    """取**严格早于 push_date 的最后 k 个交易日**的有效净值（升序）。
+
+    与 ``_nav_strictly_before`` 同一套清洗规则（坏日期 / 0 / 负值一律排除），
+    只是返回一段窗口而非单个值，用于识别「真实但时点不同」的净值（QDII T+2）。
+    """
+    rows: list = []
+    if not history or not push_date:
+        return rows
+    for row in history:
+        d = _norm_date(row.get("date"))
+        if not d or d >= push_date:
+            continue
+        try:
+            nav = float(row.get("nav"))
+        except (TypeError, ValueError):
+            continue
+        if nav <= 0:
+            continue
+        rows.append((d, nav))
+    rows.sort(key=lambda x: x[0])       # 按日期升序
+    return [nav for _d, nav in rows[-k:]]
+
+
 def _build_actual_data(push_date: str, codes: list) -> dict:
-    """构建「真实净值」字典 ``{code: nav}`` 供净值核对使用。
+    """构建「真实净值」字典供净值核对使用。
 
     Args:
         push_date: 晨报日期（YYYY-MM-DD）。
         codes: 需要核对的基金代码列表。
 
     Returns:
-        dict: ``{code: 严格早于 push_date 的最后交易日净值}``。
+        dict: ``{code: {"expect": <严格早于 D 的最后交易日净值>,
+                        "recent": [严格早于 D 的最后 K 个交易日净值]}}``。
+            ``expect`` 是 A 股/境内口径下的正确参照；QDII 因 T+2 会与它差一档，
+            但会命中 ``recent``（→ 记 skipped，不误报）。
             **取不到的 code 不会出现在字典里**（绝不编 0 或拿成本顶替），
             由调用方如实记入 skipped / 告警 —— 本项目铁律：不允许静默失效。
     """
@@ -264,11 +304,12 @@ def _build_actual_data(push_date: str, codes: list) -> dict:
         except Exception as e:           # 数据源异常 → 当作取不到，不编数
             print(f"[QUALITY] 取 {code} 净值历史失败：{e}")
             history = None
-        nav = _nav_strictly_before(history, push_date)
-        if nav is None:
+        expect = _nav_strictly_before(history, push_date)
+        recent = _recent_navs(history, push_date, RECENT_NAV_WINDOW)
+        if expect is None and not recent:
             print(f"[QUALITY] {code} 无严格早于 {push_date} 的净值，跳过核对")
             continue
-        actual[code] = nav
+        actual[code] = {"expect": expect, "recent": recent}
     return actual
 
 
@@ -316,17 +357,47 @@ def _extract_push_date(push_file: str, content: str = "") -> str:
     return ""
 
 
+def _nav_entry(entry) -> tuple:
+    """把 ``actual_data`` 的一项规整成 ``(expect, recent)``。
+
+    兼容两种形状：
+      * 新形状 ``{"expect": float|None, "recent": [float, ...]}``
+      * 旧形状 ``float``（早期版本直接给单个净值）
+    取不到（entry 为 None）→ ``(None, [])``。
+    """
+    if isinstance(entry, dict):
+        return entry.get("expect"), list(entry.get("recent") or [])
+    if entry is None:
+        return None, []
+    return float(entry), []
+
+
+def _summary_value_tolerance(n_rows: int) -> float:
+    """块级「当前市值 ≈ Σ¥V」的**动态**容差。
+
+    误差上界 = 0.5（当前市值 .0f 的舍入）+ 0.05×行数（每行 ¥V 是 .1f 的舍入），
+    再加固定余量；与下限 ``SUMMARY_VALUE_TOLERANCE`` 取大者。
+    固定 1.0 在 8 行时只剩 10% 余量、≥11 行必破 —— 那会天天误报。
+    """
+    upper = 0.5 + 0.05 * max(0, int(n_rows)) + SUMMARY_VALUE_TOLERANCE_MARGIN
+    return max(SUMMARY_VALUE_TOLERANCE, upper)
+
+
 def check_hallucination_classified(push_file: str, actual_data: dict) -> tuple:
     """核对晨报里的数字，返回 ``(issues, skipped)``。
 
     三块检查：
 
-      1) **净值核对**：晨报「现Y」vs 真实净值，容差 ``NAV_TOLERANCE``=0.001。
-         code 取不到净值 → 进 ``skipped``（**不得当作通过**）。
+      1) **净值核对**：晨报「现Y」vs 真实净值（严格早于 D 的最后交易日），
+         容差 ``NAV_TOLERANCE``=0.001。code 取不到净值 → 进 ``skipped``。
+         ⚠️ 值若不等于「严格早于 D 的最后一条」但命中**最近 K 个交易日**
+         （``RECENT_NAV_WINDOW``）→ 判「时点差」（典型 QDII T+2）→ 记 skipped
+         （**不是** issue：口径不同源，拿 A 股口径硬套 QDII 会天天误报）。
       2) **逐行内部一致性**：``round((Y-X)/X*100, 1)`` 应等于显示的 Z，
-         容差 ``ROW_PCT_TOLERANCE``=0.15。
-      3) **逐块内部一致性**：当前市值 ≈ Σ各行 ¥V（容差 1）；
-         整体浮盈% ≈ ``(市值-投入)/投入*100``（容差 1.0，因投入/市值是 .0f）。
+         容差 ``ROW_PCT_TOLERANCE``=0.15（▲/▼ 还原符号后再比）。
+      3) **逐块内部一致性**：当前市值 ≈ Σ各行 ¥V（动态容差，见
+         ``_summary_value_tolerance``）；整体浮盈% ≈ ``(市值-投入)/投入*100``
+         （容差 ``SUMMARY_PCT_TOLERANCE``=1.0，因投入/市值是 .0f）。
 
     ⚠️ 本函数**不做任何外部取数** —— 真实净值由 ``actual_data`` 注入，取数在
     ``_build_actual_data`` 里，职责分离，便于测试。
@@ -366,16 +437,23 @@ def check_hallucination_classified(push_file: str, actual_data: dict) -> tuple:
             # 晨报自己已标注「现净值缺失」，无从核对 → 如实记 skipped
             skipped.append(f"hallucination_nav_missing:{code}")
             continue
-        actual_nav = actual_data.get(code)
-        if actual_nav is None:
+        expect, recent = _nav_entry(actual_data.get(code))
+        if expect is None:
+            # 取不到「严格早于 D」的净值 → 如实记 skipped（不得当作通过）
             skipped.append(f"hallucination_nav_missing:{code}")
             continue
-        diff = abs(r["cur"] - actual_nav)
-        if diff > NAV_TOLERANCE:
-            issues.append(
-                f"⚠️ 净值不符：{label} 晨报 {r['cur']:.3f}，实际 "
-                f"{actual_nav:.4f}（差 {diff:.4f}）"
-            )
+        if abs(r["cur"] - expect) <= NAV_TOLERANCE:
+            continue  # 与 A 股/境内口径完全一致 → 核对通过
+        if any(abs(r["cur"] - v) <= NAV_TOLERANCE for v in recent):
+            # 值是**真实净值**，但不是「严格早于 D 的最后一条」——典型是 QDII
+            # T+2（晨报 08:30 只能拿到 D-2 的）。这不是幻觉，也不是「通过」：
+            # 如实记 skipped，既不误报（22:00 不打扰用户），也不静默失效。
+            skipped.append(f"hallucination_nav_timegap:{code}")
+            continue
+        issues.append(
+            f"⚠️ 净值不符：{label} 晨报 {r['cur']:.3f}，实际 "
+            f"{expect:.4f}（差 {abs(r['cur'] - expect):.4f}）"
+        )
 
     # --- 3) 逐块（组合温度计）内部一致性 ---
     m = _SUMMARY_RE.search(content)
@@ -387,7 +465,8 @@ def check_hallucination_classified(push_file: str, actual_data: dict) -> tuple:
         values = [r["value"] for r in rows if r["value"] is not None]
         if values:
             row_sum = sum(values)
-            if abs(row_sum - total_val) > SUMMARY_VALUE_TOLERANCE:
+            tol = _summary_value_tolerance(len(values))
+            if abs(row_sum - total_val) > tol:
                 issues.append(
                     f"⚠️ 内部不一致：持仓各行市值合计 ¥{row_sum:.1f} 与"
                     f"「当前市值 ¥{total_val:.0f}」不符"
