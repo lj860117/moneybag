@@ -581,7 +581,10 @@ def _north_user_text(north: dict) -> str:
     avg5 = north.get("turnover_avg_5d")
     if avg5 is not None:
         txt += f"，近5日日均{_safe_num(avg5, 0)}亿"
-    txt += "；净买入方向数据交易所已停止披露（改按季度公布）"
+    # 2026-09-17：原句「；净买入方向数据交易所已停止披露（改按季度公布）」
+    # 占 72 字节，是同一条晨报里最长的固定从句。语义不变地压成 42 字节，
+    # 为「两条装下」腾出空间（详见 wxwork_push._find_cut 的最少条数约束）。
+    txt += "；净买入已停止披露（改季报）"
     return txt
 
 
@@ -920,7 +923,10 @@ def _build_rebalance_gap(uid: str, holdings_with_val: list) -> str:
     other_val = actual.get("其他/主动混合", 0)
     other_pct = other_val / total_val * 100 if total_val > 0 else 0
     if other_pct > 5:
-        lines.append(f"  ⚠ 其他(主动混合): {other_pct:.0f}%（不在理想配置中，可逐步迁移到指数型）")
+        # 2026-09-17：括注由「（不在理想配置中，可逐步迁移到指数型）」（57B）
+        # 压成「（非理想配置，宜转指数型）」（39B）—— 保留「转指数型」这条
+        # 可操作建议，只去掉冗词，省 18 字节。
+        lines.append(f"  ⚠ 其他(主动混合): {other_pct:.0f}%（非理想配置，宜转指数型）")
 
     if not has_gap:
         lines.append("  配置基本均衡，无需调整")
@@ -1878,7 +1884,9 @@ def step_generate_products(phase1, phase2, phase3):
         briefing_parts.append(f"\n📝 【AI研判】\n{macro}")
     
     # 5. 定投速览
-    briefing_parts.append(f"\n💰 【定投参考】\n{dca_hint}\n（每月25号定投日会推详细金额建议）")
+    # 2026-09-17：补充说明由「（每月25号定投日会推详细金额建议）」（50B）
+    # 压成「（25号定投日推金额建议）」（35B），信息不变、省 15 字节。
+    briefing_parts.append(f"\n💰 【定投参考】\n{dca_hint}\n（25号定投日推金额建议）")
     
     # 6. 风险提示（只在高/极高时显示）
     if geo.get('max_severity', 0) >= 3:

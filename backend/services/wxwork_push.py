@@ -426,7 +426,22 @@ def _find_cut(text: str, cum: list, start: int, limit_bytes: int, budget: int) -
     if hi <= start:
         return start + 1  # 兜底：至少推进一个字符，防死循环
 
-    min_bytes = cum[start] + int(budget * 0.3)  # 每段至少装 30% 预算，避免碎段
+    # ── 最少条数约束（2026-09-17 修复）─────────────────────────────
+    # 旧逻辑只要求「本段至少装 30% 预算」，于是一个落在 1520B 的「整齐」标记
+    # （持仓明细 / 组合温度计）会被优先采用 —— 但切完之后剩余 2XXXB 仍 > 预算，
+    # 被迫再切一刀，**为了切得整齐反而多切出一条**。
+    #
+    # 教训（2026-09-17 LeiJiang 晨报 body 3580B）：本该 ceil(3580/1800)=2 条，
+    # 却因标记优先切在 1302B，硬生生变成 3 条，第 3 条还把「持仓速览」一分为二。
+    #
+    # 现在把「最少条数」写进门槛：若本段只装 L 字节，剩余要切 ceil((R-L)/budget)
+    # 段，总数 = 1 + 那一段数。要让它不超过理论最小 k = ceil(R/budget)，本段
+    # 至少要装 floor_bytes = R - (k-1)*budget。低于此值的标记一律跳过，切点自动
+    # 落到预算内最后一个空行（既整齐又不牺牲条数）。
+    remaining = cum[-1] - cum[start]           # 从本段起点算起的剩余字节
+    k = math.ceil(remaining / budget)          # 理论最少条数
+    floor_bytes = remaining - (k - 1) * budget  # 保证「条数最少」时第 1 段的最小长度
+    min_bytes = cum[start] + max(int(budget * 0.3), floor_bytes)
 
     for marker, keep_with_prev in SPLIT_MARKERS:
         pos = text.rfind(marker, start, hi)
