@@ -420,6 +420,14 @@ def _find_cut(text: str, cum: list, start: int, limit_bytes: int, budget: int) -
     """在 (start, hi] 内挑最佳切分点，返回绝对字符下标（下标左侧归入上一段）。
 
     limit_bytes 是「绝对」字节上限（= cum[start] + budget）。
+
+    两条优先级，**条数优先于行边界**：
+      ① 硬约束 —— 本段长度不得让总条数超过理论最少 k；任何会让条数 +1 的
+         候选（含「整齐的板块标记」和「行边界换行」）一律放弃。
+      ② 软偏好 —— 在①的前提下，尽量切在「板块标记」或「行边界」，避免把一段
+         或一行从中间劈开。
+    只有当①与②冲突时（预算内的最后一个换行 < floor_bytes，即用它必然多出一条）
+    才退化为硬切在预算边界 —— 此时**一行会被劈开**，这是刻意的取舍，非 bug。
     """
     # 最大 i 使 cum[i] <= limit_bytes
     hi = bisect.bisect_right(cum, limit_bytes) - 1
@@ -452,11 +460,25 @@ def _find_cut(text: str, cum: list, start: int, limit_bytes: int, budget: int) -
         if cut > start:
             return cut
 
-    # 退而求其次：最近的换行（换行归入上一段，下一段顶部不留空行）
+    # 退而求其次：优先在「行边界」切 —— 晨报的「持仓明细」每行约 90 字节，
+    # 硬切在预算边界会把一行基金数据劈成两半（用户可见瑕疵）。
+    #
+    # 但「行边界」不是无条件优先：只有当用这个换行切**不会让总条数 +1** 时才用。
+    # 判定方式直接算条数 —— 用换行切完后剩余还需 ceil(rest/budget) 段，只要
+    # 1 + 该段数 <= 本段理论最少条数 k，就说明没多切，可以用它（切在后段顶部不留空行）。
+    # 反之（rest > (k-1)*budget）就必须放弃行边界、硬切在 hi —— **条数优先**，
+    # 代价是这一行被劈开（见上方 docstring 的取舍说明）。
+    # 仍保留 30% 下限，避免为了对齐行边界切出过短的碎段。
     pos = text.rfind("\n", start, hi)
-    if pos > start and cum[pos] >= min_bytes:
-        return min(pos + 1, hi)
+    if pos > start and cum[pos] >= cum[start] + int(budget * 0.3):
+        cut = min(pos + 1, hi)
+        rest_after = cum[-1] - cum[cut]
+        n_after = 0 if rest_after <= 0 else math.ceil(rest_after / budget)
+        if 1 + n_after <= k:
+            return cut
 
+    # 最后兜底：硬切在预算边界（此处无法同时满足「条数最少」与「行边界」，
+    # 按契约条数优先）。
     return hi
 
 

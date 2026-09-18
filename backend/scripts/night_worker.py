@@ -899,7 +899,10 @@ def _build_rebalance_gap(uid: str, holdings_with_val: list) -> str:
         actual[bucket] += h.get("cur_val", 0)
 
     # 计算缺口
-    lines = ["⚖️ 再平衡缺口（当前结构 vs 你的定投目标）"]
+    # 2026-09-17：括注由「（当前结构 vs 你的定投目标）」（37B）压成
+    # 「（vs 定投目标）」（20B）—— 省 17 字节。这些字节落在「持仓明细」切点
+    # **之后**，才真正缩小 hi−floor 窗口、让切点落回行边界（见 wxwork_push 说明）。
+    lines = ["⚖️ 再平衡缺口（vs 定投目标）"]
     lines.append(f"当前总市值 ¥{total_val:.0f}")
     lines.append("")
 
@@ -913,9 +916,9 @@ def _build_rebalance_gap(uid: str, holdings_with_val: list) -> str:
         if abs(gap_pct) >= 3:  # 只显示偏差 ≥3% 的
             has_gap = True
             if gap_pct > 0:
-                lines.append(f"  ⬆ {bucket}: 超配 +{gap_pct:.0f}%（目标{ideal_pct}% 实际{cur_pct:.0f}%），可减¥{gap_val:.0f}")
+                lines.append(f"  ⬆ {bucket}: 超配 +{gap_pct:.0f}%（目标{ideal_pct}% 实际{cur_pct:.0f}%），减¥{gap_val:.0f}")
             else:
-                lines.append(f"  ⬇ {bucket}: 欠配 {gap_pct:.0f}%（目标{ideal_pct}% 实际{cur_pct:.0f}%），需补¥{abs(gap_val):.0f}")
+                lines.append(f"  ⬇ {bucket}: 欠配 {gap_pct:.0f}%（目标{ideal_pct}% 实际{cur_pct:.0f}%），补¥{abs(gap_val):.0f}")
         else:
             lines.append(f"  ✓ {bucket}: 目标{ideal_pct}% 实际{cur_pct:.0f}%（±{abs(gap_pct):.0f}%，在范围内）")
 
@@ -3195,7 +3198,7 @@ def gate_trade_decisions(decisions: list, *, total_value=None, position_value=No
         if act in ("add", "reduce"):
             out.append({
                 "action": "observe",
-                "reason": (f"因{verdict['reason']}，暂不给出交易建议，仅列为观察项"
+                "reason": (f"因{verdict['reason']}，暂不给出交易建议，仅观察"
                            f"（原判断：{d.get('reason', '')}）"),
                 "original_action": d.get("action"),
             })

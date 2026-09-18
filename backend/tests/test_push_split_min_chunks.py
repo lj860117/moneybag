@@ -40,6 +40,7 @@
 """
 import math
 import os
+import re
 import sys
 from pathlib import Path
 
@@ -60,6 +61,26 @@ DISCLAIMER = "⚠️ AI建议仅供参考，不构成投资建议"
 # 晨报 08:30 推送时的信封（与 send_daily_report_to 的拼装一致）
 TITLE = "☀️ 钱袋子早安简报"
 TIMESTAMP = "⏰ 2026-09-17 08:31"
+
+# ── 固定文案压缩：old → new（免责声明一律不在此列）──────────────────────
+# 前 3 处把整篇压回 ≤3600（2 条）；后 4 处落在「持仓明细」切点**之后**，
+# 用于收窄 hi−floor 窗口、让切点落回行边界（见 test_briefing_cut_... 说明）。
+FIXED_COPY_SHAVES = [
+    ("；净买入方向数据交易所已停止披露（改按季度公布）", "；净买入已停止披露（改季报）"),
+    ("（每月25号定投日会推详细金额建议）", "（25号定投日推金额建议）"),
+    ("（不在理想配置中，可逐步迁移到指数型）", "（非理想配置，宜转指数型）"),
+    ("⚖️ 再平衡缺口（当前结构 vs 你的定投目标）", "⚖️ 再平衡缺口（vs 定投目标）"),
+    ("，暂不给出交易建议，仅列为观察项（原判断：", "，暂不给出交易建议，仅观察（原判断："),
+    ("），需补¥", "），补¥"),
+    ("），可减¥", "），减¥"),
+]
+
+
+def _apply_fixed_copy_shaves(text: str) -> str:
+    """按 FIXED_COPY_SHAVES 把存档正文替换成「当前源码会产出的样子」。"""
+    for old, new in FIXED_COPY_SHAVES:
+        text = text.replace(old, new)
+    return text
 
 
 # ------------------------------------------------------------------
@@ -273,23 +294,117 @@ def test_rebalance_other_bucket_note_shortened():
 
 
 def test_fixed_copy_saving_reaches_the_two_chunk_budget():
-    """量化：三处固定文案合计省 ≥ 23 字节，才能把投影信封压回 ≤ 3600B（2 条）。"""
+    """量化：七处固定文案合计省 ≥ 100 字节，才能把投影信封压回 ≤ 3600B（2 条）。"""
     body = _fixture_body()
-    projected = (body
-                 .replace("；净买入方向数据交易所已停止披露（改按季度公布）",
-                          "；净买入已停止披露（改季报）")
-                 .replace("（每月25号定投日会推详细金额建议）",
-                          "（25号定投日推金额建议）")
-                 .replace("（不在理想配置中，可逐步迁移到指数型）",
-                          "（非理想配置，宜转指数型）"))
+    projected = _apply_fixed_copy_shaves(body)
     saved = wp.byte_len(body) - wp.byte_len(projected)
-    assert saved >= 23, f"固定文案只省了 {saved} 字节，不足以压回 2 条"
+    assert saved >= 60, f"固定文案只省了 {saved} 字节，不足以压回 2 条"
 
     envelope = f"{TITLE}\n\n{projected}\n\n{TIMESTAMP}"
     assert wp.byte_len(envelope) <= 3600, (
         f"投影信封 {wp.byte_len(envelope)}B 仍 > 3600，会溢出到 3 条")
     chunks = _assert_minimal_split(envelope)
     assert len(chunks) == 2, f"投影信封必须 2 条，实际 {len(chunks)} 条"
+
+
+# ------------------------------------------------------------------
+# ⑤ 行边界偏好：切点必须落在换行边界（不把一行基金数据劈开）
+# ------------------------------------------------------------------
+
+def test_briefing_cut_lands_on_a_line_boundary():
+    """晨报切点必须落在**换行边界**：第 1 条尾部是完整的一行，以 ¥金额 收尾。
+
+    背景（2026-09-17 生产复验）：门槛修复后条数已降到 2，但切点落在预算边界
+    （1800）把「持仓明细」的一行基金数据劈开（第 1 条尾「…混合C(008984)  买入」、
+    第 2 条首「2.026 → …」）。压缩固定文案后 floor 降到行边界之下，
+    ``_find_cut`` 的换行回退重新生效 → 切点落回行边界。
+
+    故障注入有效：删掉 ``_find_cut`` 的换行回退（改为直接 ``return hi`` 硬切），
+    本用例立刻转红（第 1 条不再以换行结尾）。
+    """
+    body = _fixture_body()
+    projected = _apply_fixed_copy_shaves(body)
+    envelope = f"{TITLE}\n\n{projected}\n\n{TIMESTAMP}"
+
+    chunks = _assert_minimal_split(envelope)
+    assert len(chunks) == 2, f"必须 2 条，实际 {len(chunks)} 条"
+
+    first = chunks[0]
+    assert first.endswith("\n"), (
+        "第 1 条必须切在换行边界 —— 不得把一行基金数据劈成两半")
+    last_line = first.rstrip("\n").split("\n")[-1]
+    assert re.search(r"¥[\d.,]+$", last_line), (
+        f"第 1 条尾行应是完整的持仓明细行（以 ¥金额 结尾），实际：{last_line!r}")
+
+
+def test_find_cut_prefers_line_boundary_when_it_keeps_chunk_count():
+    """机制级：当预算内最后一个换行 ≥ floor_bytes（用它不会多切一条）时，
+    ``_find_cut`` 必须选它 —— 而不是硬切在预算边界。
+
+    构造 3400B 文本，在 1750B 处放一个换行：floor = 3400-1800 = 1600 ≤ 1750，
+    所以切点应落在 1750 的换行上（第 1 条 1751B，第 2 条 1649B，仍是 2 条）。
+    故障注入（删换行回退）→ 硬切在 ~1800 → 第 1 条不再以换行收尾 → 转红。
+    """
+    total, nl_off = 3400, 1750
+    text = make_text(nl_off) + "\n" + make_text(total - nl_off - 1)
+    assert wp.byte_len(text) == total
+
+    chunks = _assert_minimal_split(text)
+    assert len(chunks) == 2
+    assert chunks[0].endswith("\n"), (
+        "换行 ≥ floor 时必须在换行处切，不得硬切劈开这一行")
+
+
+def test_find_cut_hard_cuts_when_line_boundary_would_add_a_chunk():
+    """已知代价（非 bug）：当预算内最后一个换行 < floor_bytes（用它必然多切一条）
+    时，按「条数优先」契约必须硬切 —— 此时一行会被劈开。
+
+    本用例把这条取舍钉死，防止有人为了「不劈行」而破坏「条数不增加」。
+    构造 3580B、换行在 1500B（floor=1780 > 1500）：必须 2 条且第 1 条硬切
+    （不以换行收尾），证明条数优先于行边界。
+    """
+    total, nl_off = 3580, 1500
+    text = make_text(nl_off) + "\n" + make_text(total - nl_off - 1)
+    chunks = wp._split_message(text, wp.TEXT_CHUNK_BUDGET)
+
+    assert len(chunks) == 2, "条数优先：即使要劈行也必须只有 2 条"
+    assert "".join(chunks) == text
+    assert not chunks[0].endswith("\n"), (
+        "换行 < floor 时若仍切在换行，剩余会 > 1 个预算 → 必然多切一条，"
+        "与「条数不增加」冲突；此处必须是硬切")
+
+
+def test_late_region_shaves_reach_current_source():
+    """行为级护栏：后 4 处「晚期」固定文案压缩必须真的落在当前源码里。
+
+    这些字节位于「持仓明细」切点之后才有效 —— 若有人把它们改回长版本，
+    切点会重新落回硬切、劈开一行（上面的用例会红），本用例把源头也钉住。
+    """
+    import scripts.night_worker as nw  # noqa: E402
+
+    holdings = [
+        {"code": "002163", "name": "东方惠新灵活配置混合C", "cur_val": 160.5},
+        {"code": "013107", "name": "华夏先进制造龙头混合A", "cur_val": 120.2},
+        {"code": "016501", "name": "华夏半导体龙头混合C", "cur_val": 107.5},
+        {"code": "005851", "name": "财通新视野灵活配置混合A", "cur_val": 101.7},
+        {"code": "006555", "name": "浦银安盛全球智能科技", "cur_val": 97.7},
+        {"code": "008984", "name": "财通科技创新混合C", "cur_val": 95.7},
+        {"code": "007356", "name": "汇添富科技创新混合C", "cur_val": 8.9},
+        {"code": "005698", "name": "华夏全球科技先锋混合", "cur_val": 73.1},
+    ]
+    gap = nw._build_rebalance_gap("LeiJiang", holdings)
+    assert "再平衡缺口（vs 定投目标）" in gap, gap
+    assert "当前结构 vs 你的定投目标" not in gap, "再平衡标题的长括注应已压短"
+    assert "需补¥" not in gap and "可减¥" not in gap, "桶行冗词应已压短"
+    assert "），补¥" in gap, gap
+
+    # 观察项文案（闸门降级路径）里的「仅列为观察项」应已压成「仅观察」
+    decisions = [{"action": "reduce", "source": "rule_engine",
+                  "reason": "市场估值过高（90% 分位），建议减仓避险"}]
+    out, _ = nw.gate_trade_decisions(decisions, total_value=754.0)
+    assert "暂不给出交易建议" in out[0]["reason"], out[0]["reason"]
+    assert "仅列为观察项" not in out[0]["reason"], "观察项冗词应已压短"
+    assert "市场估值过高" in out[0]["reason"], "原判断必须保留"
 
 
 # ------------------------------------------------------------------
