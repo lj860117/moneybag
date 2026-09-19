@@ -931,9 +931,25 @@ def warm_morning():
     except Exception as e:
         print(f"  ⚠️ per-user 预热失败: {e}")
 
-    # v9.5.122: 预制问题答案预计算
-    print("  🧠 预制问题预计算...")
-    _warm_preset_answers()
+    # v9.5.122: 预制问题答案预计算 —— 2026-09-19 起默认停掉，见下方说明。
+    #
+    # 为什么停：
+    #   这一块每天固定跑 5 预设 × 2 用户 = **10 次 LLM 调用**，每次都带上
+    #   完整的 ~2,450 token system prompt（行情上下文 + 持仓上下文），
+    #   而预生成的答案要等用户在前端**主动点一下**那个快捷问题才用得上 ——
+    #   大概率根本没人点。等于每天固定烧 10 次调用，换一堆没人读的文本。
+    #   老板已确认砍掉。
+    #
+    # 怎么临时恢复（不用改代码）：环境变量 MB_WARM_PRESET=1
+    #   MB_WARM_PRESET=1 python3 scripts/cache_warmer.py --morning
+    # 做成读环境变量而不是 argparse 的 --with-preset，是因为 args 只在
+    # `if __name__ == "__main__"` 块里可见，warm_morning() 拿不到；
+    # 硬塞参数进去要改函数签名和所有调用点，环境变量是改动更小的那个。
+    if os.environ.get("MB_WARM_PRESET", "") == "1":
+        print("  🧠 预制问题预计算（MB_WARM_PRESET=1 手动开启）...")
+        _warm_preset_answers()
+    else:
+        print("  ⏭️  预制问题预计算已停（默认）—— 需临时恢复请设 MB_WARM_PRESET=1")
 
     # v9.8.2: 高优先级新增预热
     print("  🔴 家庭持仓汇总...")
@@ -1835,7 +1851,12 @@ def warm_evening():
 
 
 def _warm_preset_answers():
-    """v9.5.122: 为每个用户预计算6个快捷问题的回答（前端点击秒回，不调 LLM）"""
+    """v9.5.122: 为每个用户预计算6个快捷问题的回答（前端点击秒回，不调 LLM）
+
+    ⚠️ 2026-09-19 起 warm_morning() 默认不再调用本函数（每天 5×2=10 次 LLM
+    调用，预生成答案大概率无人点击）。函数本体保留，仅供手动开关使用：
+        MB_WARM_PRESET=1 python3 scripts/cache_warmer.py --morning
+    """
     from pathlib import Path
     import time as _time
     
