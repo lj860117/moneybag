@@ -2768,6 +2768,33 @@ def _inject_hallucination_label(briefings: dict) -> dict:
     def _sentences_of(t):
         return [s for s in _SENT_SPLIT_RE.split(t) if s.strip()]
 
+    # v9.9.57 FIX: 程序渲染出来的**结构化行一律不删**（2026-09-16 事故）。
+    #
+    # 事故：持仓明细行「• 兴全合润混合(LOF)A(163406) 买入2.624 → 现8.519
+    # ▲224.6% ¥1005.2」被当成幻觉数字整行删除，而「当前市值 ¥1333」照旧
+    # 包含它的市值 —— 用户看到「总市值 1333 / 明细合计 328」的残缺组合，
+    # 占比 75% 的最大持仓凭空消失。
+    #
+    # 判据不是「数字大不大」，而是**这一行是谁写的**：
+    #   - 结构化行 = 代码按固定模板拼出来的（持仓明细、温度计汇总行），
+    #     数字全部来自真实数据，删掉只会让用户少看一行、且必然与汇总自相矛盾；
+    #   - 自由文本 = LLM 写的研判/速览，里面出现 >200% 才真可能是编的。
+    # 所以：自由文本照删（守卫不放松），结构化行**只标注不删**。
+    #
+    # 行格式取自生产真实存档（2026-09-16~18_briefing_BuLuoGeLi.txt）与
+    # _build_portfolio_thermometer 的渲染代码，不自造。
+    _POSITION_ROW_RE = _re_hc.compile(
+        r'^[•]\s*\S*\(\d{6}\)\s*买入'          # 持仓明细行（含"现净值缺失"变体）
+    )
+    _THERMO_SUMMARY_RE = _re_hc.compile(
+        r'^总投入\s*¥'                         # 温度计汇总行：总投入/当前市值/整体浮盈
+    )
+
+    def _is_program_rendered(s):
+        """该句是否为程序渲染的结构化行（是 → 只标注，绝不删）。"""
+        t = s.strip()
+        return bool(_POSITION_ROW_RE.match(t) or _THERMO_SUMMARY_RE.match(t))
+
     result = {}
     for uid, text in briefings.items():
         # v9.9.24: issues 存 (类别, 明细) —— 类别进推送标注，明细**只进 log**。
@@ -2777,13 +2804,25 @@ def _inject_hallucination_label(briefings: dict) -> dict:
         # v9.9.24: 需要被删掉的整句（事实型问题才进这里）
         drop_sentences = set()
 
+        def _mark_for_drop(s):
+            """登记待删句。结构化行**拒绝登记**（只标注不删），返回是否真的登记了。
+
+            静默跳过是本项目明令禁止的 —— 结构化行被放行时必须留一条 log，
+            否则哪天又开始删行，没人能从日志里看出来为什么汇总对不上。
+            """
+            if _is_program_rendered(s):
+                log(f"  ⚠️ 结构化数据行命中事实型拦截但已保留（只标注不删）：{s.strip()[:40]}")
+                return False
+            drop_sentences.add(s)
+            return True
+
         # 1. prompt 泄漏检测
         for kw in LEAK_KW:
             if kw in text:
                 issues.append(("prompt泄漏", kw))
                 for _s in _sentences_of(text):
                     if kw in _s:
-                        drop_sentences.add(_s)
+                        _mark_for_drop(_s)
                 break  # 一条就够，不刷屏
 
         # 2. 估值语义矛盾（low/normal 表述 + 实际高估值 ≥85%）
@@ -2806,10 +2845,15 @@ def _inject_hallucination_label(briefings: dict) -> dict:
                 continue
             if val > 200:
                 issues.append(("异常涨幅数字", m.group(0)))
+                _dropped_any = False
                 for _s in _sentences_of(text):
                     if m.group(0) in _s:
-                        drop_sentences.add(_s)
-                break
+                        if _mark_for_drop(_s):
+                            _dropped_any = True
+                # 命中的是结构化行（没删成）时**不能 break** —— 否则后面自由
+                # 文本里真正的幻觉数字就扫不到了，等于用一行真数据换掉整篇守卫。
+                if _dropped_any:
+                    break
 
         # 4. v9.5.129: 持仓速览中出现的"X基金"名称是否在真实持仓里
         # 只扫"持仓速览"段落，避免误报新闻里的基金名
