@@ -450,7 +450,7 @@ TUSHARE_TOKEN = os.environ.get("TUSHARE_TOKEN", "")
 #    使去注释前后行数一致（行号对齐）。自带对抗性自测（正则/字符串含 //、字符串含 /*、模板 `${}`
 #    内注释、跨行块注释、真实文件行数对齐）。
 # 注：本轮**未改前端 JS**（仅改测试基础设施 + 版本号）；按团队要求把版本号统一 bump 到 9.9.43。
-APP_VERSION = "9.9.60"
+APP_VERSION = "9.9.61"
 
 # ---- v9.5.123: API 鉴权 ----
 # 每个用户一个token，格式: userId:token（环境变量或data/auth_tokens.json）
