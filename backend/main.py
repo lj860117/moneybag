@@ -40,9 +40,17 @@ app.add_middleware(
 from infra.auth import AuthMiddleware
 app.add_middleware(AuthMiddleware)
 
+# ---- v9.9.64: 公网访问门禁（最后注册 = 最外层，先于 CORS/AuthMiddleware）----
+# 实现见 infra/http_gate.py；未配置 GATE_SECRET 时自动失效（fail-open，不锁用户）
+from infra.http_gate import HttpGateMiddleware, gate_router
+app.add_middleware(HttpGateMiddleware)
+
 # ---- v9.5.123: 鉴权路由（公开，不需要token）----
 from api.auth import router as auth_router
 app.include_router(auth_router)
+
+# ---- v9.9.64: /gate（访问密钥换取 cookie 的入口，本身在门禁白名单内）----
+app.include_router(gate_router)
 
 # ---- 旧 Router（企业微信 / 多用户 Profile）----
 from routers.wxwork import router as wxwork_router
