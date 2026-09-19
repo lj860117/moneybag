@@ -66,14 +66,38 @@ def _fmt_tokens(n: int) -> str:
     return str(n)
 
 
+# DeepSeek 官方峰谷规则（2026-08-23 起生效，与 infra/llm/gateway.py 保持一致）：
+#   工作日 09:00-12:00、14:00-18:00 为高峰；其余时段 + 周六周日全天为低谷。
+#   低谷价 = 高峰价的一半（flash 档 output：高峰 ¥9/M vs 低谷 ¥4.5/M）。
+_PEAK_RANGES = ((9, 0, 12, 0), (14, 0, 18, 0))
+
+
+def _is_peak(day: date, hour: int) -> bool:
+    """按 DeepSeek 官方规则判断某天的某小时是否处于高峰计费窗口。"""
+    if hour < 0:
+        return False
+    if day.weekday() >= 5:      # 周六=5 周日=6，周末全天低谷
+        return False
+    hm = hour * 60
+    for h1, m1, h2, m2 in _PEAK_RANGES:
+        if (h1 * 60 + m1) <= hm < (h2 * 60 + m2):
+            return True
+    return False
+
+
 def report_day(day: str) -> dict:
     by_module: dict[str, dict] = collections.defaultdict(
         lambda: {"cost": 0.0, "calls": 0, "input": 0, "output": 0, "hit": 0, "miss": 0, "est": 0, "err": 0}
     )
     by_hour: dict[int, dict] = collections.defaultdict(lambda: {"cost": 0.0, "calls": 0})
     by_model: dict[str, dict] = collections.defaultdict(lambda: {"cost": 0.0, "calls": 0, "tokens": 0})
+    by_phase: dict[str, dict] = collections.defaultdict(lambda: {"cost": 0.0, "calls": 0})
     rows: list[dict] = []
     total = {"cost": 0.0, "calls": 0, "input": 0, "output": 0, "hit": 0, "miss": 0, "est": 0, "err": 0}
+    try:
+        _day_obj = date.fromisoformat(day)
+    except ValueError:
+        _day_obj = date.today()
 
     for r in _iter_records(day):
         rows.append(r)
@@ -108,6 +132,15 @@ def report_day(day: str) -> dict:
             hour = -1
         by_hour[hour]["cost"] += cost
         by_hour[hour]["calls"] += 1
+
+        # 峰谷维度：直接用记录里的 is_peak（gateway 已按官方规则算好），
+        # 缺失时按 ts 的日期+小时自己判定（与 gateway._is_deepseek_peak_window 同规则）。
+        ip = r.get("is_peak")
+        if ip is None:
+            ip = _is_peak(_day_obj, hour)
+        phase = "peak" if ip else "valley"
+        by_phase[phase]["cost"] += cost
+        by_phase[phase]["calls"] += 1
 
         mm = by_model[r.get("model") or "?"]
         mm["cost"] += cost
@@ -149,8 +182,25 @@ def report_day(day: str) -> dict:
         if v["calls"] == 0:
             continue
         bar = "█" * min(40, int(v["cost"] / max(total["cost"], 1e-9) * 80))
+        mark = "  ←高峰" if _is_peak(_day_obj, hour) else ""
         label = f"{hour:02d}:00" if hour >= 0 else "  ?  "
-        print(f"  {label}  ¥{v['cost']:>7.4f}  {v['calls']:>4d}次  {bar}")
+        print(f"  {label}  ¥{v['cost']:>7.4f}  {v['calls']:>4d}次  {bar}{mark}")
+
+    print(f"\n  --- 按峰谷计费窗口 ---")
+    print(f"  （DeepSeek 官方：工作日 09:00-12:00 / 14:00-18:00 为高峰，"
+          f"低谷价 = 高峰价的一半；周末全天低谷）")
+    for name, cn in (("peak", "高峰"), ("valley", "低谷")):
+        v = by_phase.get(name, {"cost": 0.0, "calls": 0})
+        if v["calls"] == 0:
+            continue
+        share = v["cost"] / total["cost"] * 100 if total["cost"] else 0
+        bar = "█" * min(40, int(v["cost"] / max(total["cost"], 1e-9) * 80))
+        print(f"  {cn}  ¥{v['cost']:>7.4f}  {share:>5.1f}%  {v['calls']:>4d}次  {bar}")
+    pv = by_phase.get("peak", {"cost": 0.0, "calls": 0})
+    if pv["calls"] and total["cost"]:
+        # 同样的调用挪到低谷，output/cache-miss 单价减半 → 粗略可省一半
+        print(f"  💡 高峰占比 {pv['cost'] / total['cost'] * 100:.1f}% —— "
+              f"若这部分挪到低谷，理论上可省约 ¥{pv['cost'] / 2:.4f}/天")
 
     print(f"\n  --- 按模型 ---")
     for name, v in sorted(by_model.items(), key=lambda kv: -kv[1]["cost"]):
