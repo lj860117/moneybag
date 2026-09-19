@@ -485,14 +485,32 @@ GEO_CACHE_TTL = 1800       # 地缘新闻 30 分钟
 COMMODITY_CACHE_TTL = 3600  # 大宗商品 1 小时
 
 # ---- Token 预算控制（Phase 0 新增）----
+#
+# ⚠️ 2026-09-20 重标（v9.9.64）。旧值是 Pro 档时代定的，Pro 下架后全部形同虚设：
+#   daily ¥3 对实测 ¥0.1~0.25/天 = 12~30 倍余量，异常永远触发不了。
+#   同时旧值是在「自记账失真」时期定的（流式整类不记账），本来也校准不了。
+#
+# 重标依据 = 2026-09-20 凌晨在服务器上的真实调用实测（非估算）：
+#   · 单次真实 chat（含 10 条历史）：input 2,513~2,642 tok，output ~40 tok
+#   · 单次费用：谷 ¥0.0039 / 峰 ¥0.0079；命中 cache 后 ¥0.00089（降 4.7 倍）
+#   · 自记账 09-17~09-19 日均 ¥0.108（修记账前的低估值，修后含流式会略高）
+#   · 全库最大单次 prompt ~6k tok（self_audit），常态 2.6k
+#
+# 取值原则：闸门要能「捕获异常」又「不误伤正常」。
+#   按日均 ¥0.25（修记账后的保守上界）留 4 倍余量 → daily ¥1.0
+#   按月均 ¥6（保守上界）留 2.5 倍余量 → monthly ¥15
+#   max_input 是 **refuse 级**（超限直接拒绝调用，不是降级），留 7 倍余量 → 20k
+#
+# 待校准：明早用官方余额差分（balance_samples.csv）拿到真实日花费后，
+#   若实测日均与假设偏离 >50%，按同一原则（4 倍余量）再修一次。
 TOKEN_BUDGET = {
-    "daily_budget_rmb":    3.0,         # ¥3/天（正常 ¥0.5，6倍余量）
-    "monthly_budget_rmb":  30.0,        # ¥30/月（硬上限）
+    "daily_budget_rmb":    1.0,         # ¥1/天（实测日均 ¥0.1~0.25，4~10 倍余量）
+    "monthly_budget_rmb":  15.0,        # ¥15/月（预期 ¥3~6，2.5~5 倍余量）
     "alert_threshold":     0.7,         # 70% 时推企微预警
     "critical_threshold":  0.9,         # 90% 时降级为规则引擎
     "on_exceed":           "degrade",   # 超限策略：降级/warn_only/hard_stop
-    "max_input_per_call":  50_000,      # 单次最大 5万 input token
-    "max_output_per_call": 30_000,      # 单次最大 3万 output token
+    "max_input_per_call":  20_000,      # 单次最大 2万 input（常态 2.6k，7.7 倍余量）
+    "max_output_per_call": 10_000,      # 单次最大 1万 output（llm_heavy 上限 3000）
 }
 
 # 多 provider 定价（¥/百万token）

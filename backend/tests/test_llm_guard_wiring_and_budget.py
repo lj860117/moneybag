@@ -204,9 +204,19 @@ def test_monthly_budget_exceeded_degrades_without_network(fake_http):
 
 
 def test_monthly_critical_degrades_by_constraining_output(fake_http):
-    """月度 ≥ critical(90%) → 降级档 A：关 thinking + 压输出上限。"""
+    """月度 ≥ critical(90%) → 降级档 A：关 thinking + 压输出上限。
+
+    ⚠️ 金额必须按 config 实际阈值算，不能写死常数。
+    2026-09-20 把 monthly_budget_rmb 从 30 重标到 15 时，这里原本写死的
+    `28.0`（旧口径 28/30≈93%，落在 critical 区间）在新口径下变成 28/15≈186%，
+    掉进"100% 超限"分支 → 用例红掉。
+    守卫测试的断言意图是"落在 critical 区间"，那就按区间算，别绑死具体金额。
+    """
     gw = LLMGateway()
-    _force_monthly_spend(gw, 28.0)  # 28/30 ≈ 93% ≥ 90%
+    budget = float(config.TOKEN_BUDGET["monthly_budget_rmb"])
+    critical = float(config.TOKEN_BUDGET["critical_threshold"])
+    # 取 [critical, 100%) 区间中点，确保稳定落在降级档而不是超限档
+    _force_monthly_spend(gw, budget * (critical + 1.0) / 2)
 
     res = gw.call_sync("点评一下今天的持仓", user_id="u-c2",
                        module="close_review", max_tokens=800)
