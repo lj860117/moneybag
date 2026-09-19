@@ -358,6 +358,35 @@ SMOKE_FAIL=0
 SMOKE_TOTAL=0
 
 # ============================================================
+# 7.0b 门禁密钥 —— 不带密钥的冒烟是「死测试」，永远 401
+# ============================================================
+# 2026-09-20 实测：公网门禁（backend/infra/http_gate.py，v9.9.64 起）上线后，
+#   冒烟 8/8 全红 HTTP 401，而服务其实是健康的 —— 从服务器 loopback 打
+#   /api/health 返回 200 且 version=9.9.65。也就是说这个冒烟**已经不可能通过**：
+#   每次部署都报红，真故障会淹没在一片假红里。死测试比没有测试更糟，必须修。
+#
+# 门禁放行方式见 http_gate.py 文件头：loopback / ?k= / X-Moneybag-Gate 头 /
+#   Basic 都行。这里用**请求头**：不改 URL，避免和端点已有的 ?userId= 打架。
+#
+# 密钥只存在服务器 systemd unit 的 Environment 里（本地 backend/.env 没有），
+#   所以运行时 ssh 取一次；不写进脚本、不打印值（只打印长度），
+#   避免密钥进日志 / 进 git / 进会话记录。
+# 万一哪天门禁关了（GATE_ENABLED=false），带上这个头也无害 —— 门禁 fail-open。
+SMOKE_GATE_ARGS=()
+if [ "${SMOKE_SKIP_GATE:-0}" != "1" ]; then
+    _gate_env=$($SSH "systemctl show moneybag -p Environment" 2>/dev/null || true)
+    _gate_secret=$(printf '%s' "$_gate_env" | tr ' ' '\n' | sed -n 's/^GATE_SECRET=//p' | head -1)
+    if [ -n "$_gate_secret" ]; then
+        SMOKE_GATE_ARGS=(-H "X-Moneybag-Gate: ${_gate_secret}")
+        echo "  🔐 已取得门禁密钥（长度 ${#_gate_secret}），冒烟请求将带 X-Moneybag-Gate 头"
+    else
+        echo "  ⚠️  未取到 GATE_SECRET：若门禁开启，下面所有端点都会 401（假红）"
+        echo "      排查：ssh $REMOTE_USER@$SERVER 'systemctl show moneybag -p Environment'"
+    fi
+    unset _gate_env _gate_secret
+fi
+
+# ============================================================
 # 7.0 就绪探针 —— 把「服务没起来」和「某个端点慢」两件事分开判
 # ============================================================
 # 为什么单独一步：restart 之后端口不是立刻可连的。以前这件事混在每个端点内部判，
@@ -403,7 +432,7 @@ wait_for_service_ready() {
         # 而 $( ) 又会吃掉 echo 末尾的换行 —— 结果 code 变成 "000000"，
         # 于是 `code != "000"` 恒成立，探针永远报「已就绪」，整个闸门空转。
         # （这个是实测踩到的，不是读代码推的：死端口上探针返回了 HTTP 000000。）
-        code=$(curl -s -o /dev/null --noproxy "${SMOKE_NOPROXY:-*}" -w "%{http_code}" --max-time "$probe_budget" "$url" 2>/dev/null || true)
+        code=$(curl -s -o /dev/null --noproxy "${SMOKE_NOPROXY:-*}" ${SMOKE_GATE_ARGS[@]+"${SMOKE_GATE_ARGS[@]}"} -w "%{http_code}" --max-time "$probe_budget" "$url" 2>/dev/null || true)
         [ -n "$code" ] || code="000"
         if [ "$code" != "000" ]; then
             echo "  ✅ 服务已就绪（HTTP ${code}，等待 ${waited}s）"
@@ -487,7 +516,7 @@ check_endpoint() {
             attempt_budget="$remaining"
         fi
 
-        out=$(curl -s -o /dev/null --noproxy "${SMOKE_NOPROXY:-*}" -w "%{http_code} %{time_total}" --max-time "$attempt_budget" "$url" 2>/dev/null || true)
+        out=$(curl -s -o /dev/null --noproxy "${SMOKE_NOPROXY:-*}" ${SMOKE_GATE_ARGS[@]+"${SMOKE_GATE_ARGS[@]}"} -w "%{http_code} %{time_total}" --max-time "$attempt_budget" "$url" 2>/dev/null || true)
         [ -n "$out" ] || out="000 0"
         out="${out%%$'\n'*}"   # 超时(curl rc!=0)时 curl 已打印 "000 <elapsed>"，避免再拼一行导致 elapsed 被读成 0
         code="${out%% *}"
@@ -565,7 +594,7 @@ check_endpoint "$BASE/api/steward/briefing-history?userId=default" "MB-005 往�
 # 验证新闻条数
 # 这行不参与 SMOKE_FAIL 判定，但要给 --max-time：否则端点挂死时整次部署会卡在
 # 这里（curl 没有默认超时），而屏幕上的表现和"部署卡住"一模一样。
-NEWS_COUNT=$(curl -s --noproxy "${SMOKE_NOPROXY:-*}" --max-time 30 "$BASE/api/news?limit=20" | python3 -c "import sys,json;d=json.load(sys.stdin);print(len(d.get('news',[])))" 2>/dev/null || echo "?")
+NEWS_COUNT=$(curl -s --noproxy "${SMOKE_NOPROXY:-*}" ${SMOKE_GATE_ARGS[@]+"${SMOKE_GATE_ARGS[@]}"} --max-time 30 "$BASE/api/news?limit=20" | python3 -c "import sys,json;d=json.load(sys.stdin);print(len(d.get('news',[])))" 2>/dev/null || echo "?")
 echo "  📰 新闻条数: $NEWS_COUNT (期望 ≥15)"
 
 # 措辞避免 $SMOKE_FAIL/$SMOKE_TOTAL 这种分数式写法：「1/8 项失败」容易被读成
@@ -598,6 +627,8 @@ if [ "$USE_PASSWORD_LOGIN" = true ]; then
     echo "═══════════════════════════════════════════════════════════"
 fi
 
+# 提示：手动复现时公网要带门禁，否则 401。密钥不在本地 .env，用这条取：
+#   ssh $REMOTE_USER@$SERVER 'systemctl show moneybag -p Environment' | tr ' ' '\n' | grep GATE_SECRET
 echo "验证 timing confidence: curl -s '$BASE/api/timing?userId=default' | python3 -m json.tool | grep confidence"
 echo "验证 risk-metrics GET:  curl -s '$BASE/api/risk-metrics?userId=default' | python3 -m json.tool | head -5"
 
