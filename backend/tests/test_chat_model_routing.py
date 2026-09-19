@@ -1091,12 +1091,31 @@ def test_stream_and_sync_thinking_policy_are_identical(monkeypatch):
             if not stripped or stripped.startswith("#"):
                 continue
             lines.append(stripped)
+
+        # 起点落在各自的 body 字典**内部**，前面会挂上字典的残留字段：
+        # 同步多一个 "temperature": 0.7，
+        # 流式多 "stream": True 和（2026-09-19 新增的）"stream_options"。
+        # 这些是**请求体差异**，不是 thinking 判据，整段丢掉。
+        #
+        # ⚠️ 这里早先的写法是「把每个 ^"xxx": yyy,$ 归一化成 <BODY_FIELD>」，
+        # 一旦流式比同步多带一个字段（正是 stream_options 那次）就会
+        # 多一行 <BODY_FIELD> 而假失败——判据明明一模一样却报「只改了一边」。
+        # 改成「丢掉开头的字典残留字段 + 收尾的 }」，字段数不一致不再影响比对，
+        # 而判据骨架仍然逐行全比，守卫没有变弱。
+        #
+        # ⚠️⚠️ 收尾行是 `}`（body = {...} 是赋值语句，**没有尾逗号**）。
+        # 早先写成 "}," 导致循环弹空整段 → 两块都变空串 → 恒等通过，
+        # 守卫直接变成死测试（故障注入验证才发现的）。下面 assert 非空就是
+        # 为了防止这类静默失效再发生。
+        while lines and (lines[0] == "}" or re.match(r'^"[a-z_]+": ', lines[0])):
+            lines.pop(0)
+        lines.insert(0, "<BODY_TAIL>")
+
         blob = "\n".join(lines)
+        # 截取失败会静默退化成「两块都空 → 恒等通过」，必须显式拦住
+        assert blob.count("\n") >= 5, "骨架为空，说明起始/终止标记失效，本测试已失去意义"
         blob = re.sub(r"_is_deepseek_v4_stream", "_is_deepseek_v4", blob)
         blob = re.sub(r"stream_body", "body", blob)
-        # 两段截取的起点落在各自的 body 字典内部，多带一个字段名
-        # （同步 "temperature": 0.7 / 流式 "stream": True），归一化掉
-        blob = re.sub(r'^"[a-z_]+": [^,]+,$', "<BODY_FIELD>", blob, flags=re.M)
         return blob
 
     sync_block = _skeleton(src, '"temperature": 0.7,')
