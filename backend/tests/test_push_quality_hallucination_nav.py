@@ -318,8 +318,7 @@ def test_build_actual_data_picks_last_day_strictly_before(monkeypatch):
         {"date": "2026-09-21", "nav": 8.8888, "rate": None},  # 未来：必须排除
     ]
     monkeypatch.setattr(
-        fund_monitor, "get_fund_nav_history",
-        lambda code, days=30, force_refresh=False: series,
+        qc, "_unit_nav_history", lambda code, days=30: series,
     )
     actual = qc._build_actual_data("2026-09-18", ["002163"])
     assert set(actual) == {"002163"}
@@ -331,12 +330,12 @@ def test_build_actual_data_picks_last_day_strictly_before(monkeypatch):
 
 def test_build_actual_data_omits_codes_without_data(monkeypatch):
     """★ 取不到的 code **绝不**进 dict（不许编 0 / 拿成本顶替）。"""
-    def fake(code, days=30, force_refresh=False):
+    def fake(code, days=30):
         if code == "002163":
             return [{"date": "2026-09-17", "nav": 4.1558, "rate": None}]
         return []  # 数据源无返回
 
-    monkeypatch.setattr(fund_monitor, "get_fund_nav_history", fake)
+    monkeypatch.setattr(qc, "_unit_nav_history", fake)
     actual = qc._build_actual_data("2026-09-18", ["002163", "999999"])
     assert set(actual) == {"002163"}
     assert "999999" not in actual, "取不到的 code 绝不放进 dict（不编 0）"
@@ -344,11 +343,40 @@ def test_build_actual_data_omits_codes_without_data(monkeypatch):
 
 def test_build_actual_data_tolerates_datasource_exception(monkeypatch):
     """数据源抛异常 → 当作取不到（进 skipped），不得把整个质检炸掉。"""
-    def boom(code, days=30, force_refresh=False):
+    def boom(code, days=30):
         raise RuntimeError("akshare down")
 
-    monkeypatch.setattr(fund_monitor, "get_fund_nav_history", boom)
+    monkeypatch.setattr(qc, "_unit_nav_history", boom)
     assert qc._build_actual_data("2026-09-18", ["002163"]) == {}
+
+
+def test_build_actual_data_uses_unit_nav_not_cumulative(monkeypatch):
+    """★ 口径守卫：expect 必须来自**单位净值**，不得回落成累计净值。
+
+    背景：002163 有分红历史，累计 4.2824 / 单位 3.0385（差 1.2439）。
+    2026-09-19 起晨报改用单位净值渲染，质检若仍取累计 → 整行误报 →
+    22:00 真发告警。本用例是这条回归的承重墙。
+
+    故障注入方向：把 ``_build_actual_data`` 的取数改回
+    ``services.fund_monitor.get_fund_nav_history``（累计口径）→ 断言失败。
+    """
+    unit_series = [
+        {"date": "2026-09-16", "nav": 2.9200, "rate": None},
+        {"date": "2026-09-17", "nav": 2.9119, "rate": None},
+    ]
+    cumulative_series = [
+        {"date": "2026-09-16", "nav": 4.1639, "rate": None},
+        {"date": "2026-09-17", "nav": 4.1558, "rate": None},
+    ]
+    monkeypatch.setattr(qc, "_unit_nav_history",
+                        lambda code, days=30: unit_series)
+    # 累计口径仍在，但**不该被用到** —— 用哨兵值证明没走它
+    monkeypatch.setattr(fund_monitor, "get_fund_nav_history",
+                        lambda code, days=30, force_refresh=False: cumulative_series)
+
+    actual = qc._build_actual_data("2026-09-18", ["002163"])
+    assert actual["002163"]["expect"] == 2.9119, "expect 必须是单位净值"
+    assert actual["002163"]["expect"] != 4.1558, "不得取累计净值（会误报）"
 
 
 def test_recent_navs_returns_ascending_window():

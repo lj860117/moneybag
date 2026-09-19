@@ -280,6 +280,53 @@ def _recent_navs(history: list, push_date: str, k: int = RECENT_NAV_WINDOW) -> l
     return [nav for _d, nav in rows[-k:]]
 
 
+def _unit_nav_history(code: str, days: int = 30) -> list:
+    """取**单位净值**走势，返回 ``[{"date": "YYYY-MM-DD", "nav": float}]``。
+
+    ⚠️ 为什么**不能**用 ``services.fund_monitor.get_fund_nav_history``
+    ---------------------------------------------------------------
+    那个函数走 ``indicator="累计净值走势"``（含分红再投资）。累计口径对
+    「回撤 / 波动率 / 回测」是正确的，但晨报「持仓明细」渲染的是
+    **单位净值**（``scripts/night_worker._fetch_unit_nav`` →
+    ``services.market_data.get_fund_nav`` 的 ``official_nav``）。
+
+    拿累计净值去核对单位净值，对**有分红历史**的基金会整行误报 —— 生产实测
+    （2026-09-19，容差 0.001）：
+
+        002163  累计 4.2824 vs 单位 3.0385  差 1.2439
+        100038  累计 2.4820 vs 单位 1.8960  差 0.5860
+        163406  累计 8.7192 vs 单位 2.2927  差 6.4265
+
+    （无分红历史的基金两者相等，所以这个错**只**打有分红的，更隐蔽。）
+
+    ⚠️ 不改 ``fund_monitor`` 而是本脚本自带取数的原因：``fund_monitor`` 是
+    回撤/波动率/回测的共享取数，且其缓存键是 ``f"{code}_{days}"`` **不含口径**
+    —— 给它加 indicator 参数会让两种口径互相串味。本函数保持 QC 自洽即可。
+
+    Returns:
+        list: ``[{"date", "nav"}]``，按日期升序。取不到 / 异常 → ``[]``
+            （**绝不**回落成累计净值，那正是本次要修的错）。
+    """
+    try:
+        from infra.data_source.market.stocks import get_fund_nav_history as _raw
+        df = _raw(code=code, indicator="单位净值走势")
+    except Exception as e:                # 数据源异常 → 当作取不到，不编数
+        print(f"[QUALITY] 取 {code} 单位净值历史失败：{e}")
+        return []
+
+    if df is None or getattr(df, "empty", True):
+        return []
+
+    rows: list = []
+    for _, r in df.tail(days).iterrows():
+        try:
+            nav = float(r.get("单位净值"))
+        except (TypeError, ValueError):
+            continue
+        rows.append({"date": str(r.get("净值日期", "")), "nav": nav})
+    return rows
+
+
 def _build_actual_data(push_date: str, codes: list) -> dict:
     """构建「真实净值」字典供净值核对使用。
 
@@ -295,12 +342,10 @@ def _build_actual_data(push_date: str, codes: list) -> dict:
             **取不到的 code 不会出现在字典里**（绝不编 0 或拿成本顶替），
             由调用方如实记入 skipped / 告警 —— 本项目铁律：不允许静默失效。
     """
-    from services.fund_monitor import get_fund_nav_history
-
     actual: dict = {}
     for code in codes:
         try:
-            history = get_fund_nav_history(code, days=30)
+            history = _unit_nav_history(code, days=30)
         except Exception as e:           # 数据源异常 → 当作取不到，不编数
             print(f"[QUALITY] 取 {code} 净值历史失败：{e}")
             history = None
