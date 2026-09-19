@@ -1274,6 +1274,13 @@ def _build_qdii_delay_note(qdii_names: list) -> str:
     return QDII_DELAY_NOTE_TPL.format(funds="、".join(shown) + tail)
 
 
+#: 合规免责声明（唯一文案来源）。晨报全文末尾必须出现，且**有且只有一处**。
+#: 历史上有两处（公共简报尾部 + 持仓速览块尾部）重复打印，各 52B，把正文顶过
+#: 3600B 分片阈值导致多切一条；删掉公共简报那处后，空仓用户（不走
+#: ``_render_holdings_block``）必须在这里补回来，否则整篇零免责声明。
+BRIEFING_DISCLAIMER = "⚠️ AI建议仅供参考，不构成投资建议"
+
+
 def _render_holdings_block(name: str, diag: str, advice_section: str,
                            qdii_names: list, thermometer: str = "") -> str:
     """拼「逐用户持仓速览」整块（含 QDII 延迟标注 + 可选组合温度计）。
@@ -1305,7 +1312,7 @@ def _render_holdings_block(name: str, diag: str, advice_section: str,
     lines.append(f"{diag}{advice_section}")
     if note:
         lines.append(note)
-    lines.append("⚠️ AI建议仅供参考，不构成投资建议")
+    lines.append(BRIEFING_DISCLAIMER)
     return "\n".join(lines)
 
 
@@ -1948,8 +1955,10 @@ def step_generate_products(phase1, phase2, phase3):
     if news_titles:
         briefing_parts.append(f"\n📰 【要闻】\n" + "\n".join(f"  • {t[:35]}" for t in news_titles[:2]))
     
-    briefing_parts.append("\n⚠️ AI建议仅供参考，不构成投资建议")
-    
+    # v9.9.x: 公共简报尾部**不再**重复打印免责声明 —— 它与持仓速览块尾部的
+    # 那一处（BRIEFING_DISCLAIMER）文案完全相同，两份各 52B 把正文顶过 3600B
+    # 分片阈值，白切一条。免责声明改由逐用户侧唯一收口：非空白仓走
+    # _render_holdings_block，空仓走下面的 is_empty 分支补挂。
     briefing = "\n".join(briefing_parts)
 
     # ---- 逐用户简报 ----
@@ -1965,9 +1974,21 @@ def step_generate_products(phase1, phase2, phase3):
         )
 
         if is_empty:
-            user_briefing = briefing
+            # 空仓用户拿不到 _render_holdings_block 尾部的免责声明，这里必须补，
+            # 否则删掉公共简报那处后整篇零免责声明（合规不可接受）。
+            user_briefing = f"{briefing}\n{BRIEFING_DISCLAIMER}"
         else:
             diag = user_phase2.get("diagnosis", "暂无诊断")
+
+            # v9.9.x: AI 诊断是上游 LLM 自由文本（_call_v3 产出），**不走**
+            # gate_trade_decisions（那个是对象级闸门，只吃结构化 decisions），
+            # 于是真实事故：正文写「建议：XX可部分止盈」、【操作建议】却写
+            # 「金额不足暂不给建议」——同一条消息自相矛盾。这里让诊断文本也过
+            # 一遍文本级闸门 apply_executability_gate，口径与结构化 decisions 对齐。
+            _total_value = get_portfolio_total_value(uid)
+            if _total_value is not None:
+                diag, _gate_report = apply_executability_gate(
+                    diag, total_value=_total_value)
             dec = phase3.get(f"decisions_{uid}", {})
             # v9.5.125: 操作建议使用 bullet point 格式
             lines = []
