@@ -254,8 +254,19 @@ def _resolve_provider_config(model: str) -> tuple[str, str, str]:
 
 
 def _preferred_provider_order(module: str = "", now: Optional[datetime] = None) -> list[str]:
-    if _is_interactive_auto_module(module) and _is_deepseek_peak_window(now):
-        return ["doubao", "deepseek"]
+    """返回 provider 偏好顺序（签名保留 module/now 只为向后兼容，当前不再参与决策）。
+
+    2026-09-19 全面 Flash 化后，把交互对话在高峰期导去豆包的旧规则已算不过账：
+      - 高峰：DeepSeek flash output ¥9/百万  vs 豆包 turbo ¥15/百万 → 导豆包贵 67%
+      - 低谷：DeepSeek flash output ¥4.5/百万 vs 豆包 turbo ¥15/百万 → 贵 233%
+    即**任何时段 DeepSeek flash 都比豆包 turbo 便宜**，高峰期导豆包是纯亏。
+    （Pro 时代遗留：当年 DeepSeek Pro 高峰 ¥27/百万，导豆包 Pro ¥30 才勉强成立。）
+
+    故一律优先 deepseek，豆包仅作降级兜底。
+    注意：`_is_interactive_auto_module` / `_is_deepseek_peak_window` /
+    `INTERACTIVE_AUTO_MODULES` 均保留 —— 后者仍用于费用计算与峰谷统计，
+    只是不再参与这里的偏好排序。
+    """
     return ["deepseek", "doubao"]
 
 

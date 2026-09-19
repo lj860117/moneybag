@@ -32,7 +32,20 @@ def _stub_call_sync(self, prompt, **kwargs) -> dict:
     return dict(_STUB_MEMORY_RESULT)
 
 
-def test_resolve_default_model_peak_prefers_doubao_for_interactive(monkeypatch):
+def test_resolve_default_model_peak_prefers_deepseek_for_interactive(monkeypatch):
+    """峰段 chat 走 auto：主模型必须是 DeepSeek flash，不能是豆包 turbo。
+
+    ⚠️ 业务规则变更（2026-09-19 全面 Flash 化）：
+    本用例原名 `..._peak_prefers_doubao_for_interactive`，断言峰段把交互对话
+    导去豆包。那是 Pro 时代的遗留规则 —— 当年 DeepSeek Pro 高峰 output
+    ¥27/百万，导去豆包 Pro（¥30/百万）勉强说得通。
+
+    Flash 化后算不过账了：
+      - 高峰：DeepSeek flash ¥9/百万   vs 豆包 turbo ¥15/百万 → 导豆包贵 67%
+      - 低谷：DeepSeek flash ¥4.5/百万 vs 豆包 turbo ¥15/百万 → 贵 233%
+    即任何时段 DeepSeek flash 都比豆包 turbo 便宜，高峰期导豆包是纯亏。
+    故改为断言峰段同样优先 deepseek，豆包只作降级兜底。
+    """
     import infra.llm.gateway as gw_mod
 
     monkeypatch.setenv("LLM_API_KEY", "ds")
@@ -45,7 +58,7 @@ def test_resolve_default_model_peak_prefers_doubao_for_interactive(monkeypatch):
         now=datetime(2026, 7, 6, 9, 30),
     )
 
-    assert model == "doubao-seed-2-1-turbo-260628"
+    assert model == "deepseek-v4-flash"
 
 
 def test_resolve_default_model_peak_falls_back_to_deepseek_when_doubao_missing(monkeypatch):
@@ -97,7 +110,18 @@ def test_resolve_default_model_peak_keeps_deepseek_when_alt_providers_missing(mo
     assert model == "deepseek-v4-flash"
 
 
-def test_resolve_model_candidates_switches_fallback_order_by_peak_window(monkeypatch):
+def test_resolve_model_candidates_keeps_deepseek_first_in_any_window(monkeypatch):
+    """峰段/谷段候选顺序必须一致：都是 deepseek 在前、豆包在后。
+
+    ⚠️ 业务规则变更（2026-09-19 全面 Flash 化）：
+    本用例原名 `..._switches_fallback_order_by_peak_window`，断言候选顺序
+    **随峰谷窗口对调**（峰段豆包在前）。新规则下不再对调 —— DeepSeek flash
+    在峰段 ¥9/百万、谷段 ¥4.5/百万，都低于豆包 turbo 的 ¥15/百万，
+    任何时段导去豆包都更贵。豆包退化为纯粹的降级兜底。
+
+    这里同时验峰段和谷段，正是为了钉死「顺序不再随窗口切换」这件事：
+    只验一个时段的话，旧的对调逻辑有 50% 概率照样能绿。
+    """
     import infra.llm.gateway as gw_mod
 
     monkeypatch.setenv("LLM_API_KEY", "ds")
@@ -115,8 +139,8 @@ def test_resolve_model_candidates_switches_fallback_order_by_peak_window(monkeyp
     )
 
     assert peak_candidates == [
-        "doubao-seed-2-1-turbo-260628",
         "deepseek-v4-flash",
+        "doubao-seed-2-1-turbo-260628",
     ]
     assert offpeak_candidates == [
         "deepseek-v4-flash",
@@ -224,8 +248,14 @@ def test_doubao_heavy_fallback_is_cheap_tier(monkeypatch):
     assert all("pro" not in m for m in candidates)
 
 
-def test_peak_chat_auto_stays_cheap_and_doubao_first(monkeypatch):
-    """峰谷窗口下 chat 走 auto：主模型仍须便宜档，且候选顺序豆包优先。"""
+def test_peak_chat_auto_stays_cheap_and_deepseek_first(monkeypatch):
+    """峰谷窗口下 chat 走 auto：主模型仍须便宜档，且候选顺序 deepseek 优先。
+
+    ⚠️ 业务规则变更（2026-09-19 全面 Flash 化）：
+    原名 `..._and_doubao_first`，断言峰段豆包优先。现改为 deepseek 优先 ——
+    DeepSeek flash 峰段 ¥9/百万 < 豆包 turbo ¥15/百万，峰段导豆包反而更贵。
+    「主模型与降级档都必须是便宜档（不含 pro）」这条约束不变，继续保留。
+    """
     import infra.llm.gateway as gw_mod
 
     monkeypatch.setenv("LLM_API_KEY", "ds")
@@ -243,10 +273,10 @@ def test_peak_chat_auto_stays_cheap_and_doubao_first(monkeypatch):
         now=datetime(2026, 7, 6, 10, 15),
     )
 
-    assert candidates[0] == "doubao-seed-2-1-turbo-260628"   # 峰段豆包优先
+    assert candidates[0] == "deepseek-v4-flash"              # 峰段 deepseek 优先
     assert "pro" not in candidates[0]                        # 主模型是便宜档
     assert "pro" not in candidates[1]                        # 降级也是便宜档
-    assert default_model == "doubao-seed-2-1-turbo-260628"
+    assert default_model == "deepseek-v4-flash"
 
 
 def test_llm_cache_key_includes_model_to_avoid_cross_model_reuse(tmp_path, monkeypatch):
@@ -261,7 +291,23 @@ def test_llm_cache_key_includes_model_to_avoid_cross_model_reuse(tmp_path, monke
     assert deepseek_key != doubao_key
 
 
-def test_call_sync_peak_falls_back_to_deepseek_when_alt_providers_exhausted(monkeypatch, tmp_path):
+def test_call_sync_falls_back_to_doubao_when_deepseek_exhausted(monkeypatch, tmp_path):
+    """主 provider（deepseek）配额打满时，必须降级到豆包并标记 fallback_used。
+
+    ⚠️ 业务规则变更（2026-09-19 全面 Flash 化）：
+    原名 `..._peak_falls_back_to_deepseek_when_alt_providers_exhausted`。
+    旧版的前提是「峰段豆包优先」，于是造豆包 402、deepseek 200，验证
+    「豆包挂了能退回 deepseek」。新规则下 deepseek 在任何时段都是主 provider，
+    那个前提不成立了 —— 若夹具不改，deepseek 首次即成功，fallback_used 会是
+    False，用例就从「验降级链」退化成「验 happy path」，等于把回归网拆了。
+
+    所以这里把 402 挪到新的主 provider（deepseek）上，豆包返回 200：
+    仍然是在验「主 provider 配额打满 → 降级到备 provider → fallback_used=True」，
+    断言强度一点没降，只是跟随新的 provider 顺序。
+
+    `_is_deepseek_peak_window` 仍被钉死为 True —— 现在它是**故意的 no-op**：
+    峰段也必须走 deepseek 优先，钉死峰段正好能证明峰谷窗口不再翻转顺序。
+    """
     import infra.llm.gateway as infra_gw
     import infra.llm.gateway as gw_mod
 
@@ -293,11 +339,12 @@ def test_call_sync_peak_falls_back_to_deepseek_when_alt_providers_exhausted(monk
 
         def post(self, url, headers=None, json=None):
             model = (json or {}).get("model")
-            if model == "doubao-seed-2-1-turbo-260628":
-                return _FakeResponse(402, {"error": "doubao quota exceeded"})
+            # 402 挪到新的主 provider（deepseek）上 —— 见上方 docstring
             if model == "deepseek-v4-flash":
+                return _FakeResponse(402, {"error": "deepseek quota exceeded"})
+            if model == "doubao-seed-2-1-turbo-260628":
                 return _FakeResponse(200, {
-                    "choices": [{"message": {"content": "deepseek still works"}}],
+                    "choices": [{"message": {"content": "doubao still works"}}],
                     "usage": {"total_tokens": 12, "prompt_tokens": 5, "completion_tokens": 7},
                 })
             raise AssertionError(f"unexpected model {model}")
@@ -308,10 +355,10 @@ def test_call_sync_peak_falls_back_to_deepseek_when_alt_providers_exhausted(monk
     gateway = gw_mod.LLMGateway()
     result = gateway.call_sync("现在给我一句结论", system="sys", model_tier="llm_light", module="chat")
 
-    assert result["model"] == "deepseek-v4-flash"
+    assert result["model"] == "doubao-seed-2-1-turbo-260628"
     assert result["source"] == "ai"
     assert result["fallback_used"] is True
-    assert result["content"] == "deepseek still works"
+    assert result["content"] == "doubao still works"
 
 
 def test_list_models_returns_peak_aware_default(monkeypatch):

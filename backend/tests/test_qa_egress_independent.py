@@ -89,7 +89,14 @@ def conftest_net_block_removed(monkeypatch):
 
 
 def _drive_real_402_incident_path(monkeypatch):
-    """逐字复刻 2026-09-13 事故路径：fake httpx 造 402 → gateway 回退 → 告警。"""
+    """逐字复刻 2026-09-13 事故路径：fake httpx 造 402 → gateway 回退 → 告警。
+
+    ⚠️ 2026-09-19 全面 Flash 化后调整：旧版把 402 造在豆包上（当时峰段豆包是
+    主 provider）。现在 `_preferred_provider_order` 恒为 [deepseek, doubao]，
+    402 必须造在 deepseek 上才能复现同一条事故路径 —— 否则 deepseek 首个即
+    返回 200，配额告警压根不会触发，本文件三条用例全是空转的绿。
+    改的只是「谁挂了」，事故路径本身（402 → 回退 → 告警 → 推送）一字未动。
+    """
     import infra.llm.gateway as gw_mod
 
     monkeypatch.setenv("LLM_API_KEY", "ds")
@@ -116,10 +123,15 @@ def _drive_real_402_incident_path(monkeypatch):
 
         def post(self, url, headers=None, json=None):
             model = (json or {}).get("model")
-            if model == "doubao-seed-2-1-turbo-260628":
-                return _FakeResponse(402, {"error": "doubao quota exceeded"})
+            # ⚠️ 2026-09-19 全面 Flash 化后 provider 顺序固定为 deepseek 优先
+            # （见 _drive_real_402_incident_path 的 docstring）。402 必须挂在
+            # **主 provider** 上，事故路径（402 → 网关回退 → 配额告警）才会真的
+            # 被走到；挂在备 provider 上的话主 provider 首次即 200，整条告警链路
+            # 不会触发，本文件三条用例会全部退化成「空转的绿」。
+            if model == "deepseek-v4-flash":
+                return _FakeResponse(402, {"error": "deepseek quota exceeded"})
             return _FakeResponse(200, {
-                "choices": [{"message": {"content": "deepseek still works"}}],
+                "choices": [{"message": {"content": "doubao still works"}}],
                 "usage": {"total_tokens": 12, "prompt_tokens": 5,
                           "completion_tokens": 7},
             })
