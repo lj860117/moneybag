@@ -1514,30 +1514,21 @@ def step_r1_phase2():
             # v9.5.43 后处理：过滤 prompt 泄漏（即使 prompt 被复读也兜底）
             diagnosis = _filter_prompt_leak(diagnosis)
 
-            # v9.5.43+ 原逻辑：首次输出被 filter 判为降级时，再调一次 LLM 重试
-            # （当时为了兜住 v4-flash 偶发的思考链截断）。
-            #
-            # ⚠️ 2026-09-19 降本：改成**不重试**，直接接受首次结果 + 记告警日志。
-            #
-            # 为什么砍：这不是「换个便宜模型兜底」，也不是「解析兜底」，
-            # 而是拿同一份持仓数据（holdings_text + 温度计）再发一次完整的
-            # LLM 请求，最多 300 output token —— 一次重试 = 该用户这次诊断的
-            # 调用量直接翻倍。属昂贵重试，老板已确认砍掉。
-            #
-            # 成本口径：step_r1_phase2 在 02:30 跑，落在低谷档（flash output
-            # ¥4.5/百万）。单次重试 ≈ ¥0.002；按 2 个用户且每天都触发的
-            # 最坏情况算 ≈ ¥0.08/月（实际触发是偶发，真实值远低于此）。
-            #
-            # 异常处理未动：_call_v3 内部已吞掉异常并返回 ""，外层
-            # `except Exception` 与 results[uid] 赋值路径都保持原样，
-            # 唯一区别是不再重复烧一次调用。
-            #
-            # 已知副作用（接受）：v4-flash 偶发思考链泄漏导致首次输出被判降级
-            # 时，晨报这段会保留「诊断输出异常，建议手动查看持仓页详情」的
-            # 兜底文案，而不是重试后的正常诊断。要恢复重试，把下面的 if 块
-            # 改回调用 _call_v3 即可（holdings_text 仍在本作用域内）。
+            # v9.5.43+ 重试一次：如果首次输出被过滤为降级，再调一次（v4-flash 偶发思考链截断）
             if "异常" in diagnosis and "建议手动查看" in diagnosis:
-                log(f"  ⚠️ {name}: 首次诊断输出被判为降级，已接受首次结果（降本模式不再重试）")
+                log(f"  ⚠️ {name}: 首次输出异常，重试一次")
+                retry_prompt = f"""{holdings_text}
+直接输出三段诊断，不要思考过程：
+总评：（一句话组合风格）
+风险：（具体基金/股票名称的集中风险）
+建议：（针对持仓的可执行操作）"""
+                diagnosis2 = _call_v3(retry_prompt, 300,
+                                      system="你是持仓诊断师。直接输出'总评/风险/建议'三段，每段一句话，禁止任何思考过程或前置说明。",
+                                      force_no_thinking=True)
+                diagnosis2 = _filter_prompt_leak(diagnosis2)
+                if "异常" not in diagnosis2 or len(diagnosis2) > len(diagnosis):
+                    diagnosis = diagnosis2
+                    log(f"  ✅ {name}: 重试成功 {len(diagnosis2)}字")
 
             # v9.9.38: 记录当日持仓里的 QDII 基金名，供 step_generate_products
             # 追加「净值披露延迟」标注。整个 data 会被 json.dumps 存进
