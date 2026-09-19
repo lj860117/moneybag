@@ -20,7 +20,11 @@ function _md(text){
 }
 let chatModel='auto';
 let chatModelList=[];
-async function loadModelList(){try{const r=await fetch(API_BASE+'/models',{signal:AbortSignal.timeout(5000)});if(r.ok){const d=await r.json();chatModelList=d.models||[];if(d.default){const sticky=localStorage.getItem('chatModel');// v9.9.62 全局Flash化: 旧sticky=Pro一次性迁移回auto
+// 多轮历史窗口：**不在这里定死**，由 /api/models 下发的后端 config.CHAT_HISTORY_WINDOW 决定。
+// 过去这里写死 slice(-21,-1)=20 条，而后端实际只取 10 条 —— 多发的一倍被静默丢弃，
+// 且改后端不改前端（或反之）就会静默漂移。10 只是接口没拉到时的兜底值，与 config 默认值一致。
+let chatHistoryWindow=10;
+async function loadModelList(){try{const r=await fetch(API_BASE+'/models',{signal:AbortSignal.timeout(5000)});if(r.ok){const d=await r.json();chatModelList=d.models||[];if(d.chat_history_window>0)chatHistoryWindow=Math.min(40,d.chat_history_window|0);if(d.default){const sticky=localStorage.getItem('chatModel');// v9.9.62 全局Flash化: 旧sticky=Pro一次性迁移回auto
 if(sticky&&sticky.indexOf('v4-pro')>=0){try{localStorage.removeItem('chatModel')}catch(e){}chatModel='auto'}else{chatModel=(sticky&&sticky!=='auto')?sticky:'auto'}}}}catch{chatModelList=[{id:'deepseek-v4-flash',name:'DeepSeek V4',provider:'deepseek'}]}}
 
 // v9.5.65: 模型名 → 显示名映射（含降级标识）
@@ -203,7 +207,8 @@ let _wd = null;             // SSE stall 看门狗（try 外声明，catch 里�
 try{
 // D2 v9.5.45: 持仓上下文快照
 const p=_buildChatPortfolioSnapshot();
-const _history=chatMessages.slice(-21,-1).filter(m=>m.role==='user'||m.role==='bot').map(m=>({role:m.role==='bot'?'assistant':'user',content:m.text||''}));
+// 取「当前这条之前」的最近 chatHistoryWindow 条（末位是刚发出的这条，由 message 字段单独带）
+const _history=chatMessages.slice(-(chatHistoryWindow+1),-1).filter(m=>m.role==='user'||m.role==='bot').map(m=>({role:m.role==='bot'?'assistant':'user',content:m.text||''}));
 // SSE 超时模型（不活跃看门狗）：
 // 整条请求共用一把「不活跃」看门狗 —— 一旦拿到响应头就撤销、流式阶段彻底裸奔的做法，
 // 会让后端中途卡死时 reader.read() 永不 settle（界面永久转圈 + 输入永久锁定 + 零反馈）。

@@ -418,7 +418,14 @@ def list_models():
         if key:
             result.append({"id": m["id"], "name": m["name"], "provider": m["provider"]})
     result = [{"id": "auto", "name": "智能调度（峰谷自动）", "provider": "auto"}] + result
-    return {"models": result, "default": "auto"}
+    # 顺带下发对话历史窗口，让前端与后端共用 config.CHAT_HISTORY_WINDOW 这一个值。
+    # 原先前端写死 slice(-21,-1)=20 条、后端只取 10 条，前端白做功一半且改一处必漏另一处。
+    # 前端本来启动时就要拉一次 /api/models，挂在这里不额外多一次请求。
+    return {
+        "models": result,
+        "default": "auto",
+        "chat_history_window": int(getattr(config, "CHAT_HISTORY_WINDOW", 10) or 10),
+    }
 
 
 @router.post("/api/chat")

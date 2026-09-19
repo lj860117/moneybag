@@ -467,7 +467,7 @@ TUSHARE_TOKEN = os.environ.get("TUSHARE_TOKEN", "")
 #     兜底直接读 env 原样使用（旧注释还写着「.env 若显式配 Pro 仍尊重 env」）。
 #     .env 误配 Pro 时 OCR/票据走降级就是真实 Pro 扣费，现兜底一并归一化。
 #   index.html 27 处 ?v= 与 sw.js CACHE_NAME 一并 bump（缓存失效，让用户拿到本轮后端改动）。
-APP_VERSION = "9.9.64"
+APP_VERSION = "9.9.65"
 
 # ---- v9.5.123: API 鉴权 ----
 # 每个用户一个token，格式: userId:token（环境变量或data/auth_tokens.json）
@@ -512,6 +512,22 @@ TOKEN_BUDGET = {
     "max_input_per_call":  20_000,      # 单次最大 2万 input（常态 2.6k，7.7 倍余量）
     "max_output_per_call": 10_000,      # 单次最大 1万 output（llm_heavy 上限 3000）
 }
+
+# ── 对话页多轮历史窗口（**唯一权威**，前端与后端共用同一个值）──────────────
+# 背景：三处口径长期不一致 —— 前端 pages/chat.js 写死 slice(-21,-1) 发 20 条，
+#   后端 infra/llm/gateway.py 实际只取 history[-10:]，models/schemas.py 的注释
+#   又写着「最近5轮」。结果前端白做功一半（多发 10 条，后端直接丢掉），
+#   且任何人想调这个窗口都得改两个地方，改一处等于埋雷。
+# 现在：本常量是唯一出处，后端 gateway._select_chat_history() 消费它，
+#   前端通过 /api/models 下发的 `chat_history_window` 拿到同一个值
+#   （前端启动时本来就拉一次 /api/models，不额外多一次请求）。
+#
+# 为什么仍然保留 10 条（=5 轮），不做更激进的收缩：
+#   实测多轮老历史天然满足 DeepSeek 的前缀缓存命中 —— 命中时 input ¥0.05/M、
+#   未命中 ¥1.5/M，差 30 倍。缩到 5 条最多省 ¥2.4/月，代价是 AI 记不住上一轮，
+#   净亏。详见 LLM成本审计报告 v4 第十一节。
+CHAT_HISTORY_WINDOW = 10             # 条（user/assistant 交替），= 5 轮
+CHAT_HISTORY_TOKEN_BUDGET = 6_000    # token 预算兜底：按条数截断挡不住「单条超长」
 
 # 多 provider 定价（¥/百万token）
 # DeepSeek 官方 V4 价格分 flash/pro 两档，input 按缓存命中/未命中 + 峰谷时段分别计价

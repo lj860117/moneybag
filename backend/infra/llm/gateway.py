@@ -232,6 +232,52 @@ def _estimate_tokens_from_messages(messages: list[Any]) -> int:
     return max(1, int(total_chars / 1.6))
 
 
+# 中文约 1.6 字符/token（与 _estimate_tokens_from_messages 同一口径，别各写各的）
+_CHARS_PER_TOKEN = 1.6
+
+
+def _select_chat_history(history: Any) -> list[dict[str, str]]:
+    """把调用方传来的多轮历史归一化成「真正要发出去」的窗口。
+
+    这是对话历史窗口的**唯一实现**，窗口大小与预算来自 config：
+      - ``CHAT_HISTORY_WINDOW``        按条数取最近 N 条
+      - ``CHAT_HISTORY_TOKEN_BUDGET``  按 token 预算兜底
+
+    在此之前三处口径不一致（前端发 20、后端取 10、schema 注释写 5 轮），
+    前端多发的部分被静默丢弃。现在前端按后端下发的值取，两边永远一致。
+
+    两级裁剪，顺序不能反：
+      1) 条数截断 —— 便宜、可预期，决定「AI 记得住几轮」
+      2) token 预算 —— 挡住「单条超长」把整次输入顶穿（如贴了一大段持仓/研报）
+    超预算时**从最旧往回丢**，保证「最近一轮」一定留在窗口里；
+    AI 记不住很久以前说了什么，总比记不住上一轮要好。
+    """
+    window = int(getattr(config, "CHAT_HISTORY_WINDOW", 10) or 10)
+    budget = int(getattr(config, "CHAT_HISTORY_TOKEN_BUDGET", 6_000) or 6_000)
+
+    normalized: list[dict[str, str]] = []
+    for h in history or []:
+        if isinstance(h, dict):
+            role, content = h.get("role", "user"), h.get("content", "")
+        else:
+            role, content = getattr(h, "role", "user"), getattr(h, "content", "")
+        if role in ("user", "assistant") and content:
+            normalized.append({"role": role, "content": str(content)})
+
+    normalized = normalized[-window:]
+
+    max_chars = int(budget * _CHARS_PER_TOKEN)
+    kept: list[dict[str, str]] = []
+    total = 0
+    for m in reversed(normalized):
+        c = len(m["content"])
+        if kept and total + c > max_chars:
+            break
+        kept.append(m)
+        total += c
+    return list(reversed(kept))
+
+
 def _provider_has_key(provider: str) -> bool:
     if provider == "doubao":
         return bool(os.environ.get("DOUBAO_API_KEY", "") or os.environ.get("ARK_API_KEY", ""))
@@ -937,13 +983,9 @@ class LLMGateway:
         messages = []
         if system:
             messages.append({"role": "system", "content": system})
-        # 注入多轮对话历史（最多10条，奇偶交替 user/assistant）
+        # 注入多轮对话历史（窗口与 token 预算由 config 决定，见 _select_chat_history）
         if history:
-            for h in history[-10:]:
-                role = h.get("role", "user") if isinstance(h, dict) else h.role
-                content = h.get("content", "") if isinstance(h, dict) else h.content
-                if role in ("user", "assistant") and content:
-                    messages.append({"role": role, "content": content})
+            messages.extend(_select_chat_history(history))
         messages.append({"role": "user", "content": prompt})
 
         # 5. 流式调用（主模型失败后按候选链继续降级）

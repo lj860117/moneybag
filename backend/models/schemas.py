@@ -100,7 +100,12 @@ class ChatRequest(BaseModel):
     portfolio: Optional[Portfolio] = None
     model: Optional[str] = None  # 前端可指定模型，如 "deepseek-v4-flash"
     userId: Optional[str] = None  # 多用户隔离
-    history: Optional[list[ChatHistoryMessage]] = None  # 多轮对话历史（最近5轮）
+    # 多轮对话历史。这里**不做长度限制**——窗口大小由 config.CHAT_HISTORY_WINDOW
+    # 与 config.CHAT_HISTORY_TOKEN_BUDGET 统一决定，实际裁剪在
+    # infra/llm/gateway._select_chat_history() 里做（唯一实现）。
+    # （此处的旧注释写「最近5轮」，而前端曾发 20 条、后端取 10 条，三处口径不一致；
+    #   现在只保留一处口径，见 config.py）
+    history: Optional[list[ChatHistoryMessage]] = None
 
 class LedgerEntry(BaseModel):
     userId: str
