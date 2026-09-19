@@ -172,13 +172,21 @@ def test_all_models_failed_reports_per_model_reason(monkeypatch):
 
 # ── 2. 部分成功：写缓存但短 TTL ─────────────────────────────────────────────
 
-def test_partial_success_cached_with_short_ttl(monkeypatch):
-    """一家成功一家失败 → 写缓存但用 30min TTL，不把半数失败锁 12h。"""
+def test_primary_ok_skips_doubao_entirely(monkeypatch):
+    """主模型成功 → 一次都不碰豆包，且按「1/1 家成功」写 12h 缓存。
+
+    2026-09-19 语义变更：豆包从「并发必调」降级为「仅兜底」。
+    这条是本变更的核心守卫 —— 一旦有人把并发调用加回来，这里会红。
+    同时守住 model_total 必须等于**实际调用家数**：若写死成 2，
+    前端会永远显示"仅 1/2 家模型返回"，且缓存退化成 30min 短 TTL。
+    """
+    calls = []
 
     def responder(url: str, body: dict):
+        calls.append(url)
         if "api.deepseek.com" in url:
             return 200, _completion('{"score": 7.5, "reason": "动量强", "risk": "波动"}')
-        return 200, _completion("我是一段纯文本，不是JSON")
+        return 200, _completion('{"score": 6.5, "reason": "不该被调到", "risk": "不该"}')
 
     monkeypatch.setenv("LLM_API_KEY", "test-ds-key")
     monkeypatch.setenv("DOUBAO_API_KEY", "test-db-key")
@@ -186,12 +194,52 @@ def test_partial_success_cached_with_short_ttl(monkeypatch):
 
     result = score_fund_multi_model({"code": "000003", "name": "测试基金C"})
 
-    assert result["model_count"] == 1
-    assert result["partial"] is True
-    assert result["avg_score"] == 7.5
+    # 豆包一次都没被调
+    assert not any("volces" in u or "ark." in u for u in calls), f"豆包被被动调用了: {calls}"
+    assert len([u for u in calls if "api.deepseek.com" in u]) == 1
 
+    assert result["model_count"] == 1
+    assert result["model_total"] == 1
+    assert result["partial"] is False, "只调了 1 家且成功，不应标记 partial"
+    assert result["avg_score"] == 7.5
+    assert len(result["scores"]) == 1
+
+    # 成功 → 12h 长缓存（而不是 30min 短 TTL）
     assert _cache_file("000003").exists()
     entry = _cache_entry("000003")
+    assert entry["ttl"] == mms._CACHE_TTL == 43200
+
+
+def test_primary_failed_falls_back_to_doubao(monkeypatch):
+    """主模型失败 → 才降级补调豆包；一家成功 → 30min 短 TTL。"""
+    calls = []
+
+    def responder(url: str, body: dict):
+        calls.append(url)
+        if "api.deepseek.com" in url:
+            return 500, {}
+        return 200, _completion('{"score": 6.5, "reason": "中性", "risk": "回撤大"}')
+
+    monkeypatch.setenv("LLM_API_KEY", "test-ds-key")
+    monkeypatch.setenv("DOUBAO_API_KEY", "test-db-key")
+    _install_fake_httpx(monkeypatch, responder)
+
+    # ⚠️ 换 code：000003 已被上一条用例写了 12h 缓存，复用会直接命中缓存、
+    # 模型一次都不调，导致本用例假失败（缓存目录是本文件共享的）。
+    # 000013 也已被 test_results_follow_declared_model_order 占用。
+    result = score_fund_multi_model({"code": "000016", "name": "测试基金C2"})
+
+    # 主模型失败后才轮到豆包
+    assert any("api.deepseek.com" in u for u in calls)
+    assert any("volces" in u or "ark." in u for u in calls), f"主模型失败却没降级: {calls}"
+
+    assert result["model_count"] == 1
+    assert result["model_total"] == 2
+    assert result["partial"] is True
+    assert result["avg_score"] == 6.5
+
+    assert _cache_file("000016").exists()
+    entry = _cache_entry("000016")
     assert entry["ttl"] == mms._CACHE_TTL_PARTIAL == 1800
     assert entry["ttl"] < mms._CACHE_TTL
 
@@ -230,8 +278,9 @@ def test_poisoned_cache_lets_retry_really_retry(monkeypatch):
     result = score_fund_multi_model({"code": "000015", "name": "测试基金L"})
 
     assert "from_cache" not in result
-    assert len(calls) == 2, "毒缓存未失效，模型根本没被调用"
-    assert result["model_count"] == 2
+    # 豆包改降级后：主模型成功即收工，所以是 1 次而不是 2 次
+    assert len(calls) == 1, "毒缓存未失效，模型根本没被调用"
+    assert result["model_count"] == 1
 
 
 def test_legacy_cache_entry_without_ttl_defaults_to_12h(monkeypatch):
@@ -248,16 +297,22 @@ def test_legacy_cache_entry_without_ttl_defaults_to_12h(monkeypatch):
 
 # ── 3. 全成功：正常 12h 缓存 ────────────────────────────────────────────────
 
-def test_both_success_cached_with_full_ttl(monkeypatch):
+def test_primary_success_cached_with_full_ttl(monkeypatch):
+    """主模型成功 → 12h 缓存，且第二次命中缓存。
+
+    （原 test_both_success_cached_with_full_ttl：豆包改降级后正常路径只调
+    1 家，平均分就是主模型的分 7.5，不再是两家均值 7.0。）
+    """
     monkeypatch.setenv("LLM_API_KEY", "test-ds-key")
     monkeypatch.setenv("DOUBAO_API_KEY", "test-db-key")
     _install_fake_httpx(monkeypatch, _both_ok)
 
     result = score_fund_multi_model({"code": "000006", "name": "测试基金D"})
 
-    assert result["model_count"] == 2
+    assert result["model_count"] == 1
+    assert result["model_total"] == 1
     assert result["partial"] is False
-    assert result["avg_score"] == 7.0  # (7.5 + 6.5) / 2
+    assert result["avg_score"] == 7.5  # 只有主模型的分，不再取两家均值
     assert _cache_entry("000006")["ttl"] == mms._CACHE_TTL == 43200
 
     # 第二次调用应命中缓存
@@ -275,16 +330,27 @@ def test_requests_use_generous_max_tokens(monkeypatch):
 
     score_fund_multi_model({"code": "000007", "name": "测试基金E"})
 
-    assert len(calls) == 2
+    # 豆包改降级后正常路径只调主模型 1 次
+    assert len(calls) == 1
     for c in calls:
         assert c["json"]["max_tokens"] == 2000
 
 
 def test_doubao_request_disables_thinking(monkeypatch):
-    """豆包必须显式关闭思考，否则实测 38.9s 必然超时。"""
+    """豆包必须显式关闭思考，否则实测 38.9s 必然超时。
+
+    豆包改成降级后，正常路径已经调不到它了；要验它的请求参数，
+    必须先让主模型失败把它"逼"出来。
+    """
     monkeypatch.setenv("LLM_API_KEY", "test-ds-key")
     monkeypatch.setenv("DOUBAO_API_KEY", "test-db-key")
-    calls = _install_fake_httpx(monkeypatch, _both_ok)
+
+    def responder(url: str, body: dict):
+        if "api.deepseek.com" in url:
+            return 500, {}                      # 逼出降级
+        return 200, _completion('{"score": 6.5, "reason": "中性", "risk": "回撤大"}')
+
+    calls = _install_fake_httpx(monkeypatch, responder)
 
     score_fund_multi_model({"code": "000008", "name": "测试基金F"})
 
@@ -343,7 +409,9 @@ def test_content_parsing_variants(monkeypatch, content, finish_reason,
     ).hexdigest()[:6]
     result = score_fund_multi_model({"code": code, "name": "测试基金H"})
 
-    assert result["model_count"] == (2 if expected_score is not None else 0)
+    # 豆包改降级后：解析成功 → 只调主模型 1 家（model_count=1）；
+    # 解析失败 → 主模型拿不到分，降级补调豆包，两家都失败（model_count=0）。
+    assert result["model_count"] == (1 if expected_score is not None else 0)
     for s in result["scores"]:
         if expected_score is not None:
             assert s["score"] == expected_score
@@ -399,7 +467,11 @@ def test_timeout_budget_is_strictly_below_frontend(monkeypatch):
 
 
 def test_results_follow_declared_model_order(monkeypatch):
-    """结果顺序要稳定（as_completed 是完成序，不能泄漏给前端）。"""
+    """结果顺序要稳定（as_completed 是完成序，不能泄漏给前端）。
+
+    豆包改降级后它只在主模型失败时才出场，所以要凑齐两家进 results，
+    必须让主模型"调得到但拿不到分"（返回非 JSON），而不是 HTTP 报错。
+    """
     monkeypatch.setenv("LLM_API_KEY", "test-ds-key")
     monkeypatch.setenv("DOUBAO_API_KEY", "test-db-key")
 
@@ -408,10 +480,13 @@ def test_results_follow_declared_model_order(monkeypatch):
         if "ark.cn-beijing" in url:
             return 200, _completion('{"score": 6.5, "reason": "中性", "risk": "回撤大"}')
         time.sleep(0.05)
-        return 200, _completion('{"score": 7.5, "reason": "动量强", "risk": "波动"}')
+        # 主模型返回纯文本 → 解析失败 → 触发豆包降级
+        return 200, _completion("我是一段纯文本，不是JSON")
 
     _install_fake_httpx(monkeypatch, responder)
 
     result = score_fund_multi_model({"code": "000013", "name": "测试基金K"})
 
     assert [s["id"] for s in result["scores"]] == ["deepseek", "doubao"]
+    assert result["scores"][0]["score"] is None   # 主模型解析失败
+    assert result["scores"][1]["score"] == 6.5    # 豆包兜底成功

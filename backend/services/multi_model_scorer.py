@@ -75,11 +75,16 @@ _MODELS = [
     },
 ]
 
+# 2026-09-19：豆包从「并发必调」降级为「仅兜底」。
+# 主力一律 deepseek-v4-flash（_MODELS[0]）；豆包只在主模型拿不到分时才补调。
+_PRIMARY_MODEL = _MODELS[0]
+_FALLBACK_MODELS = _MODELS[1:]
+
 _CACHE_DIR = Path(config.DATA_DIR) / "_cache" / "multi_model_score"
-_CACHE_TTL = 43200  # 12h：两家都成功
-_CACHE_TTL_PARTIAL = 1800  # 30min：只有一家成功
+_CACHE_TTL = 43200  # 12h：本次调用的模型全部成功
+_CACHE_TTL_PARTIAL = 1800  # 30min：只有部分成功
 _MODEL_TIMEOUT = 35  # 单模型 HTTP 超时（秒）
-_TOTAL_TIMEOUT = 40  # 两家并发总预算（秒）
+_TOTAL_TIMEOUT = 40  # 一轮并发总预算（秒）
 
 
 def _get_cache(code: str) -> Optional[dict]:
@@ -280,21 +285,29 @@ def _call_model(model_cfg: dict, prompt: str) -> dict:
 
 def score_fund_multi_model(fund_info: dict) -> dict:
     """
-    两模型并发评分 → 综合排名（与 _MODELS 保持一致：DeepSeek + 豆包 Seed 2.1）
+    主模型优先评分，豆包仅作降级兜底（2026-09-19 起）。
+
+    正常路径：只调 _PRIMARY_MODEL（deepseek-v4-flash），成功即返回，
+    model_total=1、partial=False、写 12h 缓存。
+    降级路径：主模型失败/超时才补调 _FALLBACK_MODELS（豆包 turbo），
+    此时 model_total=2，按成功家数决定 12h / 30min 缓存。
 
     返回:
     {
         "scores": [
             {"id": "deepseek", "name": "DeepSeek", "score": 7.5, "reason": "...", "risk": "..."},
-            {"id": "doubao", "name": "豆包 Seed 2.1", "score": 8.0, "reason": "...", "risk": "..."},
+            # 豆包条目只在降级时才出现
         ],
         "avg_score": 7.5,
         "consensus": "推荐" / "分歧" / "谨慎",
-        "model_count": 2,       # 成功家数
-        "model_total": 2,       # 总家数
-        "partial": False,       # 只有部分模型成功
+        "model_count": 1,       # 成功家数
+        "model_total": 1,       # 本次实际调用的家数（不是写死的 2）
+        "partial": False,       # 调用的家数里只有部分成功
         "scored_at": 1717300000,
     }
+
+    ⚠️ 前端（pages/_components.js）拿 model_count / model_total 显示
+    "X/Y 家模型"，Y 必须等于实际调用家数，否则会永远显示"仅 1/2 家返回"。
     """
     code = fund_info.get("code", "")
 
@@ -307,23 +320,41 @@ def score_fund_multi_model(fund_info: dict) -> dict:
     # 2. 构建 prompt
     prompt = _build_prompt(fund_info)
 
-    # 3. 两模型并发调用
+    # 3. 调用：主模型优先，豆包只作降级
+    #
+    # 2026-09-19 改：原先两家**并发必调**，等于每次都用豆包买一份 second opinion。
+    # 两笔账都不划算：
+    #   - 单价：豆包 turbo output ¥15/百万 token，比 DeepSeek flash 还贵
+    #     （高峰 ¥9 / 低谷 ¥4.5），且豆包**没有峰谷差价**；
+    #   - 价值：线上缓存里两家分差普遍只有 0.2~0.3 分，"共识度"几乎恒为一致。
+    # 老板明确要求：豆包只做降级兜底，不要被动调用，主力一律 deepseek-v4-flash。
+    #
+    # 新语义：主模型成功 → 不再调豆包；主模型失败/超时 → 才降级补调豆包。
     results = []
-    with ThreadPoolExecutor(max_workers=2) as executor:
-        futures = {executor.submit(_call_model, m, prompt): m for m in _MODELS}
-        try:
-            for future in as_completed(futures, timeout=_TOTAL_TIMEOUT):
-                try:
-                    results.append(future.result())
-                except Exception as e:
-                    m = futures[future]
-                    results.append({"id": m["id"], "name": m["name"], "score": None, "reason": str(e)[:30] or "调用异常", "error": True})
-        except FuturesTimeoutError:
-            # 总预算耗尽：未返回的模型补记为超时，不让异常冒泡成 500
-            for future, m in futures.items():
-                if not future.done():
-                    future.cancel()
-                    results.append({"id": m["id"], "name": m["name"], "score": None, "reason": f"超时(>{_TOTAL_TIMEOUT}s)", "error": True})
+
+    def _run(models: list) -> list:
+        out = []
+        with ThreadPoolExecutor(max_workers=max(1, len(models))) as executor:
+            futures = {executor.submit(_call_model, m, prompt): m for m in models}
+            try:
+                for future in as_completed(futures, timeout=_TOTAL_TIMEOUT):
+                    try:
+                        out.append(future.result())
+                    except Exception as e:
+                        m = futures[future]
+                        out.append({"id": m["id"], "name": m["name"], "score": None, "reason": str(e)[:30] or "调用异常", "error": True})
+            except FuturesTimeoutError:
+                # 总预算耗尽：未返回的模型补记为超时，不让异常冒泡成 500
+                for future, m in futures.items():
+                    if not future.done():
+                        future.cancel()
+                        out.append({"id": m["id"], "name": m["name"], "score": None, "reason": f"超时(>{_TOTAL_TIMEOUT}s)", "error": True})
+        return out
+
+    results = _run([_PRIMARY_MODEL])
+    if not any(r.get("score") is not None for r in results) and _FALLBACK_MODELS:
+        # 主模型没拿到分 → 这才轮到豆包兜底
+        results += _run(_FALLBACK_MODELS)
 
     # as_completed 是"完成序"，排序还原成 _MODELS 定义的稳定顺序
     order = {m["id"]: i for i, m in enumerate(_MODELS)}
@@ -350,18 +381,23 @@ def score_fund_multi_model(fund_info: dict) -> dict:
         else:
             consensus = "中性"
 
+    # ⚠️ model_total 必须跟「本次实际调用了几家」一致，不能写死 len(_MODELS)：
+    # 豆包改降级后，正常情况下只调用主模型 1 家。若 model_total 仍是 2，
+    # partial 就会恒为 True → 永远走 30min 短 TTL → 12h 内反复重算，
+    # 反而比改之前烧更多调用。
+    called = len(results)
     result = {
         "scores": results,
         "avg_score": avg_score,
         "consensus": consensus,
         "model_count": len(valid_scores),
-        "model_total": len(_MODELS),
-        "partial": 0 < len(valid_scores) < len(_MODELS),
+        "model_total": called,
+        "partial": 0 < len(valid_scores) < called,
         "scored_at": int(time.time()),
     }
 
     # 5. 写缓存：全失败时不写，否则用户 12 小时内点重试只会秒回同一份失败结果
-    if result["model_count"] >= len(_MODELS):
+    if result["model_count"] >= called:
         _set_cache(code, result, _CACHE_TTL)
     elif result["model_count"] >= 1:
         _set_cache(code, result, _CACHE_TTL_PARTIAL)
