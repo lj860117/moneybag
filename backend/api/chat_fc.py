@@ -445,23 +445,97 @@ def _tool_get_macro(indicators: list) -> str:
 
 
 def _tool_get_fund_history(code: str, days: int = 30) -> str:
+    """给用户念一只基金近 N 天的净值表现。
+
+    口径分工（v9.9.57，与项目权威口径一致，勿再"顺手统一"）
+    ------------------------------------------------------
+    * **最新净值必须是单位净值** —— 用户按「金额 / 份额」录入成本，成本净值
+      costNav 是单位净值口径。权威来源 ``services.market_data.get_fund_nav``
+      （v9.9.54/56 已修好：显式拒绝累计列，宁可给 "N/A" 也不给错口径）。
+
+      ⚠️ 旧实现直接拿 ``fund_monitor.get_fund_nav_history`` 的 nav 当最新净值，
+      而那个函数三层全是**累计**口径（L1 累计走势 / L2 accum_nav / L3 LJJZ）
+      —— 002163 实测会念出 4.1558，真实单位净值 2.9119，**虚高 43%**，且是
+      L1 正常日就错，不是降级才错。
+
+    * **区间涨跌 / 当前回撤：优先累计口径，但代码不保证拿到的必然是累计**
+      —— 回撤是单序列内的峰谷比（同口径自除），累计净值在分红除权日不跳空，
+      才不会把分红误判成暴跌。这条与 ``test_briefing_caliber_unit_nav.py``
+      里钉死的"回撤用累计是对的"一致。
+
+      ⚠️ 但这两个数是直接沿用 ``fund_monitor.get_fund_nav_history`` 返回的
+      序列算的，而该函数**允许口径降级**：L1 累计走势取不到会降到单位走势、
+      L2/L3 缺累计字段时也会整段退回单位（v9.9.57 起这些路径都如实标了
+      ``caliber``）。也就是说这两个数**可能静默变成单位口径** —— 分红除权
+      日会在单位序列里留一个纯记账口径的跳空，被显示成一次暴跌。
+
+      降级发生时我们**只加风险标注、不做换算**：把单位序列换算成累计需要
+      分红明细，我们没有；硬凑才是错。故 ``caliber == "accum"`` 时标签是
+      「含分红」，否则标签写明是单位/混合口径，并追加「分红除权日可能显示为
+      下跌，仅供参考」。**注释必须与代码一致**，不得只换标签就假装还是累计。
+
+    为什么**不再输出「最大净值」**
+    ----------------------------
+    旧文案是「最新净值 2.9119，最大净值 8.7192」—— 一句话里同时出现单位
+    口径和累计口径两个绝对数，002163 上相差 3 倍，用户读完只会问"我到底
+    赚了多少"。现在**只保留一个绝对数**（单位净值口径的最新净值），其余一律
+    用**百分比**表达（涨跌幅是比值，与量纲无关），从根上消除两个尺度并存。
+    """
     try:
+        # --- 1. 最新净值：单位口径，权威来源 market_data.get_fund_nav -----------
+        unit_nav = None
+        nav_date = ""
+        try:
+            from services.market_data import get_fund_nav
+            info = get_fund_nav(code) or {}
+            raw = info.get("official_nav") or info.get("nav")
+            if raw not in (None, "", "N/A"):
+                unit_nav = float(raw)
+                nav_date = str(info.get("date") or "")
+        except Exception:
+            # 单位净值取不到就取不到，绝不用累计净值顶替（见本函数 docstring）。
+            unit_nav = None
+
+        # --- 2. 区间涨跌 / 回撤：优先累计口径，降级则如实标注，只输出百分比 ----
         from services.fund_monitor import get_fund_nav_history
-        history = get_fund_nav_history(code, days)
-        if not history:
+        history = get_fund_nav_history(code, days) or []
+        navs = [h.get("nav") for h in history if h.get("nav")]
+        calibers = {h.get("caliber") for h in history if h.get("nav")}
+        is_accum = calibers == {"accum"}
+        if is_accum:
+            caliber_txt = "含分红"
+        elif calibers == {"unit"}:
+            caliber_txt = "单位净值口径"
+        else:
+            caliber_txt = "净值口径"
+        # 口径降级时**必须如实标注风险**，只换标签不改说明 = 静默变口径。
+        # 单位净值序列在分红除权日会留一个纯记账的跳空，回撤/涨跌会把它当成
+        # 真实下跌（002163 这类多次分红的基金尤其明显）。不换算 —— 换算需要
+        # 分红明细，我们没有。见本函数 docstring。
+        risk_txt = "" if is_accum else "；分红除权日可能显示为下跌，仅供参考"
+
+        parts = [f"基金 {code}"]
+        if unit_nav is not None:
+            tail = f"，{nav_date}" if nav_date else ""
+            parts.append(f"最新净值 {unit_nav:.4f}（单位净值口径，与你的买入价同尺度{tail}）")
+        else:
+            # 绝不用累计净值顶替 —— 宁可说"取不到"，也不给一个虚高 43% 的数。
+            parts.append("最新净值暂取不到（不会拿累计净值顶替）")
+
+        if navs:
+            oldest, latest = navs[0], navs[-1]
+            change = (latest - oldest) / oldest * 100 if oldest else 0
+            peak = max(navs)
+            drawdown = (latest - peak) / peak * 100 if peak else 0
+            parts.append(f"近{len(navs)}个交易日区间涨跌 {change:+.2f}%（{caliber_txt}{risk_txt}）")
+            parts.append(f"当前回撤 {drawdown:.2f}%（{caliber_txt}，相对区间内最高点{risk_txt}）")
+        else:
+            parts.append(f"近{days}天净值序列暂不可用")
+
+        if unit_nav is None and not navs:
             return f"基金 {code} 近{days}天净值数据不可用。"
-        navs = [h.get("nav", 0) for h in history if h.get("nav")]
-        if not navs:
-            return "净值数据为空。"
-        latest = navs[-1]
-        oldest = navs[0]
-        change = (latest - oldest) / oldest * 100 if oldest else 0
-        max_nav = max(navs)
-        min_nav = min(navs)
-        drawdown = (latest - max_nav) / max_nav * 100 if max_nav else 0
-        return (f"基金 {code} 近{len(navs)}天：最新净值 {latest:.4f}，"
-                f"区间涨跌 {change:+.2f}%，最大净值 {max_nav:.4f}，"
-                f"当前回撤 {drawdown:.2f}%")
+
+        return "；".join(parts) + "。"
     except Exception as e:
         return f"查询历史净值失败: {e}"
 
