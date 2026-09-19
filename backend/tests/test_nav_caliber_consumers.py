@@ -355,5 +355,93 @@ def test_nav_series_has_no_fake_gap(monkeypatch):
         f"日收益率出现 {worst:.2%} 的极值 —— 疑似逐行混口径造成的人造跳空")
 
 
+# ============================================================
+# D. 口径降级必须**出声**（v9.9.60）
+# ============================================================
+# v9.9.57 把「整段升累计 / 整段退回单位」改对了，但退回时是**静默**的：
+# 运维和排查的人看不出这条相关性是拿单位口径算的。v9.9.59 已给
+# ``services/fund_monitor.py::calc_risk_metrics`` 加了 navCaliber /
+# caliberWarning（detect_fund_alerts 带进推送文案），本组是同一类缺口的
+# 另一个入口（api/signals.py 的 L1 / L3），补齐日志告警。
+#
+# ⚠️ 返回结构仍是裸 float 列表（改动会波及 _nav_full_cache、相关性、净值
+# 百分位等多处下游），所以这里只钉「有没有打 [CALIBER]」，不钉返回结构。
+
+def test_fetch_nav_full_warns_on_unit_caliber_fallback(monkeypatch, capsys):
+    """★ L1 整段退回**单位**口径时必须打 ``[CALIBER]`` 告警，不能静默。
+
+    单位口径在分红除权日是一个纯记账的跳空，下游 ``_get_nav_series`` 对相邻
+    两项做差，会被当成一次真实暴跌 —— 相关性与净值百分位只能仅供参考，必须
+    让排查的人看得见。
+
+    故障注入：删掉 ``_fetch_nav_full`` L1 分支里 ``if not use_accum: print(...)``
+    → 本用例红（stdout 里没有 [CALIBER]）。
+    """
+    _patch_signals_l1(monkeypatch, _rows(missing_accum_idx={10}))
+    vals = signals._fetch_nav_full(CODE)
+    out = capsys.readouterr().out
+
+    assert len(vals) == 25, f"应取到 25 条，实际 {len(vals)}"
+    assert "[CALIBER]" in out, f"退回单位口径必须打 [CALIBER] 告警，实际 stdout：{out!r}"
+    assert CODE in out, f"告警里必须带上基金代码 {CODE}，实际 stdout：{out!r}"
+    assert "单位口径" in out, f"告警里必须写明退回的是单位口径，实际 stdout：{out!r}"
+
+
+def test_fetch_nav_full_no_warning_when_accum_complete(monkeypatch, capsys):
+    """反向：整段是**累计**口径时**不得**打告警（否则告警噪音淹没有效信号）。
+
+    故障注入：把 ``if not use_accum`` 改成恒真（无条件 print） → 本用例红
+    （累计口径也打了 [CALIBER]）。
+    """
+    _patch_signals_l1(monkeypatch, _rows())
+    vals = signals._fetch_nav_full(CODE)
+    out = capsys.readouterr().out
+
+    assert len(vals) == 25, f"应取到 25 条，实际 {len(vals)}"
+    assert all(v > 4.0 for v in vals), f"整段应为累计口径，实际：{vals[:5]}"
+    assert "[CALIBER]" not in out, (
+        f"整段是累计口径，不该打口径降级告警，实际 stdout：{out!r}")
+
+
+def test_fetch_nav_full_em_warns_on_unit_caliber_fallback(monkeypatch, capsys):
+    """★ L3（天天基金）缺 LJJZ 整段退回单位口径时同样必须打 ``[CALIBER]``。
+
+    L3 是 L1/L2 都没命中时的兜底，恰恰是**最容易被忽略**的一层 —— 静默退回
+    单位口径的话，排查的人会以为拿到的还是累计口径。
+
+    故障注入：删掉 ``_fetch_nav_full_em`` 里的 ``if not use_accum: print(...)``
+    → 本用例红（stdout 里没有 [CALIBER]）。
+    """
+    monkeypatch.setattr("requests.get", _em_pages([
+        {"FSRQ": "2026-09-18", "DWJZ": "3.0385", "LJJZ": "4.2824"},
+        {"FSRQ": "2026-09-17", "DWJZ": "2.9119", "LJJZ": None},   # 缺累计
+        {"FSRQ": "2026-09-16", "DWJZ": "2.9200", "LJJZ": "4.1639"},
+    ]))
+    vals = signals._fetch_nav_full_em(CODE)
+    out = capsys.readouterr().out
+
+    assert not any(v > 4.0 for v in vals), f"应整段退回单位口径，实际：{vals}"
+    assert "[CALIBER]" in out, f"L3 退回单位口径必须打 [CALIBER] 告警，实际 stdout：{out!r}"
+    assert CODE in out, f"告警里必须带上基金代码 {CODE}，实际 stdout：{out!r}"
+    assert "单位口径" in out, f"告警里必须写明退回的是单位口径，实际 stdout：{out!r}"
+
+
+def test_fetch_nav_full_em_no_warning_when_accum_complete(monkeypatch, capsys):
+    """反向：L3 每条都有 LJJZ（整段累计）时**不得**打告警。
+
+    故障注入：把 L3 的 ``if not use_accum`` 改成恒真 → 本用例红。
+    """
+    monkeypatch.setattr("requests.get", _em_pages([
+        {"FSRQ": "2026-09-18", "DWJZ": "3.0385", "LJJZ": "4.2824"},
+        {"FSRQ": "2026-09-17", "DWJZ": "2.9119", "LJJZ": "4.1558"},
+    ]))
+    vals = signals._fetch_nav_full_em(CODE)
+    out = capsys.readouterr().out
+
+    assert vals == pytest.approx([4.1558, 4.2824]), f"应整段是累计口径，实际：{vals}"
+    assert "[CALIBER]" not in out, (
+        f"整段是累计口径，不该打口径降级告警，实际 stdout：{out!r}")
+
+
 if __name__ == "__main__":
     sys.exit(pytest.main([__file__, "-q", "-rfEX"]))

@@ -841,6 +841,12 @@ def _fetch_nav_full_em(code: str) -> list:
     use_accum = all(v is not None and v > 0 for v in accum_series)
     picked = accum_series if use_accum else unit_series
     all_navs = [v for v in picked if v is not None and v > 0]
+    # v9.9.60：与 L1（Tushare）同款 —— 整段退回单位口径时必须出声，否则运维
+    # 看不出这条相关性是拿单位口径算的（分红除权日的跳空会被当成真实暴跌）。
+    if not use_accum and all_navs:
+        print(f"[CALIBER] {code}: L3 天天基金（EM）缺 LJJZ，整段退回单位口径"
+              f"（{len(all_navs)} 条）——下游 _get_nav_series 对相邻项做差，"
+              "分红除权日的跳空会被当成真实暴跌，相关性与净值百分位仅供参考。")
     all_navs.reverse()  # EM 返回新→旧，翻转成升序与 L1/L2 对齐
     return all_navs
 
@@ -890,6 +896,15 @@ def _fetch_nav_full(code: str) -> list:
             picked = accum_series if use_accum else unit_series
             vals = [v for v in picked if v is not None and v > 0]
             if len(vals) >= _NAV_FULL_MIN:
+                # v9.9.60：整段退回单位口径时必须**出声**。下游 _get_nav_series
+                # 对相邻两项做差求日收益率，单位口径在分红除权日是一个纯记账的
+                # 跳空，会被当成一次真实暴跌，污染相关系数与净值百分位。本函数
+                # 返回结构是裸 float 列表（返回契约不动，见下方 L3 同款注释），
+                # 因此只能以日志形式把口径暴露给运维/排查的人。
+                if not use_accum:
+                    print(f"[CALIBER] {code}: L1 Tushare 缺 accum_nav，整段退回单位口径"
+                          f"（{len(vals)} 条）——下游 _get_nav_series 对相邻项做差，"
+                          "分红除权日的跳空会被当成真实暴跌，相关性与净值百分位仅供参考。")
                 return vals  # Tushare 已按 nav_date 升序
     except Exception:
         pass
