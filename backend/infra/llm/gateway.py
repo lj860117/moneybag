@@ -814,8 +814,13 @@ class LLMGateway:
             }
             # 先记账（钱已经花了），再跑输出边界守卫；被拦的内容**不得进缓存**
             self._record_usage(user_id, module, actual_model, total_tokens)
-            input_tk = usage.get("prompt_tokens", usage.get("input_tokens", 0))
-            output_tk = usage.get("completion_tokens", usage.get("output_tokens", 0))
+            # ⚠️ 不能用 usage.get("prompt_tokens", 0) 的写法：`get` 的 default
+            # 只在 **key 不存在** 时生效，若 key 存在但值为 null（部分 OpenAI 兼容
+            # 实现会返回 "prompt_tokens": null），拿到的就是 None，后续算术直接
+            # TypeError → 整条调用记账崩掉。用 `or 0` 才拦得住 None，
+            # 外层 int() 同时给 mypy strict 一个确定的 int 类型。
+            input_tk = int(usage.get("prompt_tokens") or usage.get("input_tokens") or 0)
+            output_tk = int(usage.get("completion_tokens") or usage.get("output_tokens") or 0)
             self._record_token_cost(
                 user_id, actual_model, input_tk, output_tk,
                 cache_hit_tokens=cache_hit_tk,
@@ -1106,11 +1111,14 @@ class LLMGateway:
             # 有 usage（已开 include_usage）时一律用 API 真实值；
             # 没有时才回退估算，且估算必须覆盖**实际发出去的 messages 全量**。
             if usage:
-                input_tk = usage.get("prompt_tokens", usage.get("input_tokens", 0))
-                output_tk = usage.get("completion_tokens", usage.get("output_tokens", 0))
-                total_tokens = usage.get("total_tokens", 0) or (input_tk + output_tk)
-                cache_hit_tk = usage.get("prompt_cache_hit_tokens", 0)
-                cache_miss_tk = usage.get("prompt_cache_miss_tokens", 0)
+                # ⚠️ 同 call_sync：`get(k, 0)` 拦不住「key 存在但值为 null」。
+                # 这里是流式收尾的计费点，一旦 None 参与算术就整笔漏记，
+                # 而漏记恰好是本次审计的主矛盾，不能再踩。（2026-09-20）
+                input_tk = int(usage.get("prompt_tokens") or usage.get("input_tokens") or 0)
+                output_tk = int(usage.get("completion_tokens") or usage.get("output_tokens") or 0)
+                total_tokens = int(usage.get("total_tokens") or 0) or (input_tk + output_tk)
+                cache_hit_tk = int(usage.get("prompt_cache_hit_tokens") or 0)
+                cache_miss_tk = int(usage.get("prompt_cache_miss_tokens") or 0)
             else:
                 input_tk = _estimate_tokens_from_messages(messages)
                 output_tk = max(1, int(len(total_content + total_reasoning) / 1.6))
@@ -1250,9 +1258,11 @@ class LLMGateway:
                         if not content.strip() and reasoning.strip():
                             content = reasoning.strip().split('\n')[-1][:800]
                         usage = data.get("usage", {})
-                        total_tokens = usage.get("total_tokens", 0)
-                        input_tk = usage.get("prompt_tokens", 0)
-                        output_tk = usage.get("completion_tokens", 0)
+                        # 同 call_sync / stream_sync：用 `or 0` 而非 get 的 default，
+                        # 拦得住「key 存在但值为 null」的情况（见 call_sync 处注释）。
+                        input_tk = int(usage.get("prompt_tokens") or 0)
+                        output_tk = int(usage.get("completion_tokens") or 0)
+                        total_tokens = int(usage.get("total_tokens") or 0) or (input_tk + output_tk)
 
                         # 计费
                         self._record_usage(user_id, module, cand_model, total_tokens)

@@ -1125,3 +1125,85 @@ def test_stream_and_sync_thinking_policy_are_identical(monkeypatch):
         "同步与流式的 thinking 判据不一致，说明只改了一边：\n"
         "--- sync ---\n%s\n--- stream ---\n%s" % (sync_block, stream_block)
     )
+
+
+# -----------------------------------------------------------------------------
+# usage 字段为 null（而非缺失）时的记账守卫
+# -----------------------------------------------------------------------------
+# 2026-09-20：mypy strict 报出 gateway.py 流式计费点的 `input_tk + output_tk`
+# 左侧可能是 None，深查发现是**真 bug** 而非纯类型问题：
+#
+#   usage.get("prompt_tokens", 0)   # key 存在但值为 null → 返回 None！
+#   input_tk + output_tk            # None + int → TypeError
+#
+# `get` 的 default 只在 **key 不存在** 时生效。部分 OpenAI 兼容实现（含某些
+# 代理/网关）会返回 "prompt_tokens": null，此时整条调用的记账会崩掉 → 静默漏记。
+# 而"流式漏记"正是 2026-09-19 审计出的主矛盾，所以必须加守卫防复发。
+
+def test_stream_null_usage_fields_do_not_crash_accounting(monkeypatch):
+    """流式 usage 各字段为 null → 必须归零记账，不得抛异常。"""
+    import httpx
+
+    import infra.llm.gateway as gw_mod
+
+    class _FakeStreamResp:
+        status_code = 200
+
+        def read(self):
+            return b""
+
+        def iter_lines(self):
+            yield 'data: {"choices":[{"delta":{"content":"ok"}}]}'
+            # 关键：字段存在但值为 null（不是缺失）
+            yield ('data: {"choices":[],'
+                   '"usage":{"prompt_tokens":null,"completion_tokens":null,'
+                   '"total_tokens":null,"prompt_cache_hit_tokens":null,'
+                   '"prompt_cache_miss_tokens":null}}')
+            yield "data: [DONE]"
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+    class _FakeClient:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+        def stream(self, method, url, headers=None, json=None, **kwargs):
+            return _FakeStreamResp()
+
+    monkeypatch.setattr(httpx, "Client", _FakeClient)
+    monkeypatch.setenv("LLM_API_KEY", "ds")
+    monkeypatch.setenv("DOUBAO_API_KEY", "db")
+
+    gw = gw_mod.LLMGateway()
+    seen = {"usage": [], "cost": []}
+    monkeypatch.setattr(gw, "_record_usage",
+                        lambda *a, **k: seen["usage"].append(a))
+    monkeypatch.setattr(gw, "_record_token_cost",
+                        lambda *a, **k: seen["cost"].append(a))
+
+    out = list(gw.stream_sync(
+        "你好", system="", model_tier="llm_light",
+        module="null_usage_probe", max_tokens=100,
+    ))
+
+    assert out and out[-1]["done"] is True, "流式调用没正常收尾"
+    assert seen["cost"], (
+        "usage 为 null 时计费点没被走到 —— 说明在到达计费前就抛了异常，"
+        "正是 `get(k, 0)` 拦不住 null 的老问题"
+    )
+
+    # _record_usage(user_id, module, model, total_tokens)
+    assert seen["usage"][0][3] == 0, f"total_tokens 应归零，实际 {seen['usage'][0][3]}"
+    # _record_token_cost(user_id, model, input_tokens, output_tokens, ...)
+    assert seen["cost"][0][2] == 0, f"input 应归零，实际 {seen['cost'][0][2]}"
+    assert seen["cost"][0][3] == 0, f"output 应归零，实际 {seen['cost'][0][3]}"
