@@ -233,7 +233,23 @@ def _fallback_tier_for(primary_model: str) -> str:
     return "llm_heavy" if "pro" in (primary_model or "").lower() else "llm_light"
 
 
+# 2026-09-19 全局 Flash 化（v9.9.62）：用户要求所有调用一律 Flash，不再保留
+# 「显式选 Pro」入口。历史上对话页选中 Pro 会永久存进 localStorage（sticky），
+# 导致 DeepSeek 账单每天持续出现 deepseek-v4-pro 扣费（9-18 单日 ¥3.89）。
+# 现在在 gateway 唯一入口把显式指定的 DeepSeek Pro 统一归一化为 flash ——
+# 上游（前端 picker / wxwork / 旧 localStorage）即使仍传 pro，也不会再产生 Pro 账单。
+# 豆包显式选择不在此处理（走字节自有 key，与 DeepSeek 账单无关）。
+def normalize_explicit_model(model: str) -> str:
+    m = (model or "").strip()
+    if not m or m == "auto":
+        return m
+    if m.lower().startswith("deepseek") and "pro" in m.lower():
+        return "deepseek-v4-flash"
+    return m
+
+
 def resolve_model_candidates(model_tier: str = "llm_light", module: str = "", explicit_model: str = "", need_tools: bool = False, now: Optional[datetime] = None) -> list[str]:
+    explicit_model = normalize_explicit_model(explicit_model)
     preferred = _preferred_provider_order(module, now=now)
     candidates: list[str] = []
     remaining = preferred[:]
@@ -522,6 +538,8 @@ class LLMGateway:
         force_no_thinking: 显式关闭推理模型 thinking（短输出场景）。
             置 True 时不提升 max_tokens 预算，按调用方给定值走。
         """
+        # 2026-09-19 全局 Flash 化：显式 DeepSeek Pro 一律归一化为 flash（见函数定义处注释）
+        explicit_model = normalize_explicit_model(explicit_model)
         # v9.5.140: 推理档（llm_heavy）保留 thinking，需要更大输出预算，
         # 否则 reasoning_content 挤占 content 导致截断（P0-1 全局修复）。
         # force_no_thinking=True 时调用方已明确要求关推理，预算不提升。
@@ -782,6 +800,8 @@ class LLMGateway:
         force_no_thinking: 显式关闭推理模型 thinking（短输出场景）。
             置 True 时不提升 max_tokens 预算，按调用方给定值走。
         """
+        # 2026-09-19 全局 Flash 化：显式 DeepSeek Pro 一律归一化为 flash（见函数定义处注释）
+        explicit_model = normalize_explicit_model(explicit_model)
         # v9.5.140: 推理档（llm_heavy）保留 thinking，需要更大输出预算，
         # 否则 reasoning_content 挤占 content 导致截断（P0-1 全局修复）。
         # force_no_thinking=True 时调用方已明确要求关推理，预算不提升。
@@ -1019,7 +1039,7 @@ class LLMGateway:
         返回格式与 call_sync 一致。
 
         v9.9.11: 补视觉降级链 —— DeepSeek vision 失败时降级到豆包视觉模型
-        （`LLM_VISION_MODEL_DOUBAO`，默认 doubao-seed-2-1-pro-260628，其支持图片输入）。
+        （`LLM_VISION_MODEL_DOUBAO`，v9.9.62 起默认 doubao-seed-2-1-turbo-260628，实测支持图片输入）。
         """
         # 0. 日期重置
         self._check_daily_reset()
@@ -1053,10 +1073,15 @@ class LLMGateway:
         # 2. 视觉模型降级链（主：DeepSeek vision，备：豆包视觉）
         if not model:
             model = os.environ.get("LLM_VISION_MODEL", "deepseek-v4-flash-vision-exp")
+        # 2026-09-19 全局 Flash 化：vision 主模型同样不允许 DeepSeek Pro
+        model = normalize_explicit_model(model)
         fallback_model = os.environ.get(
             "LLM_VISION_MODEL_DOUBAO",
-            os.environ.get("DOUBAO_VISION_MODEL", "doubao-seed-2-1-pro-260628"),
+            os.environ.get("DOUBAO_VISION_MODEL", "doubao-seed-2-1-turbo-260628"),
         )
+        # 2026-09-19（v9.9.62）：豆包 vision 兜底默认从 Pro 降为 Turbo。
+        # 实测（生产 key，20x20 图片）：Turbo 同样支持 image_url 输入，识别正常，
+        # 符合「降级一律用豆包便宜档」的要求；.env 若显式配 Pro 仍尊重 env。
 
         # 构建候选链：主模型 + 豆包备胎（去重，避免主模型本身已是豆包时重复）
         candidates: list[tuple[str, str, str]] = []  # (model, key, base)

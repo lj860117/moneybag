@@ -168,8 +168,12 @@ def test_heavy_tier_resolves_to_flash_with_cheap_fallback(monkeypatch):
     ]
 
 
-def test_explicit_pro_keeps_quality_fallback(monkeypatch):
-    """用户在对话页显式选 Pro 时，降级必须保质量（豆包 Pro），不能降成 Turbo。"""
+def test_explicit_pro_normalized_to_flash(monkeypatch):
+    """v9.9.62 全局 Flash 化：显式选 Pro 一律归一化为 flash，降级也是便宜档。
+
+    旧语义（显式选 Pro → 豆包 Pro 兜底）已被推翻：对话页 sticky localStorage
+    选过 Pro 后会永久按 Pro 计费，用户要求所有调用一律 Flash。
+    """
     import infra.llm.gateway as gw_mod
 
     monkeypatch.setenv("LLM_API_KEY", "ds")
@@ -183,9 +187,21 @@ def test_explicit_pro_keeps_quality_fallback(monkeypatch):
     )
 
     assert candidates == [
-        "deepseek-v4-pro",
-        "doubao-seed-2-1-pro-260628",
+        "deepseek-v4-flash",
+        "doubao-seed-2-1-turbo-260628",
     ]
+
+
+def test_normalize_explicit_model_rules():
+    """normalize_explicit_model 归一化规则：deepseek pro → flash，其余不动。"""
+    import infra.llm.gateway as gw_mod
+
+    assert gw_mod.normalize_explicit_model("deepseek-v4-pro") == "deepseek-v4-flash"
+    assert gw_mod.normalize_explicit_model("DeepSeek-V4-Pro") == "deepseek-v4-flash"
+    assert gw_mod.normalize_explicit_model("deepseek-v4-flash") == "deepseek-v4-flash"
+    assert gw_mod.normalize_explicit_model("doubao-seed-2-1-pro-260628") == "doubao-seed-2-1-pro-260628"
+    assert gw_mod.normalize_explicit_model("") == ""
+    assert gw_mod.normalize_explicit_model("auto") == "auto"
 
 
 def test_peak_chat_auto_stays_cheap_and_doubao_first(monkeypatch):
@@ -614,24 +630,22 @@ def test_llm_light_backend_disables_thinking(monkeypatch):
     assert body.get("thinking") == {"type": "disabled"}
 
 
-def test_chat_explicit_pro_keeps_thinking(monkeypatch):
-    """对话页手动选 Pro：用户显式为质量付费，thinking 必须保留。"""
+def test_chat_explicit_pro_normalized_to_flash_thinking_disabled(monkeypatch):
+    """v9.9.62 全局 Flash 化：对话页显式传 Pro 也按 flash 执行，thinking 关闭。"""
     body = _capture_request_body(
         monkeypatch,
-        prompt="对话页手动选 Pro thinking 断言",
+        prompt="对话页显式 Pro 归一化 thinking 断言",
         model_tier="llm_light",
         module="chat",
         explicit_model="deepseek-v4-pro",
     )
 
-    assert body["model"] == "deepseek-v4-pro"
-    assert "thinking" not in body, (
-        "用户显式选了 Pro 却被关掉 thinking；判据要按实际解析出的模型，不是 tier 标签"
-    )
+    assert body["model"] == "deepseek-v4-flash"
+    assert body.get("thinking") == {"type": "disabled"}
 
 
-def test_force_no_thinking_overrides_explicit_pro(monkeypatch):
-    """短输出点显式要求关推理时，即便实际模型是 Pro 也要关掉。"""
+def test_force_no_thinking_with_explicit_pro_also_flash(monkeypatch):
+    """短输出点显式传 Pro：同样归一化为 flash 并关闭 thinking。"""
     body = _capture_request_body(
         monkeypatch,
         prompt="force_no_thinking 覆盖 Pro 断言",
@@ -641,7 +655,7 @@ def test_force_no_thinking_overrides_explicit_pro(monkeypatch):
         force_no_thinking=True,
     )
 
-    assert body["model"] == "deepseek-v4-pro"
+    assert body["model"] == "deepseek-v4-flash"
     assert body.get("thinking") == {"type": "disabled"}
 
 
@@ -776,29 +790,28 @@ def test_stream_llm_light_disables_thinking(monkeypatch):
     assert body.get("thinking") == {"type": "disabled"}
 
 
-def test_stream_chat_explicit_pro_keeps_thinking(monkeypatch):
-    """P2-4b 用户决策的落点：对话页手动选 Pro，流式路径必须保留 thinking。
+def test_stream_chat_explicit_pro_normalized_to_flash(monkeypatch):
+    """v9.9.62 全局 Flash 化（流式侧）：显式传 Pro 也归一化为 flash。
 
-    改动前这条是红的：explicit_model=deepseek-v4-pro + model_tier=llm_light 会被
-    判成「轻档」而关掉 thinking —— 用户显式花钱选了 Pro，反而拿到无推理输出。
+    改动前这条断言要求 explicit_model=deepseek-v4-pro 透传并保留 thinking；
+    2026-09-19 起全局统一 Flash，Pro 在 gateway 入口即被归一化。
     """
     body = _capture_stream_body(
         monkeypatch,
-        prompt="流式对话页手动选 Pro thinking 断言",
+        prompt="流式对话页显式 Pro 归一化断言",
         model_tier="llm_light",
         module="chat",
         explicit_model="deepseek-v4-pro",
     )
 
-    assert body["model"] == "deepseek-v4-pro"
-    assert "thinking" not in body, (
-        "对话页走的是 stream_sync，用户显式选了 Pro 却被关掉 thinking；"
-        "流式判据必须与同步侧一致，按实际解析出的模型判"
+    assert body["model"] == "deepseek-v4-flash"
+    assert body.get("thinking") == {"type": "disabled"}, (
+        "流式侧显式 Pro 归一化为 flash 后必须关 thinking；流式判据必须与同步侧一致"
     )
 
 
-def test_stream_force_no_thinking_overrides_explicit_pro(monkeypatch):
-    """流式短输出点显式要求关推理时，即便实际模型是 Pro 也要关掉。"""
+def test_stream_force_no_thinking_with_explicit_pro_also_flash(monkeypatch):
+    """流式短输出点显式传 Pro：同样归一化为 flash 并关闭 thinking。"""
     body = _capture_stream_body(
         monkeypatch,
         prompt="流式 force_no_thinking 覆盖 Pro 断言",
@@ -808,7 +821,7 @@ def test_stream_force_no_thinking_overrides_explicit_pro(monkeypatch):
         force_no_thinking=True,
     )
 
-    assert body["model"] == "deepseek-v4-pro"
+    assert body["model"] == "deepseek-v4-flash"
     assert body.get("thinking") == {"type": "disabled"}
 
 

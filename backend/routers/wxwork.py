@@ -87,7 +87,6 @@ async def callback_receive(
             # 用户选"R1"实际收到的是降级后的豆包回复，体验割裂。已下架该选项。
             MODEL_MAP = {
                 "deepseek-v4-flash": "DeepSeek V4",
-                "deepseek-v4-pro": "DeepSeek V4 Pro",
             }
             if cmd.startswith("模型"):
                 model_name = content.strip()[2:].strip()
@@ -111,7 +110,7 @@ async def callback_receive(
                     send_markdown(f"✅ 已切换到 {model_name}\n{MODEL_MAP[model_name]}", user_id=from_user)
                 else:
                     models_list = "\n".join([f"  {k} — {v}" for k, v in MODEL_MAP.items()])
-                    send_markdown(f"可用模型：\n{models_list}\n\n发送「模型 deepseek-v4-pro」切换", user_id=from_user)
+                    send_markdown(f"可用模型：\n{models_list}\n\n（2026-09-19 起全局统一 Flash，Pro 已下架）", user_id=from_user)
                 return
 
             # 获取用户偏好模型

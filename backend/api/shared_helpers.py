@@ -1848,10 +1848,11 @@ NICKNAMES = {"LeiJiang": "厉害了哥", "BuLuoGeLi": "部落格里"}
 # FIX 2026-08-09: DeepSeek 已于2026-07-24 停用 deepseek-reasoner(R1)/deepseek-chat(V3)
 # 旧模型名，官方目前将其静默重定向到deepseek-v4-flash（返回200但content为空，
 # 只有reasoning_content，触发网关降级链，白白多耗一次调用+等待）。
-# 深度推理场景请直接选用 deepseek-v4-pro，故从可选列表移除 deepseek-reasoner。
+# 2026-09-19 全局 Flash 化（v9.9.62）：下架 deepseek-v4-pro 选项。对话页 sticky
+# localStorage 选过 Pro 后会永久按 Pro 计费（9-18 单日 ¥3.89），用户要求所有调用
+# 一律 Flash；即使旧端仍传 pro，gateway.normalize_explicit_model 也会兜底归一化。
 AVAILABLE_MODELS = [
     {"id": "deepseek-v4-flash", "name": "DeepSeek V4 (快速·主力)", "provider": "deepseek", "base": "https://api.deepseek.com/v1", "env_key": "LLM_API_KEY"},
-    {"id": "deepseek-v4-pro", "name": "DeepSeek V4 Pro (高质量·仲裁)", "provider": "deepseek", "base": "https://api.deepseek.com/v1", "env_key": "LLM_API_KEY"},
     {"id": "doubao-seed-2-1-pro-260628", "name": "豆包 Seed 2.1 Pro (字节·旗舰)", "provider": "doubao", "base": "https://ark.cn-beijing.volces.com/api/v3", "env_key": "DOUBAO_API_KEY"},
     {"id": "doubao-seed-2-1-turbo-260628", "name": "豆包 Seed 2.1 Turbo (字节·通用)", "provider": "doubao", "base": "https://ark.cn-beijing.volces.com/api/v3", "env_key": "DOUBAO_API_KEY"},
 ]

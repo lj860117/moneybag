@@ -20,7 +20,8 @@ function _md(text){
 }
 let chatModel='auto';
 let chatModelList=[];
-async function loadModelList(){try{const r=await fetch(API_BASE+'/models',{signal:AbortSignal.timeout(5000)});if(r.ok){const d=await r.json();chatModelList=d.models||[];if(d.default){const sticky=localStorage.getItem('chatModel');chatModel=(sticky&&sticky!=='auto')?sticky:'auto';}}}catch{chatModelList=[{id:'deepseek-v4-flash',name:'DeepSeek V4',provider:'deepseek'}]}}
+async function loadModelList(){try{const r=await fetch(API_BASE+'/models',{signal:AbortSignal.timeout(5000)});if(r.ok){const d=await r.json();chatModelList=d.models||[];if(d.default){const sticky=localStorage.getItem('chatModel');// v9.9.62 全局Flash化: 旧sticky=Pro一次性迁移回auto
+if(sticky&&sticky.indexOf('v4-pro')>=0){try{localStorage.removeItem('chatModel')}catch(e){}chatModel='auto'}else{chatModel=(sticky&&sticky!=='auto')?sticky:'auto'}}}}catch{chatModelList=[{id:'deepseek-v4-flash',name:'DeepSeek V4',provider:'deepseek'}]}}
 
 // v9.5.65: 模型名 → 显示名映射（含降级标识）
 function _formatModelName(model, fallbackUsed){
