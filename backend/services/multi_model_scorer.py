@@ -51,6 +51,8 @@ from concurrent.futures import (
 # 3) doubao-seed-2-1-pro-260628 同样是思考模型，默认开思考时实测 38.91s /
 #    3117 reasoning tokens，必然撞 30s 读超时 → "The read operation timed out"。
 #    显式关闭思考后 2.12s 返回，输出质量不变。
+# 4) v9.9.63：豆包 Pro 下架，这里改用便宜档 doubao-seed-2-1-turbo-260628。
+#    打分只需一个 JSON，Turbo 足够；原 Pro 档是本项目最后一个豆包昂贵调用点。
 _MODELS = [
     {
         "id": "deepseek",
@@ -63,8 +65,8 @@ _MODELS = [
     },
     {
         "id": "doubao",
-        "name": "豆包 Seed 2.1",
-        "model": "doubao-seed-2-1-pro-260628",
+        "name": "豆包 Seed 2.1 Turbo",
+        "model": "doubao-seed-2-1-turbo-260628",
         "key_env": "DOUBAO_API_KEY",
         "base_url": "https://ark.cn-beijing.volces.com/api/v3",
         "max_tokens": 2000,

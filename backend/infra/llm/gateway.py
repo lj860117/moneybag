@@ -57,7 +57,8 @@ MODEL_ROUTING = {
 }
 DOUBAO_MODEL_ROUTING = {
     "llm_light": "doubao-seed-2-1-turbo-260628",
-    "llm_heavy": "doubao-seed-2-1-pro-260628",
+    # v9.9.63：豆包 Pro 下架，重档降级同样落便宜档 Turbo（原为 doubao-seed-2-1-pro）
+    "llm_heavy": "doubao-seed-2-1-turbo-260628",
 }
 INTERACTIVE_AUTO_MODULES = {
     "chat",
@@ -238,13 +239,18 @@ def _fallback_tier_for(primary_model: str) -> str:
 # 导致 DeepSeek 账单每天持续出现 deepseek-v4-pro 扣费（9-18 单日 ¥3.89）。
 # 现在在 gateway 唯一入口把显式指定的 DeepSeek Pro 统一归一化为 flash ——
 # 上游（前端 picker / wxwork / 旧 localStorage）即使仍传 pro，也不会再产生 Pro 账单。
-# 豆包显式选择不在此处理（走字节自有 key，与 DeepSeek 账单无关）。
+#
+# v9.9.63 扩到豆包：豆包 Pro 一并下架，显式/滞留的 doubao-*-pro 归一化为 Turbo，
+# 全项目只保留两家各自的便宜档（DeepSeek flash / 豆包 turbo）。
 def normalize_explicit_model(model: str) -> str:
     m = (model or "").strip()
     if not m or m == "auto":
         return m
-    if m.lower().startswith("deepseek") and "pro" in m.lower():
+    lc = m.lower()
+    if lc.startswith("deepseek") and "pro" in lc:
         return "deepseek-v4-flash"
+    if lc.startswith("doubao") and "pro" in lc:
+        return "doubao-seed-2-1-turbo-260628"
     return m
 
 

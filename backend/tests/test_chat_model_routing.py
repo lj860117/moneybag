@@ -193,15 +193,35 @@ def test_explicit_pro_normalized_to_flash(monkeypatch):
 
 
 def test_normalize_explicit_model_rules():
-    """normalize_explicit_model 归一化规则：deepseek pro → flash，其余不动。"""
+    """normalize_explicit_model 归一化规则：两家的 pro 档各归便宜档，其余不动。"""
     import infra.llm.gateway as gw_mod
 
     assert gw_mod.normalize_explicit_model("deepseek-v4-pro") == "deepseek-v4-flash"
     assert gw_mod.normalize_explicit_model("DeepSeek-V4-Pro") == "deepseek-v4-flash"
     assert gw_mod.normalize_explicit_model("deepseek-v4-flash") == "deepseek-v4-flash"
-    assert gw_mod.normalize_explicit_model("doubao-seed-2-1-pro-260628") == "doubao-seed-2-1-pro-260628"
+    # v9.9.63：豆包 Pro 一并下架，归一化到 Turbo
+    assert gw_mod.normalize_explicit_model("doubao-seed-2-1-pro-260628") == "doubao-seed-2-1-turbo-260628"
+    assert gw_mod.normalize_explicit_model("doubao-seed-2-1-turbo-260628") == "doubao-seed-2-1-turbo-260628"
     assert gw_mod.normalize_explicit_model("") == ""
     assert gw_mod.normalize_explicit_model("auto") == "auto"
+
+
+def test_doubao_heavy_fallback_is_cheap_tier(monkeypatch):
+    """v9.9.63：豆包重档降级也必须是 Turbo，不得再落 Pro。"""
+    import infra.llm.gateway as gw_mod
+
+    monkeypatch.setenv("LLM_API_KEY", "ds")
+    monkeypatch.setenv("DOUBAO_API_KEY", "db")
+
+    candidates = gw_mod.resolve_model_candidates(
+        "llm_heavy",
+        module="morning_brief",
+        explicit_model="doubao-seed-2-1-pro-260628",
+        now=datetime(2026, 7, 6, 10, 15),
+    )
+
+    assert candidates[0] == "doubao-seed-2-1-turbo-260628"
+    assert all("pro" not in m for m in candidates)
 
 
 def test_peak_chat_auto_stays_cheap_and_doubao_first(monkeypatch):

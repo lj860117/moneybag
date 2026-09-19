@@ -237,6 +237,7 @@ def test_call_multimodal_doubao_as_primary_dedup(monkeypatch, tmp_path):
     monkeypatch.setitem(sys.modules, "httpx", _make_fake_httpx(dispatch))
 
     gw = gw_mod.LLMGateway()
+    # v9.9.63：豆包 Pro 已下架，显式 doubao-*-pro 会被归一化为 Turbo
     result = gw.call_multimodal(
         [{"role": "user", "content": [{"type": "text", "text": "识别"}]}],
         model="doubao-seed-2-1-pro-260628",
@@ -245,10 +246,10 @@ def test_call_multimodal_doubao_as_primary_dedup(monkeypatch, tmp_path):
     )
 
     assert result["source"] == "ai"
-    assert result["model"] == "doubao-seed-2-1-pro-260628"
+    assert result["model"] == "doubao-seed-2-1-turbo-260628"
     assert result["fallback_used"] is False
     # 去重后只请求一次
-    assert calls == ["doubao-seed-2-1-pro-260628"]
+    assert calls == ["doubao-seed-2-1-turbo-260628"]
 
 
 # ============================================================
