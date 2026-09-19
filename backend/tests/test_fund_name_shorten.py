@@ -593,16 +593,39 @@ def test_helper_defined_exactly_once_in_whole_repo():
     )
 
 
+#: v9.9.59：温度计的**渲染代码**搬到了 ``_build_portfolio_thermometer_with_data``
+#: （拆出侧车返回值），``_build_portfolio_thermometer`` 只剩薄包装，里面自然
+#: 不会再出现基金名截断。护栏必须跟着**渲染代码**走，否则它会变成一个永远为真、
+#: 什么都守不住的空断言。两个名字都取得到，是为了兼容拆分前后的任一形态。
+_THERMOMETER_RENDER_FUNCS = (
+    "_build_portfolio_thermometer_with_data",
+    "_build_portfolio_thermometer",
+)
+
+
 def test_thermometer_uses_helper_not_bare_slice():
-    """`_build_portfolio_thermometer` 里不得再出现裸 `name[:12]`。"""
+    """温度计的**渲染**函数里不得再出现裸 `name[:12]`。"""
     src = NIGHT_WORKER_PATH.read_text(encoding="utf-8")
-    seg = _top_level_func_src(src, "_build_portfolio_thermometer")
+    seg = ""
+    for fname in _THERMOMETER_RENDER_FUNCS:
+        try:
+            seg = _top_level_func_src(src, fname)
+        except AssertionError:
+            continue
+        if "_shorten_fund_name" in seg:
+            break
+    else:
+        seg = ""
+    assert seg, (
+        f"找不到温度计的渲染函数（{_THERMOMETER_RENDER_FUNCS}）—— "
+        f"改名后必须同步更新本护栏，否则它就是个永远为真的空断言"
+    )
     assert "_shorten_fund_name" in seg, (
-        "_build_portfolio_thermometer 未调用 _shorten_fund_name"
+        "温度计渲染函数未调用 _shorten_fund_name"
     )
     slices = _bare_name_slices(seg)
     assert not slices, (
-        f"_build_portfolio_thermometer 里仍有裸切片（盲截基金名会留下半截括号）: {slices}"
+        f"温度计渲染函数里仍有裸切片（盲截基金名会留下半截括号）: {slices}"
     )
 
 

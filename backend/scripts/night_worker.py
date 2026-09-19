@@ -1000,11 +1000,31 @@ def _fetch_unit_nav(code: str) -> tuple:
     return val, str(data.get("date") or "")
 
 
-def _build_portfolio_thermometer(uid: str) -> str:
-    """计算持仓浮盈/仓位快照，返回格式化文本供晨报和诊断使用。
+def _build_portfolio_thermometer_with_data(uid: str) -> tuple:
+    """计算持仓浮盈/仓位快照，返回 ``(格式化文本, 侧车字典)``。
 
     从 V4 transactions 读成本，用 **_fetch_unit_nav 的单位净值**（与成本净值同
     口径；**不是** get_fund_nav_history 的累计净值），纯算术，无 LLM。
+
+    为什么还要返回**侧车字典**（v9.9.59 / 净值质检 v3）
+    ----------------------------------------------------
+    质检在 22:00 跑，晨报 08:30 生成。若质检拿**项目内部同源接口**去重算，
+    一旦内部链路整体拿错口径（例如某只基金的 ``official_nav`` 实际返回的是累计
+    净值），两边**错得一模一样**，核对必然全绿 —— 这是「看起来在监工、其实没在
+    监工」的第二种形态。所以生成层必须把**它自己当时实际用到的每一只净值 +
+    净值日期**如实落盘成侧车，质检再拿**独立第三方源**按 ``nav_date`` 去核。
+
+    Args:
+        uid: 用户 ID。
+
+    Returns:
+        ``(text, sidecar)``。取不到持仓 / 净值时 ``text == ""`` 且
+        ``sidecar == {}``。``sidecar`` 结构：
+        ``{"schema":1, "caliber":"unit_nav", "rows":[{code,name,nav,nav_date,
+        wt_nav,shares,cur_val,float_pct,navMissing}], "total":{cost,value,pct}}``。
+        ``nav_date`` 为该行现净值实际对应的净值日期（数据源返回的 date），
+        QDII 会天然落后一两天 —— 质检按**声明的日期**核，不设窗口。
+
     输出示例：
     📊 组合温度计（截至昨日收盘）
     总投入 ¥709  当前市值 ¥758  整体浮盈 +6.9%
@@ -1022,12 +1042,12 @@ def _build_portfolio_thermometer(uid: str) -> str:
         _users_dir = os.environ.get("USERS_DIR") or str(_P(config.DATA_DIR) / "users")
         ufile = _P(_users_dir) / f"{safe}.json"
         if not ufile.exists():
-            return ""
+            return "", {}
         raw = json.loads(ufile.read_text())
         portfolio = raw.get("portfolio") or {}  # FIX: 防止 portfolio=null 时 .get() 报 NoneType
         txns = portfolio.get("transactions") or []  # FIX: transactions=null 时也安全
         if not txns:
-            return ""
+            return "", {}
 
         # 聚合每只基金的买入成本（多次买入取加权均价）
         #
@@ -1081,7 +1101,7 @@ def _build_portfolio_thermometer(uid: str) -> str:
                 h["sold_shares"] += shares
 
         if not holdings_map:
-            return ""
+            return "", {}
 
         # 已清仓（剩余份额 <= 1e-6）的基金不再进入温度计
         active_holdings = {}
@@ -1099,7 +1119,7 @@ def _build_portfolio_thermometer(uid: str) -> str:
             active_holdings[code] = h
 
         if not active_holdings:
-            return ""
+            return "", {}
 
         # 拉最新净值（**单位净值**口径，见 _fetch_unit_nav 的口径说明）
         total_cost = 0.0
@@ -1118,7 +1138,7 @@ def _build_portfolio_thermometer(uid: str) -> str:
             # v9.9.x FIX（晨报口径 P0）：现净值必须取**单位净值**，不能用
             # get_fund_nav_history 的累计净值 —— 市值 = 单位净值 × 份额，
             # 用累计净值会把市值虚增 accum/unit 倍（详见 _fetch_unit_nav 注释）。
-            cur_nav, _nav_date = _fetch_unit_nav(code)
+            cur_nav, nav_date = _fetch_unit_nav(code)
 
             # v9.9.12 FIX-H2：净值取不到时**不再静默用成本顶替**。
             # 旧写法 `cur_val = cur_nav * shares if cur_nav > 0 else cost_amount`
@@ -1140,13 +1160,13 @@ def _build_portfolio_thermometer(uid: str) -> str:
             total_val += cur_val
             rows.append({
                 "code": code, "name": h["name"],
-                "wt_nav": wt_nav, "cur_nav": cur_nav,
+                "wt_nav": wt_nav, "cur_nav": cur_nav, "nav_date": nav_date,
                 "cur_val": cur_val, "float_pct": float_pct,
-                "cost": cost_amount, "navMissing": nav_missing,
+                "cost": cost_amount, "shares": shares, "navMissing": nav_missing,
             })
 
         if total_cost == 0:
-            return ""
+            return "", {}
 
         overall_pct = (total_val - total_cost) / total_cost * 100
         overall_flag = "📈" if overall_pct >= 0 else "📉"
@@ -1196,10 +1216,95 @@ def _build_portfolio_thermometer(uid: str) -> str:
             lines.append("")
             lines += rebalance_text.split("\n")
 
-        return "\n".join(lines)
+        # ---- 侧车（v9.9.59 / 净值质检 v3）：如实记录**生成层当时用到的**净值 ----
+        # 只记「市值口径」的字段（nav=现净值、nav_date=该净值日期、wt_nav、
+        # cur_val、float_pct）。caliber 是**承重字段**：质检读到非 unit_nav
+        # 一律判 DEGRADED，防止哪天有人把口径悄悄改回去却不自知。
+        sidecar = {
+            "schema": 1,
+            "caliber": "unit_nav",
+            "generated_at": datetime.now().isoformat(timespec="seconds"),
+            "rows": [
+                {
+                    "code": r["code"],
+                    "name": r["name"],                 # 全名（QDII 判据要用，勿截断）
+                    "nav": (None if r["navMissing"] else round(r["cur_nav"], 6)),
+                    "nav_date": "" if r["navMissing"] else str(r["nav_date"] or ""),
+                    "wt_nav": round(r["wt_nav"], 6),
+                    "shares": round(r["shares"], 6),
+                    "cur_val": round(r["cur_val"], 6),
+                    "float_pct": (None if r["float_pct"] is None
+                                  else round(r["float_pct"], 6)),
+                    "navMissing": bool(r["navMissing"]),
+                }
+                for r in rows
+            ],
+            "total": {
+                "cost": round(total_cost, 6),
+                "value": round(total_val, 6),
+                "pct": round(overall_pct, 6),
+            },
+        }
+        return "\n".join(lines), sidecar
 
     except Exception as e:
         log(f"  [温度计] 计算失败: {e}")
+        return "", {}
+
+
+#: 本次生成（同一个 night_worker 进程内）产出的温度计侧车，按 uid 缓存。
+#: 用途：``_write_navs_sidecar`` 在**写正文存档的同一处**直接复用它 ——
+#: 绝不在推送时**重算**温度计（那会多打一轮净值请求，且可能取到与正文渲染时
+#: 不同的值，给「渲染一致性」检查凭空造出误报）。
+_THERMOMETER_SIDECAR_CACHE: dict = {}
+
+
+def _build_portfolio_thermometer(uid: str) -> str:
+    """``_build_portfolio_thermometer_with_data`` 的**薄包装**，只取文本。
+
+    保留旧名与签名：``_render_user_briefing`` / ``step_r1_phase2`` /
+    ``get_portfolio_total_value`` / ``weekend_push`` / ``stock_monitor_cron``
+    等调用点零成本迁移；单测 monkeypatch ``night_worker._build_portfolio_
+    thermometer`` 的故障注入照旧生效（模块属性重绑定，调用点运行时按全局名解析）。
+    """
+    text, sidecar = _build_portfolio_thermometer_with_data(uid)
+    if sidecar:
+        _THERMOMETER_SIDECAR_CACHE[uid] = sidecar
+    return text
+
+
+def _write_navs_sidecar(push_date: str, uid: str, sidecar: dict) -> str:
+    """把温度计侧车原子写入 ``PUSH_ARCHIVE_DIR/YYYY-MM-DD_briefing_<uid>.navs.json``。
+
+    与晨报正文存档（``wxwork_push.archive_push`` 写的 ``*.txt``）**同目录、同
+    前缀**，只差扩展名 —— 质检按存档名一对一取侧车，不会串日期。
+
+    Args:
+        push_date: 晨报日期（``YYYY-MM-DD``，须与正文存档文件名同一天）。
+        uid: 用户 ID。
+        sidecar: ``_build_portfolio_thermometer_with_data`` 的第二返回值。
+
+    Returns:
+        落盘路径字符串；失败（无 PUSH_ARCHIVE_DIR / 落盘异常）返回空串并打日志。
+        失败**不抛异常** —— 侧车写不到不该把推送链路炸掉；质检侧会因"侧车缺失"
+        判 DEGRADED（记进 checks_skipped），不会静默通过。
+    """
+    if not sidecar:
+        return ""
+    try:
+        from pathlib import Path as _P2
+        from config import PUSH_ARCHIVE_DIR
+        from services.persistence import atomic_write_json
+
+        path = _P2(PUSH_ARCHIVE_DIR) / f"{push_date}_briefing_{uid}.navs.json"
+        payload = dict(sidecar)
+        payload["push_date"] = push_date
+        payload["user_id"] = uid
+        atomic_write_json(path, payload)
+        log(f"  [侧车] 温度计净值已存档 {path.name}（{len(payload.get('rows', []))} 行）")
+        return str(path)
+    except Exception as e:                      # 侧车失败只告警，不阻断推送
+        log(f"  [侧车] ⚠️ 温度计净值侧车落盘失败：{e}")
         return ""
 
 
@@ -2525,7 +2630,22 @@ def step_push_briefing(briefings):
                 )
             except Exception as e:
                 log(f"  ⚠️ 存档失败: {e}")
-            
+
+            # v9.9.59 / 净值质检 v3：在**写正文存档的同一处**落温度计净值侧车。
+            #
+            # 复用生成时缓存的侧车 —— **绝不重算**温度计：重算会多打一轮净值
+            # 请求，而且可能取到与正文渲染时**不同**的值，给 v3 的「(i) 渲染
+            # 一致性」凭空造出误报（侧车与正文不一致 → 误判渲染错）。
+            # 侧车写失败只打日志，不影响推送；质检侧会因「侧车缺失」判 DEGRADED
+            # （记进 checks_skipped），不会静默通过。
+            try:
+                _sc = _THERMOMETER_SIDECAR_CACHE.get(uid) or {}
+                _write_navs_sidecar(
+                    datetime.now().strftime("%Y-%m-%d"), uid, _sc
+                )
+            except Exception as e:
+                log(f"  ⚠️ 温度计侧车生成失败: {e}")
+
             result = send_daily_report_to(wxid, msg, title="☀️ 钱袋子早安简报")
             if result.get("ok"):
                 log(f"  ✅ {p.get('name', uid)}: 已推企微")
