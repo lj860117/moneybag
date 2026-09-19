@@ -155,10 +155,31 @@ def _resolve_chat_model(requested_model: str | None, *, model_tier: str = "llm_l
 
 
 def _normalize_explicit_model(requested_model: str | None) -> str:
-    """前端 'auto' 哨兵 / 空值 → ''，交给 gateway 峰谷调度；其余原样透传。"""
+    """归一化前端显式指定的模型。
+
+    返回空串 '' 表示「交给 gateway 的峰谷调度自选模型」；非空则是一个已经
+    过 Pro 归一化的具体模型 ID。
+
+    v9.9.64：这里新增了 Pro 归一化。原因是 FC（Function Calling）路径在
+    api/chat_fc.py 里直连 httpx，**完全绕过 gateway**，gateway 入口的归一化
+    管不到它。前端 localStorage sticky / 旧客户端缓存 / API 直传都可能带来
+    'deepseek-v4-pro'，若不在此处收敛，一个 max_rounds=4 的对话最多会产生
+    4 次 DeepSeek Pro 调用（每次 max_tokens=3000）—— 这就是用户在账单里看到
+    Pro 扣费的来源。
+
+    本函数是 chat.py 里显式模型的唯一出口，改动同时覆盖 4 个消费点：
+    _fallback_chat_stream / chat_analysis / chat_analysis_stream(FC) /
+    chat_analysis_stream(普通流式)。
+    """
     if not requested_model or requested_model == "auto":
         return ""
-    return requested_model
+    try:
+        from infra.llm.gateway import normalize_explicit_model
+
+        return normalize_explicit_model(requested_model)
+    except Exception:
+        # 归一化只是防御，拿不到 gateway 时退回原值，不能让对话打不开
+        return requested_model
 
 
 async def _fallback_chat_stream(user_msg: str, system_prompt: str, market_ctx: str, portfolio_ctx: str, uid: str, req: ChatRequest):

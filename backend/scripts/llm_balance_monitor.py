@@ -92,18 +92,26 @@ DOUBAO_API_KEY = os.environ.get("DOUBAO_API_KEY", "") or os.environ.get("ARK_API
 # 探测用模型：复用 gateway 的 llm_light 档位（turbo），可用 env 覆盖
 DOUBAO_PROBE_MODEL = os.environ.get("DOUBAO_PROBE_MODEL", "doubao-seed-2-1-turbo-260628")
 #
-# FIX 2026-09-12：只探测一个模型会得出错误结论。
+# 背景（2026-09-12）：只探测一个模型会得出错误结论。
 # 实测（2026-09-12 01:30 CST，生产 Key 直连 ARK）：
 #   doubao-seed-2-1-turbo-260628 → 404 ModelNotOpen（模型未开通）
 #   doubao-seed-2-1-pro-260628   → 200 OK（账户可用）
 # 只看 turbo 的旧逻辑分不清「账号欠费」和「这个模型没开通」，
 # 于是把 ModelNotOpen 静默记一句就完事；而 402/403 又被一律当成欠费。
-# 现在两个路由档位都探，各自独立告警，语义由 llm_quota_alert 统一判定。
+# 故把两个档位都列入探测，各自独立告警，语义由 llm_quota_alert 统一判定。
+#
+# v9.9.64 变更：默认只探 turbo。
+#   · turbo 现已实测开通可用（上面那份「未开通」的实测结论已过时）。
+#   · 豆包 Pro 已随全局 Flash 化下架，不再产生任何调用；而本脚本每跑一次
+#     探测就会真实发一次 chat/completions（max_tokens=1，成本极小但确属
+#     Pro 调用），与「禁止 Pro 调用」的要求直接冲突。
+#   若确需临时探 Pro（例如排查账户开通状态），用 env 显式开启：
+#     DOUBAO_PROBE_MODELS=doubao-seed-2-1-turbo-260628,doubao-seed-2-1-pro-260628
 DOUBAO_PROBE_MODELS: list[str] = [
     m.strip()
     for m in os.environ.get(
         "DOUBAO_PROBE_MODELS",
-        "doubao-seed-2-1-turbo-260628,doubao-seed-2-1-pro-260628",
+        "doubao-seed-2-1-turbo-260628",
     ).split(",")
     if m.strip()
 ] or [DOUBAO_PROBE_MODEL]

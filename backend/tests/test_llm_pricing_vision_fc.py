@@ -132,7 +132,18 @@ def test_call_multimodal_deepseek_success_no_fallback(monkeypatch, tmp_path):
     assert calls == ["deepseek-v4-flash-vision-exp"]
 
 
-def test_call_multimodal_deepseek_fails_falls_back_to_doubao(monkeypatch, tmp_path):
+def test_call_multimodal_env_misconfigured_pro_fallback_normalized(monkeypatch, tmp_path):
+    """v9.9.64 回归：.env 误配成豆包 Pro 的兜底模型，也必须被拦成 Turbo。
+
+    改动前 call_multimodal 只归一化了主模型，兜底直接读 env 原样使用（旧注释
+    甚至写着「.env 若显式配 Pro 仍尊重 env」）。一旦服务器 .env 配了
+    LLM_VISION_MODEL_DOUBAO=doubao-seed-2-1-pro-260628，OCR / 票据识别在
+    DeepSeek vision 失败走豆包降级时就会产生**真实豆包 Pro 调用** —— 这条路径
+    平时不触发，属于极难发现的隐性漏钱口子。
+
+    这里刻意保留 setenv(..., "doubao-seed-2-1-pro-260628") 作为对抗输入：
+    它测的正是「env 被误配」这个场景，不能被改成 turbo 而失去意义。
+    """
     import infra.llm.gateway as gw_mod
 
     monkeypatch.setenv("DATA_DIR", str(tmp_path))
@@ -147,7 +158,7 @@ def test_call_multimodal_deepseek_fails_falls_back_to_doubao(monkeypatch, tmp_pa
         calls.append(model)
         if model == "deepseek-v4-flash-vision-exp":
             return 500, {"error": "vision model down"}
-        if model == "doubao-seed-2-1-pro-260628":
+        if model == "doubao-seed-2-1-turbo-260628":
             return 200, {
                 "choices": [{"message": {"content": "豆包识别：金额 888.88"}}],
                 "usage": {"total_tokens": 9, "prompt_tokens": 7, "completion_tokens": 2},
@@ -165,10 +176,10 @@ def test_call_multimodal_deepseek_fails_falls_back_to_doubao(monkeypatch, tmp_pa
     )
 
     assert result["source"] == "ai"
-    assert result["model"] == "doubao-seed-2-1-pro-260628"
+    assert result["model"] == "doubao-seed-2-1-turbo-260628"
     assert result["fallback_used"] is True
     assert "888.88" in result["content"]
-    assert calls == ["deepseek-v4-flash-vision-exp", "doubao-seed-2-1-pro-260628"]
+    assert calls == ["deepseek-v4-flash-vision-exp", "doubao-seed-2-1-turbo-260628"]
 
 
 def test_call_multimodal_no_key_returns_no_key(monkeypatch, tmp_path):
@@ -217,8 +228,54 @@ def test_call_multimodal_all_fail_returns_api_error(monkeypatch, tmp_path):
     assert result["content"] == ""
 
 
+def test_call_multimodal_cheap_primary_never_reaches_pro_fallback(monkeypatch, tmp_path):
+    """v9.9.64 回归：主模型已是便宜档时，env 误配的 Pro 兜底绝不能被触达。
+
+    这是 vision 兜底未归一化时**最隐蔽**的一条漏钱路径：主模型传的是便宜的
+    doubao turbo，兜底 env 却配了 Pro。改动前两者不同值 → 候选链去重失效 →
+    主模型一失败就真的发一次豆包 Pro。改动后兜底被归一化成与主模型同值、
+    去重生效，候选链只剩 1 个，Pro 根本进不来。
+
+    断言的是「任何一次请求都不许带 pro 字样」，而不是只看最终 result。
+    """
+    import infra.llm.gateway as gw_mod
+
+    monkeypatch.setenv("DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("DOUBAO_API_KEY", "db")
+    # 对抗输入：兜底被误配成 Pro
+    monkeypatch.setenv("LLM_VISION_MODEL_DOUBAO", "doubao-seed-2-1-pro-260628")
+
+    calls = []
+
+    def dispatch(model):
+        calls.append(model)
+        # 主模型（便宜档）失败，逼出降级链
+        return 500, {"error": "doubao turbo down"}
+
+    monkeypatch.setitem(sys.modules, "httpx", _make_fake_httpx(dispatch))
+
+    gw = gw_mod.LLMGateway()
+    result = gw.call_multimodal(
+        [{"role": "user", "content": [{"type": "text", "text": "识别"}]}],
+        model="doubao-seed-2-1-turbo-260628",
+        user_id="LeiJiang",
+        module="ocr",
+    )
+
+    assert result["source"] == "api_error"
+    assert calls == ["doubao-seed-2-1-turbo-260628"], (
+        "归一化后兜底与主模型同值，去重生效，候选链应只剩 1 个；"
+        "实际 %r —— 说明 env 误配的 Pro 又被放进了候选链" % calls
+    )
+    assert all("pro" not in m for m in calls)
+
+
 def test_call_multimodal_doubao_as_primary_dedup(monkeypatch, tmp_path):
-    """主模型本身就是豆包时，降级链去重，不重复请求。"""
+    """主模型本身就是豆包时，降级链去重，不重复请求。
+
+    注：本用例的 setenv 刻意保留 Pro —— 它同时覆盖了「显式传 Pro 的主模型被
+    归一化」和「env 误配 Pro 的兜底被归一化」两条，正是 v9.9.64 要守的场景。
+    """
     import infra.llm.gateway as gw_mod
 
     monkeypatch.setenv("DATA_DIR", str(tmp_path))

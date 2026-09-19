@@ -1087,7 +1087,14 @@ class LLMGateway:
         )
         # 2026-09-19（v9.9.62）：豆包 vision 兜底默认从 Pro 降为 Turbo。
         # 实测（生产 key，20x20 图片）：Turbo 同样支持 image_url 输入，识别正常，
-        # 符合「降级一律用豆包便宜档」的要求；.env 若显式配 Pro 仍尊重 env。
+        # 符合「降级一律用豆包便宜档」的要求。
+        #
+        # v9.9.64：兜底同样**不允许** Pro —— 旧注释写的「.env 若显式配 Pro 仍尊重
+        # env」是错的。服务器 .env 一旦误配成 doubao-seed-2-1-pro-260628，OCR /
+        # 票据识别走豆包降级时就会产生真实 Pro 扣费，而这条路径平时不触发、只在
+        # DeepSeek vision 失败时才走，属于极难发现的隐性漏钱口子。
+        # 现在与主模型同一把尺子：env 误配 Pro 会被归一化到 Turbo。
+        fallback_model = normalize_explicit_model(fallback_model)
 
         # 构建候选链：主模型 + 豆包备胎（去重，避免主模型本身已是豆包时重复）
         candidates: list[tuple[str, str, str]] = []  # (model, key, base)

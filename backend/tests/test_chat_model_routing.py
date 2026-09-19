@@ -877,6 +877,151 @@ def test_stream_doubao_turbo_under_llm_light_keeps_default_thinking(monkeypatch)
     assert "thinking" not in body
 
 
+# -----------------------------------------------------------------------------
+# v9.9.64：堵死 FC 直连路径的 Pro 泄漏
+# -----------------------------------------------------------------------------
+# 背景
+# ----
+# api/chat_fc.py 的 Function Calling 是**直连 httpx** 的（见 _fc_call_with_fallback
+# 里的 _do），完全不经过 gateway，所以 gateway 入口的 normalize_explicit_model
+# 根本管不到它。前端 sticky localStorage / 旧客户端缓存 / API 直传都可能带来
+# 'deepseek-v4-pro'，一旦进来就会以 Pro 身份真实发出去（max_rounds=4，每轮
+# max_tokens=3000）—— 这就是用户在 DeepSeek 账单里看到 Pro 扣费的来源。
+#
+# 纵深防御两层：api/chat.py 的 _normalize_explicit_model（出口统一归一化）
+#              + api/chat_fc.py 的 _fc_call_with_fallback（入口自保）。
+# 下面两组用例分别守住这两层，且 FC 那组断言的是**真正发出去的 request body**。
+
+def test_api_chat_normalize_explicit_model_rules():
+    """api.chat._normalize_explicit_model：auto 哨兵语义不变，Pro 一律归一化。"""
+    import api.chat as chat
+
+    # auto / 空值 → ''（空串是「交给 gateway 峰谷调度」的哨兵，语义不能变）
+    assert chat._normalize_explicit_model(None) == ""
+    assert chat._normalize_explicit_model("") == ""
+    assert chat._normalize_explicit_model("auto") == ""
+
+    # 两家 Pro 档 → 各自便宜档
+    assert chat._normalize_explicit_model("deepseek-v4-pro") == "deepseek-v4-flash"
+    assert chat._normalize_explicit_model("doubao-seed-2-1-pro-260628") == "doubao-seed-2-1-turbo-260628"
+
+    # 已是便宜档 → 原样透传
+    assert chat._normalize_explicit_model("deepseek-v4-flash") == "deepseek-v4-flash"
+    assert chat._normalize_explicit_model("doubao-seed-2-1-turbo-260628") == "doubao-seed-2-1-turbo-260628"
+
+
+def _capture_fc_request(monkeypatch, tmp_path, model, messages=None):
+    """跑一次 _fc_call_with_fallback，拦截 httpx 拿到真正发出去的请求。
+
+    _do 是 _fc_call_with_fallback 的内嵌函数，无法直接 monkeypatch，因此把假
+    实现装在 httpx.Client 这一层（FC 唯一的出口）。
+    """
+    import httpx
+
+    import api.chat_fc as chat_fc
+
+    captured = []
+
+    class _FakeResponse:
+        status_code = 200
+
+        def __init__(self, payload):
+            self._payload = payload
+
+        def json(self):
+            return self._payload
+
+    class _FakeClient:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+        def post(self, url, headers=None, json=None, **kwargs):
+            captured.append({"url": url, "headers": headers or {}, "json": json})
+            return _FakeResponse({
+                "choices": [{"message": {"content": "ok"}, "finish_reason": "stop"}],
+                "usage": {"prompt_tokens": 1, "completion_tokens": 1},
+            })
+
+    monkeypatch.setattr(httpx, "Client", _FakeClient)
+    monkeypatch.setenv("DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("LLM_API_KEY", "ds")
+    monkeypatch.setenv("LLM_API_BASE", "https://api.deepseek.com/v1")
+    monkeypatch.setenv("DOUBAO_API_KEY", "db")
+    monkeypatch.setenv("DOUBAO_API_BASE", "https://ark.cn-beijing.volces.com/api/v3")
+
+    payload, actual_model, fallback_used = chat_fc._fc_call_with_fallback(
+        model,
+        messages if messages is not None else [{"role": "user", "content": "hi"}],
+        max_tokens=3000,
+    )
+
+    assert len(captured) == 1, "期望发出 1 次 FC 请求，实际 %d 次" % len(captured)
+    return captured[0], actual_model, fallback_used
+
+
+def test_fc_direct_path_normalizes_deepseek_pro_to_flash(monkeypatch, tmp_path):
+    """v9.9.64 核心回归：FC 直连路径收到 Pro 也必须发出 flash。
+
+    改动前 _fc_call_with_fallback 原样透传 model，request body 里就是
+    'deepseek-v4-pro' —— 一次对话最多 4 次 Pro 调用，每次 max_tokens=3000。
+    """
+    req, actual_model, fallback_used = _capture_fc_request(
+        monkeypatch, tmp_path, "deepseek-v4-pro",
+    )
+
+    assert req["json"]["model"] == "deepseek-v4-flash", (
+        "FC 直连 httpx 绕过了 gateway，必须自己归一化；"
+        "发出 %r 会产生真实 Pro 扣费" % req["json"]["model"]
+    )
+    assert req["url"] == "https://api.deepseek.com/v1/chat/completions"
+    assert actual_model == "deepseek-v4-flash"
+    assert fallback_used is False
+
+
+def test_fc_direct_path_normalizes_doubao_pro_to_turbo(monkeypatch, tmp_path):
+    """豆包侧同理：Pro 归一化成 Turbo，且 _route 仍识别为 doubao provider。
+
+    归一化必须发生在 _route(model) **之前** —— _route 靠模型名前缀判断
+    provider，顺序反了会把 doubao 请求发到 deepseek 的 base 上。
+    """
+    req, actual_model, fallback_used = _capture_fc_request(
+        monkeypatch, tmp_path, "doubao-seed-2-1-pro-260628",
+    )
+
+    assert req["json"]["model"] == "doubao-seed-2-1-turbo-260628"
+    assert req["url"] == "https://ark.cn-beijing.volces.com/api/v3/chat/completions", (
+        "归一化后 _route 仍须识别为 doubao provider（实际发往 %r）" % req["url"]
+    )
+    assert actual_model == "doubao-seed-2-1-turbo-260628"
+    assert fallback_used is False
+
+
+def test_fc_direct_path_keeps_deepseek_flash_untouched(monkeypatch, tmp_path):
+    """已是便宜档（deepseek flash）时不得被归一化带偏（防「无脑改名」）。"""
+    req, actual_model, _ = _capture_fc_request(monkeypatch, tmp_path, "deepseek-v4-flash")
+    assert req["json"]["model"] == "deepseek-v4-flash"
+    assert actual_model == "deepseek-v4-flash"
+
+
+def test_fc_direct_path_keeps_doubao_turbo_untouched(monkeypatch, tmp_path):
+    """豆包侧负向：已是便宜档（doubao turbo）时必须原样发出。
+
+    与上面 deepseek flash 那条成对存在 —— 只覆盖 flash 会漏掉「有人把归一化
+    写成无条件替换成 flash」这种改法，那样豆包的便宜档也会被改坏。
+    """
+    req, actual_model, _ = _capture_fc_request(monkeypatch, tmp_path, "doubao-seed-2-1-turbo-260628")
+
+    assert req["json"]["model"] == "doubao-seed-2-1-turbo-260628"
+    assert req["url"] == "https://ark.cn-beijing.volces.com/api/v3/chat/completions"
+    assert actual_model == "doubao-seed-2-1-turbo-260628"
+
+
 def test_stream_and_sync_thinking_policy_are_identical(monkeypatch):
     """同步/流式两份 thinking 判据必须逐例一致，防止将来只改一边。
 

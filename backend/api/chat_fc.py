@@ -682,7 +682,21 @@ def _fc_call_with_fallback(model: str, messages: list, max_tokens: int = 3000) -
     - actual_model: 实际成功的模型 ID
     - fallback_used: 是否触发了降级
     抛出 RuntimeError 表示所有 provider 都失败。
+
+    v9.9.64: 入口强制做一次 Pro 归一化。FC 路径是**直连 httpx**（见下方 _do），
+    完全绕过 gateway，gateway 的 normalize_explicit_model 管不到这里；上游
+    （api/chat.py）即使已归一化，FC 仍可能被其它调用方直接喂进 Pro 模型 ID。
+    所以此处必须自保：任何含 pro 的模型名一律落到便宜档（deepseek-v4-flash /
+    doubao-seed-2-1-turbo-260628），否则会产生真实的 Pro 扣费。
     """
+    try:
+        from infra.llm.gateway import normalize_explicit_model
+
+        model = normalize_explicit_model(model)
+    except Exception:
+        # 归一化只是防御，拿不到 gateway 时沿用原值，不能让 FC 整体不可用
+        pass
+
     def _route(m: str) -> tuple[str, str, str]:
         """返回 (api_key, api_base, provider)"""
         if m.startswith("doubao") or m.startswith("ep-"):

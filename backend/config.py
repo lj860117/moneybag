@@ -450,7 +450,24 @@ TUSHARE_TOKEN = os.environ.get("TUSHARE_TOKEN", "")
 #    使去注释前后行数一致（行号对齐）。自带对抗性自测（正则/字符串含 //、字符串含 /*、模板 `${}`
 #    内注释、跨行块注释、真实文件行数对齐）。
 # 注：本轮**未改前端 JS**（仅改测试基础设施 + 版本号）；按团队要求把版本号统一 bump 到 9.9.43。
-APP_VERSION = "9.9.63"
+#
+# v9.9.64：堵死 Pro 扣费的最后一条通路。
+#   · api/chat_fc.py 的 Function Calling 直连 httpx、完全绕过 gateway，
+#     gateway 的归一化管不到它；前端 sticky localStorage / 旧客户端缓存 /
+#     API 直传带来的 'deepseek-v4-pro' 会原样发给 DeepSeek（max_rounds=4，
+#     每轮 max_tokens=3000）—— 这是账单里 Pro 扣费的真凶。
+#     修法（纵深防御）：_fc_call_with_fallback 入口自归一化（须在 _route 之前），
+#     同时 api/chat.py 的 _normalize_explicit_model 一并归一化（覆盖 4 个消费点）。
+#   · scripts/llm_balance_monitor.py 的 DOUBAO_PROBE_MODELS 默认去掉豆包 Pro
+#     （已下架，且每次探测都是一次真实 Pro 调用）。
+#   · services/agent_engine.py 与 routers/wxwork.py 各有一处
+#     `llm_heavy if model == 'deepseek-v4-pro' else llm_light` 死分支（互为复制品），
+#     均清理为恒 llm_light，并修掉 wxwork 那条「降级落到豆包 Pro 保质量」的错误注释。
+#   · infra/llm/gateway.py 的 call_multimodal：豆包 vision 兜底此前只归一化主模型、
+#     兜底直接读 env 原样使用（旧注释还写着「.env 若显式配 Pro 仍尊重 env」）。
+#     .env 误配 Pro 时 OCR/票据走降级就是真实 Pro 扣费，现兜底一并归一化。
+#   index.html 27 处 ?v= 与 sw.js CACHE_NAME 一并 bump（缓存失效，让用户拿到本轮后端改动）。
+APP_VERSION = "9.9.64"
 
 # ---- v9.5.123: API 鉴权 ----
 # 每个用户一个token，格式: userId:token（环境变量或data/auth_tokens.json）
