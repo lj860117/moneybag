@@ -900,6 +900,18 @@ def _check_render_consistency(rows: list, sidecar: dict) -> tuple:
             )
             continue
         label = f"{r['name']}({code})"
+        # v9.9.59 补：正文与侧车对"这只到底有没有净值"必须对得上。
+        # 任一侧说缺失、另一侧说有 → 两者根本不是同一次计算的结果，
+        # 而下面的 nav 比对会因为 `is not None` 判断**被静默跳过** ——
+        # 那是典型的静默失效，必须显式报出来。
+        if bool(sc.get("navMissing")) != bool(r["navMissing"]):
+            issues.append(
+                f"⚠️ 渲染不一致：{label} 正文"
+                f"{'标注「现净值缺失」' if r['navMissing'] else '印出了现净值'}"
+                f"，净值侧车却记为"
+                f"{'缺失' if sc.get('navMissing') else '有净值'}"
+                f"（生成层与正文不同源？）"
+            )
         if not sc.get("navMissing"):
             sc_nav = _to_float(sc.get("nav"))
             if r["cur"] is not None and sc_nav is not None and \
@@ -985,7 +997,15 @@ def _check_independent_caliber(sidecar: dict, provider) -> tuple:
         if not nav_date:
             unverified.append(f"no_nav_date:{code}")
             continue
-        series = provider(code)
+        try:
+            series = provider(code)
+        except Exception as e:                  # provider 抛错不得拖垮整轮质检
+            # 22:00 带 --alert 的 cron 里，一个未捕获异常会让**整个质检静默
+            # 停摆**（连 v9.9.57 的既有检查都不跑了）。所以这里吞掉并如实记
+            # DEGRADED —— 少核一只，好过全部不核。
+            print(f"[QUALITY] 独立源 {code} 抛错：{type(e).__name__}: {e}")
+            unverified.append(f"independent_error:{code}:{type(e).__name__}")
+            continue
         if not series:
             unverified.append(f"independent_unreachable:{code}")
             continue
