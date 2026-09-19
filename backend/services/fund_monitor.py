@@ -462,6 +462,20 @@ def get_fund_nav_history(code: str, days: int = 60, force_refresh: bool = False)
     run_close_review() 开头先跑 run_scan()，几分钟后第 4 段「持仓预警」又调
     本函数 —— 两者相隔几分钟，而 _NAV_TTL = 3600（1 小时），必然命中 scan 刚
     写入的快照。基金净值通常 20:00-23:00 陆续公布，21:02 复盘时应该拿最新值。
+
+    口径（v9.9.57 定标，勿再"顺手统一"）
+    -----------------------------------
+    本函数服务的是「**最大回撤 / 波动率 / 回测**」（见 :func:`calc_risk_metrics`
+    与 ``scripts/stock_monitor_cron.py`` 的持仓预警），权威口径是 **累计净值**
+    （``accum``）：累计净值在分红除权日不跳空，回撤才不会被"分红除权"误判成
+    暴跌。用**单位净值**算回撤，分红日会出现一个纯属记账口径的假跳空。
+
+    三条降级路径**必须同口径**，否则同一只基金昨天的 nav 与今天的 nav 相差
+    accum/unit 倍（002163 实测：单位 2.9119 / 累计 4.1558 = 1.427×），
+    而 cache_key 里**没有口径维度**，调用方无从分辨自己拿到的是哪一套。
+
+    每条记录额外带一个 ``caliber`` 字段（``"accum"`` / ``"unit"``）供调用方
+    自证；数值口径本身由本函数保证三层一致。
     """
     now = time.time()
     cache_key = f"{code}_{days}"
@@ -481,11 +495,15 @@ def get_fund_nav_history(code: str, days: int = 60, force_refresh: bool = False)
         from infra.data_source.market.stocks import get_fund_nav_history as _get_fund_nav_hist
         # 用累计净值走势（含分红再投资），避免分红后单位净值下降导致盈亏计算失真
         df = _get_fund_nav_hist(code=code, indicator="累计净值走势")
+        indicator_used = "累计净值走势"
         if df is None or df.empty:
             # 降级到单位净值
             df = _get_fund_nav_hist(code=code, indicator="单位净值走势")
+            indicator_used = "单位净值走势"
         if df is None or df.empty:
             raise ValueError("AKShare 空数据")
+        # v9.9.57：如实标注本帧的口径。走满累计走势 = accum；降级到单位走势 = unit。
+        l1_caliber = "accum" if indicator_used == "累计净值走势" else "unit"
         df = df.tail(days)
         result = []
         for _, row in df.iterrows():
@@ -495,6 +513,7 @@ def get_fund_nav_history(code: str, days: int = 60, force_refresh: bool = False)
                 "date": str(row.get("净值日期", "")),
                 "nav": nav_val,
                 "rate": _safe_float(row.get("日增长率")),
+                "caliber": l1_caliber,
             })
         _nav_cache.set(cache_key, result, ttl=_NAV_TTL)
         _mark_nav_written(cache_key)
@@ -507,10 +526,32 @@ def get_fund_nav_history(code: str, days: int = 60, force_refresh: bool = False)
                 ts = ts_nav(code, days=days)
                 if ts.get("available") and ts.get("navs"):
                     rows = ts["navs"][-days:]
+                    # ---------------------------------------------------------
+                    # v9.9.57 口径统一（P1）：这里原本无条件取 ``unit_nav``，是三条
+                    # 降级路径里**唯一**的口径偏离层 —— L1/L3 正常返回累计净值，
+                    # 只有 L1 挂掉、本层顶上时才返回单位净值，同一只基金的 nav
+                    # 会因"那天哪个数据源活着"而相差 accum/unit 倍。
+                    #
+                    # ⚠️ 只认 ``accum_nav``（累计净值），**绝不认 ``adj_nav``**：
+                    # adj_nav 是复权净值（分红再投资复利），与 L1/L3 的「累计净值」
+                    # 不是一个量纲 —— 002163 实测 unit 2.9119 / accum 4.1558 /
+                    # adj 6.7802。取 adj 会把现在的 1.427× 跳变放大成 2.35×。
+                    #
+                    # ⚠️ 必须**整段同口径**，不能逐行 ``accum_nav or unit_nav``：
+                    # 逐行回退会在同一条序列里混进两个量纲，回撤/波动率会被自己
+                    # 造出来的假跳空污染，比"整段都用单位"更糟。故仅当**每一行**
+                    # 都有正的 accum_nav 时才整段升为累计口径，否则整段退回单位。
+                    # ---------------------------------------------------------
+                    accum_series = [_safe_float(r.get("accum_nav")) for r in rows]
+                    unit_series = [_safe_float(r.get("unit_nav")) for r in rows]
+                    use_accum = bool(rows) and all(
+                        v is not None and v > 0 for v in accum_series)
+                    l2_caliber = "accum" if use_accum else "unit"
+                    nav_series = accum_series if use_accum else unit_series
+
                     result = []
                     prev_nav = None
-                    for r in rows:
-                        nav = _safe_float(r.get("unit_nav"))
+                    for r, nav in zip(rows, nav_series):
                         rate = None
                         if prev_nav is not None and prev_nav > 0:
                             rate = round((nav - prev_nav) / prev_nav * 100, 4) if nav is not None else None
@@ -519,8 +560,10 @@ def get_fund_nav_history(code: str, days: int = 60, force_refresh: bool = False)
                             "date": r.get("nav_date", ""),
                             "nav": nav,
                             "rate": rate if rate is not None else 0,
+                            "caliber": l2_caliber,
                         })
-                    print(f"[FUND_MONITOR] {code} Tushare 降级: {len(result)} 天")
+                    print(f"[FUND_MONITOR] {code} Tushare 降级: {len(result)} 天"
+                          f"（口径 {l2_caliber}）")
                     _nav_cache.set(cache_key, result)
                     _mark_nav_written(cache_key)
                     return result
@@ -548,19 +591,48 @@ def get_fund_nav_history(code: str, days: int = 60, force_refresh: bool = False)
                 except Exception:
                     break
             if all_items:
+                # ---------------------------------------------------------
+                # v9.9.57 口径统一（P1，与 L2 同一条铁律）：**绝不逐行**
+                # ``LJJZ or DWJZ``。
+                #
+                # LJJZ = 累计净值，DWJZ = 单位净值（2026-09-22 实测 002163：
+                # DWJZ 2.9119 / LJJZ 4.1558，与 L1 的累计口径一致）。只认
+                # LJJZ，**绝不认 adj_nav**（复权净值是第三个量纲）。
+                #
+                # 逐行回退会在同一条序列里混进两个量纲（前面 4.1558、缺 LJJZ
+                # 的那行 2.9119），下游 ``_get_nav_series`` / ``calc_risk_metrics``
+                # 对相邻项做差求日收益，这个人造跳空会被当成一次 -30% 的真实
+                # 日收益，污染相关系数、波动率、回撤 —— 比"整段都用单位"更糟。
+                #
+                # 故：**每条**都有正的 LJJZ → 整段升为累计口径；只要缺一条，
+                # 整段退回 DWJZ 单位口径。二选一，不混。
+                #
+                # ⚠️ 预扫必须在**完整的 ``all_items``** 上做、不能只扫截取后的
+                # ``result[-days:]``：「要不要升累计」这个决策本身覆盖的是整个
+                # 拉取窗口，只按截取后的片段判定，会让"窗口外某条缺 LJJZ"的
+                # 情况整段误升累计。
+                # ---------------------------------------------------------
+                accum_series = [_safe_float(it.get("LJJZ")) for it in all_items]
+                unit_series = [_safe_float(it.get("DWJZ")) for it in all_items]
+                use_accum = bool(all_items) and all(
+                    v is not None and v > 0 for v in accum_series)
+                l3_caliber = "accum" if use_accum else "unit"
+                nav_series = accum_series if use_accum else unit_series
+
                 result = []
                 prev_nav = None
-                for item in reversed(all_items):  # EM 返回的是倒序（最新在前），reversed 后时间升序
-                    nav = _safe_float(item.get("LJJZ") or item.get("DWJZ"))
+                for item, nav in zip(reversed(all_items), reversed(nav_series)):  # EM 返回的是倒序（最新在前），reversed 后时间升序
                     date = item.get("FSRQ", "")
                     # 日增长率：先用字段，再自算
                     rate_raw = _safe_float(item.get("JZZZL"))
                     if rate_raw is None and prev_nav is not None and prev_nav > 0 and nav is not None:
                         rate_raw = round((nav - prev_nav) / prev_nav * 100, 4)
                     prev_nav = nav
-                    result.append({"date": date, "nav": nav, "rate": rate_raw or 0})
+                    result.append({"date": date, "nav": nav,
+                                   "rate": rate_raw or 0, "caliber": l3_caliber})
                 result = result[-days:]  # 截取最近 days 条
-                print(f"[FUND_MONITOR] {code} EM API 降级: {len(result)} 天")
+                print(f"[FUND_MONITOR] {code} EM API 降级: {len(result)} 天"
+                      f"（口径 {l3_caliber}）")
                 _nav_cache.set(cache_key, result, ttl=_NAV_TTL)
                 _mark_nav_written(cache_key)
                 return result

@@ -782,6 +782,19 @@ _nav_full_cache: dict = {}    # {code: [nav,...]} 升序，按天失效
 _nav_full_date = ""
 
 
+def _safe_nav_float(v) -> float | None:
+    """把数据源里的净值字段转成 float，失败返回 None（不抛、不返回 0）。
+
+    返回 None 而不是 0 是刻意的：0 会被下游的 ``if v > 0`` 当成"有效且为 0"
+    而被静默丢掉，与"这一行根本没有这个字段"无法区分。
+    """
+    try:
+        f = float(v)
+    except (TypeError, ValueError):
+        return None
+    return f if f == f else None  # NaN 视为缺失
+
+
 def _fetch_nav_full_em(code: str) -> list:
     """L3 兜底：天天基金 f10/lsjz 翻页。
 
@@ -793,7 +806,7 @@ def _fetch_nav_full_em(code: str) -> list:
     url = "https://api.fund.eastmoney.com/f10/lsjz"
     headers = {"Referer": "https://fund.eastmoney.com/", "User-Agent": "Mozilla/5.0"}
     deadline = _t.time() + 6
-    all_navs = []
+    all_items = []
     for page in range(1, 16):  # 15 页 × 20 条 = 300 条（~15 个月）
         if _t.time() > deadline:
             break
@@ -805,12 +818,29 @@ def _fetch_nav_full_em(code: str) -> list:
             items = _json.loads(body).get("Data", {}).get("LSJZList", [])
             if not items:
                 break
-            for item in items:
-                nav = float(item.get("LJJZ") or item.get("DWJZ") or 0)
-                if nav > 0:
-                    all_navs.append(nav)
+            all_items.extend(items)
         except Exception:
             break
+    if not all_items:
+        return []
+    # -------------------------------------------------------------------
+    # v9.9.57：与 L1（Tushare）同一条铁律 —— **绝不逐行** ``LJJZ or DWJZ``。
+    # 逐行回退会在同一条序列里混进两个量纲（前面 4.1558、缺 LJJZ 的那行
+    # 2.9119），下游 ``_get_nav_series`` 对相邻两项做差求日收益，这个人造
+    # 跳空会被当成一次 -30% 的真实日收益，污染相关系数与净值百分位。
+    #
+    # 故：**整段二选一** —— 每条都有正的 LJJZ（累计净值）→ 整段用累计；
+    # 只要缺一条 → 整段退回 DWJZ（单位口径）。只认 LJJZ，绝不认 adj_nav
+    # （002163 实测 unit 2.9119 / accum 4.1558 / adj 6.7802）。
+    #
+    # 注：本函数返回裸 float 列表、不带 caliber 字段（返回契约不动），
+    # 口径只在取值层面保证整段一致。
+    # -------------------------------------------------------------------
+    accum_series = [_safe_nav_float(item.get("LJJZ")) for item in all_items]
+    unit_series = [_safe_nav_float(item.get("DWJZ")) for item in all_items]
+    use_accum = all(v is not None and v > 0 for v in accum_series)
+    picked = accum_series if use_accum else unit_series
+    all_navs = [v for v in picked if v is not None and v > 0]
     all_navs.reverse()  # EM 返回新→旧，翻转成升序与 L1/L2 对齐
     return all_navs
 
@@ -836,15 +866,29 @@ def _fetch_nav_full(code: str) -> list:
         from services.tushare_data import is_configured, get_fund_nav as ts_nav
         if is_configured():
             r = ts_nav(code, days=_NAV_FULL_WINDOW_DAYS)
-            vals = []
-            for row in (r.get("navs") or []):
-                v = row.get("accum_nav") or row.get("unit_nav")
-                try:
-                    v = float(v)
-                except (TypeError, ValueError):
-                    continue
-                if v > 0:
-                    vals.append(v)
+            rows = r.get("navs") or []
+            # ---------------------------------------------------------------
+            # v9.9.57：与 ``services.fund_monitor.get_fund_nav_history`` 同一条
+            # 铁律 —— **绝不逐行** ``accum_nav or unit_nav``。
+            #
+            # 逐行回退会在同一条序列里混进两个量纲（前面 4.16、后面 2.91），
+            # 下游 ``_get_nav_series`` 直接对相邻两项做差求日收益率，于是这个
+            # 人造跳空被当成一次 -30% 的真实日收益，污染相关系数与净值百分位
+            # —— 比"整段都用单位"更糟。
+            #
+            # 故：**每行**都有正的 accum_nav → 整段升为累计口径；只要缺一行，
+            # 整段退回单位口径。二选一，不混。
+            #
+            # ⚠️ 只认 accum_nav（累计净值），绝不认 adj_nav（复权净值）：
+            # 002163 实测 unit 2.9119 / accum 4.1558 / adj 6.7802，adj 与
+            # 本函数另外两层（AKShare 累计走势、EM 的 LJJZ）不是一个量纲。
+            # ---------------------------------------------------------------
+            accum_series = [_safe_nav_float(row.get("accum_nav")) for row in rows]
+            unit_series = [_safe_nav_float(row.get("unit_nav")) for row in rows]
+            use_accum = bool(rows) and all(
+                v is not None and v > 0 for v in accum_series)
+            picked = accum_series if use_accum else unit_series
+            vals = [v for v in picked if v is not None and v > 0]
             if len(vals) >= _NAV_FULL_MIN:
                 return vals  # Tushare 已按 nav_date 升序
     except Exception:
