@@ -70,6 +70,11 @@ BACKEND_LOOSE_FILES=(
     "backend/domain/__init__.py"
     "backend/infra/__init__.py"
     "backend/infra/auth.py"
+    # ⚠️ v9.9.64 公网访问门禁：main.py 顶部 `from infra.http_gate import ...`，
+    # 躺在 infra/ 父包下（BACKEND_DIRS 只列了 infra/ 的若干子目录，覆盖不到它）。
+    # 不加进来的话以后改门禁逻辑永远上不了线 —— 正是 test_deploy_asset_coverage
+    # 类级守卫要防的「本地改了、部署不带、线上永远旧」。
+    "backend/infra/http_gate.py"
 )
 
 for f in "${BACKEND_LOOSE_FILES[@]}"; do
