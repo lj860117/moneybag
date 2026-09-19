@@ -688,13 +688,96 @@ def get_fund_nav_history(code: str, days: int = 60, force_refresh: bool = False)
         return []
 
 
+# ---------------------------------------------------------------------------
+# 净值口径标注（v9.9.59）
+# ---------------------------------------------------------------------------
+# ``get_fund_nav_history`` 自 v9.9.57 起给每条记录带 ``caliber`` 字段
+# （``"accum"`` / ``"unit"``），但**一直没人消费**：口径降级到单位净值时，
+# 分红除权日会在序列里留一个纯记账的假跳空，回撤/连续下跌被凭空放大，而
+# 调用方和最终用户都看不出来——字段埋了等于没埋。
+#
+# 这里把口径**如实标注**到 metrics 上，供下游（detect_fund_alerts 的推送文案、
+# scan_all_fund_holdings 的 risk 字段）直接消费。
+#
+# ⚠️ 只标注，**绝不换算**：unit → accum 需要逐笔分红明细（除权日 + 每份分红
+# 额 + 当日净值），我们没有这份数据；硬凑出来的"累计净值"比如实报单位口径更
+# 危险，因为它看起来是对的。宁可标注"这个数可能含除权"，也不给一个假的数。
+
+#: 权威口径：累计净值，分红除权日不跳空。
+NAV_CALIBER_ACCUM = "accum"
+#: 降级口径：单位净值，分红除权日会跳空。
+NAV_CALIBER_UNIT = "unit"
+#: 同一条序列里混了两种口径 —— 比整段 unit 更糟，必须显式暴露。
+NAV_CALIBER_MIXED = "mixed"
+#: 序列里没有 caliber 字段（老缓存 / 第三方构造），无从判定。
+NAV_CALIBER_UNKNOWN = "unknown"
+
+_CALIBER_WARNING_UNIT = (
+    "单位净值口径：分红除权日会出现纯记账的净值跳空，"
+    "回撤/跌幅可能含除权因素，不代表真实亏损"
+)
+_CALIBER_WARNING_MIXED = (
+    "净值序列口径混用：同一段里同时存在累计净值与单位净值，"
+    "回撤/跌幅不可信"
+)
+
+
+def resolve_nav_caliber(nav_list: list) -> tuple:
+    """从净值序列里解析口径，返回 ``(caliber, warning)``。
+
+    Args:
+        nav_list: ``get_fund_nav_history`` 形态的序列
+            ``[{"date", "nav", "rate", "caliber"}, ...]``。
+
+    Returns:
+        tuple:
+            - ``caliber`` (str): :data:`NAV_CALIBER_ACCUM` / ``_UNIT`` /
+              ``_MIXED`` / ``_UNKNOWN`。
+            - ``warning`` (str | None): ``None`` 表示**无需告警**；否则是可直接
+              展示给用户的告警文案。
+
+    判定规则（只看**有 nav 的**那些行，与 ``calc_risk_metrics`` 里 ``pairs``
+    的过滤保持一致 —— 没有 nav 的行不参与回撤计算，也不该参与口径判定）:
+
+        - 全是 accum                → ``("accum", None)``，权威口径，不告警
+        - 全是 unit                 → ``("unit", 告警)``
+        - 两种都有                  → ``("mixed", 告警)``
+        - 一条 caliber 都没有       → ``("unknown", None)``
+
+    ⚠️ 为什么 ``unknown`` **不**告警：没有标注 ≠ 是单位口径。凭空告警会改掉
+    既有的推送文案（老调用方/老缓存构造的序列都没有 caliber 字段），属于无
+    事实依据的行为变更。需要"必须确认是 accum"的调用方请自行判
+    ``risk["navCaliber"] != NAV_CALIBER_ACCUM``。
+    """
+    calibers = {
+        str(n.get("caliber"))
+        for n in (nav_list or [])
+        if isinstance(n, dict) and n.get("nav") is not None and n.get("caliber")
+    }
+    if not calibers:
+        return NAV_CALIBER_UNKNOWN, None
+    if calibers == {NAV_CALIBER_ACCUM}:
+        return NAV_CALIBER_ACCUM, None
+    if calibers == {NAV_CALIBER_UNIT}:
+        return NAV_CALIBER_UNIT, _CALIBER_WARNING_UNIT
+    return NAV_CALIBER_MIXED, _CALIBER_WARNING_MIXED
+
+
 def calc_risk_metrics(nav_list: list) -> dict:
     """计算风控指标：最大回撤、波动率、连续下跌天数
 
     v9.5.72: 加上回撤窗口的具体日期 + 当前距高点位置
+
+    v9.9.59: 额外返回 ``navCaliber`` / ``caliberWarning`` 两个**纯新增**字段
+    —— 老调用方不读它们时行为完全不变（向后兼容）。口径降级到单位净值时，
+    ``caliberWarning`` 非 None，下游 :func:`detect_fund_alerts` 会把它带进
+    推送文案，避免用户把"分红除权"读成"亏了"。详见 :func:`resolve_nav_caliber`。
     """
+    caliber, caliber_warning = resolve_nav_caliber(nav_list)
+
     if len(nav_list) < 5:
-        return {"maxDrawdown": None, "volatility": None, "downDays": 0}
+        return {"maxDrawdown": None, "volatility": None, "downDays": 0,
+                "navCaliber": caliber, "caliberWarning": caliber_warning}
 
     # 完整保留 (date, nav) 对，方便定位回撤窗口
     pairs = [(n.get("date", ""), n.get("nav")) for n in nav_list if n.get("nav") is not None]
@@ -785,6 +868,9 @@ def calc_risk_metrics(nav_list: list) -> dict:
         # v9.9.11: 真实统计区间起止日 —— 供文案展示，避免"30日"被误读成 30 个自然日
         "navStartDate": _fmt_md(dates[0]) if dates else "",
         "navEndDate": _fmt_md(dates[-1]) if dates else "",
+        # v9.9.59: 口径自证 —— 老调用方不读这两个键时行为完全不变
+        "navCaliber": caliber,
+        "caliberWarning": caliber_warning,
     }
 
 
@@ -792,12 +878,35 @@ def calc_risk_metrics(nav_list: list) -> dict:
 # 5. 异动检测 & 预警信号
 # ============================================================
 
+def _caliber_note(risk: dict) -> str:
+    """口径降级时的如实标注后缀；权威累计口径返回空串（文案逐字不变）。
+
+    v9.9.59：``calc_risk_metrics`` 已经把口径写进 ``risk["caliberWarning"]``，
+    本函数只是把它拼成可追加到推送文案里的形态。正常路径（accum）恒返回 ""，
+    所以既有的文案断言不受影响。
+    """
+    warning = (risk or {}).get("caliberWarning")
+    return f"（{warning}）" if warning else ""
+
+
 def detect_fund_alerts(code: str, realtime: dict, risk: dict) -> list:
     """检测基金异动，返回预警信号列表（每个 alert 含 code 字段用于去重）
     
     v9.5.124: 统一字段名为 message（与 wxwork_push.py 的 send_stock_alert_to 对齐）
+
+    v9.9.59: 回撤类预警在口径降级时会追加一段标注（见 :func:`_caliber_note`）。
+    只加在**回撤**这一条上 —— 其余规则的失真要么不可能、要么不显著：
+      · 规则 1/2/3 用的是 realtime 的 estRate/estDeviation（估值，与净值序列无关）；
+      · 规则 6「近一周涨幅 >5%」：除权跳空只会让涨幅**变小**，不可能凭空造出
+        一个"过热"信号；
+      · 规则 5「连续下跌 ≥4 天」：一次除权只制造**一天**的假跌，凑不满 4 天，
+        触发不了该阈值。
+    而规则 4 的 maxDrawdown 是**单点极大值** —— 一个除权跳空就足以把它从 1%
+    抬到 42%（分红基金实测），直接越过 5% 门槛变成一条红色预警。口径标注
+    必须落在这里。
     """
     alerts = []
+    caliber_note = _caliber_note(risk)
 
     est_rate = realtime.get("estRate")
     est_dev = realtime.get("estDeviation")
@@ -877,7 +986,9 @@ def detect_fund_alerts(code: str, realtime: dict, risk: dict) -> list:
         alerts.append({
             "type": "drawdown", "code": code,
             "level": "warning",
-            "message": main + sub,
+            # v9.9.59：口径降级时把"可能含除权"如实带进推送文案。accum 口径下
+            # caliber_note 为空串，文案与改动前逐字一致（向后兼容）。
+            "message": main + sub + caliber_note,
         })
 
     # 规则 5：连续下跌 >= 4 天（提高门槛，3天波动太正常）
