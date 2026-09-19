@@ -24,6 +24,7 @@ import os
 import time
 import json
 import hashlib
+import threading
 from dataclasses import dataclass
 from datetime import datetime, date
 from pathlib import Path
@@ -184,6 +185,51 @@ def _pricing_key_from_model(model: str) -> str:
     if "pro" in lowered:
         return "deepseek-pro"
     return "deepseek-pro"
+
+
+# ---------------------------------------------------------------------------
+# 逐次调用明细（成本归因的唯一证据源）
+# ---------------------------------------------------------------------------
+# 2026-09-19 起因：官方后台 30 天实际扣费 ¥50.54 / 2,811 次 / 1.336 亿 token，
+# 而自记账只有 ¥2.53 / 1,087 次 / 93 万 token（金额低估 19.9 倍、token 低估 143 倍）。
+# 根因之一是**没有 module 维度的明细**：
+#   · `_record_usage` 只写进程内存字典（重启即丢，外部脚本读不到）
+#   · `_record_token_cost` 只写「日期/用户」两个聚合文件，module 压根没传进来
+# 结果是「今天这几块钱花在哪个模块」在事后**无法回答**——只能靠猜。
+# 这里补一条 append-only JSONL：每次调用一行，带 module/model/token/成本。
+_CALL_LOG_LOCK = threading.Lock()
+
+
+def _append_call_log(record: dict[str, Any]) -> None:
+    """追加一条 LLM 调用明细到 DATA_DIR/llm_usage/calls/YYYY-MM-DD.jsonl。
+
+    失败绝不影响调用本身（与既有记账函数的容错策略保持一致）。
+    """
+    try:
+        log_dir = Path(config.DATA_DIR) / "llm_usage" / "calls"
+        log_dir.mkdir(parents=True, exist_ok=True)
+        path = log_dir / f"{date.today().isoformat()}.jsonl"
+        line = json.dumps(record, ensure_ascii=False, sort_keys=True) + "\n"
+        with _CALL_LOG_LOCK:
+            with open(path, "a", encoding="utf-8") as fh:
+                fh.write(line)
+    except Exception as e:  # pragma: no cover - 记账永不影响调用
+        print(f"[LLM_GATEWAY] ⚠️ 调用明细落盘失败（不影响调用）: {e}")
+
+
+def _estimate_tokens_from_messages(messages: list[Any]) -> int:
+    """没有真实 usage 时的输入估算（中文约 1.6 字符/token）。
+
+    旧实现是 `len(prompt) // 3`，**只算 prompt，把 system 与 history 整块丢掉**——
+    而这两块恰恰是最大头的输入。流式请求过去不索取 usage，于是全系统
+    的流式调用都在用这个漏掉大头的估算，这是 token 低估 143 倍的主因之一。
+    这里按「实际发送出去的 messages 全量」估算，至少不再结构性漏项。
+    """
+    total_chars = 0
+    for m in messages:
+        content = m.get("content") if isinstance(m, dict) else getattr(m, "content", "")
+        total_chars += len(str(content or ""))
+    return max(1, int(total_chars / 1.6))
 
 
 def _provider_has_key(provider: str) -> bool:
@@ -763,6 +809,7 @@ class LLMGateway:
                 user_id, actual_model, input_tk, output_tk,
                 cache_hit_tokens=cache_hit_tk,
                 cache_miss_tokens=cache_miss_tk,
+                module=module, stream=False, estimated=not bool(usage),
             )
             block_reason = _shadow_audit_output(content, module=module, model=actual_model)
             if block_reason is not None:
@@ -777,6 +824,22 @@ class LLMGateway:
 
         except Exception as e:
             print(f"[LLM_GATEWAY] 调用失败: {e}")
+            # 失败也留痕（旧实现只 print 不记账，失败次数在账本上完全不可见）
+            _append_call_log({
+                "ts": _china_now().isoformat(timespec="seconds"),
+                "date": date.today().isoformat(),
+                "user_id": user_id or "_anonymous",
+                "module": module or "_unknown",
+                "model": model,
+                "pricing_key": _pricing_key_from_model(model),
+                "stream": False,
+                "estimated": False,
+                "input_tokens": 0, "output_tokens": 0,
+                "cache_hit_tokens": 0, "cache_miss_tokens": 0,
+                "cost_rmb": None,
+                "success": False,
+                "error": str(e)[:500],
+            })
             return {
                 "content": "", "source": "error",
                 "fallback": True, "model": model,
@@ -891,6 +954,12 @@ class LLMGateway:
                 "max_tokens": max_tokens,
                 "temperature": 0.7,
                 "stream": True,
+                # 2026-09-19：DeepSeek 流式响应**默认不返回 usage**（最后一个 chunk
+                # 的 usage 字段为 null）。不带这个参数时下方计费会整段回退到
+                # 「按字符数估算」，而旧估算只算 prompt、丢掉 system 与 history，
+                # 结果全系统流式调用都在用漏掉大头的估算记账。
+                # 显式索取 usage，让流式与 call_sync 一样读到 API 返回的真实 token。
+                "stream_options": {"include_usage": True},
             }
             _is_deepseek_v4_stream = use_model.startswith("deepseek-v4")
             if force_no_thinking:
@@ -935,12 +1004,19 @@ class LLMGateway:
                             break
                         try:
                             chunk = json.loads(payload)
-                            delta_obj = chunk.get("choices", [{}])[0].get("delta", {})
+                            # ⚠️ 先取 usage 再碰 choices：带 stream_options.include_usage 时，
+                            # 承载 usage 的**最后一个 chunk 的 choices 是空数组**，
+                            # 而 `choices[0]` 会抛 IndexError 被下面的 except 吞掉——
+                            # 那样就算加了 include_usage 也一样拿不到 usage。
+                            usage = chunk.get("usage")
+                            choices = chunk.get("choices") or []
+                            delta_obj = (choices[0].get("delta", {}) if choices else {}) or {}
                             reasoning = delta_obj.get("reasoning_content", "")
                             content = delta_obj.get("content", "")
-                            usage = chunk.get("usage")
+                            if not usage and not reasoning and not content:
+                                continue
                             yield {"reasoning": reasoning, "content": content, "usage": usage}
-                        except (json.JSONDecodeError, IndexError, KeyError):
+                        except (json.JSONDecodeError, IndexError, KeyError, TypeError):
                             continue
 
         try:
@@ -993,21 +1069,51 @@ class LLMGateway:
                     continue
 
             if not success:
+                # 2026-09-19：失败也落一条明细。旧实现在这里直接 return、**一次账都不记**，
+                # 而流式是本项目调用量最大的一路——失败次数在账本上完全是空白，
+                # 于是「官方次数 ≫ 自记次数（漏 61%）」里就有它的一份。
+                # token 记 0 是为了不污染用量口径，但次数与失败原因必须留痕。
+                _append_call_log({
+                    "ts": _china_now().isoformat(timespec="seconds"),
+                    "date": date.today().isoformat(),
+                    "user_id": user_id or "_anonymous",
+                    "module": module or "_unknown",
+                    "model": actual_model,
+                    "pricing_key": _pricing_key_from_model(actual_model),
+                    "stream": True,
+                    "estimated": False,
+                    "input_tokens": 0, "output_tokens": 0,
+                    "cache_hit_tokens": 0, "cache_miss_tokens": 0,
+                    "cost_rmb": None,
+                    "success": False,
+                    "error": (last_error or "all_candidates_failed")[:500],
+                })
                 yield {"delta": "", "done": True, "error": last_error or "all_candidates_failed", "fallback": True}
                 return
 
             # 6. 流结束 — 计费
-            estimated_tokens = len(total_content + total_reasoning) // 2 + len(prompt) // 3
-            total_tokens = usage.get("total_tokens", estimated_tokens) if usage else estimated_tokens
-            input_tk = usage.get("prompt_tokens", len(prompt) // 3) if usage else len(prompt) // 3
-            output_tk = usage.get("completion_tokens", len(total_content + total_reasoning) // 2) if usage else len(total_content + total_reasoning) // 2
-            cache_hit_tk = usage.get("prompt_cache_hit_tokens", 0) if usage else 0
-            cache_miss_tk = usage.get("prompt_cache_miss_tokens", 0) if usage else 0
+            # 有 usage（已开 include_usage）时一律用 API 真实值；
+            # 没有时才回退估算，且估算必须覆盖**实际发出去的 messages 全量**。
+            if usage:
+                input_tk = usage.get("prompt_tokens", usage.get("input_tokens", 0))
+                output_tk = usage.get("completion_tokens", usage.get("output_tokens", 0))
+                total_tokens = usage.get("total_tokens", 0) or (input_tk + output_tk)
+                cache_hit_tk = usage.get("prompt_cache_hit_tokens", 0)
+                cache_miss_tk = usage.get("prompt_cache_miss_tokens", 0)
+            else:
+                input_tk = _estimate_tokens_from_messages(messages)
+                output_tk = max(1, int(len(total_content + total_reasoning) / 1.6))
+                total_tokens = input_tk + output_tk
+                cache_hit_tk = 0
+                cache_miss_tk = 0
+                print(f"[LLM_GATEWAY] ⚠️ stream 无 usage，回退估算: "
+                      f"in≈{input_tk} out≈{output_tk}（按 messages 全量，含 system+history）")
 
             self._record_usage(user_id, module, actual_model, total_tokens)
             self._record_token_cost(user_id, actual_model, input_tk, output_tk,
                                     cache_hit_tokens=cache_hit_tk,
-                                    cache_miss_tokens=cache_miss_tk)
+                                    cache_miss_tokens=cache_miss_tk,
+                                    module=module, stream=True, estimated=not bool(usage))
 
             # 输出边界守卫（shadow）。注意：流式场景内容**已经**逐块发给用户了，
             # enforce 只能是事后的（拦不回来），此处仅在 enforce 命中时于收尾
@@ -1139,7 +1245,8 @@ class LLMGateway:
 
                         # 计费
                         self._record_usage(user_id, module, cand_model, total_tokens)
-                        self._record_token_cost(user_id, cand_model, input_tk, output_tk)
+                        self._record_token_cost(user_id, cand_model, input_tk, output_tk,
+                                                module=module, stream=False)
 
                         # 输出边界守卫（shadow）
                         block_reason = _shadow_audit_output(
@@ -1340,41 +1447,78 @@ class LLMGateway:
     def _record_token_cost(self, user_id: str, model: str,
                            input_tokens: int, output_tokens: int,
                            cache_hit_tokens: int = 0,
-                           cache_miss_tokens: int = 0) -> None:
-        """记录本次调用的金额成本到磁盘（按天+按用户双维度）
+                           cache_miss_tokens: int = 0,
+                           module: str = "",
+                           stream: bool = False,
+                           estimated: bool = False) -> None:
+        """记录本次调用的金额成本到磁盘（按天+按用户双维度），并落一条调用明细。
 
         按具体模型选价目：
         - deepseek：分 flash/pro 两档，cache_hit/miss 与输出价都按峰谷窗口选值
         - doubao：价目未知（PROVIDER_PRICING=None），只记用量不计费
+
+        2026-09-19 新增 module/stream/estimated 三个可选参数：
+        - module：成本归因的关键标签，过去**没传给本函数**，导致明细无法回答
+          「钱花在哪个模块」。新增调用点请务必带上。
+        - stream：区分流式/非流式。流式过去不索取 usage，是记账最不可靠的一路。
+        - estimated：本条的 token 是估算值还是 API 真实返回值。事后做对账时
+          必须能区分，否则又会把估算值当成事实。
         """
+        cost: Optional[float] = None
+        pricing_key = _pricing_key_from_model(model)
         try:
             from config import TOKEN_BUDGET, PROVIDER_PRICING
 
-            pricing_key = _pricing_key_from_model(model)
             pricing = PROVIDER_PRICING.get(pricing_key)
             if not pricing:
-                # 价目未知（doubao），跳过金额记账
-                return
+                # 价目未知（doubao）：不计金额，但仍落明细以便看清调用量
+                pricing = None
 
             # deepseek 输出价 + 输入缓存命中/未命中价都按峰谷窗口选择
             is_peak = _is_deepseek_peak_window()
-            output_rate = pricing["output_peak"] if is_peak else pricing["output_valley"]
-            hit_rate = pricing["input_cache_hit_peak"] if is_peak else pricing["input_cache_hit_valley"]
-            miss_rate = pricing["input_cache_miss_peak"] if is_peak else pricing["input_cache_miss_valley"]
+            if pricing:
+                output_rate = pricing["output_peak"] if is_peak else pricing["output_valley"]
+                hit_rate = pricing["input_cache_hit_peak"] if is_peak else pricing["input_cache_hit_valley"]
+                miss_rate = pricing["input_cache_miss_peak"] if is_peak else pricing["input_cache_miss_valley"]
 
-            # 用真实命中/未命中 token 算真实成本
-            # 若没返回这俩字段（老 API），回退到 hit/miss 平均估算
-            if cache_hit_tokens + cache_miss_tokens > 0:
-                cost = (
-                    cache_hit_tokens * hit_rate
-                    + cache_miss_tokens * miss_rate
-                    + output_tokens * output_rate
-                ) / 1_000_000
-                cache_ratio = cache_hit_tokens / (cache_hit_tokens + cache_miss_tokens)
+                # 用真实命中/未命中 token 算真实成本
+                # 若没返回这俩字段（老 API），回退到 hit/miss 平均估算
+                if cache_hit_tokens + cache_miss_tokens > 0:
+                    cost = (
+                        cache_hit_tokens * hit_rate
+                        + cache_miss_tokens * miss_rate
+                        + output_tokens * output_rate
+                    ) / 1_000_000
+                    cache_ratio = cache_hit_tokens / (cache_hit_tokens + cache_miss_tokens)
+                else:
+                    input_rate = (hit_rate + miss_rate) / 2
+                    cost = (input_tokens * input_rate + output_tokens * output_rate) / 1_000_000
+                    cache_ratio = None
             else:
-                input_rate = (hit_rate + miss_rate) / 2
-                cost = (input_tokens * input_rate + output_tokens * output_rate) / 1_000_000
                 cache_ratio = None
+
+            # ---- 逐次调用明细（先落，保证即使下面的聚合写失败也留有证据）----
+            _append_call_log({
+                "ts": _china_now().isoformat(timespec="seconds"),
+                "date": date.today().isoformat(),
+                "user_id": user_id or "_anonymous",
+                "module": module or "_unknown",
+                "model": model,
+                "pricing_key": pricing_key,
+                "stream": bool(stream),
+                "estimated": bool(estimated),
+                "input_tokens": input_tokens,
+                "output_tokens": output_tokens,
+                "cache_hit_tokens": cache_hit_tokens,
+                "cache_miss_tokens": cache_miss_tokens,
+                "cost_rmb": round(cost, 6) if cost is not None else None,
+                "is_peak": bool(is_peak),
+                "success": True,
+            })
+
+            if cost is None:
+                # 价目未知（doubao），到此为止，不写 DeepSeek 金额账本
+                return
 
             # 读取今日全局用量
             usage_dir = Path(config.DATA_DIR) / "llm_usage"
@@ -1395,7 +1539,9 @@ class LLMGateway:
             daily["output_tokens"] += output_tokens
             daily["cache_hit_tokens"] = daily.get("cache_hit_tokens", 0) + cache_hit_tokens
             daily["cache_miss_tokens"] = daily.get("cache_miss_tokens", 0) + cache_miss_tokens
-            daily["cost_rmb"] = round(daily["cost_rmb"] + cost, 4)
+            # 累计保留 6 位小数再四舍五入（原来是每笔 round 到 4 位，
+            # 高频小额调用会被逐笔抹零，长期偏低于真实值）
+            daily["cost_rmb"] = round(daily["cost_rmb"] + cost, 6)
             daily["calls"] += 1
 
             # 原子写（复用 infra/store，不变式 #5：文件 IO 走 infra/store）
@@ -1410,7 +1556,7 @@ class LLMGateway:
                 user_daily = json.loads(user_file.read_text(encoding="utf-8"))
             else:
                 user_daily = {"user_id": user_id, "date": date.today().isoformat(), "cost_rmb": 0.0, "calls": 0}
-            user_daily["cost_rmb"] = round(user_daily["cost_rmb"] + cost, 4)
+            user_daily["cost_rmb"] = round(user_daily["cost_rmb"] + cost, 6)
             user_daily["calls"] += 1
             atomic_write_json(user_file, user_daily)
 
@@ -1447,7 +1593,7 @@ class LLMGateway:
         """
         self._record_usage(user_id, module, model, input_tokens + output_tokens)
         self._record_token_cost(user_id, model, input_tokens, output_tokens,
-                                cache_hit_tokens, cache_miss_tokens)
+                                cache_hit_tokens, cache_miss_tokens, module=module)
 
     def get_api_config(self, model_tier: str = "llm_light", module: str = "") -> dict[str, Any]:
         """返回当前默认模型对应的 API 配置。"""
