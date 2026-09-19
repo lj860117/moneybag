@@ -859,6 +859,11 @@ def evaluate_push_quality(date_str: str, user_id: str = "LeiJiang",
         if codes and not actual_data:
             # 有需要核对的持仓、却一条净值都没取到 → 本检查整体不可用，如实记录
             results["checks_skipped"].append("hallucination")
+        if push_type == "briefing" and not position_rows:
+            # 晨报本该有「持仓明细」段、却一行都没解析出来 → 净值核对无从下手。
+            # 不记就是把「没核对」当「通过」（违反上面那条铁律）；closing_review
+            # 本来就没有持仓明细段，不记，否则天天 110 份噪音。
+            results["checks_skipped"].append("hallucination:no_position_rows")
 
         issues.extend(check_data_source(str(push_file)))
         issues.extend(check_ai_quality(str(push_file)))
