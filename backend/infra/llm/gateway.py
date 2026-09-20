@@ -1951,3 +1951,103 @@ class LLMClient:
 
     def get_daily_remaining(self) -> int:
         return LLMGateway.instance().get_daily_remaining()
+
+
+# ============================================================================
+# DeepSeek Pro 出口防火墙（v9.9.66）
+# ============================================================================
+_PRO_FIREWALL_INSTALLED = False
+
+
+def _rewrite_model_if_pro(request: Any) -> tuple[Any, str]:
+    """若请求体指向 DeepSeek Pro，改写为 flash，返回 (新 request, 原模型名)。
+
+    未命中时返回 (原 request, "")。任何解析失败都原样返回，绝不阻断调用。
+    """
+    import httpx
+
+    url = str(request.url)
+    if "api.deepseek.com" not in url or "/chat/completions" not in url:
+        return request, ""
+    raw = request.content
+    if not raw:
+        return request, ""
+    try:
+        data = json.loads(raw)
+    except Exception:
+        return request, ""
+    if not isinstance(data, dict):
+        return request, ""
+    model = str(data.get("model") or "")
+    if "pro" not in model.lower():
+        return request, ""
+    data["model"] = "deepseek-v4-flash"
+    headers = {k: v for k, v in request.headers.items() if k.lower() != "content-length"}
+    new_req = httpx.Request(
+        str(request.method), request.url, headers=headers,
+        content=json.dumps(data, ensure_ascii=False).encode("utf-8"),
+    )
+    return new_req, model
+
+
+def install_deepseek_pro_firewall() -> None:
+    """在 httpx 出口拦截一切 DeepSeek Pro 调用（v9.9.66）。
+
+    背景：09-20 官方逐次明细显示仍有 deepseek-v4-pro 扣费（5 次 / ¥0.262，
+    占当日 ¥0.294 的 89%），但自记账与 journalctl 里一条都没有 —— 说明存在
+    绕过 gateway 的直连路径；gateway 的 normalize_explicit_model() 管不到直连 httpx。
+
+    这里 patch 在 httpx.Client.send / AsyncClient.send —— 所有直连的最终出口，
+    既拦住扣费，又打印调用栈用于定位来源。只改写 model 字段，其余请求原样放行。
+    """
+    global _PRO_FIREWALL_INSTALLED
+    if _PRO_FIREWALL_INSTALLED:
+        return
+    try:
+        import httpx
+    except Exception:
+        return
+
+    orig_send = httpx.Client.send
+
+    def _guarded_send(self: Any, request: Any, **kwargs: Any) -> Any:
+        try:
+            new_req, orig_model = _rewrite_model_if_pro(request)
+            if orig_model:
+                import traceback
+                stack = "".join(traceback.format_stack()[-8:])
+                print(
+                    f"[PRO_FIREWALL] 拦截 DeepSeek Pro: {orig_model} -> deepseek-v4-flash\n{stack}",
+                    flush=True,
+                )
+                request = new_req
+        except Exception as e:  # noqa: BLE001
+            print(f"[PRO_FIREWALL] 检查异常(不阻断): {e}", flush=True)
+        return orig_send(self, request, **kwargs)
+
+    httpx.Client.send = _guarded_send  # type: ignore[method-assign]
+
+    try:
+        orig_async_send = httpx.AsyncClient.send
+
+        async def _guarded_asend(self: Any, request: Any, **kwargs: Any) -> Any:
+            try:
+                new_req, orig_model = _rewrite_model_if_pro(request)
+                if orig_model:
+                    import traceback
+                    stack = "".join(traceback.format_stack()[-8:])
+                    print(
+                        f"[PRO_FIREWALL] 拦截 DeepSeek Pro(async): {orig_model} -> deepseek-v4-flash\n{stack}",
+                        flush=True,
+                    )
+                    request = new_req
+            except Exception as e:  # noqa: BLE001
+                print(f"[PRO_FIREWALL] 检查异常(不阻断): {e}", flush=True)
+            return await orig_async_send(self, request, **kwargs)
+
+        httpx.AsyncClient.send = _guarded_asend  # type: ignore[method-assign]
+    except Exception:
+        pass
+
+    _PRO_FIREWALL_INSTALLED = True
+    print("[PRO_FIREWALL] 已挂载（httpx.Client.send / AsyncClient.send）", flush=True)

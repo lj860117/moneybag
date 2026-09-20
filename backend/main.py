@@ -188,6 +188,11 @@ def serve_frontend_file(filename: str):
     return _cached_file_response(FRONTEND_DIR / "index.html")
 
 
+# ---- DeepSeek Pro 出口防火墙（v9.9.66）：拦住绕过 gateway 的直连 Pro 调用 ----
+from infra.llm.gateway import install_deepseek_pro_firewall
+
+install_deepseek_pro_firewall()
+
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(app, host="0.0.0.0", port=8000)
