@@ -2008,6 +2008,34 @@ def _probe_write(rec: dict[str, Any]) -> None:
         pass
 
 
+def _check_model_in_body(raw: Any) -> tuple[Any, str]:
+    """检查请求体 JSON 里的 model 字段。
+
+    含 "pro"（大小写不敏感）→ 返回 (改写后的 body 字节, 原模型名)；
+    否则 / 不可解析 / 非 dict → 返回 (None, "")。
+    httpx 路径与 requests 路径共用，保证两种客户端的判定口径一致。
+    """
+    if not raw:
+        return None, ""
+    if isinstance(raw, str):
+        raw_b = raw.encode("utf-8")
+    elif isinstance(raw, (bytes, bytearray)):
+        raw_b = bytes(raw)
+    else:
+        return None, ""
+    try:
+        data = json.loads(raw_b)
+    except Exception:
+        return None, ""
+    if not isinstance(data, dict):
+        return None, ""
+    model = str(data.get("model") or "")
+    if "pro" not in model.lower():
+        return None, ""
+    data["model"] = "deepseek-v4-flash"
+    return json.dumps(data, ensure_ascii=False).encode("utf-8"), model
+
+
 def _inspect_request(request: Any) -> tuple[Any, str, str]:
     """检查一个 httpx 请求，返回 (request, model, orig_model)。
 
@@ -2089,6 +2117,10 @@ def install_deepseek_pro_firewall() -> None:
     这里 patch 在 httpx.Client.send / AsyncClient.send —— 所有直连的最终出口：
     每一次都记探针（含调用栈），Pro 额外改写为 flash 并打印栈。只改 model 字段，
     其余请求原样放行。
+
+    v9.9.69 扩展：额外 patch requests.adapters.HTTPAdapter.send，覆盖「不走 httpx、
+    直接用 requests 调 DeepSeek」的直连路径（httpx 防火墙看不到）。两条路径共用
+    _check_model_in_body 判定口径。
     """
     global _PRO_FIREWALL_INSTALLED
     if _PRO_FIREWALL_INSTALLED:
@@ -2115,8 +2147,62 @@ def install_deepseek_pro_firewall() -> None:
     except Exception:
         pass
 
+    # ------------------------------------------------------------------
+    # requests / urllib3 出口：覆盖「不走 httpx、直接用 requests 调 DeepSeek」的
+    # 直连路径（httpx 防火墙看不到）。requests 底层也是 urllib3，但这里 patch
+    # HTTPAdapter.send 即可覆盖所有 requests 调用；非 DeepSeek 请求原样放行。
+    # ------------------------------------------------------------------
+    try:
+        import requests
+
+        orig_adapter_send = requests.adapters.HTTPAdapter.send
+
+        def _guarded_adapter_send(
+            self: Any,
+            request: Any,
+            stream: bool = False,
+            timeout: Any = None,
+            verify: Any = True,
+            cert: Any = None,
+            proxies: Any = None,
+            **kwargs: Any,
+        ) -> Any:
+            url = getattr(request, "url", "") or ""
+            if "api.deepseek.com" in url and "/chat/completions" in url:
+                new_body, orig_model = _check_model_in_body(getattr(request, "body", None))
+                if orig_model:
+                    request.body = new_body
+                    try:
+                        request.headers["Content-Length"] = str(len(new_body))
+                    except Exception:
+                        pass
+                    _probe_write(
+                        {
+                            "ts": _china_now().isoformat(timespec="seconds"),
+                            "client": "requests",
+                            "model": "deepseek-v4-flash",
+                            "orig_model": orig_model,
+                            "rewritten": True,
+                            "messages": -1,
+                            "bytes": len(new_body),
+                            "stack": _project_frames(),
+                        }
+                    )
+                    print(
+                        f"[PRO_FIREWALL] 拦截 Pro(requests): {orig_model} -> deepseek-v4-flash | {url}",
+                        flush=True,
+                    )
+            return orig_adapter_send(
+                self, request, stream=stream, timeout=timeout,
+                verify=verify, cert=cert, proxies=proxies, **kwargs,
+            )
+
+        requests.adapters.HTTPAdapter.send = _guarded_adapter_send  # type: ignore[method-assign]
+    except Exception:
+        pass
+
     _PRO_FIREWALL_INSTALLED = True
-    print("[PRO_FIREWALL] 已挂载（httpx.Client.send / AsyncClient.send，全量探针）", flush=True)
+    print("[PRO_FIREWALL] 已挂载（httpx + requests 出口，全量探针 + Pro→Flash 改写）", flush=True)
 
 
 def _auto_install_firewall() -> None:
