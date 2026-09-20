@@ -1965,17 +1965,25 @@ _PRO_FIREWALL_INSTALLED = False
 
 
 def _project_frames(limit: int = 8) -> list[str]:
-    """取调用栈中属于本项目代码的帧；取不到就退回末尾若干帧。
+    """取调用栈中属于本项目「业务代码」的帧（栈末优先）。
 
-    目的是让日志一眼看到业务调用点，而不是 httpx / anyio 的内部帧。
+    必须排除探针自身所在的 gateway.py 帧：栈的末尾几句必然是
+    _guarded_send / _guard_request / _project_frames，不过滤掉的话
+    记下来的栈全是探针自己，看不到真正的业务调用点（v9.9.67 首个版本
+    就是踩了这个坑，被故障注入抓出来）。
     """
     import traceback
 
     frames = [f.strip().replace("\n", " | ") for f in traceback.format_stack()]
-    keep = [f for f in frames if "moneybag/backend/" in f]
-    if not keep:
-        keep = frames[-6:]
-    return keep[-limit:]
+    biz = [
+        f for f in frames
+        if "moneybag/backend/" in f and "infra/llm/gateway.py" not in f
+    ]
+    if not biz:
+        biz = [f for f in frames if "moneybag/backend/" in f]
+    if not biz:
+        biz = frames[-6:]
+    return biz[-limit:]
 
 
 def _probe_write(rec: dict[str, Any]) -> None:
