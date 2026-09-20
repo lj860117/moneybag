@@ -1964,20 +1964,26 @@ class LLMClient:
 _PRO_FIREWALL_INSTALLED = False
 
 
-def _project_frames(limit: int = 8) -> list[str]:
-    """取调用栈中属于本项目「业务代码」的帧（栈末优先）。
+# 探针自身的函数帧 —— 必须排除，否则栈末尾几句永远是它们，看不到调用点。
+# 注意只排除这几个函数、而不是整个 gateway.py：gateway._do_call 是真实调用点，
+# 栈末尾若是 _do_call 说明「走了 gateway 正路（会记账）」，这个信息本身很有用。
+_PROBE_SELF_FRAMES = ("_guarded_send", "_guarded_asend", "_guard_request", "_project_frames")
 
-    必须排除探针自身所在的 gateway.py 帧：栈的末尾几句必然是
-    _guarded_send / _guard_request / _project_frames，不过滤掉的话
-    记下来的栈全是探针自己，看不到真正的业务调用点（v9.9.67 首个版本
-    就是踩了这个坑，被故障注入抓出来）。
+
+def _project_frames(limit: int = 8) -> list[str]:
+    """取调用栈中属于本项目代码的帧（栈末优先），排除探针自身帧。
+
+    判读方式：
+      栈末尾 = gateway.py 的 _do_call  → 走 gateway 正路，会被记账
+      栈末尾 = 其他业务文件            → 直连路径，可能绕过记账（重点排查）
     """
     import traceback
 
     frames = [f.strip().replace("\n", " | ") for f in traceback.format_stack()]
     biz = [
         f for f in frames
-        if "moneybag/backend/" in f and "infra/llm/gateway.py" not in f
+        if "moneybag/backend/" in f
+        and not any(fn in f for fn in _PROBE_SELF_FRAMES)
     ]
     if not biz:
         biz = [f for f in frames if "moneybag/backend/" in f]
