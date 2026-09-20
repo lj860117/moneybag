@@ -1954,51 +1954,127 @@ class LLMClient:
 
 
 # ============================================================================
-# DeepSeek Pro 出口防火墙（v9.9.66）
+# DeepSeek 出口防火墙 + 全量探针（v9.9.67）
+#
+# v9.9.66 只拦 Pro。但逐小时对齐后发现漏记的不止 Pro —— 09-20 官方 29 次、
+# 自记账只有 19 次，差的 10 次里 5 次是 Pro、5 次是 flash（集中在 00 点）。
+# 所以这里改成「全量探针」：所有发往 DeepSeek 的出口请求都落盘带调用栈，
+# 探针总数应当等于官方次数，探针数减去自记账数就是漏记路径。
 # ============================================================================
 _PRO_FIREWALL_INSTALLED = False
 
 
-def _rewrite_model_if_pro(request: Any) -> tuple[Any, str]:
-    """若请求体指向 DeepSeek Pro，改写为 flash，返回 (新 request, 原模型名)。
+def _project_frames(limit: int = 8) -> list[str]:
+    """取调用栈中属于本项目代码的帧；取不到就退回末尾若干帧。
 
-    未命中时返回 (原 request, "")。任何解析失败都原样返回，绝不阻断调用。
+    目的是让日志一眼看到业务调用点，而不是 httpx / anyio 的内部帧。
+    """
+    import traceback
+
+    frames = [f.strip().replace("\n", " | ") for f in traceback.format_stack()]
+    keep = [f for f in frames if "moneybag/backend/" in f]
+    if not keep:
+        keep = frames[-6:]
+    return keep[-limit:]
+
+
+def _probe_write(rec: dict[str, Any]) -> None:
+    """把一次 DeepSeek 出口调用落到 llm_usage/raw_probe/YYYY-MM-DD.jsonl。
+
+    统一走 config.DATA_DIR（不自己拼路径），落盘失败一律静默 ——
+    探针绝不能影响主调用，也不能制造新的目录分裂。
+    """
+    try:
+        d = Path(config.DATA_DIR) / "llm_usage" / "raw_probe"
+        d.mkdir(parents=True, exist_ok=True)
+        day = _china_now().strftime("%Y-%m-%d")
+        with open(d / f"{day}.jsonl", "a", encoding="utf-8") as f:
+            f.write(json.dumps(rec, ensure_ascii=False) + "\n")
+    except Exception:
+        pass
+
+
+def _inspect_request(request: Any) -> tuple[Any, str, str]:
+    """检查一个 httpx 请求，返回 (request, model, orig_model)。
+
+    - 非 DeepSeek chat/completions → (原 request, "", "")
+    - DeepSeek 非 Pro             → (原 request, 模型名, "")
+    - DeepSeek Pro                → (改写为 flash 的新 request, "deepseek-v4-flash", 原名)
+
+    任何解析失败都原样返回，绝不阻断调用。
     """
     import httpx
 
     url = str(request.url)
     if "api.deepseek.com" not in url or "/chat/completions" not in url:
-        return request, ""
+        return request, "", ""
     raw = request.content
     if not raw:
-        return request, ""
+        return request, "", ""
     try:
         data = json.loads(raw)
     except Exception:
-        return request, ""
+        return request, "", ""
     if not isinstance(data, dict):
-        return request, ""
+        return request, "", ""
     model = str(data.get("model") or "")
     if "pro" not in model.lower():
-        return request, ""
+        return request, model, ""
     data["model"] = "deepseek-v4-flash"
     headers = {k: v for k, v in request.headers.items() if k.lower() != "content-length"}
     new_req = httpx.Request(
         str(request.method), request.url, headers=headers,
         content=json.dumps(data, ensure_ascii=False).encode("utf-8"),
     )
-    return new_req, model
+    return new_req, "deepseek-v4-flash", model
+
+
+def _guard_request(request: Any, async_tag: str = "") -> Any:
+    """对一个出口请求做「探针记录 + Pro 改写」，返回最终要发出的 request。"""
+    try:
+        new_req, model, orig_model = _inspect_request(request)
+        if not model:
+            return request
+        msgs = -1
+        try:
+            body = json.loads(request.content or b"{}")
+            if isinstance(body, dict):
+                raw_msgs = body.get("messages")
+                msgs = len(raw_msgs) if isinstance(raw_msgs, list) else 0
+        except Exception:
+            msgs = -1
+        frames = _project_frames()
+        _probe_write({
+            "ts": _china_now().isoformat(timespec="seconds"),
+            "model": model,
+            "orig_model": orig_model,
+            "rewritten": bool(orig_model),
+            "messages": msgs,
+            "bytes": len(request.content) if request.content else 0,
+            "stack": frames,
+        })
+        if orig_model:
+            print(
+                f"[PRO_FIREWALL] 拦截 Pro{async_tag}: {orig_model} -> {model} | "
+                + " <- ".join(frames),
+                flush=True,
+            )
+            return new_req
+    except Exception as e:  # noqa: BLE001
+        print(f"[PRO_FIREWALL] 检查异常(不阻断): {e}", flush=True)
+    return request
 
 
 def install_deepseek_pro_firewall() -> None:
-    """在 httpx 出口拦截一切 DeepSeek Pro 调用（v9.9.66）。
+    """在 httpx 出口记录并拦截 DeepSeek 调用（v9.9.67 全量探针）。
 
     背景：09-20 官方逐次明细显示仍有 deepseek-v4-pro 扣费（5 次 / ¥0.262，
-    占当日 ¥0.294 的 89%），但自记账与 journalctl 里一条都没有 —— 说明存在
+    占当日 ¥0.294 的 89%），且官方 29 次 vs 自记账 19 次差 10 次 —— 说明存在
     绕过 gateway 的直连路径；gateway 的 normalize_explicit_model() 管不到直连 httpx。
 
-    这里 patch 在 httpx.Client.send / AsyncClient.send —— 所有直连的最终出口，
-    既拦住扣费，又打印调用栈用于定位来源。只改写 model 字段，其余请求原样放行。
+    这里 patch 在 httpx.Client.send / AsyncClient.send —— 所有直连的最终出口：
+    每一次都记探针（含调用栈），Pro 额外改写为 flash 并打印栈。只改 model 字段，
+    其余请求原样放行。
     """
     global _PRO_FIREWALL_INSTALLED
     if _PRO_FIREWALL_INSTALLED:
@@ -2011,19 +2087,7 @@ def install_deepseek_pro_firewall() -> None:
     orig_send = httpx.Client.send
 
     def _guarded_send(self: Any, request: Any, **kwargs: Any) -> Any:
-        try:
-            new_req, orig_model = _rewrite_model_if_pro(request)
-            if orig_model:
-                import traceback
-                stack = "".join(traceback.format_stack()[-8:])
-                print(
-                    f"[PRO_FIREWALL] 拦截 DeepSeek Pro: {orig_model} -> deepseek-v4-flash\n{stack}",
-                    flush=True,
-                )
-                request = new_req
-        except Exception as e:  # noqa: BLE001
-            print(f"[PRO_FIREWALL] 检查异常(不阻断): {e}", flush=True)
-        return orig_send(self, request, **kwargs)
+        return orig_send(self, _guard_request(request), **kwargs)
 
     httpx.Client.send = _guarded_send  # type: ignore[method-assign]
 
@@ -2031,23 +2095,11 @@ def install_deepseek_pro_firewall() -> None:
         orig_async_send = httpx.AsyncClient.send
 
         async def _guarded_asend(self: Any, request: Any, **kwargs: Any) -> Any:
-            try:
-                new_req, orig_model = _rewrite_model_if_pro(request)
-                if orig_model:
-                    import traceback
-                    stack = "".join(traceback.format_stack()[-8:])
-                    print(
-                        f"[PRO_FIREWALL] 拦截 DeepSeek Pro(async): {orig_model} -> deepseek-v4-flash\n{stack}",
-                        flush=True,
-                    )
-                    request = new_req
-            except Exception as e:  # noqa: BLE001
-                print(f"[PRO_FIREWALL] 检查异常(不阻断): {e}", flush=True)
-            return await orig_async_send(self, request, **kwargs)
+            return await orig_async_send(self, _guard_request(request, "(async)"), **kwargs)
 
         httpx.AsyncClient.send = _guarded_asend  # type: ignore[method-assign]
     except Exception:
         pass
 
     _PRO_FIREWALL_INSTALLED = True
-    print("[PRO_FIREWALL] 已挂载（httpx.Client.send / AsyncClient.send）", flush=True)
+    print("[PRO_FIREWALL] 已挂载（httpx.Client.send / AsyncClient.send，全量探针）", flush=True)
