@@ -467,7 +467,7 @@ TUSHARE_TOKEN = os.environ.get("TUSHARE_TOKEN", "")
 #     兜底直接读 env 原样使用（旧注释还写着「.env 若显式配 Pro 仍尊重 env」）。
 #     .env 误配 Pro 时 OCR/票据走降级就是真实 Pro 扣费，现兜底一并归一化。
 #   index.html 27 处 ?v= 与 sw.js CACHE_NAME 一并 bump（缓存失效，让用户拿到本轮后端改动）。
-APP_VERSION = "9.9.67"
+APP_VERSION = "9.9.68"
 
 # ---- v9.5.123: API 鉴权 ----
 # 每个用户一个token，格式: userId:token（环境变量或data/auth_tokens.json）

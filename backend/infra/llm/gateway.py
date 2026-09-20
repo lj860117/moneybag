@@ -2117,3 +2117,33 @@ def install_deepseek_pro_firewall() -> None:
 
     _PRO_FIREWALL_INSTALLED = True
     print("[PRO_FIREWALL] 已挂载（httpx.Client.send / AsyncClient.send，全量探针）", flush=True)
+
+
+def _auto_install_firewall() -> None:
+    """import 本模块即自动挂载防火墙 —— 把覆盖范围扩到 cron 独立进程。
+
+    为什么需要：install_deepseek_pro_firewall() 此前只在 main.py 调用，
+    只有 API 进程会装。而 night_worker / cache_warmer / weekend_push /
+    stock_monitor_cron 等 cron 脚本都是独立进程，且是**函数内延迟 import**
+    gateway，启动时根本不加载 —— 它们的 LLM 调用既不被探针记录也不被拦截，
+    是 Pro 漏记的主要嫌疑（09-20 的 Pro 集中在 03/05 深夜时段）。
+
+    现在改为 import 即挂载，cron 进程一用到 LLM 就自动覆盖。
+
+    跳过两种情况：
+      - 环境变量 MB_LLM_FIREWALL=0 显式关闭
+      - pytest 环境（tests/ 尚无数据隔离 conftest，避免测试写脏生产 data）
+    """
+    import sys
+
+    if os.environ.get("MB_LLM_FIREWALL") == "0":
+        return
+    if "pytest" in sys.modules:
+        return
+    try:
+        install_deepseek_pro_firewall()
+    except Exception:
+        pass
+
+
+_auto_install_firewall()
