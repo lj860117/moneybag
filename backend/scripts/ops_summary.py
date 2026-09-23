@@ -399,8 +399,30 @@ def _root_cause_fingerprint(error_text: str) -> str:
 # 零值健康汇总行：`✅ 正常: 13    ❌ 异常: 0` 这类汇总行因为含 `❌` 被误算成错误。
 # 只排除「值为 0」这一种形态 —— `❌ 异常: 15` 这类真报警必须照常计入。
 # ⚠️ 这是「放宽计数」方向的改动，和过度去重是同一个滑坡，所以口径收到最窄：
-# 只认 `❌` + 异常/错误/失败 + 冒号 + 0，不做通用汇总行排除。
+# 只认 `❌` + 异常/错误/失败 + 冒号 + 0。
 _ZERO_SUMMARY_RE = re.compile(r"❌\s*(?:异常|错误|失败)\s*[:：]\s*0(?![0-9.])")
+
+# FIX 2026-09-22: 汇总行识别（**只用来判定「是不是明细行的回声」，不用来无条件丢弃**）。
+#
+# 背景（实测，`data/ops/snapshot_2026-09-22.json`）：一次真实的巡检失败在日报里
+# 被数成 2 个独立根因 —— 明细行 `❌ [akshare_optimized] [降级]实时行情(优化): 异常: …`
+# 算一个，紧随其后的汇总行 `✅ 正常: 13    ❌ 异常: 1（其中需告警: 1）` 又算一个
+# （它同时含 ✅ 和 ❌，被 keywords 里的 ❌ 命中）。同一段落里这两行描述的是
+# **同一次失败**，不该各占一个根因。
+#
+# 判据用「结构」而不是「有没有 ❌」：一行里同时出现 `正常: N` 与 `异常: M`
+# 才是汇总行。真明细行不会同时带这两个计数，所以不会被误伤 —— 这一点很关键，
+# 误伤明细行就是「静默丢告警」，比虚高危险得多。
+#
+# ⚠️ 为什么**不**做成「命中就无条件丢弃」：
+# 汇总行常常是那次失败**唯一的落盘证据**（明细行被老化、被截断、或压根没写进
+# 日志）。无条件丢弃会让「❌ 异常: 15」这种真报警在日报里消失 —— 静默丢告警，
+# 比虚高危险得多。仓库里 `tests/test_ops_error_dedup.py::
+# test_nonzero_summary_line_still_counted` 就是这道闸门（其注释原话：「一旦有人
+# 把它做成通用的汇总行排除，这条会红」）。
+# 所以这里的用法是**回声抑制**：只有当同一巡检段落里已经有一条明细行被计入时，
+# 汇总行才作为重复计数丢掉；段落里只剩汇总行时照常计入（见 `collect_error_logs`）。
+_SUMMARY_LINE_RE = re.compile(r"正常\s*[:：]\s*\d+.*?异常\s*[:：]\s*\d+")
 
 
 # ── 行内时间戳解析（24h 过滤口径）──────────────────────────────
@@ -573,6 +595,115 @@ def _line_timestamp(line: str, fallback_date: date) -> Optional[datetime]:
     return _line_timestamp_ex(line, fallback_date)[0]
 
 
+# ── 段落头（segment header）解析 ──────────────────────────────
+# FIX 2026-09-22（24h 窗口失效的真根因）：一批核心 cron 日志是「每次运行先打一行
+# 带日期的标题，后面几十行**全裸、没有任何行内时间戳**」的形态，例如：
+#   health_check.log  → `🔍 数据源健康巡检 (2026-09-21 01:20:00)`   （日期 + 时刻）
+#   ops_summary.log   → `🔍 运行态势快照 2026-09-21`                （只有日期）
+#   ops_analyst.log   → `🔍 AI 运维巡检日报 2026-09-21`             （只有日期）
+# 而这些文件又是**按天 `>>` 追加**的（mtime 每天刷新为当天）。于是旧段落里的裸行
+# 在 `_resolve_line_times` 里只能「继承」文件 mtime = 今天 —— 3 天前那次巡检的
+# 错误被判成 24h 内写的，cutoff 对这类行形同虚设（等于 grep 全文）。
+#
+# 实测佐证：`data/ops/snapshot_2026-09-22.json` 的 error_logs_24h.files 第 1 条
+# 是 `/var/log/moneybag/ops_summary.log` 的 `❌ 周度自检: 距今 8 天（阈值 7 天）`
+# —— 今天已是 9 天，这行只能是 9-21 写的，却出现在 9-22 的 24h 窗口里。
+# 9-22 当日真实错误为 0，日报却报了「3 条错误 / 3 个根因」。
+#
+# 段落头自带日期，正好是「下面这些裸行是哪次运行写的」的唯一可靠证据。
+# 新增日志形态时往下面这个元组里加一条正则即可（日期组必须命名 date，
+# 时刻组可选命名 time）。
+_SEGMENT_HEADER_RES: tuple[re.Pattern, ...] = (
+    # 数据源健康巡检：🔍 数据源健康巡检 (2026-09-21 01:20:00)
+    re.compile(
+        r"🔍\s*数据源健康巡检\s*\(\s*"
+        r"(?P<date>\d{4}[-/.]\d{1,2}[-/.]\d{1,2})[ T](?P<time>\d{1,2}:\d{2}(?::\d{2})?)"
+        r"\s*\)"
+    ),
+    # 运行态势快照（元巡检）：🔍 运行态势快照 2026-09-21
+    re.compile(
+        r"🔍\s*运行态势快照\s*(?P<date>\d{4}[-/.]\d{1,2}[-/.]\d{1,2})(?![-\d])"
+    ),
+    # FIX 2026-09-22: AI 运维巡检日报：🔍 AI 运维巡检日报 2026-09-21
+    # 段头由 ops_analyst.main() 打印（同日补的），形态与上面那条一致
+    # （只带日期 → 取当日 00:00）。ops_analyst.log 同样是按天 >> 追加的，
+    # 正文行 `[OPS_ANALYST] …` 无行内时间戳，没有段头就只能继承 mtime。
+    re.compile(
+        r"🔍\s*AI\s*运维巡检日报\s*(?P<date>\d{4}[-/.]\d{1,2}[-/.]\d{1,2})(?![-\d])"
+    ),
+)
+
+
+def _segment_start_ts(line: str) -> Optional[datetime]:
+    """若该行是「巡检段落头」，返回该段落的起始时刻；不是段落头则返回 None。
+
+    Args:
+        line: 原始日志行。
+
+    Returns:
+        段落起始时刻；不是段落头（或日期非法）时返回 None。
+
+    只有日期、没有时刻的段落头（如 `🔍 运行态势快照 2026-09-21`）取该日 00:00。
+    对「一天跑一次」的 cron 来说这个近似正好：当天读 → 年龄 < 24h 保留；
+    隔天读 → 年龄 ≥ 24h 老化。刻意不取 23:59:59 —— 那会把昨天整段重新算进
+    24h 窗口，等于没修。
+    """
+    s = line or ""
+    for pattern in _SEGMENT_HEADER_RES:
+        m = pattern.search(s)
+        if not m:
+            continue
+        token = m.group("date")
+        if "time" in pattern.groupindex:
+            token = f"{m.group('date')} {m.group('time')}"
+        return _parse_datetime_token(token)
+    return None
+
+
+def _segment_timestamps(lines: list[str]) -> list[Optional[datetime]]:
+    """给每一行标注它所属巡检段落的起始时刻。
+
+    第一个段头**之前**的行（文件开头残留）返回 None —— 调用方收到 None 会退回
+    原来的「继承下面最近已知时刻 / 文件 mtime」口径，保持向后兼容，不放宽也不收紧。
+
+    Args:
+        lines: 文件的全部行。
+
+    Returns:
+        与 lines 等长的列表；元素为段落起始时刻或 None。
+    """
+    result: list[Optional[datetime]] = [None] * len(lines)
+    current: Optional[datetime] = None
+    for i, line in enumerate(lines):
+        ts = _segment_start_ts(line)
+        if ts is not None:
+            current = ts
+        result[i] = current
+    return result
+
+
+def _segment_ids(lines: list[str]) -> list[int]:
+    """给每一行标注它所属巡检段落的序号（同一段头之下的行同属一段）。
+
+    段头识别复用 `_segment_start_ts`；序号从 0 起、每遇到一个段头 +1。
+    第一个段头**之前**的行统一为 -1（它们没有段落归属，汇总行回声判定对它们
+    一律「没有同段明细」→ 汇总行保留，行为与改动前一致）。
+
+    Args:
+        lines: 文件的全部行。
+
+    Returns:
+        与 lines 等长的段落序号列表。
+    """
+    ids: list[int] = []
+    current = -1
+    for line in lines:
+        if _segment_start_ts(line) is not None:
+            current += 1
+        ids.append(current)
+    return ids
+
+
 def _resolve_line_times(lines: list[str], file_mtime: datetime) -> list[datetime]:
     """给文件里每一行定一个写入时刻 —— **倒序锚定推演**。
 
@@ -583,12 +714,19 @@ def _resolve_line_times(lines: list[str], file_mtime: datetime) -> list[datetime
     出来（真实 cron.log 里 09-07 08:30 与 09-08 08:30 就差这 28 秒），
     09-07 01:00 的旧错误才不会被当成今天写的。
 
-    没有时间戳的行**继承它下面最近一个已知时刻**：Traceback 的后续行
+    没有时间戳的行**优先继承它所属巡检段落的段头时刻**（见 `_segment_timestamps`），
+    段头不存在时才退化成「继承它下面最近一个已知时刻」：Traceback 的后续行
     （`File "…", line 21, in <module>`）本来就没有时刻，取「下一条日志的
     时刻」作为上界是**安全方向** —— 宁可算新一点（报出来），不可算旧一点
     （静默老化掉，告警变绿而故障还在）。
 
-    **整份文件一行时间戳都没有**时，锚点从头到尾都是初始的 `file_mtime`，
+    FIX 2026-09-22: 「继承下面最近已知时刻」对**按天追加**的日志是失效的 ——
+    那份文件的锚点初值就是今天的 mtime，于是 3 天前那段巡检的裸行全部被判成
+    今天写的，24h cutoff 拦不住（实测：9-22 日报把 9-21 的巡检错误算进 24h，
+    当天真实错误为 0）。段头自带日期，是唯一能证明这些裸行年龄的信息，
+    所以优先级排在「继承已知时刻」之前。
+
+    **整份文件既没有时间戳也没有段头**时，锚点从头到尾都是初始的 `file_mtime`，
     于是每一行都拿到文件 mtime —— 这正好就是「回退到按文件 mtime 整体判定」
     的语义（老文件整体跳过、新文件整体计入，与改动前口径一致），不需要
     额外的分支去实现。
@@ -601,12 +739,14 @@ def _resolve_line_times(lines: list[str], file_mtime: datetime) -> list[datetime
         与 `lines` 等长的时刻列表（不会含 None）。
     """
     resolved: list[datetime] = [file_mtime] * len(lines)
+    segment_ts = _segment_timestamps(lines)
     anchor = file_mtime
     for i in range(len(lines) - 1, -1, -1):
         ts, has_date = _line_timestamp_ex(lines[i], anchor.date())
         if ts is None:
-            # 无时间戳：继承下面最近一个已知时刻（安全方向：偏新不偏旧）
-            resolved[i] = anchor
+            # 无行内时间戳：优先用所属段落的段头时刻（段头自带日期，能把旧段落
+            # 正确老化）；整份文件都没有段头时才退回继承下面最近已知时刻。
+            resolved[i] = segment_ts[i] if segment_ts[i] is not None else anchor
             continue
         if ts > anchor and not has_date:
             # 时刻比锚点还晚 → 属于前一天。自带日期的行以行内日期为准，
@@ -645,8 +785,17 @@ def collect_error_logs() -> dict[str, Any]:
     去重：同一条错误被 tee 进多份日志时只计一次（见 `_error_fingerprint`），
     `count_24h` 表示「独立错误条数」而非「错误行数」。
 
-    同时排除「零值健康汇总行」：`✅ 正常: 13  ❌ 异常: 0` 这类汇总行含 `❌`
-    但不是错误，仅当值为 0 时跳过（见 `_ZERO_SUMMARY_RE`）。
+    同时排除「健康汇总行」：`✅ 正常: 13  ❌ 异常: 0` 这类汇总行含 `❌`
+    但不是错误，值为 0 时跳过（见 `_ZERO_SUMMARY_RE`）。
+
+    FIX 2026-09-22 回声抑制：非零汇总行（`✅ 正常: 13  ❌ 异常: 1`）本身是真
+    报警，但当**同一巡检段落里已经有一条明细行被计入**时，它只是那次失败的
+    回声，再计一次会让「1 次故障」膨胀成「2 个根因」（实测 9-21 那次巡检就是
+    明细 + 汇总各占一个根因）。因此这里的规则是**有条件的**：
+      - 同段落有明细行 → 汇总行丢弃（重复计数）
+      - 同段落只有汇总行 → 汇总行保留（它可能是唯一的告警证据，
+        无条件丢弃就是静默丢告警，见 `_SUMMARY_LINE_RE` 的注释与
+        `tests/test_ops_error_dedup.py::test_nonzero_summary_line_still_counted`）
 
     24h 窗口按**行内时间戳**判定（见 `_resolve_line_times`），不按文件 mtime：
     cron.log 这类按天追加的文件 mtime 永远新鲜，按 mtime 判会让上周的错误
@@ -692,6 +841,12 @@ def collect_error_logs() -> dict[str, Any]:
                 # 按行匹配，才能精确排除「failed 但带 retry」的容错行
                 lines = text.splitlines()
                 line_times = _resolve_line_times(lines, file_mtime)
+                seg_ids = _segment_ids(lines)
+
+                # ── 第一遍：挑候选错误行（时间窗 + 关键字 + 容错重试 + 零值汇总）──
+                # 汇总行不是在这一遍直接丢，而是先按段落分组（见下面第二遍），
+                # 因为「该不该丢」取决于同段落里有没有明细行。
+                candidates: list[tuple[int, str, str, int, bool]] = []
                 for idx, line in enumerate(lines):
                     # 24h 过滤按**行内时间戳**判，不按文件 mtime：
                     # cron.log 这类按天追加的文件 mtime 永远新鲜，按 mtime 判
@@ -705,33 +860,48 @@ def collect_error_logs() -> dict[str, Any]:
                     # 只认「值为 0」这一种形态，非零的真报警照常计入
                     if _ZERO_SUMMARY_RE.search(line):
                         continue
+                    is_summary = _SUMMARY_LINE_RE.search(line) is not None
                     for kw in keywords:
                         if kw in line:
                             # failed/Failed 且同行含容错重试标志 → 跳过
                             if kw.lower() == "failed" and any(m in line.lower() for m in retry_markers):
                                 continue
-                            fp = _error_fingerprint(line)
-                            if fp in _fp_index:
-                                # 同一条错误的另一个出处：只记来源，不重复计数。
-                                # also_in 只记「别的文件」——同一文件内重复出现不记，避免噪音
-                                _dup = findings[_fp_index[fp]]
-                                _also = _dup.setdefault("also_in", [])
-                                if str(f) not in _also and str(f) != _dup.get("file"):
-                                    _also.append(str(f))
-                                break
-                            _fp_index[fp] = len(findings)
-                            # 同源 fan-out（5 档风险 × 3 类资产）收敛成 1 个根因
-                            _rc = _root_cause_fingerprint(fp)
-                            if _rc not in _rc_index:
-                                _rc_index[_rc] = len(_rc_index)
-                            findings.append({
-                                "file": str(f),
-                                "keyword": kw,
-                                # 保留原文（截断 200 字）供日报/人工审计：只报数字
-                                # 说不出「是什么错误」，事后也无法验证去重对不对
-                                "line": line.strip()[:200],
-                            })
+                            candidates.append((idx, kw, line, seg_ids[idx], is_summary))
                             break
+
+                # ── 第二遍：汇总行回声抑制 ──
+                # 只有「同段落里已经有明细行被计入」的汇总行才丢；段落里只剩
+                # 汇总行的（明细被老化/截断/未落盘）必须保留，否则就是静默丢告警。
+                segs_with_detail = {
+                    seg_id
+                    for (_idx, _kw, _line, seg_id, is_summary) in candidates
+                    if not is_summary
+                }
+
+                for _idx, kw, line, seg_id, is_summary in candidates:
+                    if is_summary and seg_id in segs_with_detail:
+                        continue
+                    fp = _error_fingerprint(line)
+                    if fp in _fp_index:
+                        # 同一条错误的另一个出处：只记来源，不重复计数。
+                        # also_in 只记「别的文件」——同一文件内重复出现不记，避免噪音
+                        _dup = findings[_fp_index[fp]]
+                        _also = _dup.setdefault("also_in", [])
+                        if str(f) not in _also and str(f) != _dup.get("file"):
+                            _also.append(str(f))
+                        continue
+                    _fp_index[fp] = len(findings)
+                    # 同源 fan-out（5 档风险 × 3 类资产）收敛成 1 个根因
+                    _rc = _root_cause_fingerprint(fp)
+                    if _rc not in _rc_index:
+                        _rc_index[_rc] = len(_rc_index)
+                    findings.append({
+                        "file": str(f),
+                        "keyword": kw,
+                        # 保留原文（截断 200 字）供日报/人工审计：只报数字
+                        # 说不出「是什么错误」，事后也无法验证去重对不对
+                        "line": line.strip()[:200],
+                    })
             except Exception:
                 continue
     return {

@@ -3,7 +3,8 @@
 设计文档: Part 0 AI 24小时排班表
 
 完整链路:
-01:00 数据源健康巡检
+01:00 数据源健康巡检 —— FIX 2026-09-22 已移出本链，改由 01:20 cron 独占
+      （原先 01:00 与 01:20 重复执行同一份巡检、且 01:00 的落盘被 01:20 覆盖）
 01:30 数据预热（Tushare+AKShare 凌晨拉取）
 02:00 R1 Phase 1: 宏观环境+地缘政治+行业轮动
 02:30 R1 Phase 2: 持仓诊断（逐用户）+ 盈利预测解读
@@ -286,11 +287,19 @@ def _user_has_account(user_id: str) -> bool:
 
 
 # ============================================================
-# 01:00 数据源健康巡检
+# 数据源健康巡检（**手动重跑入口**，自动链已不再调用）
 # ============================================================
+# FIX 2026-09-22: 本步骤已从 `run_night_worker()` 的自动链里移除 ——
+# 01:00 这次与 01:20 的独立 cron 重复执行同一份 `run_health_check()`，
+# 每晚白拉一次 70 页全量行情，且两者都写 data/health/{date}.json，
+# 01:00 的结果会被 01:20 静默覆盖。
+#
+# 保留本函数只是为了 `--step health` 手动重跑（修完某个数据源后想立刻验证），
+# 调度职责交给 01:20 cron 独家负责（它带告警去重与恢复通知，能力更强）。
+# ⚠️ 不要把它加回自动链 —— 加回去就重新引入上面那个「白跑 + 覆盖」问题。
 
 def step_health_check():
-    log("🔍 01:00 数据源健康巡检")
+    log("🔍 数据源健康巡检（手动重跑；自动链已交由 01:20 cron）")
     try:
         from scripts.datasource_health_check import run_health_check, save_health_results
         result = run_health_check()
@@ -2683,8 +2692,17 @@ def run_night_worker():
     # v9.5.66: 重置模型使用统计，每次完整运行独立计数
     _reset_model_stats()
 
-    # 01:00 健康巡检
-    step_health_check()
+    # FIX 2026-09-22: 01:00 健康巡检**已从本链移除**，数据源巡检改由
+    # 01:20 的独立 cron（datasource_health_check.py）独占。
+    #
+    # 原因（重复巡检）：本链 01:00 与 01:20 cron 执行的是**同一份**
+    # `run_health_check()`，却各自拉一次 70 页全量行情（每晚两次），且都往
+    # data/health/{date.today()}.json 落盘 —— 同天单文件、后写覆盖前写，
+    # 01:00 的结果被 01:20 静默覆盖，等于白跑一次。
+    #
+    # 告警不丢：01:20 cron 的 `_push_alert` 负责企微告警（还带去重 +
+    # 恢复通知），能力比这里的无去重推送更强；本链不再重复推送。
+    # 手动重跑入口仍保留：`python scripts/night_worker.py --step health`。
 
     # 01:15 月度快照（每月1号执行）
     step_monthly_snapshot()
@@ -3605,28 +3623,47 @@ def push_morning():
 
 if __name__ == "__main__":
     import argparse
+
+    # FIX 2026-09-22: 步骤表提前到 parser 之前定义，帮助文本由这张表**生成**，
+    # 而不是手写一份名字清单。
+    # 此前帮助文本里列了 `products` / `briefing` 两个本表里根本不存在的键
+    # （历史遗留），`--step products` 会静默落到「未知步骤」分支 —— 帮助文本
+    # 说谎。把两张表合成一张，从结构上杜绝再次漂移。
+    steps = {
+        "health": step_health_check,
+        "warm": step_data_warm,
+        "phase1": step_r1_phase1,
+        "phase2": step_r1_phase2,
+        "phase3": step_r1_phase3,
+        "reports": step_archive_reports,
+        "maintain": step_maintenance,
+        "overnight": step_overnight_check,
+    }
+
     parser = argparse.ArgumentParser(description="AI 凌晨自主工作链")
     parser.add_argument("--push-only", action="store_true", help="只推送简报(08:30)")
-    parser.add_argument("--step", type=str, help="只执行某一步(health/warm/phase1/phase2/phase3/products/reports/maintain/overnight/briefing)")
+    parser.add_argument(
+        "--step",
+        type=str,
+        help=f"只执行某一步（{'/'.join(steps.keys())}）",
+    )
     args = parser.parse_args()
 
     if args.push_only:
         push_morning()
     elif args.step:
-        steps = {
-            "health": step_health_check,
-            "warm": step_data_warm,
-            "phase1": step_r1_phase1,
-            "phase2": step_r1_phase2,
-            "phase3": step_r1_phase3,
-            "reports": step_archive_reports,
-            "maintain": step_maintenance,
-            "overnight": step_overnight_check,
-        }
         if args.step in steps:
             steps[args.step]()
         else:
+            # FIX 2026-09-22: 未知步骤必须以**非 0** 退出。
+            # 此前这里只 print 一句就正常结束（exit 0），cron / 调用方看到 0
+            # 会以为这一步跑成功了 —— 实际什么都没干，是静默失败。
+            # 这里刻意**不用** argparse 的 `choices`：choices 校验失败时
+            # argparse 自己会 exit 2 并打 usage，但那样 `--step` 的可选值
+            # 就同时在「choices」和「steps 表」两处维护（正是本次要消灭的
+            # 双份真相），所以保持单一真相 + 手工 exit 2。
             print(f"未知步骤: {args.step}, 可选: {list(steps.keys())}")
+            sys.exit(2)
     else:
         # E5 v9.5.47: 主流程异常捕获 — 失败时发企微告警
         import sys

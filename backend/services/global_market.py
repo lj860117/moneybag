@@ -33,6 +33,49 @@ import traceback
 from datetime import datetime, timedelta
 from infra.cache import MemoryCache
 
+# ⚠️ 排查备忘（2026-09-22 已核实，别再当成 bug 去改 TTL）：
+# 「01:20 数据源巡检会不会吃到 1 小时内的旧缓存、把降级的外汇误判成 ✅？」
+#
+# **在当前架构下不会** —— 这个结论**带前提**，不是无条件成立：
+#
+#   前提：巡检必须跑在**一次性进程**里（现在是 01:20 的独立 cron 直接起
+#        scripts/datasource_health_check.py，跑完即退）。一次性进程启动瞬间
+#        `_global_cache` 必为空 → 必然真实取数 → 命中不到 3600s 旧值。
+#
+#   链路已逐环核实（前提成立时的 5 条证据）：
+#   1. `_global_cache` 是 `infra.cache.MemoryCache` = 进程内的 dict + Lock，
+#      `set/get` 只动内存，**没有文件落盘、不跨进程共享**；
+#   2. `get_forex_data()` 开头也只读这个内存缓存（`_global_cache.get("forex")`），
+#      不读任何文件缓存；
+#   3. 巡检跑在**独立 cron 进程**（`20 1 * * *`），进程起来时缓存必为空；
+#   4. 夜链的 01:00 巡检已本轮移除（night_worker.run_night_worker），不存在
+#      「常驻进程里先取数、再巡检」的暖缓存场景；`api/` 与 `main.py` 里也
+#      grep 不到任何巡检入口；
+#   5. 底层 `infra/data_source/macro/indicators.py::get_fx_spot_quote` 是裸
+#      `call_with_timeout(ak.fx_spot_quote, 10)`，同样无文件缓存。
+#
+# 🚫 红线：不得把 `run_health_check()` 接进**常驻进程**。
+#      最有诱惑的入口是 `api/dashboard.py` 的 `/api/health` —— 那里已经在做
+#      「数据源健康检测」，顺手改成直接调巡检几乎是改一行的事，**不要做**。
+#      一旦接进去，上面的前提 3 立刻失效：常驻 API 进程被任意业务取数喂过
+#      一次 `forex` 键之后，接下来整整一个缓存窗口（窗口长度就是这里的
+#      `_GLOBAL_TTL` = 3600s）内的巡检都只会读到旧值 —— 主源在这期间挂掉，
+#      巡检照样判 ✅，故障彻底隐形。
+#      要查健康就起一次性进程（独立 cron / subprocess），别复用常驻进程的缓存。
+#
+#   结论的边界（P7，回应 QA 给的「预置旧好值」反例）：即使前提被破、真的
+#      命中了缓存，风险也**只限于「旧的『好』值」这一种情形**，不是「一命中
+#      缓存结论就全废」—— 因为缓存里如果已经是**降级值**，`result["usdcny"]
+#      ["proxy"]=True` 会跟着一起被缓存下来（见 get_forex_data 末尾
+#      `_global_cache.set(cache_key, result, ttl=_ttl)`），
+#      `datasource_health_check._check_forex` 读到它照样走 `if usd.get("proxy")`
+#      分支判 ⚠️ 降级。也就是说：**降级不会因为缓存命中而变隐形**，
+#      会隐形的只有「旧的成功值」。
+#
+# → 结论：本 TTL 只影响**常驻 API 进程**内的重复调用，与巡检结果无关。
+# 红线：`_GLOBAL_TTL` / `_GLOBAL_TTL_DEGRADED` 的值不得改动 ——
+#       tests/test_global_market_fx.py::test_success_ttl_constant_not_weakened
+#       断言 `gm._GLOBAL_TTL == 3600`，改了会红。
 _global_cache = MemoryCache(default_ttl=3600)
 _GLOBAL_TTL = 3600  # 1 小时缓存（成功路径）
 # 降级/失败结果的缓存时长。远短于成功路径，目的是让主源一恢复就能自愈，

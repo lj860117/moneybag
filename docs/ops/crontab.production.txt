@@ -52,7 +52,10 @@
 # night_worker 内部按顺序串跑 10 个阶段（时间是目标节点，实际可能提前完成）：
 # Sprint 3: 月度家庭报告
 #   Step 10 07:30 生成早安简报（落盘等推送）
-#   Step 1  01:00 健康巡检（数据源/Key）
+#   Step 1  01:00 健康巡检（数据源/Key）—— FIX 2026-09-22 已移出夜链：
+#            night_worker 不再调 step_health_check，改由下面 01:20 的独立
+#            cron 独占。原先两处各跑一次同一份 run_health_check()，01:00 的
+#            落盘还会被 01:20 覆盖。
 #   Step 2  01:30 数据预热（Tushare/AKShare 因子）
 #   Step 3  02:00 🧠 R1 Phase 1 - 全局市场分析
 #   Step 4  02:30 🧠 R1 Phase 2 - 持仓诊断
@@ -98,5 +101,27 @@
 
 # 08:05 二期 AI 运维巡检日报（紧跟 08:03 快照；LLM 分析 + 规则兜底 + critical 立即推）
 5 8 * * * cd /opt/moneybag/backend && set -a && . /opt/moneybag/backend/.env && set +a && /opt/moneybag/venv/bin/python scripts/ops_analyst.py >> /var/log/moneybag/ops_analyst.log 2>&1
+
+# FIX 2026-09-22 待上线（需主理人授权后粘贴到服务器 crontab）：周度自检调度补齐。
+# 背景：scripts/weekly_self_audit.py 是孤儿脚本——服务器上无任何调度、全库零调用方，
+# 导致 data/audit/latest.json 9 天未更新、ops_summary 的「周度自检」巡检项天天告警。
+# 时段选周日 02:00：与现有周日任务（20:00 评级 / 21:00 下周规划 / 22:00 基金排行）不冲突，
+# night_worker 是工作日 01:00，周日 02:00 空闲；耗时 2-5 分钟（含 LLM 审计）。
+# ⚠️ 必须带 DATA_DIR：cron 侧缺该变量曾导致 data 目录分裂（项目历史事故根因）。
+# 详见 docs/ops/weekly-self-audit-cron.md
+0 2 * * 0 cd /opt/moneybag/backend && set -a && . /opt/moneybag/backend/.env && set +a && export DATA_DIR=/opt/moneybag/data && /opt/moneybag/venv/bin/python scripts/weekly_self_audit.py >> /var/log/moneybag/weekly_self_audit.log 2>&1
+
+# 01:20 数据源健康巡检（数据源/Key）
+# ⚠️⚠️ 本条是**重建条目，不是从服务器 `crontab -l` 导出的**。
+#   来源：本轮排查确认服务器上确实跑着这条（`20 1 * * *`，与 night_worker 的
+#   01:00 重复过），但**没有把它 dump 下来核对过**，下面这行是按仓库里其它
+#   条目的既有写法（cd + set -a/.env + venv python）**推断重建**的：
+#     - 时间字段 `20 1 * * *`：来自排查结论，可信；
+#     - 日志路径 `/var/log/moneybag/health_check.log`：**推断值，未验证**；
+#     - `export DATA_DIR=/opt/moneybag/data`：按本文件其它新条目的规矩补上
+#       （cron 侧缺该变量曾导致 data 目录分裂，项目历史事故根因）。
+#   上线前**必须**先在服务器上 `crontab -l` 核对真实条目（尤其是日志路径），
+#   一致再照抄，不一致以服务器为准并回来改本文件。别直接把本条粘上去。
+20 1 * * * cd /opt/moneybag/backend && set -a && . /opt/moneybag/backend/.env && set +a && export DATA_DIR=/opt/moneybag/data && /opt/moneybag/venv/bin/python scripts/datasource_health_check.py >> /var/log/moneybag/health_check.log 2>&1
 # 可选：实时 critical 高频重扫（默认关闭；快照每天 08:03 才更新，高频重扫收益有限，需主理人拍板后启用）
 # */30 * * * * cd /opt/moneybag/backend && set -a && . /opt/moneybag/backend/.env && set +a && /opt/moneybag/venv/bin/python scripts/ops_analyst.py --critical-only >> /var/log/moneybag/ops_analyst.log 2>&1

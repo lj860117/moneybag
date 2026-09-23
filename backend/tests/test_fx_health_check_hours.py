@@ -153,7 +153,18 @@ def test_fx_offshore_proxy_skips_off_hours(monkeypatch):
 
 
 def test_fx_offshore_proxy_still_alerts_in_trading_hours(monkeypatch):
-    """反向：交易时段主源降级仍是故障，必须告警（2026-09-11 的病根就是没报）。"""
+    """反向：交易时段主源降级仍必须**告警**（2026-09-11 的病根就是没报）。
+
+    FIX 2026-09-22 契约变更（本测试同步改断言，意图不变）：
+      旧：判 ❌ 失败（ok=False）
+      新：判 ⚠️ 降级（ok=True + degraded=True + status="⚠️"）
+    为什么改：
+      ① 判 ❌ 把「还有兜底价可用」说成彻底失败，与事实不符；
+      ② 更关键的 —— ❌ 会被 ops_summary.collect_error_logs 的关键字表命中，
+         于是「降级」被数进 error_logs_24h 的「错误」，污染刚修干净的日报数字。
+         降级不是错误，只是「值不可信」，两者必须分开计数。
+    所以本测试除了锁住「仍然告警」，还额外锁住「告警文案里绝不出现 ❌」。
+    """
     from scripts import datasource_health_check as hc
 
     monkeypatch.setattr(hc, "_is_fx_trading_hours", lambda *a, **k: True)
@@ -171,5 +182,49 @@ def test_fx_offshore_proxy_still_alerts_in_trading_hours(monkeypatch):
 
     result = hc._check_forex({"name": "外汇(USD/CNY)"})
 
-    assert result["ok"] is False
+    # ① 不是彻底失败（还有离岸兜底价可用）
+    assert result["ok"] is True
+    # ② 但**必须**被打成降级态，绝不能混进 ✅ 正常里（混进去就是隐形故障）
+    assert result.get("degraded") is True, (
+        f"交易时段主源降级必须置 degraded=True，否则又变成没人看得见的隐形故障：{result}"
+    )
+    assert result.get("status") == hc._DEGRADED_STATUS
     assert "主源降级" in result["detail"]
+    # ③ 硬约束：降级文案里不得出现 ❌（否则被 error_logs_24h 当成错误计数）
+    assert "❌" not in result["detail"], (
+        f"降级文案出现 ❌ 会被 ops_summary 关键字表命中，把降级数成错误：{result['detail']}"
+    )
+
+
+def test_fx_degraded_is_alerted_and_not_counted_as_error(monkeypatch, tmp_path):
+    """端到端：外汇降级在 main() 里走告警通道，且不带 ❌ 关键字。
+
+    锁住两件事，缺一不可：
+      1. `degraded` 项会被单独统计并触发 `_push_alert`（不能因为改了状态就静默）；
+      2. 推送文案里没有 ❌ —— 这是「降级不进错误计数」的最后一道闸门。
+    """
+    from scripts import datasource_health_check as hc
+
+    monkeypatch.setattr(hc, "DATA_DIR", tmp_path)
+    pushed: list[str] = []
+
+    import services.wxwork_push as wx
+
+    monkeypatch.setattr(wx, "send_text", lambda m: pushed.append(m) or {"ok": True})
+
+    degraded_item = {
+        "name": "外汇(USD/CNY)", "source": "forex", "status": hc._DEGRADED_STATUS,
+        "degraded": True,
+        "detail": "主源降级：当前 USD/CNY 由 Tushare 离岸 USD/CNH 兜底 = 6.7138",
+    }
+    hc._push_alert([], 14, [degraded_item])
+
+    assert len(pushed) == 1, f"降级项必须触发告警推送，实际推了 {len(pushed)} 次"
+    msg = pushed[0]
+    assert "外汇(USD/CNY)" in msg and "降级" in msg
+    # 关键字表：ops_summary.collect_error_logs 用它们判定「错误行」
+    for kw in ("❌", "Traceback", "ERROR", "Exception", "failed", "Failed"):
+        assert kw not in msg, (
+            f"降级告警文案出现错误关键字 {kw!r} —— 会被 error_logs_24h 计数，"
+            f"降级不是错误：{msg}"
+        )

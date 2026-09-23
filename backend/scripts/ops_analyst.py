@@ -121,6 +121,40 @@ _FALLBACK_PROMPT = """# 角色
 
 
 # ============================================================
+# 错误级输出（FIX 2026-09-22：纯中文错误行在 error_logs_24h 里漏报）
+# ============================================================
+# 现象：ops_summary.collect_error_logs 用关键字表命中错误行，关键字表是
+#     keywords = ("Traceback", "ERROR", "❌", "Exception", "failed", "Failed")
+#   本脚本的错误行全是纯中文（如 "[OPS_ANALYST] LLM 调用异常: ..."），
+#   一个关键字都命中不了 → 这些真实错误不会计入 error_logs_24h，看板显示 0。
+#
+# 修法选**生产侧**（本文件补前缀）而非消费侧（加宽关键字表），理由：
+#   1. 关键字表一旦加宽（比如加「异常」「失败」），历史日志里所有含该词的
+#      正常行都会被回溯算成错误，存量数据无法收敛，且影响面跨所有日志文件；
+#   2. 生产侧补前缀只影响本脚本**今后新写**的行，历史数据零影响，
+#      且对任何消费方（ops_summary / 人工 grep）都同时生效。
+#   → 结论：关键字表一个字都不许加；本文件所有「错误级」输出一律走 _err()。
+#
+# 边界（务必遵守，否则会把预期行为记成错误）：
+#   - 走 _err()：异常、失败、不可用、解析失败、推送失败 —— 需要人来看的。
+#   - 不走 _err()：跳过推送、签名未变跳过、已推送成功 —— 预期/正常分支。
+
+_ERROR_PREFIX = "❌"
+
+
+def _err(msg: str) -> None:
+    """打印一条错误级日志，统一补 ❌ 前缀，使其能被 ops_summary 关键字表命中。
+
+    Args:
+        msg: 错误正文，**不含**前缀（前缀由本函数统一补，避免各处手写不一致）。
+
+    Returns:
+        None。仅向 stdout 输出一行（cron 以 >> 追加到 ops_analyst.log）。
+    """
+    print(f"{_ERROR_PREFIX} {msg}")
+
+
+# ============================================================
 # 纯函数（确定性逻辑，方便单测）
 # ============================================================
 
@@ -216,7 +250,8 @@ class OpsAnalyst:
             data = json.loads(path.read_text(encoding="utf-8"))
             return data if isinstance(data, dict) else None
         except Exception as e:
-            print(f"[OPS_ANALYST] 快照读取失败 {path}: {e}")
+            # FIX 2026-09-22: 补 ❌ 前缀，否则纯中文错误行进不了 error_logs_24h
+            _err(f"[OPS_ANALYST] 快照读取失败 {path}: {e}")
             return None
 
     def _iter_snapshot_files(self):
@@ -462,24 +497,25 @@ class OpsAnalyst:
                 force_no_thinking=True,
             )
         except Exception as e:
-            print(f"[OPS_ANALYST] LLM 调用异常: {e}")
+            # FIX 2026-09-22: 补 ❌ 前缀（LLM 不可用是真实错误，不该在 24h 统计里隐形）
+            _err(f"[OPS_ANALYST] LLM 调用异常: {e}")
             return None
 
         source = r.get("source", "")
         content = (r.get("content") or "").strip()
         if not content or source in ("rate_limited", "api_error", "error", "no_key"):
-            print(f"[OPS_ANALYST] LLM 不可用 source={source}，走规则兜底")
+            _err(f"[OPS_ANALYST] LLM 不可用 source={source}，走规则兜底")
             return None
 
         # 截断的 JSON 是半截字符串，解析必然失败；显式记录 finish_reason 便于定位
         finish_reason = r.get("finish_reason", "")
         if finish_reason == "length":
-            print(f"[OPS_ANALYST] LLM 输出被 max_tokens 截断（finish_reason=length, tokens={r.get('tokens')}），走规则兜底")
+            _err(f"[OPS_ANALYST] LLM 输出被 max_tokens 截断（finish_reason=length, tokens={r.get('tokens')}），走规则兜底")
             return None
 
         parsed = extract_json_object(content)
         if parsed is None:
-            print(f"[OPS_ANALYST] LLM JSON 解析失败（model={r.get('model')}, finish_reason={finish_reason}, content_len={len(content)}），走规则兜底")
+            _err(f"[OPS_ANALYST] LLM JSON 解析失败（model={r.get('model')}, finish_reason={finish_reason}, content_len={len(content)}），走规则兜底")
             return None
         parsed["_model"] = r.get("model", "")
         return parsed
@@ -603,7 +639,8 @@ class OpsAnalyst:
         try:
             from services import wxwork_push
         except Exception as e:
-            print(f"[OPS_ANALYST] 推送服务导入失败: {e}")
+            # FIX 2026-09-22: 补 ❌ 前缀（推送链断了必须能在 24h 错误里看见）
+            _err(f"[OPS_ANALYST] 推送服务导入失败: {e}")
             return report.setdefault("push", {})
         push = report.setdefault("push", {})
         push["target"] = OPS_REPORT_USER_ID
@@ -703,7 +740,7 @@ class OpsAnalyst:
                 text = self._build_critical_text_from_rule(today, rule)
                 wxwork_push.send_markdown(text, user_id=OPS_REPORT_USER_ID)
         except Exception as e:
-            print(f"[OPS_ANALYST] 推送失败: {e}")
+            _err(f"[OPS_ANALYST] 推送失败: {e}")
 
         self._save_critical_state({"signature": signature, "date": today.get("date", "")})
         print("[OPS_ANALYST] 已推送 critical 告警并更新签名")
@@ -718,6 +755,19 @@ def main(argv: list[str] | None = None) -> int:
         help="仅规则引擎扫描 critical 告警（不调 LLM、不产日报、不推非 critical）",
     )
     args = parser.parse_args(argv)
+
+    # FIX 2026-09-22: 打一行**带日期的段头**，与 ops_summary / 数据源健康巡检
+    # 同一套形态（`🔍 <名称> YYYY-MM-DD`，只带日期 → 取当日 00:00）。
+    #
+    # 为什么必须打：本脚本的日志是 `>> /var/log/moneybag/ops_analyst.log`
+    # **按天追加**的，而正文行（`[OPS_ANALYST] …`）既没有行内时间戳、也没有
+    # 日期 —— 于是它们在 ops_summary 的 24h 错误扫描里只能继承「文件 mtime」，
+    # 而 mtime 每天都被刷新成当天，3 天前那次运行的旧错误会被当成今天写的，
+    # 24h 窗口形同虚设（与 Bug 5 同源）。
+    # 段头自带日期，是唯一能证明「下面这批行是哪次运行写的」的证据。
+    # 解析侧不用改：ops_summary.py 的 _SEGMENT_HEADER_RES 已登记这一形态。
+    print(f"🔍 AI 运维巡检日报 {date.today().isoformat()}")
+
     analyst = OpsAnalyst()
     if args.critical_only:
         return analyst.run_critical_only()
