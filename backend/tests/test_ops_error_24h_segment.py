@@ -28,6 +28,11 @@
    `test_ops_error_dedup.py::test_nonzero_summary_line_still_counted` 同源）。
 4. **兜底不回退**：整份文件既没有行内时间戳、也没有段头时，仍退回「继承文件
    mtime」的老口径 —— 老文件整体跳过、新文件整体计入，行为与改动前一致。
+5. **自引用排除不过宽**（FIX 2026-09-23）：ops_summary.log 里本脚本**自己的
+   报告行**（`❌ 周度自检: 距今 10 天`）不计入；但**同一份日志里的 Traceback**
+   与**其它日志里的同一行**必须照常计入。后两条是反向闸门，防止把「排除自己
+   的报告行」做成「排除整个文件 / 排除所有 ❌」—— 那会让本脚本崩溃时的
+   Traceback 和别处的真告警一起消失，是静默丢告警。
 
 设计原则（与 test_ops_error_dedup.py 一致）：
   - **绝不复制实现里的正则/常量到本文件**。所有断言都真实调用
@@ -227,9 +232,17 @@ def test_old_snapshot_segment_aged_out(env):
     """`🔍 运行态势快照 YYYY-MM-DD` 这种「只有日期」的段头同样要能老化。
 
     线上那条误报就是 ops_summary.log 里的 `❌ 周度自检: 距今 8 天`。
+
+    ⚠️ 2026-09-23 改名说明：本用例原先把日志写成 `ops_summary.log`，但自引用
+    排除（FIX 2026-09-23）生效后，那个文件里 `❌ 周度自检 …` 这类**本脚本自己的
+    报告行**一律不计入 —— 于是「只剩今天那 1 条」的断言会变成 0 条，而且
+    **无论老化逻辑坏没坏都是 0**（自引用排除先于时间窗生效），用例会退化成
+    恒绿空转。所以文件名改成 `snapshot.log`：本用例锁的是「只有日期的段头
+    能否老化」，那是一个**段头格式**性质，与文件名无关；改名后原断言语义
+    完全不变。ops_summary.log 的自引用语义由下面第 6 组三条用例专门守。
     """
     _write(
-        env / "logs" / "ops_summary.log",
+        env / "logs" / "snapshot.log",
         _snapshot_segment(_days_ago(3), 8) + _snapshot_segment(_today_anchor(), 9),
         mtime=datetime.now(),
     )
@@ -428,4 +441,98 @@ def test_chinese_error_line_only_counted_with_prefix(env):
     result = ops.collect_error_logs()
     assert result["count_24h"] == 1, (
         f"生产侧补了 ❌ 就必须计入，实际 {result['count_24h']} 条：{result['files']}"
+    )
+
+
+# ============================================================
+# 6. 自引用排除（FIX 2026-09-23）：巡检结论 ≠ 系统错误
+# ============================================================
+# 背景：collect_error_logs 用 `rglob("*.log")` 扫日志目录，会扫到**它自己的输出**
+# /var/log/moneybag/ops_summary.log。它打印的报告行带 ❌
+# （`❌ 周度自检: 距今 10 天（阈值 7 天）`）→ 命中关键字表 → 被当成系统错误。
+# 2026-09-23 生产实测：修好 24h 行级时间窗后首次运行报「1 条独立错误 /
+# 1 个独立根因」，明细正是它自己那行（此前窗口按 mtime 全算，把它盖住了）。
+#
+# 这是**分类错误**：巡检结论被当成系统错误。修法是排除「本脚本自己的报告行」，
+# 但下面三条必须**成对**存在 —— 少了反向闸门，一个「把整个 ops_summary.log
+# 都不扫」或「把所有 ❌ 都排除」的实现同样能让第 1 条绿，那就是静默丢告警。
+def test_ops_summary_own_report_line_not_counted(env, monkeypatch):
+    """ops_summary.log 里本脚本自己打印的 `❌ 周度自检: …` → 不计入。
+
+    反空转（关键）：断言 0 条之后，把自引用规则**临时关掉**（把
+    `_SELF_LOG_NAME` 指到一个不存在的文件名），同一份日志必须立刻变成 1 条。
+    少了这一步，「0 条」可能只是因为文件压根没被扫到（比如扫描范围打桩
+    写错），用例会退化成恒绿空转 —— 正是本项目反复踩的那类坑。
+    """
+    _write(
+        env / "logs" / "ops_summary.log",
+        _snapshot_segment(_today_anchor(), 10),
+        mtime=datetime.now(),
+    )
+
+    result = ops.collect_error_logs()
+    assert result["count_24h"] == 0, (
+        f"本脚本自己的报告行被当成了系统错误，实际 {result['count_24h']} 条：{result['files']}"
+    )
+
+    # 反空转：关掉自引用规则后必须变成 1 条，否则上面那个 0 是假的
+    monkeypatch.setattr(ops, "_SELF_LOG_NAME", "__no_such_self_log__.log")
+    reenabled = ops.collect_error_logs()
+    assert reenabled["count_24h"] == 1, (
+        f"关掉自引用规则后仍是 {reenabled['count_24h']} 条 —— 说明上面那个 0 不是"
+        f"自引用排除造成的（日志根本没被扫到），本用例空转：{reenabled['files']}"
+    )
+
+
+def test_ops_summary_own_traceback_still_counted(env):
+    """同一份 ops_summary.log 里的 Traceback → **仍计入**。
+
+    反向闸门：证明排除的是「本脚本自己打印的报告行」，而不是「整个
+    ops_summary.log 都不扫」。本脚本自己崩溃时打到同一份日志（`2>&1`）的
+    Traceback 是真故障，必须能被看到。
+    """
+    _write(
+        env / "logs" / "ops_summary.log",
+        _snapshot_segment(_today_anchor(), 10)
+        + [
+            "Traceback (most recent call last):",
+            '  File "scripts/ops_summary.py", line 1234, in collect_error_logs',
+            "PermissionError: [Errno 13] Permission denied: '/var/log/moneybag/x.log'",
+        ],
+        mtime=datetime.now(),
+    )
+
+    result = ops.collect_error_logs()
+    kept = [f["line"] for f in result["files"]]
+    assert result["count_24h"] >= 1, (
+        f"ops_summary.log 里的 Traceback 被一起排除了 —— 那等于本脚本崩溃时"
+        f"无人看守（静默丢告警）：{result['files']}"
+    )
+    assert any("Traceback" in line for line in kept), (
+        f"计入的不是 Traceback 行：{kept}"
+    )
+    assert not any("周度自检" in line for line in kept), (
+        f"自己的报告行仍被计入，自引用排除失效了：{kept}"
+    )
+
+
+def test_same_line_in_other_log_is_still_counted(env):
+    """**同一行** `❌ 周度自检: …` 换个文件名（cron.log）→ **仍计入**。
+
+    反向闸门：证明过滤只作用于 ops_summary.log 自身（判据是「文件名 + 行首
+    报告前缀」两个条件都要满足），没有误伤其它日志里的 ❌。
+    """
+    line = "  ❌ 周度自检: 距今 10 天（阈值 7 天）"
+    today_header = _snapshot_header(_today_anchor())
+
+    _write(env / "logs" / "ops_summary.log", [today_header, line], mtime=datetime.now())
+    _write(env / "logs" / "cron.log", [today_header, line], mtime=datetime.now())
+
+    result = ops.collect_error_logs()
+    assert result["count_24h"] == 1, (
+        f"同一行应只在 ops_summary.log 里被排除、在 cron.log 里照常计入，"
+        f"实际 {result['count_24h']} 条：{result['files']}"
+    )
+    assert result["files"][0]["file"].endswith("cron.log"), (
+        f"留下来的必须是 cron.log 那条，实际：{result['files']}"
     )

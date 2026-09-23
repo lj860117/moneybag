@@ -424,6 +424,33 @@ _ZERO_SUMMARY_RE = re.compile(r"❌\s*(?:异常|错误|失败)\s*[:：]\s*0(?![0
 # 汇总行才作为重复计数丢掉；段落里只剩汇总行时照常计入（见 `collect_error_logs`）。
 _SUMMARY_LINE_RE = re.compile(r"正常\s*[:：]\s*\d+.*?异常\s*[:：]\s*\d+")
 
+# FIX 2026-09-23: 自引用排除 —— 本脚本**会扫到自己**。
+#
+# 本脚本的输出写进 /var/log/moneybag/ops_summary.log，而扫描是
+# `rglob("*.log")` 全覆盖 —— 于是它会把自己上一次的报告扫进来。它打印的
+# 报告行（`🔍 运行态势快照 …` / `✅ …` / `❌ 周度自检: 距今 10 天` / `💾 …`）
+# 是**巡检结论**，不是系统错误；其中带 ❌ 的那行会被 keywords 命中，把自己的
+# 结论当成错误统计 —— 2026-09-23 生产实测：修好 24h 行级时间窗后首次运行报
+# 「24h 错误: 1 条独立错误 / 1 个独立根因」，明细正是它自己那行
+# `❌ 周度自检: 距今 10 天（阈值 7 天）`。（此前窗口按 mtime 判、全算，
+# 把这个分类错误盖住了；窗口修好才浮出来。）
+#
+# ⚠️ 刻意**不**做成「整个 ops_summary.log 都不扫」：
+# 本脚本自己崩溃时打到同一份日志（`2>&1`）的 Traceback 是真故障，必须能被
+# 看到。所以只排除「它自己打印的报告行」—— 判据是行首的表情符号前缀，
+# 而不是文件名一个条件。
+#
+# 为什么用 tuple + str.startswith 而不是正则字符类 `[🔍✅❌⚠️…]`：
+# 本元组里的 `⚠️` 与 `⏭️` 是**两个码位**（U+26A0+U+FE0F / U+23ED+U+FE0F，
+# 实测 len()==2），写进 `[...]` 字符类等于把单独的 U+FE0F 变体选择符也塞进
+# 字符集合 —— 那会匹配上任何带变体选择符的行，误伤正常行。前缀匹配没这个问题。
+# （顺带订正：不要顺手把 `❗` 也当成双码位写进这类注释，实测它是单码位 U+2757。）
+#
+# 这类信号**不会因此丢失**：陈旧告警仍出现在 freshness 段落和 ops_analyst 的
+# 日报里，只是不再冒充「系统错误」。
+_SELF_LOG_NAME = "ops_summary.log"
+_SELF_REPORT_PREFIXES = ("🔍", "✅", "❌", "⚠️", "⏭️", "💾", "📝", "🚨")
+
 
 # ── 行内时间戳解析（24h 过滤口径）──────────────────────────────
 # ⚠️ 为什么必须按「行内时间戳」而不是「文件 mtime」判 24h（2026-09-08 事故真根因）：
@@ -797,6 +824,17 @@ def collect_error_logs() -> dict[str, Any]:
         无条件丢弃就是静默丢告警，见 `_SUMMARY_LINE_RE` 的注释与
         `tests/test_ops_error_dedup.py::test_nonzero_summary_line_still_counted`）
 
+    FIX 2026-09-23 自引用排除：本脚本的输出写进 `/var/log/moneybag/ops_summary.log`，
+    而扫描是 `rglob("*.log")` 全覆盖 —— 它会把自己上一次的报告扫进来。那些
+    报告行（`❌ 周度自检: 距今 10 天` 等）是**巡检结论**不是系统错误，带 ❌ 的
+    会被 keywords 命中，把自己的结论当成错误统计（2026-09-23 生产实测：
+    24h 错误 1 条 / 1 个根因，明细正是它自己那行）。
+
+    ⚠️ 只排除「ops_summary.log 里行首带本脚本报告前缀的行」，**不是整个文件
+    都不扫**：本脚本自己崩溃时打到同一份日志（`2>&1`）的 Traceback 是真故障，
+    必须能被看到。判据详见 `_SELF_REPORT_PREFIXES` 的注释。这类陈旧告警也不会
+    因此丢失 —— 它仍出现在 freshness 段落和 ops_analyst 日报里。
+
     24h 窗口按**行内时间戳**判定（见 `_resolve_line_times`），不按文件 mtime：
     cron.log 这类按天追加的文件 mtime 永远新鲜，按 mtime 判会让上周的错误
     永远算进 24h；只有整份文件都解析不到行内时间戳时才回退 mtime。
@@ -859,6 +897,12 @@ def collect_error_logs() -> dict[str, Any]:
                     # 零值健康汇总行（`✅ 正常: 13    ❌ 异常: 0`）→ 整行跳过，
                     # 只认「值为 0」这一种形态，非零的真报警照常计入
                     if _ZERO_SUMMARY_RE.search(line):
+                        continue
+                    # FIX 2026-09-23 自引用排除：本脚本自己的报告行不是系统错误。
+                    # 只作用于自身日志（ops_summary.log），且只排除「行首是本脚本
+                    # 报告前缀」的那些行 —— 同一份日志里的 Traceback 照常计入，
+                    # 其它日志里的 ❌ 也照常计入（见 _SELF_REPORT_PREFIXES 注释）。
+                    if f.name == _SELF_LOG_NAME and line.lstrip().startswith(_SELF_REPORT_PREFIXES):
                         continue
                     is_summary = _SUMMARY_LINE_RE.search(line) is not None
                     for kw in keywords:
