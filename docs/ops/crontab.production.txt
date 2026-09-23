@@ -112,16 +112,15 @@
 0 2 * * 0 cd /opt/moneybag/backend && set -a && . /opt/moneybag/backend/.env && set +a && export DATA_DIR=/opt/moneybag/data && /opt/moneybag/venv/bin/python scripts/weekly_self_audit.py >> /var/log/moneybag/weekly_self_audit.log 2>&1
 
 # 01:20 数据源健康巡检（数据源/Key）
-# ⚠️⚠️ 本条是**重建条目，不是从服务器 `crontab -l` 导出的**。
-#   来源：本轮排查确认服务器上确实跑着这条（`20 1 * * *`，与 night_worker 的
-#   01:00 重复过），但**没有把它 dump 下来核对过**，下面这行是按仓库里其它
-#   条目的既有写法（cd + set -a/.env + venv python）**推断重建**的：
-#     - 时间字段 `20 1 * * *`：来自排查结论，可信；
-#     - 日志路径 `/var/log/moneybag/health_check.log`：**推断值，未验证**；
-#     - `export DATA_DIR=/opt/moneybag/data`：按本文件其它新条目的规矩补上
-#       （cron 侧缺该变量曾导致 data 目录分裂，项目历史事故根因）。
-#   上线前**必须**先在服务器上 `crontab -l` 核对真实条目（尤其是日志路径），
-#   一致再照抄，不一致以服务器为准并回来改本文件。别直接把本条粘上去。
-20 1 * * * cd /opt/moneybag/backend && set -a && . /opt/moneybag/backend/.env && set +a && export DATA_DIR=/opt/moneybag/data && /opt/moneybag/venv/bin/python scripts/datasource_health_check.py >> /var/log/moneybag/health_check.log 2>&1
+# ✅ 2026-09-23 已用服务器 `crontab -l` 核对（第 102 行），下面这行是**真实条目原文**。
+#   核对结论（纠正了本文件此前两处推断错误，别再改回去）：
+#     - 日志在 `/opt/moneybag/data/night_worker/health_check.log`，
+#       **不是** `/var/log/moneybag/health_check.log`；
+#     - 条目里**没有**额外 `export DATA_DIR=...` —— 因为
+#       `/opt/moneybag/backend/.env` 里已含 `DATA_DIR=/opt/moneybag/data`，
+#       `set -a && . .env` 会自动导出，重复写反而制造两份真相。
+#   本轮起夜链的 01:00 巡检已移除，数据源巡检由本条**独占**（此前每晚跑两次、
+#   各拉一次 70 页全量行情，且同天单文件后写覆盖前写）。
+20 1 * * * cd /opt/moneybag/backend && set -a && . /opt/moneybag/backend/.env && set +a && /opt/moneybag/venv/bin/python scripts/datasource_health_check.py >> /opt/moneybag/data/night_worker/health_check.log 2>&1
 # 可选：实时 critical 高频重扫（默认关闭；快照每天 08:03 才更新，高频重扫收益有限，需主理人拍板后启用）
 # */30 * * * * cd /opt/moneybag/backend && set -a && . /opt/moneybag/backend/.env && set +a && /opt/moneybag/venv/bin/python scripts/ops_analyst.py --critical-only >> /var/log/moneybag/ops_analyst.log 2>&1
